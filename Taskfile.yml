@@ -1,0 +1,37 @@
+version: '3'
+
+vars:
+  BINARY: bin/tietiezhi
+  CONFIG: configs/config.yaml
+
+tasks:
+  build:
+    desc: 编译项目
+    cmds:
+      - go build -o {{.BINARY}} ./cmd/server
+
+  run:
+    desc: 编译并运行
+    cmds:
+      - task: build
+      - ./{{.BINARY}} -c {{.CONFIG}}
+
+  test:
+    desc: 运行测试
+    cmds:
+      - go test ./...
+
+  tidy:
+    desc: 整理依赖
+    cmds:
+      - go mod tidy
+
+  clean:
+    desc: 清理构建产物
+    cmds:
+      - rm -rf bin/
+
+  lint:
+    desc: 代码检查
+    cmds:
+      - go vet ./...
