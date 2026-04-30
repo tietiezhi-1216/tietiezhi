@@ -1,3 +1,13 @@
+github.com/gogo/protobuf v1.3.2 h1:Ojh1/73e0t78sP3IiPJ6qBBrW9wgNX5KV4QBIz29KQc=
+github.com/gogo/protobuf v1.3.2/go.mod h1:SlYgWuQ5SjCEiZWLpCt3exg3jqFfIsQ1y6xXxoKBNLQ=
+github.com/gorilla/websocket v1.5.0 h1:PPwGk2jz7EePpoHN/+ClbZu8SPxiqlu12wZP/0sweA8=
+github.com/gorilla/websocket v1.5.0/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/larksuite/oapi-sdk-go/v3 v3.6.1 h1:6g3F5Y7Jm5P5P5P5P5P5P5P5P5P5P5P5P5P5P5P5P5P=
+github.com/larksuite/oapi-sdk-go/v3 v3.6.1/go.mod h1:v3SdkGoV3MD5mz9Wd7Lm1jVQJQCJ1E1e1E1e1E1e1E1=
+golang.org/x/net v0.30.0 h1:AcW1ILZB5ymQ3OuQPCV2C9YF5LBJeG5PwqX2WqQ7xYk=
+golang.org/x/net v0.30.0/go.mod h1:k0C/N1m6l1P076R5Gkz0Pq5TR5K8q7yp5v7J8q5Z5Z5M=
+golang.org/x/text v0.19.0 h1:AcW1ILZB5ymQ3OuQPCV2C9YF5LBJeG5PwqX2WqQ7xYk=
+golang.org/x/text v0.19.0/go.mod h1:k0C/N1m6l1P076R5Gkz0Pq5TR5K8q7yp5v7J8q5Z5Z5M=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=
