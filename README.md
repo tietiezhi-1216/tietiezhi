@@ -34,10 +34,10 @@ tietiezhi 的定位很明确：
 
 - ✅ YAML 配置驱动
 - ✅ 项目骨架与核心接口
-- 🔄 LLM 接入（OpenAI 协议，含流式）
-- 🔄 Agent 对话引擎（单轮 / 多轮 / 工具调用循环）
-- 🔄 工具调用循环检测
-- 📋 渠道接入（飞书、钉钉、Telegram、Discord、Slack）
+✅ LLM 接入（OpenAI 协议，含流式）
+✅ Agent 对话引擎（单轮对话 + 对话历史）
+✅ 工具调用循环检测框架
+🔄 渠道接入（飞书已对接 WebSocket 长连接）
 - 📋 技能包系统（Anthropic MD 规范）
 - 📋 Hook 系统（6 个核心触发点）
 - 📋 MCP 协议支持
