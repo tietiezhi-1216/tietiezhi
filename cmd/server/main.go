@@ -49,7 +49,11 @@ func main() {
 		feishuCh := feishu.New(cfg.Channels.Feishu.AppID, cfg.Channels.Feishu.AppSecret)
 		// 设置消息处理函数：收到的消息交给 Agent 处理
 		feishuCh.SetHandler(func(ctx context.Context, msg *channel.Message) (*channel.Message, error) {
-			return ag.Run(ctx, &agent.Message{Role: "user", Content: msg.Content})
+			reply, err := ag.Run(ctx, &agent.Message{Role: "user", Content: msg.Content})
+			if err != nil {
+				return nil, err
+			}
+			return &channel.Message{Content: reply.Content}, nil
 		})
 		channelRegistry.Register(feishuCh)
 		log.Println("飞书渠道已注册")
