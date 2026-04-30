@@ -1,75 +1,148 @@
 # tietiezhi
 
-> 轻量级本地 AI Agent 框架 — Go 核心 + 原生 UI
+> 🇨🇳 轻量级本地 AI Agent 框架 — 一个配置文件搞定所有功能
 
-tietiezhi（铁铁汁）是一个用 Go 开发的轻量级本地 AI Agent 框架，目标是让每个人都能在自己的设备上运行一个智能终端。类似于 Codex / Claude Code 的本地化方案，但可以跑在手机上。
+tietiezhi 是一个用 Go 开发的轻量级 AI Agent 框架，聚焦 **Server 模式**，将市面上所有 Agent 功能整合到一个好配置、好使用、好管理的服务中。
 
-## ✨ 核心特性
+## 为什么做 tietiezhi？
 
-- **多厂商 LLM 接入** — 支持所有主流 AI 厂商，支持流式输出
-- **本地化优先** — 所有数据存储在本地，无需云服务，隐私安全
-- **工作区系统** — 不同工作区隔离 Agent、文件、配置，互不干扰
-- **MCP 支持** — 可调用外部 MCP 服务扩展能力
-- **Tools (Function Call)** — 原生支持 OpenAI 兼容的 Function Calling
-- **Skills 系统** — 本地导入技能包，扩展 Agent 能力
-- **Hooks** — 生命周期钩子，可在关键节点注入自定义逻辑
-- **定时任务** — 支持 cron 表达式，满足 OpenClaw 级别的定时调度能力
-- **多 Agent 协作** — 子 Agent 创建、调用、交接、并行汇总
-- **独立 Persona** — 每个 Agent 有独立的 system prompt 和人设
-- **分层记忆系统** — 短期记忆 + 长期记忆分离，持久化存储到本地文件
-- **多租户支持** — 记忆模式支持多租户隔离
+市面上有很多 Agent 框架，但它们要么太重（需要数据库、Redis），要么功能碎片化（只做渠道、只做工具、只做记忆），要么配置复杂（交互式引导、多层嵌套配置）。
 
-## 🏗️ 架构
+tietiezhi 的定位很明确：
 
-```
-┌─────────────────────────────────┐
-│         原生 UI 层               │
-│   (Swift / Kotlin / Flutter)    │
-├─────────────────────────────────┤
-│       gomobile bind 接口层       │
-├─────────────────────────────────┤
-│           Go 核心层              │
-│  ┌───────┐ ┌───────┐ ┌───────┐ │
-│  │ Agent │ │ LLM   │ │Memory │ │
-│  │ Engine│ │ Router│ │ Store │ │
-│  └───────┘ └───────┘ └───────┘ │
-│  ┌───────┐ ┌───────┐ ┌───────┐ │
-│  │ Tools │ │ Skills│ │ Hooks │ │
-│  └───────┘ └───────┘ └───────┘ │
-│  ┌───────┐ ┌───────┐ ┌───────┐ │
-│  │  MCP  │ │ Cron  │ │Workspace│ │
-│  └───────┘ └───────┘ └───────┘ │
-└─────────────────────────────────┘
-```
+- **功能全**：渠道、Agent、Hook、定时任务、Skills、MCP、记忆、LLM — 全都整合在一个服务里
+- **配置简**：一个 YAML 文件搞定，不搞交互式引导，不搞多余代码
+- **零依赖**：零数据库，Markdown 驱动的记忆系统，单二进制部署
+- **协议通**：原生支持 OpenAI 协议，兼容主流大模型
 
-- **Go 核心**：只负责逻辑处理，不碰 UI
-- **gomobile bind**：生成 `.aar`(Android) + `.xcframework`(iOS)，暴露简单类型接口
-- **原生 UI**：Swift 写 iOS，Kotlin 写 Android，体验原生
+## 核心特性
 
-## 🎯 目标用户
+| 特性 | 说明 |
+|------|------|
+| 🎯 配置驱动 | 一个 YAML 文件搞定所有功能，清晰明了 |
+| 🔌 OpenAI 协议 | 原生支持，兼容 OpenAI / Azure / 国产模型 |
+| 📦 零数据库 | Markdown 文件记忆，SOUL.md / MEMORY.md / USER.md |
+| 🚀 开箱即用 | 单二进制部署，无外部依赖 |
+| 📡 多渠道 | 飞书、钉钉、Telegram、Discord... |
+| 🛠️ 工具系统 | 内置工具 + 技能包（Anthropic MD 规范）+ MCP 协议 |
+| 🪝 Hook 链 | LLM 调用前后、工具调用前后、消息收发前后 |
+| ⏰ 定时任务 | Cron 表达式驱动，定时执行任务 |
+| 🔄 循环检测 | 多策略检测工具调用循环，防止 Agent 陷入死循环 |
+| 🇨🇳 中文优先 | 文档、配置、注释全中文 |
 
-- 希望在本地拥有智能终端的开发者
-- 需要在手机上运行 AI Agent 的用户
-- 不想依赖云服务、注重隐私的用户
+## 功能状态
 
-## 🚀 快速开始
+- ✅ YAML 配置驱动
+- ✅ 项目骨架与核心接口
+- 🔄 LLM 接入（OpenAI 协议，含流式）
+- 🔄 Agent 对话引擎（单轮 / 多轮 / 工具调用循环）
+- 🔄 工具调用循环检测
+- 📋 渠道接入（飞书、钉钉、Telegram、Discord、Slack）
+- 📋 技能包系统（Anthropic MD 规范）
+- 📋 Hook 系统（6 个核心触发点）
+- 📋 MCP 协议支持
+- 📋 Markdown 记忆系统
+- 📋 定时任务调度
+- 📋 工作区管理
+
+## 快速开始
 
 ```bash
-go get github.com/tietiezhi-1216/tietiezhi
+# 克隆项目
+git clone https://github.com/tietiezhi-1216/tietiezhi.git
+cd tietiezhi
+
+# 配置
+cp configs/config.example.yaml configs/config.yaml
+# 编辑 config.yaml，填入你的 API Key
+
+# 构建并运行
+make build && make run
 ```
 
-## 📋 MVP 范围
+服务启动后访问 `http://localhost:8080/health` 检查状态。
 
-- [ ] LLM 多厂商接入 + 流式输出
-- [ ] 本地/远程工作区
-- [ ] MCP 调用
-- [ ] Tools (Function Call)
-- [ ] Skills 本地导入
-- [ ] Hooks 生命周期钩子
-- [ ] 定时任务（cron）
-- [ ] 多 Agent 协作（创建/调用/交接/并行）
-- [ ] 分层记忆系统（短期 + 长期）
+## 配置示例
 
-## 📄 License
+```yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+llm:
+  provider: "openai"
+  base_url: "https://api.openai.com/v1"
+  api_key: "sk-your-api-key"
+  model: "gpt-4o"
+
+agent:
+  max_tool_calls: 20
+  system_prompt: "你是一个有用的AI助手"
+  loop_detection: true
+
+channels:
+  feishu:
+    enabled: false
+    app_id: ""
+    app_secret: ""
+
+memory:
+  type: "markdown"
+  path: "./workspaces"
+
+skills:
+  path: "./skills"
+```
+
+完整配置参考 [configs/config.example.yaml](configs/config.example.yaml)。
+
+## 项目结构
+
+```
+tietiezhi/
+├── cmd/server/           # 入口
+├── internal/
+│   ├── config/           # 配置加载
+│   ├── server/           # HTTP 服务
+│   ├── llm/              # LLM 接入层
+│   ├── agent/            # Agent 引擎 + 循环检测
+│   ├── channel/          # 渠道层
+│   │   └── feishu/       # 飞书渠道
+│   ├── tool/             # 工具系统
+│   │   └── builtin/      # 内置工具
+│   ├── skill/            # 技能包（Anthropic MD 规范）
+│   ├── hook/             # Hook 链
+│   ├── mcp/              # MCP 协议
+│   ├── memory/           # 记忆系统
+│   ├── scheduler/        # 定时任务
+│   └── workspace/        # 工作区管理
+├── configs/              # 配置文件
+├── skills/               # 技能包目录
+├── workspaces/           # 工作区目录
+├── AGENTS.md             # 开发规范
+└── Makefile              # 构建命令
+```
+
+## 开发计划
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| Phase 1 | 配置加载 + LLM 接入（OpenAI） + 单轮对话 + HTTP API | 🔄 |
+| Phase 2 | Agent 多轮对话 + 工具调用 + 循环检测 | 📋 |
+| Phase 3 | 渠道接入（飞书） | 📋 |
+| Phase 4 | 技能包 + Hook 系统 | 📋 |
+| Phase 5 | MCP 协议 + 记忆系统 | 📋 |
+| Phase 6 | 定时任务 + 工作区管理 | 📋 |
+| Phase 7 | 打磨优化 + 文档完善 | 📋 |
+
+## 开发规范
+
+详见 [AGENTS.md](AGENTS.md)。
+
+## 贡献
+
+欢迎 PR！请先阅读 [AGENTS.md](AGENTS.md) 了解开发规范。
+
+## License
 
 MIT

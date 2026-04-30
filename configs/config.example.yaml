@@ -1,0 +1,45 @@
+# tietiezhi 配置文件
+# 中文注释，配置即文档
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+# LLM 配置
+llm:
+  provider: "openai"            # 目前仅支持 openai
+  base_url: "https://api.openai.com/v1"  # API 基础地址，可替换为兼容接口
+  api_key: "sk-your-api-key"    # 你的 API Key
+  model: "gpt-4o"              # 默认模型
+
+# Agent 配置
+agent:
+  max_tool_calls: 20            # 单次对话最大工具调用次数
+  system_prompt: "你是一个有用的AI助手"  # 默认系统提示词
+  loop_detection: true          # 启用工具调用循环检测
+
+# 渠道配置
+channels:
+  feishu:
+    enabled: false              # 是否启用飞书渠道
+    app_id: ""                  # 飞书应用 ID
+    app_secret: ""              # 飞书应用 Secret
+
+# 记忆配置
+memory:
+  type: "markdown"              # 记忆类型：markdown
+  path: "./workspaces"          # 记忆文件目录
+
+# 技能配置
+skills:
+  path: "./skills"              # 技能包目录
+
+# 定时任务配置
+scheduler:
+  enabled: false                # 是否启用定时任务
+
+# 日志配置
+log:
+  level: "info"                 # 日志级别：debug, info, warn, error
+  format: "text"                # 日志格式：json, text

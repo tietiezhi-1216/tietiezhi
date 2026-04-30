@@ -1,36 +1,19 @@
-# Binaries
+# 二进制
+bin/
 *.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-/tietiezhi
-/cmd/tietiezhi/tietiezhi
 
-# Test binary
-*.test
-
-# Output
-*.out
-
-# Dependency directories
-/vendor/
+# 配置（保留示例）
+configs/config.yaml
 
 # IDE
 .idea/
 .vscode/
 *.swp
-*.swo
-*~
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Build output
-/dist/
-/build/
-
-# Environment
-.env
-.env.local
+# 工作区数据
+workspaces/*/
+!workspaces/.gitkeep
