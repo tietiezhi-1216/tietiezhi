@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/tietiezhi-1216/tietiezhi/internal/channel"
+	"tietiezhi/internal/channel"
 )
 
 // FeishuChannel 飞书渠道

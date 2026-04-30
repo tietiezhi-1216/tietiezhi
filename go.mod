@@ -1,4 +1,4 @@
-module github.com/tietiezhi-1216/tietiezhi
+module tietiezhi
 
 go 1.23
 

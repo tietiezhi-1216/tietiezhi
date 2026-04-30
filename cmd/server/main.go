@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/tietiezhi-1216/tietiezhi/internal/config"
-	"github.com/tietiezhi-1216/tietiezhi/internal/server"
+	"tietiezhi/internal/config"
+	"tietiezhi/internal/server"
 )
 
 func main() {

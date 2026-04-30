@@ -7,7 +7,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/tietiezhi-1216/tietiezhi/internal/config"
+	"tietiezhi/internal/config"
 )
 
 // Server HTTP 服务器

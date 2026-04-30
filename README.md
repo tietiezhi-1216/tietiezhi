@@ -49,7 +49,7 @@ tietiezhi 的定位很明确：
 
 ```bash
 # 克隆项目
-git clone https://github.com/tietiezhi-1216/tietiezhi.git
+git clone https://tietiezhi.git
 cd tietiezhi
 
 # 配置
