@@ -57,7 +57,7 @@ cp configs/config.example.yaml configs/config.yaml
 # 编辑 config.yaml，填入你的 API Key
 
 # 构建并运行
-make build && make run
+task build && task run
 ```
 
 服务启动后访问 `http://localhost:8080/health` 检查状态。
