@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -195,13 +194,3 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, input 
 	flusher.Flush()
 }
 
-// extractContent 从 delta JSON 中提取 content
-func extractContent(delta json.RawMessage) string {
-	var d struct {
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal(delta, &d); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(d.Content)
-}
