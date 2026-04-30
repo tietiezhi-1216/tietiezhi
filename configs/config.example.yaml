@@ -4,7 +4,7 @@
 # 服务器配置
 server:
   host: "0.0.0.0"
-  port: 8080
+  port: 18178
 
 # LLM 配置
 llm:
@@ -25,6 +25,8 @@ channels:
     enabled: false              # 是否启用飞书渠道
     app_id: ""                  # 飞书应用 ID
     app_secret: ""              # 飞书应用 Secret
+    verification_token: ""      # 事件订阅验证 Token
+    encrypt_key: ""             # 事件订阅加密 Key
 
 # 记忆配置
 memory:

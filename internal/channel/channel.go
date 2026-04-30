@@ -9,6 +9,9 @@ type Message struct {
 	Content   string `json:"content"`
 }
 
+// Handler 消息处理函数类型
+type Handler func(ctx context.Context, msg *Message) (*Message, error)
+
 // Channel 渠道接口
 type Channel interface {
 	// ID 返回渠道唯一标识

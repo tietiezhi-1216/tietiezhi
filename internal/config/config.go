@@ -27,7 +27,7 @@ type ServerConfig struct {
 
 // LLMConfig 大模型配置
 type LLMConfig struct {
-	Provider string `yaml:"provider"` // 目前仅支持 openai
+	Provider string `yaml:"provider"`
 	BaseURL  string `yaml:"base_url"`
 	APIKey   string `yaml:"api_key"`
 	Model    string `yaml:"model"`
@@ -35,33 +35,34 @@ type LLMConfig struct {
 
 // AgentConfig Agent 配置
 type AgentConfig struct {
-	MaxToolCalls  int    `yaml:"max_tool_calls"`  // 单次对话最大工具调用次数
-	SystemPrompt  string `yaml:"system_prompt"`   // 默认系统提示词
-	LoopDetection bool   `yaml:"loop_detection"`  // 是否启用循环检测
+	MaxToolCalls  int    `yaml:"max_tool_calls"`
+	SystemPrompt  string `yaml:"system_prompt"`
+	LoopDetection bool   `yaml:"loop_detection"`
 }
 
 // ChannelsConfig 渠道配置
 type ChannelsConfig struct {
 	Feishu *FeishuConfig `yaml:"feishu"`
-	// 后续扩展：DingTalk, Telegram, Discord, Slack...
 }
 
 // FeishuConfig 飞书渠道配置
 type FeishuConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	AppID     string `yaml:"app_id"`
-	AppSecret string `yaml:"app_secret"`
+	Enabled           bool   `yaml:"enabled"`
+	AppID             string `yaml:"app_id"`
+	AppSecret         string `yaml:"app_secret"`
+	VerificationToken string `yaml:"verification_token"`
+	EncryptKey        string `yaml:"encrypt_key"`
 }
 
 // MemoryConfig 记忆配置
 type MemoryConfig struct {
-	Type string `yaml:"type"` // markdown
-	Path string `yaml:"path"` // 记忆文件目录
+	Type string `yaml:"type"`
+	Path string `yaml:"path"`
 }
 
 // SkillsConfig 技能配置
 type SkillsConfig struct {
-	Path string `yaml:"path"` // 技能包目录
+	Path string `yaml:"path"`
 }
 
 // SchedulerConfig 定时任务配置
@@ -71,8 +72,8 @@ type SchedulerConfig struct {
 
 // LogConfig 日志配置
 type LogConfig struct {
-	Level  string `yaml:"level"`  // debug, info, warn, error
-	Format string `yaml:"format"` // json, text
+	Level  string `yaml:"level"`
+	Format string `yaml:"format"`
 }
 
 // Load 从 YAML 文件加载配置
@@ -97,7 +98,7 @@ func (c *Config) applyDefaults() {
 		c.Server.Host = "0.0.0.0"
 	}
 	if c.Server.Port == 0 {
-		c.Server.Port = 8080
+		c.Server.Port = 18178
 	}
 	if c.Agent.MaxToolCalls == 0 {
 		c.Agent.MaxToolCalls = 20

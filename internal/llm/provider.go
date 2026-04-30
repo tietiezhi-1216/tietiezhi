@@ -21,7 +21,7 @@ type ChatRequest struct {
 
 // ToolDef 工具定义
 type ToolDef struct {
-	Type     string      `json:"type"` // function
+	Type     string      `json:"type"`
 	Function FunctionDef `json:"function"`
 }
 
@@ -59,10 +59,14 @@ type StreamChoice struct {
 	FinishReason *string         `json:"finish_reason"`
 }
 
+// StreamDelta 流式消息增量
+type StreamDelta struct {
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+}
+
 // Provider LLM 提供者接口
 type Provider interface {
-	// Chat 同步聊天
 	Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
-	// ChatStream 流式聊天
 	ChatStream(ctx context.Context, req *ChatRequest) (<-chan StreamChunk, error)
 }
