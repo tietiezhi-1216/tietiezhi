@@ -148,9 +148,11 @@ type MCPClient struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	stdout  *bufio.Scanner
+	stderr  io.Closer
 	tools   []MCPToolDef
 	mu      sync.Mutex
 	reqID   int
+	done    chan struct{}
 }
 
 // newMCPClient 创建 MCP 客户端实例
@@ -159,6 +161,7 @@ func newMCPClient(name string, config skill.MCPServerConfig) (*MCPClient, error)
 		name:   name,
 		config: config,
 		reqID:  0,
+		done:   make(chan struct{}),
 	}, nil
 }
 
@@ -173,20 +176,20 @@ func (c *MCPClient) Connect() error {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
-	// 使用 io.Pipe 获取 stdin
+	// 使用 cmd.StdinPipe() 获取 stdin 管道（正确连接到 MCP 进程）
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("创建 stdin pipe 失败: %w", err)
 	}
-	c.stdin = stdinPipe
 
-	// 使用 io.Pipe 获取 stdout
+	// 使用 cmd.StdoutPipe() 获取 stdout 管道（正确连接到 MCP 进程）
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("创建 stdout pipe 失败: %w", err)
 	}
 
-	stderr, err := cmd.StderrPipe()
+	// 使用 cmd.StderrPipe() 获取 stderr 管道
+	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
 		return fmt.Errorf("创建 stderr pipe 失败: %w", err)
 	}
@@ -196,13 +199,16 @@ func (c *MCPClient) Connect() error {
 		return fmt.Errorf("启动 MCP 进程失败: %w", err)
 	}
 
+	// 设置成员变量
 	c.cmd = cmd
+	c.stdin = stdinPipe
+	c.stderr = stderrPipe
 	c.stdout = bufio.NewScanner(stdoutPipe)
 	c.stdout.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer
 
 	// 读取 stderr（异步，防止阻塞）
 	go func() {
-		scanner := bufio.NewScanner(stderr)
+		scanner := bufio.NewScanner(stderrPipe)
 		for scanner.Scan() {
 			log.Printf("[MCP %s stderr] %s", c.name, scanner.Text())
 		}
@@ -367,38 +373,73 @@ func (c *MCPClient) CallTool(name string, args map[string]interface{}) (string, 
 
 // Close 关闭 MCP 连接
 func (c *MCPClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 先关闭 stdin pipe，通知进程输入结束
+	if c.stdin != nil {
+		c.stdin.Close()
+		c.stdin = nil
+	}
+
+	// 关闭 stderr pipe
+	if c.stderr != nil {
+		c.stderr.Close()
+		c.stderr = nil
+	}
+
+	// Kill 进程并等待其退出
 	if c.cmd != nil && c.cmd.Process != nil {
 		c.cmd.Process.Kill()
 		c.cmd.Wait()
 		c.cmd = nil
 	}
+
+	// 关闭 done channel
+	close(c.done)
+
 	return nil
 }
 
-// sendRequest 发送请求（带锁）
+// sendRequest 发送请求（带锁，确保并发安全）
 func (c *MCPClient) sendRequest(ctx context.Context, req map[string]interface{}) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// 检查 stdin 是否已关闭
+	if c.stdin == nil {
+		return fmt.Errorf("stdin pipe 已关闭")
+	}
 
 	jsonBytes, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
+	// 写入 JSON-RPC 消息
 	_, err = c.stdin.Write(jsonBytes)
 	if err != nil {
 		return fmt.Errorf("发送请求失败: %w", err)
 	}
 	// 添加换行符（MCP 协议使用 JSON-RPC 2.0，每条消息一行）
-	c.stdin.Write([]byte("\n"))
+	_, err = c.stdin.Write([]byte("\n"))
+	if err != nil {
+		return fmt.Errorf("发送换行符失败: %w", err)
+	}
 
 	return nil
 }
 
-// sendNotification 发送通知（无响应）
+// sendNotification 发送通知（无响应，带锁）
 func (c *MCPClient) sendNotification(notif map[string]interface{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// 检查 stdin 是否已关闭
+	if c.stdin == nil {
+		log.Printf("[MCP %s] stdin pipe 已关闭，跳过通知", c.name)
+		return
+	}
 
 	jsonBytes, _ := json.Marshal(notif)
 	c.stdin.Write(jsonBytes)
@@ -427,6 +468,8 @@ func (c *MCPClient) readResponse(ctx context.Context) (map[string]interface{}, e
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	case <-c.done:
+		return nil, fmt.Errorf("客户端已关闭")
 	case resp := <-responseCh:
 		return resp, nil
 	case err := <-errorCh:
