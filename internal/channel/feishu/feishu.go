@@ -146,12 +146,7 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 				}
 			} else {
 				// 群聊回复：带上 @发送者，触发手机推送通知
-				replyWithMention := &channel.Message{
-					ChannelID: chatID,
-					UserID:    userID,
-					Content:   reply.Content,
-				}
-				if err := f.ReplyWithMention(ctx, messageID, replyWithMention); err != nil {
+				if err := f.Reply(ctx, messageID, reply); err != nil {
 					log.Printf("回复飞书消息出错: %v", err)
 				}
 			}
