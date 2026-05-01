@@ -47,16 +47,10 @@ func main() {
 	// 注册飞书渠道
 	if cfg.Channels.Feishu != nil && cfg.Channels.Feishu.Enabled {
 		feishuCh := feishu.New(cfg.Channels.Feishu.AppID, cfg.Channels.Feishu.AppSecret)
-		// 设置消息处理函数：收到的消息交给 Agent 处理
-		feishuCh.SetHandler(func(ctx context.Context, msg *channel.Message) (*channel.Message, error) {
-			reply, err := ag.Run(ctx, &agent.Message{Role: "user", Content: msg.Content})
-			if err != nil {
-				return nil, err
-			}
-			return &channel.Message{Content: reply.Content}, nil
-		})
+		// 使用流式处理函数实现打字机效果
+		feishu.SetAgentHandler(feishuCh, ag)
 		channelRegistry.Register(feishuCh)
-		log.Println("飞书渠道已注册")
+		log.Println("飞书渠道已注册（流式卡片模式）")
 	}
 
 	// 创建 HTTP 服务器
