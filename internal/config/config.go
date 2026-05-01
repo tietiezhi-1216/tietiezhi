@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -70,7 +71,9 @@ type SkillsConfig struct {
 
 // SchedulerConfig 定时任务配置
 type SchedulerConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled     bool   `yaml:"enabled"`
+	Path        string `yaml:"path"`
+	ExecTimeout int    `yaml:"exec_timeout"` // 秒
 }
 
 // LogConfig 日志配置
@@ -98,12 +101,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("解析配置文件失败: %w", err)
 	}
 
-	cfg.applyDefaults()
+	cfg.applyDefaults(path)
 	return cfg, nil
 }
 
 // applyDefaults 填充默认值
-func (c *Config) applyDefaults() {
+func (c *Config) applyDefaults(configPath string) {
 	if c.Server.Host == "" {
 		c.Server.Host = "0.0.0.0"
 	}
@@ -117,10 +120,16 @@ func (c *Config) applyDefaults() {
 		c.Memory.Type = "markdown"
 	}
 	if c.Memory.Path == "" {
-		c.Memory.Path = "./workspaces"
+		c.Memory.Path = "./data/workspace"
 	}
 	if c.Skills.Path == "" {
 		c.Skills.Path = "./skills"
+	}
+	if c.Scheduler.Path == "" {
+		c.Scheduler.Path = "./data/cron"
+	}
+	if c.Scheduler.ExecTimeout == 0 {
+		c.Scheduler.ExecTimeout = 300
 	}
 	if c.Log.Level == "" {
 		c.Log.Level = "info"
@@ -137,4 +146,20 @@ func (c *Config) applyDefaults() {
 	if c.Session.AutoSaveSeconds == 0 {
 		c.Session.AutoSaveSeconds = 60
 	}
+
+	// 解析相对路径为绝对路径
+	c.Memory.Path = resolvePath(c.Memory.Path, configPath)
+	c.Skills.Path = resolvePath(c.Skills.Path, configPath)
+	c.Scheduler.Path = resolvePath(c.Scheduler.Path, configPath)
+	c.Session.PersistPath = resolvePath(c.Session.PersistPath, configPath)
+}
+
+// resolvePath 解析相对路径为绝对路径
+func resolvePath(path string, configPath string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	absConfigPath, _ := filepath.Abs(configPath)
+	configDir := filepath.Dir(absConfigPath)
+	return filepath.Join(configDir, path)
 }

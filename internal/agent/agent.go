@@ -25,14 +25,18 @@ type Handler func(ctx context.Context, input *Message) (*Message, error)
 
 // BaseAgent 基础 Agent 实现
 type BaseAgent struct {
-	provider      llm.Provider
-	systemPrompt  string
-	maxToolCalls  int
-	loopDetector  *LoopDetector
-	sessionMgr    *session.SessionManager
-	memoryMgr     *memory.MemoryManager
-	skillLoader   *skill.Loader
-	mcpManager    *mcp.MCPManager
+	provider     llm.Provider
+	systemPrompt string
+	maxToolCalls int
+	loopDetector *LoopDetector
+	sessionMgr   *session.SessionManager
+	memoryMgr    *memory.MemoryManager
+	skillLoader  *skill.Loader
+	mcpManager   *mcp.MCPManager
+	cronMgr      interface {
+		GetCronTools() []llm.ToolDef
+		ExecuteCronTool(action string, args map[string]interface{}, sessionKey string, isGroup bool, chatID string) string
+	}
 }
 
 // NewBaseAgent 创建基础 Agent
@@ -57,6 +61,14 @@ func (a *BaseAgent) SetMCPManager(mgr *mcp.MCPManager) {
 	a.mcpManager = mgr
 }
 
+// SetCronManager 设置定时任务管理器
+func (a *BaseAgent) SetCronManager(mgr interface{}) {
+	a.cronMgr = mgr.(interface {
+		GetCronTools() []llm.ToolDef
+		ExecuteCronTool(action string, args map[string]interface{}, sessionKey string, isGroup bool, chatID string) string
+	})
+}
+
 // GetSkillLoader 获取技能加载器
 func (a *BaseAgent) GetSkillLoader() *skill.Loader {
 	return a.skillLoader
@@ -68,8 +80,28 @@ func (a *BaseAgent) GetMCPManager() *mcp.MCPManager {
 }
 
 // Run 执行 Agent 对话（含工具调用循环）
-// isGroup: 是否是群聊（影响是否注入 MEMORY.md）
-func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, input *Message) (*Message, error) {
+func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, chatID string, input *Message) (*Message, error) {
+	return a.runWithTools(ctx, sessionKey, isGroup, chatID, input, true)
+}
+
+// RunCron 执行 cron 任务（隔离 session，不注入 cron 工具）
+func (a *BaseAgent) RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error) {
+	msg := &Message{Role: role, Content: content}
+	
+	// 使用 runWithTools，但注入 cron 工具
+	// 注意：cron session 会话 key 以 "cron:" 开头，所以 buildToolsList 会跳过 cron 工具
+	result, err := a.runWithTools(ctx, sessionKey, isGroup, "", msg, false)
+	if err != nil {
+		return "", err
+	}
+	if result != nil {
+		return result.Content, nil
+	}
+	return "", nil
+}
+
+// runWithTools 通用运行方法
+func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup bool, chatID string, input *Message, injectCronTools bool) (*Message, error) {
 	history := a.sessionMgr.GetHistory(sessionKey)
 
 	messages := make([]llm.ChatMessage, 0, len(history)+2)
@@ -77,7 +109,7 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 	// 系统提示词
 	systemPrompt := a.systemPrompt
 
-	// 检查 BOOTSTRAP.md 是否存在（仅私聊），在 system prompt 最开头加强指令
+	// 检查 BOOTSTRAP.md 是否存在
 	if !isGroup && a.memoryMgr != nil {
 		if a.memoryMgr.FileExists("BOOTSTRAP.md") {
 			bootstrapDirective := " 重要：BOOTSTRAP.md 存在于你的工作区。你必须优先执行初始化引导——和主人认识彼此，了解他们的偏好，然后使用工具更新 IDENTITY.md、USER.md、SOUL.md，最后用 delete_bootstrap 删除 BOOTSTRAP.md。不要正常回复，而是从引导对话开始。\n\n"
@@ -91,7 +123,7 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 			systemPrompt = systemPrompt + "\n\n" + memoryContext
 		}
 	}
-	
+
 	// 追加记忆写入指引
 	systemPrompt += `
 
@@ -102,7 +134,7 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 - memory_search：搜索记忆文件中的相关内容。当你需要回忆之前记录的信息时使用。
 - delete_bootstrap：删除 BOOTSTRAP.md。完成初始化引导后必须调用此工具，避免重复触发。`
 
-	// 追加技能系统指引（如果有可用技能）
+	// 追加技能系统指引
 	if a.skillLoader != nil && len(a.skillLoader.GetAvailableSkills()) > 0 {
 		systemPrompt += `
 
@@ -121,15 +153,14 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 	// 追加用户消息到 session
 	a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "user", Content: input.Content})
 
-	// ReAct 循环：最多 5 轮工具调用
+	// ReAct 循环
 	maxToolRounds := 5
-	// 会话级别的已加载技能状态
 	loadedSkills := make(map[string]*LoadedSkill)
-	
+
 	for round := 0; round < maxToolRounds; round++ {
 		// 构建工具列表
-		tools := a.buildToolsList()
-		
+		tools := a.buildToolsList(injectCronTools)
+
 		req := &llm.ChatRequest{
 			Messages: messages,
 			Tools:    tools,
@@ -152,21 +183,19 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 			return &Message{Role: "assistant", Content: assistantMsg.Content}, nil
 		}
 
-		// 有工具调用：追加 assistant 消息（含 tool_calls）到历史
+		// 有工具调用
 		messages = append(messages, assistantMsg)
 		a.sessionMgr.AppendMessage(sessionKey, assistantMsg)
 
 		// 执行每个工具调用
 		for _, toolCall := range assistantMsg.ToolCalls {
 			log.Printf("工具调用 [%s]: %s(%s)", sessionKey, toolCall.Function.Name, toolCall.Function.Arguments)
-			result := a.ExecuteToolCall(toolCall, loadedSkills)
+			result := a.ExecuteToolCall(toolCall, loadedSkills, sessionKey, isGroup, chatID)
 			log.Printf("工具结果 [%s]: %s", sessionKey, truncate(result, 200))
 
-			// 检查是否是 skill_load 结果（需要注入系统提示词）
+			// 检查是否是 skill_load 结果
 			if toolCall.Function.Name == "skill_load" {
 				if injectedPrompt := a.handleSkillLoadResult(result, loadedSkills); injectedPrompt != "" {
-					// 注入技能内容到系统提示词
-					// 找到系统消息并追加
 					for i := range messages {
 						if messages[i].Role == "system" {
 							messages[i].Content += injectedPrompt
@@ -184,7 +213,6 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 				Name:       toolCall.Function.Name,
 			}
 			messages = append(messages, toolMsg)
-			// tool 消息不追加到 session history，避免污染上下文
 		}
 	}
 
@@ -192,58 +220,58 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 }
 
 // buildToolsList 构建工具列表
-func (a *BaseAgent) buildToolsList() []llm.ToolDef {
+func (a *BaseAgent) buildToolsList(injectCron bool) []llm.ToolDef {
 	var tools []llm.ToolDef
-	
+
 	// 基础记忆工具
 	tools = append(tools, GetMemoryTools()...)
-	
-	// 技能工具（如果有）
+
+	// 技能工具
 	if skillTools := GetSkillTools(a.skillLoader); len(skillTools) > 0 {
 		tools = append(tools, skillTools...)
 	}
-	
+
+	// 定时任务工具（递归防护）
+	if injectCron && a.cronMgr != nil {
+		tools = append(tools, a.cronMgr.GetCronTools()...)
+	}
+
 	return tools
 }
 
-// handleSkillLoadResult 处理 skill_load 结果，返回需要注入的 system prompt
+// handleSkillLoadResult 处理 skill_load 结果
 func (a *BaseAgent) handleSkillLoadResult(result string, loadedSkills map[string]*LoadedSkill) string {
-	// 解析 result
 	var loadResult struct {
-		Success    bool     `json:"success"`
-		SkillName  string   `json:"skill_name"`
-		Error      string   `json:"error"`
-		MCPTools   []string `json:"mcp_tools,omitempty"`
+		Success   bool     `json:"success"`
+		SkillName string   `json:"skill_name"`
+		Error     string   `json:"error"`
+		MCPTools  []string `json:"mcp_tools,omitempty"`
 	}
-	
+
 	if err := json.Unmarshal([]byte(result), &loadResult); err != nil {
 		return ""
 	}
-	
+
 	if !loadResult.Success {
 		return ""
 	}
-	
-	// 获取已加载的技能信息
+
 	ls, exists := loadedSkills[loadResult.SkillName]
 	if !exists {
 		return ""
 	}
-	
+
 	return ls.SystemPrompt
 }
 
 // RunStream 流式对话
-// isGroup: 是否是群聊（影响是否注入 MEMORY.md）
 func (a *BaseAgent) RunStream(ctx context.Context, sessionKey string, isGroup bool, input *Message) (<-chan llm.StreamChunk, error) {
 	history := a.sessionMgr.GetHistory(sessionKey)
 
 	messages := make([]llm.ChatMessage, 0, len(history)+2)
 
-	// 系统提示词 = 基础 prompt + 记忆上下文
 	systemPrompt := a.systemPrompt
 
-	// 检查 BOOTSTRAP.md 是否存在（仅私聊），在 system prompt 最开头加强指令
 	if !isGroup && a.memoryMgr != nil {
 		if a.memoryMgr.FileExists("BOOTSTRAP.md") {
 			bootstrapDirective := " 重要：BOOTSTRAP.md 存在于你的工作区。你必须优先执行初始化引导——和主人认识彼此，了解他们的偏好，然后使用工具更新 IDENTITY.md、USER.md、SOUL.md，最后用 delete_bootstrap 删除 BOOTSTRAP.md。不要正常回复，而是从引导对话开始。\n\n"
@@ -271,18 +299,17 @@ func (a *BaseAgent) RunStream(ctx context.Context, sessionKey string, isGroup bo
 		Content: input.Content,
 	})
 
-	// 先追加用户消息
 	a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "user", Content: input.Content})
 
 	req := &llm.ChatRequest{
 		Messages: messages,
-		Tools:    GetMemoryTools(), // 流式暂时只用基础工具
+		Tools:    GetMemoryTools(),
 	}
 
 	return a.provider.ChatStream(ctx, req)
 }
 
-// AppendToSession 追加助手消息到会话（流式完成后调用）
+// AppendToSession 追加助手消息到会话
 func (a *BaseAgent) AppendToSession(sessionKey, content string) {
 	a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "assistant", Content: content})
 }
@@ -304,25 +331,44 @@ func (a *BaseAgent) GetMemoryMgr() *memory.MemoryManager {
 	return a.memoryMgr
 }
 
-// ExecuteToolCall 执行工具调用（带已加载技能状态）
-func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*LoadedSkill) string {
+// ExecuteToolCall 执行工具调用
+func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*LoadedSkill, sessionKey string, isGroup bool, chatID string) string {
 	toolName := call.Function.Name
-	
-	// MCP 工具：以 mcp__ 开头
+
+	// MCP 工具
 	if strings.HasPrefix(toolName, "mcp__") {
 		if a.mcpManager != nil {
 			return ExecuteMCPToolCall(call, a.mcpManager)
 		}
 		return `{"error": "MCP 管理器未初始化"}`
 	}
-	
+
 	// 技能加载工具
 	if toolName == "skill_load" {
 		return ExecuteSkillLoad(call.Function.Arguments, a.skillLoader, a.mcpManager, loadedSkills)
 	}
-	
+
+	// cron 工具
+	if toolName == "cron_task" {
+		if a.cronMgr != nil {
+			args := parseToolArgs(call.Function.Arguments)
+			action, _ := args["action"].(string)
+			return a.cronMgr.ExecuteCronTool(action, args, sessionKey, isGroup, chatID)
+		}
+		return `{"error": "定时任务管理器未初始化"}`
+	}
+
 	// 其他工具（记忆相关）
 	return ExecuteToolCall(call, a.memoryMgr)
+}
+
+// parseToolArgs 解析工具参数
+func parseToolArgs(argsJSON string) map[string]interface{} {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return make(map[string]interface{})
+	}
+	return args
 }
 
 // truncate 截断字符串

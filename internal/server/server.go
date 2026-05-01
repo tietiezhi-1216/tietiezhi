@@ -114,7 +114,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // handleSyncChat 同步聊天响应
 func (s *Server) handleSyncChat(w http.ResponseWriter, r *http.Request, input *agent.Message) {
-	reply, err := s.agent.Run(r.Context(), "api", false, input)
+	reply, err := s.agent.Run(r.Context(), "api", false, "", input)
 	if err != nil {
 		log.Printf("Agent 处理失败: %v", err)
 		http.Error(w, "agent error", http.StatusInternalServerError)

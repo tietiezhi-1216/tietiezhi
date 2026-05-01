@@ -14,6 +14,7 @@ import (
 	"tietiezhi/internal/channel"
 	"tietiezhi/internal/channel/feishu"
 	"tietiezhi/internal/config"
+	"tietiezhi/internal/cron"
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
@@ -73,10 +74,17 @@ func main() {
 		// 不致命，继续运行
 	}
 
+	// 初始化定时任务管理器
+	cronMgr := cron.NewCronManager(cfg.Scheduler.Path, cfg.Scheduler.ExecTimeout)
+	if cfg.Scheduler.Enabled {
+		log.Printf("定时任务管理器已创建: path=%s, timeout=%ds", cfg.Scheduler.Path, cfg.Scheduler.ExecTimeout)
+	}
+
 	// 初始化 Agent
 	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr, memoryMgr)
 	ag.SetSkillLoader(skillLoader)
 	ag.SetMCPManager(mcpManager)
+	ag.SetCronManager(cronMgr)
 
 	// 初始化渠道注册表
 	channelRegistry := channel.NewRegistry()
@@ -91,6 +99,25 @@ func main() {
 			mode = "流式(Streaming)"
 		}
 		log.Printf("飞书渠道已注册（%s模式）", mode)
+
+		// 设置定时任务投递函数
+		if cfg.Scheduler.Enabled {
+			cronMgr.SetDeliveryFn(func(chatID, content string) error {
+				return feishuCh.Send(context.Background(), chatID, &channel.Message{Content: content})
+			})
+		}
+	}
+
+	// 设置 Agent 的 CronManager（需要飞书渠道的 chatID）
+	// 实际上在飞书消息处理时会传入 chatID，这里先设置好
+	_ = cronMgr // 后续在飞书处理中会用到
+
+	// 启动定时任务调度器
+	if cfg.Scheduler.Enabled {
+		cronMgr.SetAgent(ag)
+		if err := cronMgr.Start(context.Background()); err != nil {
+			log.Printf("启动定时任务调度器失败: %v", err)
+		}
 	}
 
 	// 创建 HTTP 服务器
@@ -124,11 +151,18 @@ func main() {
 	if err := srv.Stop(ctx); err != nil {
 		log.Printf("关闭服务器出错: %v", err)
 	}
-	
+
+	// 停止定时任务调度器
+	if cfg.Scheduler.Enabled {
+		if err := cronMgr.Stop(); err != nil {
+			log.Printf("停止定时任务调度器出错: %v", err)
+		}
+	}
+
 	// 关闭 MCP 连接
 	if err := mcpManager.Close(); err != nil {
 		log.Printf("关闭 MCP 连接出错: %v", err)
 	}
-	
+
 	fmt.Println("服务器已停止")
 }
