@@ -184,7 +184,7 @@ func (f *FeishuChannel) addTypingReaction(ctx context.Context, messageID string)
 	_, err := f.client.Im.MessageReaction.Create(ctx, larkim.NewCreateMessageReactionReqBuilder().
 		MessageId(messageID).
 		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
-			ReactionType(larkim.NewReactionTypeBuilder().
+			ReactionType(larkim.NewEmojiBuilder().
 				EmojiType("Typing").
 				Build()).
 			Build()).
