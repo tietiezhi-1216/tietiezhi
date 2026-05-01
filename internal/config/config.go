@@ -17,6 +17,7 @@ type Config struct {
 	Memory    MemoryConfig    `yaml:"memory"`
 	Skills    SkillsConfig    `yaml:"skills"`
 	Scheduler SchedulerConfig `yaml:"scheduler"`
+	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
 	Log       LogConfig       `yaml:"log"`
 	Session   SessionConfig   `yaml:"session"`
 }
@@ -76,6 +77,13 @@ type SchedulerConfig struct {
 	ExecTimeout int    `yaml:"exec_timeout"` // 秒
 }
 
+// HeartbeatConfig 心跳配置
+type HeartbeatConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Interval int    `yaml:"interval"` // 分钟
+	ChatID   string `yaml:"chat_id"`  // 默认投递目标
+}
+
 // LogConfig 日志配置
 type LogConfig struct {
 	Level  string `yaml:"level"`
@@ -130,6 +138,10 @@ func (c *Config) applyDefaults(configPath string) {
 	}
 	if c.Scheduler.ExecTimeout == 0 {
 		c.Scheduler.ExecTimeout = 300
+	}
+	// Heartbeat 默认值
+	if c.Heartbeat.Interval == 0 {
+		c.Heartbeat.Interval = 30
 	}
 	if c.Log.Level == "" {
 		c.Log.Level = "info"

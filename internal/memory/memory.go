@@ -436,3 +436,8 @@ func (mm *MemoryManager) truncateSearchResult(content, query string) string {
 func (mm *MemoryManager) GetWorkspacePath() string {
 	return mm.workspacePath
 }
+
+// ReadFile 读取工作区文件（公开方法，供 HeartbeatManager 使用）
+func (mm *MemoryManager) ReadFile(relativePath string) string {
+	return mm.readFile(relativePath)
+}

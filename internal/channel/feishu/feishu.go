@@ -22,6 +22,9 @@ import (
 	"tietiezhi/internal/session"
 )
 
+// OnMessageFunc 消息回调函数类型
+type OnMessageFunc func(chatType, chatID string)
+
 // FeishuChannel 飞书渠道
 type FeishuChannel struct {
 	appID        string
@@ -30,6 +33,7 @@ type FeishuChannel struct {
 	client       *lark.Client
 	handler      func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
 	streamHandler func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error
+	onMessage     OnMessageFunc // 消息回调（用于心跳 chatID 更新）
 	mu           sync.Mutex
 	running      bool
 	processedMu  sync.Mutex
@@ -59,6 +63,11 @@ func (f *FeishuChannel) SetHandler(handler func(ctx context.Context, msg *channe
 // SetStreamHandler 设置流式消息处理函数（流式模式）
 func (f *FeishuChannel) SetStreamHandler(handler func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error) {
 	f.streamHandler = handler
+}
+
+// SetOnMessage 设置消息回调（用于心跳 chatID 更新）
+func (f *FeishuChannel) SetOnMessage(fn OnMessageFunc) {
+	f.onMessage = fn
 }
 
 // ID 返回渠道标识
@@ -142,6 +151,12 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 	if msg.ChatId != nil {
 		chatID = *msg.ChatId
 	}
+
+	// 调用消息回调（用于心跳 chatID 更新）
+	if f.onMessage != nil && chatType != "group" && chatID != "" {
+		f.onMessage(chatType, chatID)
+	}
+
 	if chatType == "group" && !f.isBotMentioned(msg) {
 		return nil
 	}

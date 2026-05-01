@@ -15,6 +15,7 @@ import (
 	"tietiezhi/internal/channel/feishu"
 	"tietiezhi/internal/config"
 	"tietiezhi/internal/cron"
+	"tietiezhi/internal/heartbeat"
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
@@ -60,10 +61,8 @@ func main() {
 	log.Println("MCP 管理器已初始化")
 
 	// 初始化技能加载器
-	// 技能目录：相对于项目根目录（配置文件所在目录）
 	skillsPath := cfg.Skills.Path
 	if !filepath.IsAbs(skillsPath) {
-		// 解析为相对于当前工作目录的绝对路径
 		absConfigPath, _ := filepath.Abs(*configPath)
 		configDir := filepath.Dir(absConfigPath)
 		skillsPath = filepath.Join(configDir, skillsPath)
@@ -71,13 +70,19 @@ func main() {
 	skillLoader := skill.NewLoader(skillsPath)
 	if err := skillLoader.LoadAll(); err != nil {
 		log.Printf("技能加载失败: %v", err)
-		// 不致命，继续运行
 	}
 
-	// 初始化定时任务管理器
+	// 初始化定时任务管理器（使用修复后的路径拼接）
 	cronMgr := cron.NewCronManager(cfg.Scheduler.Path, cfg.Scheduler.ExecTimeout)
 	if cfg.Scheduler.Enabled {
-		log.Printf("定时任务管理器已创建: path=%s, timeout=%ds", cfg.Scheduler.Path, cfg.Scheduler.ExecTimeout)
+		log.Printf("定时任务管理器已创建: path=%s/jobs.json, timeout=%ds", cfg.Scheduler.Path, cfg.Scheduler.ExecTimeout)
+	}
+
+	// 初始化心跳管理器
+	var heartbeatMgr *heartbeat.HeartbeatManager
+	if cfg.Heartbeat.Enabled {
+		heartbeatMgr = heartbeat.NewHeartbeatManager(cfg.Heartbeat.Interval)
+		log.Printf("心跳管理器已创建: interval=%dmin", cfg.Heartbeat.Interval)
 	}
 
 	// 初始化 Agent
@@ -92,6 +97,16 @@ func main() {
 	// 注册飞书渠道
 	if cfg.Channels.Feishu != nil && cfg.Channels.Feishu.Enabled {
 		feishuCh := feishu.New(cfg.Channels.Feishu.AppID, cfg.Channels.Feishu.AppSecret, cfg.Channels.Feishu.BotOpenID)
+
+		// 设置心跳消息回调（更新 chatID）
+		if heartbeatMgr != nil {
+			feishuCh.SetOnMessage(func(chatType, chatID string) {
+				if chatType != "group" {
+					heartbeatMgr.UpdateChatID(chatID)
+				}
+			})
+		}
+
 		feishu.SetAgentHandler(feishuCh, ag, cfg.Channels.Feishu.Streaming)
 		channelRegistry.Register(feishuCh)
 		mode := "非流式(Legacy)"
@@ -106,11 +121,21 @@ func main() {
 				return feishuCh.Send(context.Background(), chatID, &channel.Message{Content: content})
 			})
 		}
+
+		// 设置心跳投递函数
+		if heartbeatMgr != nil {
+			heartbeatMgr.SetDeliveryFn(func(chatID, content string) error {
+				return feishuCh.Send(context.Background(), chatID, &channel.Message{Content: content})
+			})
+			// 如果配置文件指定了 chatID，设置它
+			if cfg.Heartbeat.ChatID != "" {
+				heartbeatMgr.SetChatID(cfg.Heartbeat.ChatID)
+			}
+		}
 	}
 
-	// 设置 Agent 的 CronManager（需要飞书渠道的 chatID）
-	// 实际上在飞书消息处理时会传入 chatID，这里先设置好
-	_ = cronMgr // 后续在飞书处理中会用到
+	// 设置 Agent 的 CronManager
+	_ = cronMgr
 
 	// 启动定时任务调度器
 	if cfg.Scheduler.Enabled {
@@ -118,6 +143,13 @@ func main() {
 		if err := cronMgr.Start(context.Background()); err != nil {
 			log.Printf("启动定时任务调度器失败: %v", err)
 		}
+	}
+
+	// 启动心跳系统
+	if heartbeatMgr != nil {
+		heartbeatMgr.SetAgent(ag)
+		heartbeatMgr.SetMemoryManager(memoryMgr)
+		go heartbeatMgr.Start(context.Background())
 	}
 
 	// 创建 HTTP 服务器
@@ -150,6 +182,11 @@ func main() {
 	channelRegistry.StopAll(ctx)
 	if err := srv.Stop(ctx); err != nil {
 		log.Printf("关闭服务器出错: %v", err)
+	}
+
+	// 停止心跳系统
+	if heartbeatMgr != nil {
+		heartbeatMgr.Stop()
 	}
 
 	// 停止定时任务调度器

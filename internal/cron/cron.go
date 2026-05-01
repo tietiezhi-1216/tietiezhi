@@ -61,13 +61,18 @@ type CronManager struct {
 
 // NewCronManager 创建定时任务管理器
 func NewCronManager(storePath string, execTimeout int) *CronManager {
+	// 如果 storePath 不是以 .json 结尾，自动追加 /jobs.json
+	finalPath := storePath
+	if !strings.HasSuffix(finalPath, ".json") {
+		finalPath = finalPath + "/jobs.json"
+	}
 	if execTimeout <= 0 {
 		execTimeout = 300
 	}
 	m := &CronManager{
 		jobs:        make(map[string]*CronJob),
 		entryIDs:    make(map[string]cron.EntryID),
-		storePath:   storePath,
+		storePath:   finalPath,
 		execTimeout: time.Duration(execTimeout) * time.Second,
 	}
 	return m
