@@ -53,22 +53,18 @@ func (f *FeishuChannel) Start(ctx context.Context) error {
 		return nil
 	}
 
-	// 创建飞书 API 客户端（用于发送消息）
 	f.client = lark.NewClient(f.appID, f.appSecret)
 
-	// 注册事件处理器
 	eventHandler := dispatcher.NewEventDispatcher("", "").
 		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 			return f.handleMessage(ctx, event)
 		})
 
-	// 创建 WebSocket 长连接客户端
 	wsClient := larkws.NewClient(f.appID, f.appSecret,
 		larkws.WithEventHandler(eventHandler),
 		larkws.WithLogLevel(larkcore.LogLevelDebug),
 	)
 
-	// 启动 WebSocket 长连接
 	go func() {
 		if err := wsClient.Start(ctx); err != nil {
 			log.Printf("飞书 WebSocket 连接异常: %v", err)
@@ -95,19 +91,17 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 
 	// 群聊中，只处理 @机器人 的消息
 	if chatType == "group" {
-		if !f.isBotMentioned(event) {
+		if !f.isBotMentioned(msg) {
 			return nil
 		}
 	}
 
-	// 提取用户 ID
 	userID := ""
 	if event.Event.Sender != nil && event.Event.Sender.SenderId != nil {
 		userID = *event.Event.Sender.SenderId.OpenId
 	}
 
-	// 解析消息内容（支持 text 和 post 两种格式）
-	content := f.parseMessageContent(msg, event)
+	content := f.parseMessageContent(msg)
 
 	chatID := ""
 	if msg.ChatId != nil {
@@ -125,7 +119,6 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 		return nil
 	}
 
-	// 调用消息处理函数
 	if f.handler != nil {
 		input := &channel.Message{
 			ChannelID: chatID,
@@ -145,7 +138,6 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 					log.Printf("发送飞书消息出错: %v", err)
 				}
 			} else {
-				// 群聊中回复消息
 				if err := f.Reply(ctx, messageID, reply); err != nil {
 					log.Printf("回复飞书消息出错: %v", err)
 				}
@@ -157,17 +149,11 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 }
 
 // isBotMentioned 检查群聊中是否 @了机器人
-func (f *FeishuChannel) isBotMentioned(event *larkim.P2MessageReceiveV1) bool {
-	if event.Event == nil || event.Event.Message == nil {
-		return false
-	}
-	msg := event.Event.Message
-
+func (f *FeishuChannel) isBotMentioned(msg *larkim.EventMessage) bool {
 	// 检查 mentions 数组
 	if len(msg.Mentions) > 0 {
 		return true
 	}
-
 	// 检查内容中的 @_user_ 占位符
 	if msg.Content != nil {
 		matched, _ := regexp.MatchString(`@_user_\d+`, *msg.Content)
@@ -175,12 +161,11 @@ func (f *FeishuChannel) isBotMentioned(event *larkim.P2MessageReceiveV1) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
-// parseMessageContent 解析消息内容，兼容 text 和 post 格式
-func (f *FeishuChannel) parseMessageContent(msg *larkim.Message, event *larkim.P2MessageReceiveV1) string {
+// parseMessageContent 解析消息内容
+func (f *FeishuChannel) parseMessageContent(msg *larkim.EventMessage) string {
 	if msg.Content == nil {
 		return ""
 	}
@@ -198,11 +183,11 @@ func (f *FeishuChannel) parseMessageContent(msg *larkim.Message, event *larkim.P
 			Text string `json:"text"`
 		}
 		if err := json.Unmarshal([]byte(rawContent), &textMsg); err == nil {
-			return f.cleanMentionPlaceholders(textMsg.Text, event)
+			return cleanMentionPlaceholders(textMsg.Text)
 		}
 
 	case "post":
-		return f.parsePostContent(rawContent, event)
+		return parsePostContent(rawContent)
 
 	default:
 		log.Printf("暂不支持的消息类型: %s", msgType)
@@ -212,7 +197,7 @@ func (f *FeishuChannel) parseMessageContent(msg *larkim.Message, event *larkim.P
 }
 
 // parsePostContent 解析飞书富文本消息
-func (f *FeishuChannel) parsePostContent(rawContent string, event *larkim.P2MessageReceiveV1) string {
+func parsePostContent(rawContent string) string {
 	var postWrapper map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(rawContent), &postWrapper); err != nil {
 		return rawContent
@@ -249,7 +234,6 @@ func (f *FeishuChannel) parsePostContent(rawContent string, event *larkim.P2Mess
 			if err := json.Unmarshal(element, &elem); err != nil {
 				continue
 			}
-
 			switch elem.Tag {
 			case "text":
 				lineParts = append(lineParts, elem.Text)
@@ -279,11 +263,11 @@ func (f *FeishuChannel) parsePostContent(rawContent string, event *larkim.P2Mess
 	}
 
 	result := strings.Join(parts, "\n")
-	return f.cleanMentionPlaceholders(result, event)
+	return cleanMentionPlaceholders(result)
 }
 
-// cleanMentionPlaceholders 清理飞书消息中的 @mention 占位符
-func (f *FeishuChannel) cleanMentionPlaceholders(text string, event *larkim.P2MessageReceiveV1) string {
+// cleanMentionPlaceholders 清理 @mention 占位符
+func cleanMentionPlaceholders(text string) string {
 	re := regexp.MustCompile(`@_user_\d+`)
 	cleaned := re.ReplaceAllString(text, "")
 	return strings.TrimSpace(cleaned)
@@ -298,7 +282,7 @@ func (f *FeishuChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Send 发送消息到飞书（使用 Post 富文本格式）
+// Send 发送消息到飞书（Post 富文本格式）
 func (f *FeishuChannel) Send(ctx context.Context, chatID string, msg *channel.Message) error {
 	if f.client == nil {
 		return fmt.Errorf("飞书客户端未初始化")
@@ -320,12 +304,11 @@ func (f *FeishuChannel) Send(ctx context.Context, chatID string, msg *channel.Me
 	return nil
 }
 
-// Reply 回复飞书消息（使用 Post 富文本格式）
+// Reply 回复飞书消息（Post 富文本格式）
 func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channel.Message) error {
 	if f.client == nil {
 		return fmt.Errorf("飞书客户端未初始化")
 	}
-
 	if messageID == "" {
 		return fmt.Errorf("消息 ID 为空")
 	}
@@ -346,7 +329,6 @@ func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channe
 }
 
 // buildPostContent 将 Markdown 文本转换为飞书 Post 格式
-// 使用 md 标签，飞书自动渲染 Markdown（加粗、代码块、列表、链接等）
 func buildPostContent(markdownText string) string {
 	post := map[string]any{
 		"zh_cn": map[string]any{
@@ -360,7 +342,6 @@ func buildPostContent(markdownText string) string {
 			},
 		},
 	}
-
 	data, _ := json.Marshal(post)
 	return string(data)
 }
