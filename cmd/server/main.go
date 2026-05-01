@@ -55,10 +55,13 @@ func main() {
 	// 注册飞书渠道
 	if cfg.Channels.Feishu != nil && cfg.Channels.Feishu.Enabled {
 		feishuCh := feishu.New(cfg.Channels.Feishu.AppID, cfg.Channels.Feishu.AppSecret)
-		// 使用流式处理函数实现打字机效果
-		feishu.SetAgentHandler(feishuCh, ag)
+		feishu.SetAgentHandler(feishuCh, ag, cfg.Channels.Feishu.Streaming)
 		channelRegistry.Register(feishuCh)
-		log.Println("飞书渠道已注册（流式卡片模式）")
+		mode := "非流式(Legacy)"
+		if cfg.Channels.Feishu.Streaming {
+			mode = "流式(Streaming)"
+		}
+		log.Printf("飞书渠道已注册（%s模式）", mode)
 	}
 
 	// 创建 HTTP 服务器

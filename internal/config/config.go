@@ -53,6 +53,7 @@ type FeishuConfig struct {
 	AppSecret         string `yaml:"app_secret"`
 	VerificationToken string `yaml:"verification_token"`
 	EncryptKey        string `yaml:"encrypt_key"`
+	Streaming         bool   `yaml:"streaming"`
 }
 
 // MemoryConfig 记忆配置

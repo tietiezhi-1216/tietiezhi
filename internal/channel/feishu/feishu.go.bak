@@ -154,17 +154,11 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 	log.Printf("收到飞书消息: chatType=%s, userID=%s, content=%s", chatType, userID, content)
 
 	if f.handler != nil || f.streamHandler != nil {
-		// 所有消息都加 THINKING 表情（不管群聊还是私聊）
-		if messageID != "" {
+		if chatType == "group" && messageID != "" {
 			f.addReaction(ctx, messageID, "THINKING")
 		}
 
-		// 群聊消息加上发言者标识，让模型能感知不同发言者
-		messageContent := content
-		if chatType == "group" && userID != "" {
-			messageContent = fmt.Sprintf("[%s]: %s", userID, content)
-		}
-		input := &channel.Message{ChannelID: chatID, UserID: userID, Content: messageContent, ChatType: chatType}
+		input := &channel.Message{ChannelID: chatID, UserID: userID, Content: content, ChatType: chatType}
 
 		// 优先使用流式处理
 		if f.streamHandler != nil {
@@ -242,7 +236,7 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 							Build()).
 						Build())
 				}
-				if messageID != "" {
+				if chatType == "group" && messageID != "" {
 					f.removeReaction(ctx, messageID, "THINKING")
 				}
 				return nil
@@ -252,26 +246,25 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 			reply, err := f.handler(ctx, input)
 			if err != nil {
 				log.Printf("处理飞书消息出错: %v", err)
-				if messageID != "" {
+				if chatType == "group" && messageID != "" {
 					f.removeReaction(ctx, messageID, "THINKING")
 				}
 				return nil
 			}
-			// 所有消息优先用 Reply API 回复，如果 messageID 为空才 fallback 到 Create
 			if reply != nil && reply.Content != "" {
-				if messageID != "" {
-					if err := f.Reply(ctx, messageID, reply); err != nil {
-						log.Printf("回复飞书消息出错: %v", err)
-					}
-				} else {
+				if chatType == "p2p" {
 					if err := f.Send(ctx, chatID, reply); err != nil {
 						log.Printf("发送飞书消息出错: %v", err)
+					}
+				} else {
+					if err := f.Reply(ctx, messageID, reply); err != nil {
+						log.Printf("回复飞书消息出错: %v", err)
 					}
 				}
 			}
 		}
 
-		if messageID != "" {
+		if chatType == "group" && messageID != "" {
 			f.removeReaction(ctx, messageID, "THINKING")
 		}
 	}
@@ -479,7 +472,7 @@ func sanitizeMarkdown(text string) string {
 	// 去除脚注语法 [^1]
 	text = regexp.MustCompile(`\[[\^]?\d+\]`).ReplaceAllString(text, "")
 
-	return strings.TrimSpace(text)
+	return text
 }
 
 // containsMarkdownTable 检测文本是否包含 Markdown 表格
@@ -497,7 +490,6 @@ func containsMarkdownTable(text string) bool {
 
 // buildCardContent 构建飞书卡片 JSON 2.0，自动拆分表格和非表格（无 header）
 func buildCardContent(markdownText string) string {
-	markdownText = strings.TrimSpace(markdownText)
 	segments := splitByTables(markdownText)
 	var elements []map[string]any
 	for _, seg := range segments {
@@ -532,7 +524,6 @@ func buildCardContent(markdownText string) string {
 
 // buildStreamingCardContent 构建流式卡片 JSON（用于打字机效果，无 header）
 func buildStreamingCardContent(content string, streamingStatus string) string {
-	content = strings.TrimSpace(content)
 	elements := []map[string]any{
 		{
 			"tag":        "markdown",
