@@ -2,52 +2,77 @@ package skill
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 )
 
-// Loader 技能加载器（Anthropic MD 规范）
+// Loader 技能加载器
 type Loader struct {
 	skillDir string
+	skills   map[string]*SkillDef // name -> SkillDef
 }
 
 // NewLoader 创建技能加载器
 func NewLoader(skillDir string) *Loader {
-	return &Loader{skillDir: skillDir}
+	return &Loader{
+		skillDir: skillDir,
+		skills:   make(map[string]*SkillDef),
+	}
 }
 
 // LoadAll 加载所有技能
-func (l *Loader) LoadAll() ([]Skill, error) {
-	// 技能包结构参考 Anthropic MD 规范：
-	// skill-name/
-	//   SKILL.md          # 技能主文件
-	//   references/       # 参考文档
-	//   scripts/          # 脚本文件
+func (l *Loader) LoadAll() error {
+	// 确保目录存在
+	if err := os.MkdirAll(l.skillDir, 0755); err != nil {
+		return fmt.Errorf("创建技能目录失败: %w", err)
+	}
+	
 	entries, err := os.ReadDir(l.skillDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil // 目录不存在，返回空列表
-		}
-		return nil, fmt.Errorf("读取技能目录失败: %w", err)
+		return fmt.Errorf("读取技能目录失败: %w", err)
 	}
-
-	var skills []Skill
+	
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
+		
 		skillPath := filepath.Join(l.skillDir, entry.Name())
-		skill, err := l.loadOne(skillPath)
+		skill, err := ParseSkill(skillPath)
 		if err != nil {
-			return nil, fmt.Errorf("加载技能 %s 失败: %w", entry.Name(), err)
+			log.Printf("加载技能 %s 失败: %v，跳过", entry.Name(), err)
+			continue
 		}
-		skills = append(skills, skill)
+		
+		l.skills[skill.Name] = skill
+		log.Printf("技能加载成功: %s (%s)", skill.Name, skill.Description)
 	}
-	return skills, nil
+	
+	log.Printf("技能系统初始化完成，共加载 %d 个技能", len(l.skills))
+	return nil
 }
 
-// loadOne 加载单个技能包
-func (l *Loader) loadOne(path string) (Skill, error) {
-	// TODO: 解析 SKILL.md，提取技能信息
-	return nil, fmt.Errorf("技能加载尚未实现")
+// GetSkill 获取指定名称的技能
+func (l *Loader) GetSkill(name string) *SkillDef {
+	return l.skills[name]
+}
+
+// GetAllSkills 获取所有已加载的技能
+func (l *Loader) GetAllSkills() []*SkillDef {
+	var skills []*SkillDef
+	for _, s := range l.skills {
+		skills = append(skills, s)
+	}
+	return skills
+}
+
+// GetAvailableSkills 返回可用技能列表（用于生成 skill_load 工具描述）
+func (l *Loader) GetAvailableSkills() []*SkillDef {
+	return l.GetAllSkills()
+}
+
+// SkillDir 返回技能目录路径
+func (l *Loader) SkillDir() string {
+	return l.skillDir
 }

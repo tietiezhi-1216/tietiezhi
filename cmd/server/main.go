@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"tietiezhi/internal/agent"
@@ -14,9 +15,11 @@ import (
 	"tietiezhi/internal/channel/feishu"
 	"tietiezhi/internal/config"
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
 	"tietiezhi/internal/server"
 	"tietiezhi/internal/session"
+	"tietiezhi/internal/skill"
 )
 
 func main() {
@@ -51,8 +54,29 @@ func main() {
 	memoryMgr := memory.NewMemoryManager(cfg.Memory.Path)
 	log.Printf("记忆系统已初始化: workspace=%s", memoryMgr.GetWorkspacePath())
 
+	// 初始化 MCP 管理器
+	mcpManager := mcp.NewMCPManager()
+	log.Println("MCP 管理器已初始化")
+
+	// 初始化技能加载器
+	// 技能目录：相对于项目根目录（配置文件所在目录）
+	skillsPath := cfg.Skills.Path
+	if !filepath.IsAbs(skillsPath) {
+		// 解析为相对于当前工作目录的绝对路径
+		absConfigPath, _ := filepath.Abs(*configPath)
+		configDir := filepath.Dir(absConfigPath)
+		skillsPath = filepath.Join(configDir, skillsPath)
+	}
+	skillLoader := skill.NewLoader(skillsPath)
+	if err := skillLoader.LoadAll(); err != nil {
+		log.Printf("技能加载失败: %v", err)
+		// 不致命，继续运行
+	}
+
 	// 初始化 Agent
 	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr, memoryMgr)
+	ag.SetSkillLoader(skillLoader)
+	ag.SetMCPManager(mcpManager)
 
 	// 初始化渠道注册表
 	channelRegistry := channel.NewRegistry()
@@ -100,5 +124,11 @@ func main() {
 	if err := srv.Stop(ctx); err != nil {
 		log.Printf("关闭服务器出错: %v", err)
 	}
+	
+	// 关闭 MCP 连接
+	if err := mcpManager.Close(); err != nil {
+		log.Printf("关闭 MCP 连接出错: %v", err)
+	}
+	
 	fmt.Println("服务器已停止")
 }

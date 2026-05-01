@@ -2,12 +2,16 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
 	"tietiezhi/internal/session"
+	"tietiezhi/internal/skill"
 )
 
 // Message Agent 消息
@@ -21,12 +25,14 @@ type Handler func(ctx context.Context, input *Message) (*Message, error)
 
 // BaseAgent 基础 Agent 实现
 type BaseAgent struct {
-	provider     llm.Provider
-	systemPrompt string
-	maxToolCalls int
-	loopDetector *LoopDetector
-	sessionMgr   *session.SessionManager
-	memoryMgr    *memory.MemoryManager
+	provider      llm.Provider
+	systemPrompt  string
+	maxToolCalls  int
+	loopDetector  *LoopDetector
+	sessionMgr    *session.SessionManager
+	memoryMgr     *memory.MemoryManager
+	skillLoader   *skill.Loader
+	mcpManager    *mcp.MCPManager
 }
 
 // NewBaseAgent 创建基础 Agent
@@ -39,6 +45,26 @@ func NewBaseAgent(provider llm.Provider, systemPrompt string, maxToolCalls int, 
 		sessionMgr:   sessionMgr,
 		memoryMgr:    memoryMgr,
 	}
+}
+
+// SetSkillLoader 设置技能加载器
+func (a *BaseAgent) SetSkillLoader(loader *skill.Loader) {
+	a.skillLoader = loader
+}
+
+// SetMCPManager 设置 MCP 管理器
+func (a *BaseAgent) SetMCPManager(mgr *mcp.MCPManager) {
+	a.mcpManager = mgr
+}
+
+// GetSkillLoader 获取技能加载器
+func (a *BaseAgent) GetSkillLoader() *skill.Loader {
+	return a.skillLoader
+}
+
+// GetMCPManager 获取 MCP 管理器
+func (a *BaseAgent) GetMCPManager() *mcp.MCPManager {
+	return a.mcpManager
 }
 
 // Run 执行 Agent 对话（含工具调用循环）
@@ -65,6 +91,7 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 			systemPrompt = systemPrompt + "\n\n" + memoryContext
 		}
 	}
+	
 	// 追加记忆写入指引
 	systemPrompt += `
 
@@ -73,13 +100,16 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 你可以使用以下工具来管理记忆：
 - memory_add：记录重要信息。当用户说"记住"、"记一下"，或对话中出现重要的偏好、决策、事实时主动调用。日常笔记用 daily 类型，重要偏好和决策用 longterm 类型。
 - memory_search：搜索记忆文件中的相关内容。当你需要回忆之前记录的信息时使用。
-- delete_bootstrap：删除 BOOTSTRAP.md。完成初始化引导后必须调用此工具，避免重复触发。
+- delete_bootstrap：删除 BOOTSTRAP.md。完成初始化引导后必须调用此工具，避免重复触发。`
 
-重要规则：
-- "心理备忘"不可靠，文件才能持久。想记住的东西一定要写入文件。
-- 当有人说"记住这个"→ 更新 memory/YYYY-MM-DD.md 或相关文件
-- 当你学到一个教训 → 更新 TOOLS.md 或相关文件
-- 完成初始化引导后，必须调用 delete_bootstrap 删除 BOOTSTRAP.md`
+	// 追加技能系统指引（如果有可用技能）
+	if a.skillLoader != nil && len(a.skillLoader.GetAvailableSkills()) > 0 {
+		systemPrompt += `
+
+## 技能系统
+
+你可以使用 skill_load 工具加载技能来增强你的能力。加载技能后会注入相关知识到当前对话，部分技能还会提供额外的工具。`
+	}
 
 	if systemPrompt != "" {
 		messages = append(messages, llm.ChatMessage{Role: "system", Content: systemPrompt})
@@ -93,10 +123,16 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 
 	// ReAct 循环：最多 5 轮工具调用
 	maxToolRounds := 5
+	// 会话级别的已加载技能状态
+	loadedSkills := make(map[string]*LoadedSkill)
+	
 	for round := 0; round < maxToolRounds; round++ {
+		// 构建工具列表
+		tools := a.buildToolsList()
+		
 		req := &llm.ChatRequest{
 			Messages: messages,
-			Tools:    GetMemoryTools(),
+			Tools:    tools,
 		}
 
 		resp, err := a.provider.Chat(ctx, req)
@@ -123,8 +159,23 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 		// 执行每个工具调用
 		for _, toolCall := range assistantMsg.ToolCalls {
 			log.Printf("工具调用 [%s]: %s(%s)", sessionKey, toolCall.Function.Name, toolCall.Function.Arguments)
-			result := ExecuteToolCall(toolCall, a.memoryMgr)
-			log.Printf("工具结果 [%s]: %s", sessionKey, result)
+			result := a.ExecuteToolCall(toolCall, loadedSkills)
+			log.Printf("工具结果 [%s]: %s", sessionKey, truncate(result, 200))
+
+			// 检查是否是 skill_load 结果（需要注入系统提示词）
+			if toolCall.Function.Name == "skill_load" {
+				if injectedPrompt := a.handleSkillLoadResult(result, loadedSkills); injectedPrompt != "" {
+					// 注入技能内容到系统提示词
+					// 找到系统消息并追加
+					for i := range messages {
+						if messages[i].Role == "system" {
+							messages[i].Content += injectedPrompt
+							break
+						}
+					}
+					log.Printf("技能已注入到 system prompt")
+				}
+			}
 
 			toolMsg := llm.ChatMessage{
 				Role:       "tool",
@@ -138,6 +189,48 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 	}
 
 	return nil, fmt.Errorf("工具调用轮数超限")
+}
+
+// buildToolsList 构建工具列表
+func (a *BaseAgent) buildToolsList() []llm.ToolDef {
+	var tools []llm.ToolDef
+	
+	// 基础记忆工具
+	tools = append(tools, GetMemoryTools()...)
+	
+	// 技能工具（如果有）
+	if skillTools := GetSkillTools(a.skillLoader); len(skillTools) > 0 {
+		tools = append(tools, skillTools...)
+	}
+	
+	return tools
+}
+
+// handleSkillLoadResult 处理 skill_load 结果，返回需要注入的 system prompt
+func (a *BaseAgent) handleSkillLoadResult(result string, loadedSkills map[string]*LoadedSkill) string {
+	// 解析 result
+	var loadResult struct {
+		Success    bool     `json:"success"`
+		SkillName  string   `json:"skill_name"`
+		Error      string   `json:"error"`
+		MCPTools   []string `json:"mcp_tools,omitempty"`
+	}
+	
+	if err := json.Unmarshal([]byte(result), &loadResult); err != nil {
+		return ""
+	}
+	
+	if !loadResult.Success {
+		return ""
+	}
+	
+	// 获取已加载的技能信息
+	ls, exists := loadedSkills[loadResult.SkillName]
+	if !exists {
+		return ""
+	}
+	
+	return ls.SystemPrompt
 }
 
 // RunStream 流式对话
@@ -183,6 +276,7 @@ func (a *BaseAgent) RunStream(ctx context.Context, sessionKey string, isGroup bo
 
 	req := &llm.ChatRequest{
 		Messages: messages,
+		Tools:    GetMemoryTools(), // 流式暂时只用基础工具
 	}
 
 	return a.provider.ChatStream(ctx, req)
@@ -208,6 +302,27 @@ func (a *BaseAgent) GetSessionMgr() *session.SessionManager {
 // GetMemoryMgr 获取记忆管理器
 func (a *BaseAgent) GetMemoryMgr() *memory.MemoryManager {
 	return a.memoryMgr
+}
+
+// ExecuteToolCall 执行工具调用（带已加载技能状态）
+func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*LoadedSkill) string {
+	toolName := call.Function.Name
+	
+	// MCP 工具：以 mcp__ 开头
+	if strings.HasPrefix(toolName, "mcp__") {
+		if a.mcpManager != nil {
+			return ExecuteMCPToolCall(call, a.mcpManager)
+		}
+		return `{"error": "MCP 管理器未初始化"}`
+	}
+	
+	// 技能加载工具
+	if toolName == "skill_load" {
+		return ExecuteSkillLoad(call.Function.Arguments, a.skillLoader, a.mcpManager, loadedSkills)
+	}
+	
+	// 其他工具（记忆相关）
+	return ExecuteToolCall(call, a.memoryMgr)
 }
 
 // truncate 截断字符串
