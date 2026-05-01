@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
@@ -20,12 +21,14 @@ import (
 
 // FeishuChannel 飞书渠道
 type FeishuChannel struct {
-	appID     string
-	appSecret string
-	client    *lark.Client
-	handler   func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
-	mu        sync.Mutex
-	running   bool
+	appID       string
+	appSecret   string
+	client      *lark.Client
+	handler     func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
+	mu          sync.Mutex
+	running     bool
+	processedMu sync.Mutex
+	processed   map[string]time.Time // 消息去重：messageID -> 处理时间
 }
 
 // New 创建飞书渠道
@@ -33,6 +36,7 @@ func New(appID, appSecret string) *FeishuChannel {
 	return &FeishuChannel{
 		appID:     appID,
 		appSecret: appSecret,
+		processed: make(map[string]time.Time),
 	}
 }
 
@@ -71,9 +75,39 @@ func (f *FeishuChannel) Start(ctx context.Context) error {
 		}
 	}()
 
+	// 启动去重缓存清理
+	go f.cleanProcessedCache()
+
 	f.running = true
 	log.Println("飞书渠道已启动（WebSocket 模式）")
 	return nil
+}
+
+// cleanProcessedCache 定期清理过期的去重记录
+func (f *FeishuChannel) cleanProcessedCache() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		f.processedMu.Lock()
+		now := time.Now()
+		for id, t := range f.processed {
+			if now.Sub(t) > 10*time.Minute {
+				delete(f.processed, id)
+			}
+		}
+		f.processedMu.Unlock()
+	}
+}
+
+// isDuplicate 检查消息是否已处理过
+func (f *FeishuChannel) isDuplicate(messageID string) bool {
+	f.processedMu.Lock()
+	defer f.processedMu.Unlock()
+	if _, ok := f.processed[messageID]; ok {
+		return true
+	}
+	f.processed[messageID] = time.Now()
+	return false
 }
 
 // handleMessage 处理飞书消息事件
@@ -83,6 +117,17 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 	}
 
 	msg := event.Event.Message
+
+	messageID := ""
+	if msg.MessageId != nil {
+		messageID = *msg.MessageId
+	}
+
+	// 消息去重：同一消息飞书可能重推
+	if messageID != "" && f.isDuplicate(messageID) {
+		log.Printf("跳过重复消息: %s", messageID)
+		return nil
+	}
 
 	chatType := ""
 	if msg.ChatType != nil {
@@ -94,16 +139,20 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 		chatID = *msg.ChatId
 	}
 
-	messageID := ""
-	if msg.MessageId != nil {
-		messageID = *msg.MessageId
-	}
-
 	// 群聊中，只处理 @机器人 的消息
 	if chatType == "group" {
 		if !f.isBotMentioned(msg) {
 			return nil
 		}
+	}
+
+	// 忽略机器人自己发送的消息，避免死循环
+	senderType := ""
+	if event.Event.Sender != nil && event.Event.Sender.SenderType != nil {
+		senderType = *event.Event.Sender.SenderType
+	}
+	if senderType == "bot" {
+		return nil
 	}
 
 	userID := ""
@@ -119,7 +168,7 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 	log.Printf("收到飞书消息: chatType=%s, userID=%s, content=%s", chatType, userID, content)
 
 	if f.handler != nil {
-		// 群聊：先给消息加 🤔 表情（思考中）
+		// 群聊：先给消息加 🤔 表情
 		if chatType == "group" && messageID != "" {
 			f.addReaction(ctx, messageID, "THINKING")
 		}
@@ -145,7 +194,6 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 					log.Printf("发送飞书消息出错: %v", err)
 				}
 			} else {
-				// 群聊回复：带上 @发送者，触发手机推送通知
 				if err := f.Reply(ctx, messageID, reply); err != nil {
 					log.Printf("回复飞书消息出错: %v", err)
 				}
@@ -172,7 +220,7 @@ func (f *FeishuChannel) addReaction(ctx context.Context, messageID, emojiType st
 			Build()).
 		Build())
 	if err != nil {
-		log.Printf("添加表情 %s 失败: %v", emojiType, err)
+		log.Printf("添加表情失败: %v", err)
 	}
 }
 
@@ -365,40 +413,19 @@ func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channe
 	return nil
 }
 
-// ReplyWithMention 回复消息并 @发送者（触发手机推送通知）
-func (f *FeishuChannel) ReplyWithMention(ctx context.Context, messageID string, msg *channel.Message) error {
-	if f.client == nil {
-		return fmt.Errorf("飞书客户端未初始化")
-	}
-	if messageID == "" {
-		return fmt.Errorf("消息 ID 为空")
-	}
-
-	// 在回复内容前加上 @发送者，飞书 md 标签中的 @ 语法：<at user_id="ou_xxx">name</at>
-	// 这里用 open_id 格式
-	content := buildPostContentWithMention(msg.Content, msg.UserID)
-	_, err := f.client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
-		Body(larkim.NewReplyMessageReqBodyBuilder().
-			MsgType(larkim.MsgTypePost).
-			Content(content).
-			Build()).
-		MessageId(messageID).
-		Build())
-	if err != nil {
-		return fmt.Errorf("回复飞书消息失败: %w", err)
-	}
-	return nil
-}
-
-// buildPostContent 构建飞书 Post 格式
+// buildPostContent 将 Markdown 转换为飞书 Post 格式
+// 飞书 md 标签不支持表格，需要将表格转换为对齐文本
 func buildPostContent(markdownText string) string {
+	// 预处理：将 Markdown 表格转换为对齐文本（飞书 md 不支持表格）
+	processedText := convertMarkdownTables(markdownText)
+
 	post := map[string]any{
 		"zh_cn": map[string]any{
 			"content": [][]map[string]any{
 				{
 					{
 						"tag":  "md",
-						"text": markdownText,
+						"text": processedText,
 					},
 				},
 			},
@@ -408,25 +435,74 @@ func buildPostContent(markdownText string) string {
 	return string(data)
 }
 
-// buildPostContentWithMention 构建带 @发送者的飞书 Post 格式
-func buildPostContentWithMention(markdownText, senderOpenID string) string {
-	// 飞书 md 标签中的 @ 语法：<at user_id="ou_xxx"></at>
-	// 注意：标签内不需要文本内容，飞书会自动显示为 @用户名
-	mentionTag := fmt.Sprintf("<at user_id=\"%s\"></at> ", senderOpenID)
-	textWithMention := mentionTag + markdownText
+// convertMarkdownTables 将 Markdown 表格转换为对齐文本格式
+// 飞书 md 标签不支持 | col1 | col2 | 语法
+// 策略：检测到表格时，转为代码块显示（保留对齐）
+func convertMarkdownTables(text string) string {
+	lines := strings.Split(text, "\n")
+	var result []string
+	var tableLines []string
+	inTable := false
 
-	post := map[string]any{
-		"zh_cn": map[string]any{
-			"content": [][]map[string]any{
-				{
-					{
-						"tag":  "md",
-						"text": textWithMention,
-					},
-				},
-			},
-		},
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		isTableLine := strings.Contains(trimmed, "|") && strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|")
+
+		if isTableLine {
+			if !inTable {
+				inTable = true
+				tableLines = []string{}
+			}
+			tableLines = append(tableLines, trimmed)
+		} else {
+			if inTable {
+				// 表格结束，转换为代码块
+				result = append(result, markdownTableToCodeBlock(tableLines))
+				tableLines = nil
+				inTable = false
+			}
+			result = append(result, line)
+		}
 	}
-	data, _ := json.Marshal(post)
-	return string(data)
+
+	// 处理末尾的表格
+	if inTable {
+		result = append(result, markdownTableToCodeBlock(tableLines))
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// markdownTableToCodeBlock 将 Markdown 表格行转换为代码块
+func markdownTableToCodeBlock(lines []string) string {
+	// 过滤分隔行（|---|---|）
+	var dataLines []string
+	for _, line := range lines {
+		cleaned := strings.ReplaceAll(line, "-", "")
+		cleaned = strings.ReplaceAll(cleaned, " ", "")
+		if cleaned != "||" && cleaned != "|" {
+			dataLines = append(dataLines, line)
+		}
+	}
+
+	if len(dataLines) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("```")
+	for _, line := range dataLines {
+		// 去掉首尾 |，保留内容
+		trimmed := strings.TrimPrefix(line, "|")
+		trimmed = strings.TrimSuffix(trimmed, "|")
+		// 用制表符对齐
+		cells := strings.Split(trimmed, "|")
+		for i, cell := range cells {
+			cells[i] = strings.TrimSpace(cell)
+		}
+		sb.WriteString(strings.Join(cells, "\t"))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("```")
+	return sb.String()
 }
