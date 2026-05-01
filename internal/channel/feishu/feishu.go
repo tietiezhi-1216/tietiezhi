@@ -498,11 +498,11 @@ func buildCardContent(markdownText string) string {
 				elements = append(elements, table)
 			}
 		} else if strings.TrimSpace(seg.text) != "" {
-			elements = append(elements, map[string]any{"tag": "markdown", "content": seg.text})
+			elements = append(elements, map[string]any{"tag": "markdown", "content": seg.text, "text_size": "heading"})
 		}
 	}
 	if len(elements) == 0 {
-		elements = append(elements, map[string]any{"tag": "markdown", "content": markdownText})
+		elements = append(elements, map[string]any{"tag": "markdown", "content": markdownText, "text_size": "heading"})
 	}
 
 	// 构建完整的卡片结构（无 header）
@@ -528,16 +528,21 @@ func buildStreamingCardContent(content string, streamingStatus string) string {
 			"tag":        "markdown",
 			"content":    content,
 			"element_id": "streaming_md",
+			"text_size":  "heading",
 		},
 	}
+
+	// 流式状态：streaming 表示正在输入，finished 表示完成
+	streamingMode := streamingStatus == "streaming"
 
 	card := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{
 			"wide_screen_mode": true,
 			"update_multi":     true,
-			"streaming": map[string]any{
-				"streaming_status": streamingStatus,
+			"streaming_mode":   streamingMode,
+			"summary": map[string]any{
+				"content": "AI 正在回复...",
 			},
 		},
 		"body": map[string]any{
@@ -660,12 +665,12 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent) {
 			log.Printf("发送初始卡片失败: %v", err)
 		}
 
-		// 流式更新状态
+		// 流式更新状态（优化为更频繁的更新）
 		var (
 			lastUpdateTime      = time.Now()
 			chunkCount          = 0
-			updateInterval      = 500 * time.Millisecond // 每 500ms 或每 5 个 chunk 更新一次
-			maxChunkBeforeUpdate = 5
+			updateInterval      = 300 * time.Millisecond // 每 300ms 或每 3 个 chunk 更新一次
+			maxChunkBeforeUpdate = 3
 		)
 
 		for {
@@ -705,7 +710,7 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent) {
 				}
 			}
 
-			// 检查是否需要更新（每 500ms 或每 5 个 chunk）
+			// 检查是否需要更新（每 300ms 或每 3 个 chunk）
 			shouldUpdate := false
 			if time.Since(lastUpdateTime) >= updateInterval {
 				shouldUpdate = true
