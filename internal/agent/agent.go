@@ -50,6 +50,15 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 
 	// 系统提示词
 	systemPrompt := a.systemPrompt
+
+	// 检查 BOOTSTRAP.md 是否存在（仅私聊），在 system prompt 最开头加强指令
+	if !isGroup && a.memoryMgr != nil {
+		if a.memoryMgr.FileExists("BOOTSTRAP.md") {
+			bootstrapDirective := " 重要：BOOTSTRAP.md 存在于你的工作区。你必须优先执行初始化引导——和主人认识彼此，了解他们的偏好，然后使用工具更新 IDENTITY.md、USER.md、SOUL.md，最后用 delete_bootstrap 删除 BOOTSTRAP.md。不要正常回复，而是从引导对话开始。\n\n"
+			systemPrompt = bootstrapDirective + systemPrompt
+		}
+	}
+
 	if a.memoryMgr != nil {
 		memoryContext := a.memoryMgr.BuildMemoryContext(isGroup)
 		if memoryContext != "" {
@@ -140,6 +149,15 @@ func (a *BaseAgent) RunStream(ctx context.Context, sessionKey string, isGroup bo
 
 	// 系统提示词 = 基础 prompt + 记忆上下文
 	systemPrompt := a.systemPrompt
+
+	// 检查 BOOTSTRAP.md 是否存在（仅私聊），在 system prompt 最开头加强指令
+	if !isGroup && a.memoryMgr != nil {
+		if a.memoryMgr.FileExists("BOOTSTRAP.md") {
+			bootstrapDirective := " 重要：BOOTSTRAP.md 存在于你的工作区。你必须优先执行初始化引导——和主人认识彼此，了解他们的偏好，然后使用工具更新 IDENTITY.md、USER.md、SOUL.md，最后用 delete_bootstrap 删除 BOOTSTRAP.md。不要正常回复，而是从引导对话开始。\n\n"
+			systemPrompt = bootstrapDirective + systemPrompt
+		}
+	}
+
 	if a.memoryMgr != nil {
 		memoryContext := a.memoryMgr.BuildMemoryContext(isGroup)
 		if memoryContext != "" {
