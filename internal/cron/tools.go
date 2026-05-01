@@ -28,6 +28,11 @@ func GetCronTools() []llm.ToolDef {
 							"type":        "string",
 							"description": "定时执行的提示词（create时必填）",
 						},
+						"mode": map[string]any{
+							"type":        "string",
+							"enum":        []string{"isolated", "main"},
+							"description": "执行模式：isolated=创建独立session执行并投递结果（默认），main=注入heartbeat巡检中一起处理，共享主会话上下文",
+						},
 						"schedule_kind": map[string]any{
 							"type":        "string",
 							"enum":        []string{"at", "every", "cron"},

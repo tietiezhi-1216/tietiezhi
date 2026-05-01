@@ -149,6 +149,8 @@ func main() {
 	if heartbeatMgr != nil {
 		heartbeatMgr.SetAgent(ag)
 		heartbeatMgr.SetMemoryManager(memoryMgr)
+		// 注入 CronManager 到 HeartbeatManager
+		heartbeatMgr.SetCronManager(cronMgr)
 		go heartbeatMgr.Start(context.Background())
 	}
 

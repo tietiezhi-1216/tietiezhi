@@ -17,6 +17,17 @@ import (
 	"tietiezhi/internal/llm"
 )
 
+// PendingEvent 待处理事件（Main 模式）
+type PendingEvent struct {
+	ID       string    `json:"id"`       // UUID
+	JobID    string     `json:"job_id"`   // 来源任务 ID
+	JobName  string     `json:"job_name"` // 任务名称
+	Message  string     `json:"message"`  // 执行提示词
+	FiredAt  time.Time  `json:"fired_at"` // 触发时间
+	ChatID   string     `json:"chat_id"`  // 投递目标
+	IsGroup  bool       `json:"is_group"` // 是否群聊
+}
+
 // CronJob 定时任务
 type CronJob struct {
 	ID             string     `json:"id"`              // UUID
@@ -33,6 +44,7 @@ type CronJob struct {
 	IsGroup        bool       `json:"is_group"`    // 来源是否群聊
 	ChatID         string     `json:"chat_id"`     // 飞书聊天 ID（投递目标）
 	MessageID      string     `json:"message_id"`  // 来源消息 ID（用于 Reply）
+	Mode           string     `json:"mode"`        // 执行模式：isolated=独立session，main=注入heartbeat
 }
 
 // Schedule 调度规则
@@ -50,6 +62,7 @@ type CronManager struct {
 	cronLib     *cron.Cron             // robfig/cron 调度器
 	entryIDs    map[string]cron.EntryID // jobID -> cron.EntryID
 	storePath   string                 // jobs.json 路径
+	pendingPath string                 // pending.json 路径
 	execTimeout time.Duration          // 执行超时
 	agent       interface {
 		RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error)
@@ -66,6 +79,9 @@ func NewCronManager(storePath string, execTimeout int) *CronManager {
 	if !strings.HasSuffix(finalPath, ".json") {
 		finalPath = finalPath + "/jobs.json"
 	}
+	// pending.json 存放在同一目录
+	pendingPath := filepath.Join(filepath.Dir(finalPath), "pending.json")
+	
 	if execTimeout <= 0 {
 		execTimeout = 300
 	}
@@ -73,6 +89,7 @@ func NewCronManager(storePath string, execTimeout int) *CronManager {
 		jobs:        make(map[string]*CronJob),
 		entryIDs:    make(map[string]cron.EntryID),
 		storePath:   finalPath,
+		pendingPath: pendingPath,
 		execTimeout: time.Duration(execTimeout) * time.Second,
 	}
 	return m
@@ -271,8 +288,50 @@ func (m *CronManager) unscheduleJob(jobID string) {
 
 // executeJob 执行定时任务
 func (m *CronManager) executeJob(job *CronJob) {
-	log.Printf("开始执行定时任务: %s (ID: %s)", job.Name, job.ID)
+	log.Printf("开始执行定时任务: %s (ID: %s, Mode: %s)", job.Name, job.ID, job.Mode)
 
+	// Main 模式：写入 pending 队列，等待 Heartbeat 处理
+	if job.Mode == "main" {
+		event := PendingEvent{
+			ID:      uuid.New().String(),
+			JobID:   job.ID,
+			JobName: job.Name,
+			Message: job.Message,
+			FiredAt: time.Now(),
+			ChatID:  job.ChatID,
+			IsGroup: job.IsGroup,
+		}
+		if err := m.AddPendingEvent(&event); err != nil {
+			log.Printf("添加 pending 事件失败: %v", err)
+		} else {
+			log.Printf("Main 模式任务已加入 pending 队列: %s", job.Name)
+		}
+		
+		// 更新统计
+		m.mu.Lock()
+		job.RunCount++
+		now := time.Now()
+		job.LastRunAt = &now
+		
+		if job.DeleteAfterRun {
+			m.unscheduleJob(job.ID)
+			delete(m.jobs, job.ID)
+			log.Printf("一次性定时任务已完成并删除: %s", job.Name)
+		} else {
+			if entryID, ok := m.entryIDs[job.ID]; ok {
+				entry := m.cronLib.Entry(entryID)
+				if entry.ID > 0 {
+					next := entry.Next
+					job.NextRunAt = &next
+				}
+			}
+			m.saveJobs()
+		}
+		m.mu.Unlock()
+		return
+	}
+
+	// Isolated 模式：创建独立 session 执行（原有逻辑）
 	sessionKey := fmt.Sprintf("cron:%s", job.ID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), m.execTimeout)
@@ -314,6 +373,83 @@ func (m *CronManager) executeJob(job *CronJob) {
 	m.mu.Unlock()
 }
 
+// AddPendingEvent 添加待处理事件
+func (m *CronManager) AddPendingEvent(event *PendingEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	events, err := m.loadPendingEvents()
+	if err != nil {
+		events = []*PendingEvent{}
+	}
+
+	events = append(events, event)
+
+	return m.savePendingEvents(events)
+}
+
+// GetPendingEvents 获取所有待处理事件
+func (m *CronManager) GetPendingEvents() []*PendingEvent {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	events, _ := m.loadPendingEvents()
+	return events
+}
+
+// ClearPendingEvents 清空待处理事件
+func (m *CronManager) ClearPendingEvents() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	return m.savePendingEvents([]*PendingEvent{})
+}
+
+func (m *CronManager) loadPendingEvents() ([]*PendingEvent, error) {
+	dir := filepath.Dir(m.pendingPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("创建目录失败: %w", err)
+	}
+
+	if _, err := os.Stat(m.pendingPath); os.IsNotExist(err) {
+		return []*PendingEvent{}, nil
+	}
+
+	data, err := os.ReadFile(m.pendingPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取文件失败: %w", err)
+	}
+
+	if len(data) == 0 {
+		return []*PendingEvent{}, nil
+	}
+
+	var events []*PendingEvent
+	if err := json.Unmarshal(data, &events); err != nil {
+		return nil, fmt.Errorf("解析文件失败: %w", err)
+	}
+
+	return events, nil
+}
+
+func (m *CronManager) savePendingEvents(events []*PendingEvent) error {
+	dir := filepath.Dir(m.pendingPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+
+	data, err := json.MarshalIndent(events, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化失败: %w", err)
+	}
+
+	if err := os.WriteFile(m.pendingPath, data, 0644); err != nil {
+		return fmt.Errorf("写入文件失败: %w", err)
+	}
+
+	return nil
+}
+
 // CreateJob 创建任务
 func (m *CronManager) CreateJob(job *CronJob) error {
 	m.mu.Lock()
@@ -323,6 +459,11 @@ func (m *CronManager) CreateJob(job *CronJob) error {
 		job.ID = uuid.New().String()
 	}
 	job.CreatedAt = time.Now()
+	
+	// 默认 Mode 为 isolated
+	if job.Mode == "" {
+		job.Mode = "isolated"
+	}
 
 	m.jobs[job.ID] = job
 
@@ -432,6 +573,7 @@ func (m *CronManager) executeCreate(args map[string]interface{}, sessionKey stri
 	name, _ := args["name"].(string)
 	message, _ := args["message"].(string)
 	scheduleKind, _ := args["schedule_kind"].(string)
+	mode, _ := args["mode"].(string)
 
 	if name == "" {
 		return `{"error": "任务名称不能为空"}`
@@ -443,10 +585,19 @@ func (m *CronManager) executeCreate(args map[string]interface{}, sessionKey stri
 		return `{"error": "调度类型不能为空"}`
 	}
 
+	// 默认 mode 为 isolated
+	if mode == "" {
+		mode = "isolated"
+	}
+	if mode != "isolated" && mode != "main" {
+		return fmt.Sprintf(`{"error": "不支持的 mode: %s，支持的值: isolated, main"}`, mode)
+	}
+
 	job := &CronJob{
 		Name:       name,
 		Message:    message,
 		Enabled:    true,
+		Mode:       mode,
 		SessionKey: sessionKey,
 		IsGroup:    isGroup,
 		ChatID:     chatID,
@@ -489,7 +640,7 @@ func (m *CronManager) executeCreate(args map[string]interface{}, sessionKey stri
 		return fmt.Sprintf(`{"error": "创建任务失败: %v"}`, err)
 	}
 
-	return fmt.Sprintf(`{"success": true, "message": "任务已创建", "job_id": "%s", "name": "%s"}`, job.ID, job.Name)
+	return fmt.Sprintf(`{"success": true, "message": "任务已创建", "job_id": "%s", "name": "%s", "mode": "%s"}`, job.ID, job.Name, job.Mode)
 }
 
 func (m *CronManager) executeList() string {
@@ -501,6 +652,7 @@ func (m *CronManager) executeList() string {
 	type JobInfo struct {
 		ID        string    `json:"id"`
 		Name      string    `json:"name"`
+		Mode      string    `json:"mode"`
 		Schedule  Schedule  `json:"schedule"`
 		Enabled   bool      `json:"enabled"`
 		RunCount  int       `json:"run_count"`
@@ -514,6 +666,7 @@ func (m *CronManager) executeList() string {
 		info := JobInfo{
 			ID:        job.ID,
 			Name:      job.Name,
+			Mode:      job.Mode,
 			Schedule:  job.Schedule,
 			Enabled:   job.Enabled,
 			RunCount:  job.RunCount,
@@ -601,6 +754,10 @@ func (m *CronManager) loadJobs() error {
 	}
 
 	for _, job := range jobs {
+		// 确保默认 Mode 为 isolated
+		if job.Mode == "" {
+			job.Mode = "isolated"
+		}
 		m.jobs[job.ID] = job
 	}
 
