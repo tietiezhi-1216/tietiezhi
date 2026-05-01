@@ -7,6 +7,7 @@ type Message struct {
 	ChannelID string `json:"channel_id"`
 	UserID    string `json:"user_id"`
 	Content   string `json:"content"`
+	ChatType  string `json:"chat_type,omitempty"` // p2p 或 group
 }
 
 // Handler 消息处理函数类型

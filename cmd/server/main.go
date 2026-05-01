@@ -15,6 +15,7 @@ import (
 	"tietiezhi/internal/config"
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/server"
+	"tietiezhi/internal/session"
 )
 
 func main() {
@@ -38,8 +39,15 @@ func main() {
 		log.Fatalf("不支持的 LLM Provider: %s", cfg.LLM.Provider)
 	}
 
+	// 初始化会话管理器
+	sessionMgr := session.NewSessionManager(
+		cfg.Session.MaxHistoryTurns,
+		cfg.Session.AutoSaveSeconds,
+		cfg.Session.PersistPath,
+	)
+
 	// 初始化 Agent
-	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls)
+	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr)
 
 	// 初始化渠道注册表
 	channelRegistry := channel.NewRegistry()
@@ -69,6 +77,10 @@ func main() {
 	if err := channelRegistry.StartAll(ctx); err != nil {
 		log.Printf("启动渠道失败: %v", err)
 	}
+
+	// 启动会话自动保存
+	sessionMgr.StartAutoSave(ctx)
+	log.Println("会话自动保存已启动")
 
 	// 等待退出信号
 	quit := make(chan os.Signal, 1)

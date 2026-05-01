@@ -19,6 +19,7 @@ import (
 	"tietiezhi/internal/agent"
 	"tietiezhi/internal/channel"
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/session"
 )
 
 // FeishuChannel 飞书渠道
@@ -157,7 +158,7 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 			f.addReaction(ctx, messageID, "THINKING")
 		}
 
-		input := &channel.Message{ChannelID: chatID, UserID: userID, Content: content}
+		input := &channel.Message{ChannelID: chatID, UserID: userID, Content: content, ChatType: chatType}
 
 		// 优先使用流式处理
 		if f.streamHandler != nil {
@@ -653,8 +654,11 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent) {
 		ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		defer cancel()
 
+		// 构建 session key
+		sessionKey := session.BuildSessionKey(msg.ChatType, msg.ChannelID, msg.UserID)
+
 		// 获取流式响应
-		ch, err := ag.RunStream(ctx, &agent.Message{Role: "user", Content: msg.Content})
+		ch, err := ag.RunStream(ctx, sessionKey, &agent.Message{Role: "user", Content: msg.Content})
 		if err != nil {
 			return err
 		}
@@ -683,6 +687,7 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent) {
 				readCancel()
 				// 读取超时或上下文取消，认为流结束
 				if fullContent.Len() > 0 {
+					ag.AppendToSession(sessionKey, fullContent.String())
 					sendFunc(fullContent.String(), true)
 				}
 				return nil
@@ -692,6 +697,7 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent) {
 			case <-ctx.Done():
 				readCancel()
 				if fullContent.Len() > 0 {
+					ag.AppendToSession(sessionKey, fullContent.String())
 					sendFunc(fullContent.String(), true)
 				}
 				return ctx.Err()

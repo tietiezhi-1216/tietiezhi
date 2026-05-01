@@ -17,6 +17,7 @@ type Config struct {
 	Skills    SkillsConfig    `yaml:"skills"`
 	Scheduler SchedulerConfig `yaml:"scheduler"`
 	Log       LogConfig       `yaml:"log"`
+	Session   SessionConfig   `yaml:"session"`
 }
 
 // ServerConfig 服务器配置
@@ -76,6 +77,13 @@ type LogConfig struct {
 	Format string `yaml:"format"`
 }
 
+// SessionConfig 会话配置
+type SessionConfig struct {
+	MaxHistoryTurns int    `yaml:"max_history_turns"`
+	PersistPath     string `yaml:"persist_path"`
+	AutoSaveSeconds int    `yaml:"auto_save_seconds"`
+}
+
 // Load 从 YAML 文件加载配置
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -117,5 +125,14 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Log.Format == "" {
 		c.Log.Format = "text"
+	}
+	if c.Session.MaxHistoryTurns == 0 {
+		c.Session.MaxHistoryTurns = 20
+	}
+	if c.Session.PersistPath == "" {
+		c.Session.PersistPath = "./data/sessions"
+	}
+	if c.Session.AutoSaveSeconds == 0 {
+		c.Session.AutoSaveSeconds = 60
 	}
 }
