@@ -44,7 +44,7 @@ func (f *FeishuChannel) SetHandler(handler func(ctx context.Context, msg *channe
 // ID 返回渠道标识
 func (f *FeishuChannel) ID() string { return "feishu" }
 
-// Start 启动飞书渠道（WebSocket 长连接模式）
+// Start 启动飞书渠道
 func (f *FeishuChannel) Start(ctx context.Context) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -79,6 +79,7 @@ func (f *FeishuChannel) Start(ctx context.Context) error {
 // handleMessage 处理飞书消息事件
 func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 	if event.Event == nil || event.Event.Message == nil {
+		log.Printf("飞书事件: Event 或 Message 为空")
 		return nil
 	}
 
@@ -88,20 +89,6 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 	if msg.ChatType != nil {
 		chatType = *msg.ChatType
 	}
-
-	// 群聊中，只处理 @机器人 的消息
-	if chatType == "group" {
-		if !f.isBotMentioned(msg) {
-			return nil
-		}
-	}
-
-	userID := ""
-	if event.Event.Sender != nil && event.Event.Sender.SenderId != nil {
-		userID = *event.Event.Sender.SenderId.OpenId
-	}
-
-	content := f.parseMessageContent(msg)
 
 	chatID := ""
 	if msg.ChatId != nil {
@@ -113,13 +100,48 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 		messageID = *msg.MessageId
 	}
 
-	log.Printf("收到飞书消息: chatType=%s, chatID=%s, userID=%s, content=%s", chatType, chatID, userID, content)
+	msgType := ""
+	if msg.MessageType != nil {
+		msgType = *msg.MessageType
+	}
+
+	// 记录所有收到的消息（调试用）
+	log.Printf("飞书原始消息: chatType=%s, msgType=%s, chatID=%s, messageID=%s, mentions=%d",
+		chatType, msgType, chatID, messageID, len(msg.Mentions))
+
+	if msg.Content != nil {
+		log.Printf("飞书原始内容: %s", *msg.Content)
+	}
+
+	// 群聊中，只处理 @机器人 的消息
+	if chatType == "group" {
+		if !f.isBotMentioned(msg) {
+			log.Printf("群聊消息但未 @机器人，跳过")
+			return nil
+		}
+		log.Printf("群聊消息，已 @机器人，开始处理")
+	}
+
+	userID := ""
+	if event.Event.Sender != nil && event.Event.Sender.SenderId != nil {
+		userID = *event.Event.Sender.SenderId.OpenId
+	}
+
+	content := f.parseMessageContent(msg)
 
 	if content == "" {
+		log.Printf("消息内容为空，跳过")
 		return nil
 	}
 
+	log.Printf("处理飞书消息: chatType=%s, content=%s", chatType, content)
+
 	if f.handler != nil {
+		// 群聊：先给消息加表情回复（typing indicator）
+		if chatType == "group" && messageID != "" {
+			f.addTypingReaction(ctx, messageID)
+		}
+
 		input := &channel.Message{
 			ChannelID: chatID,
 			UserID:    userID,
@@ -129,6 +151,10 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 		reply, err := f.handler(ctx, input)
 		if err != nil {
 			log.Printf("处理飞书消息出错: %v", err)
+			// 出错也要移除 typing 表情
+			if chatType == "group" && messageID != "" {
+				f.removeTypingReaction(ctx, messageID)
+			}
 			return nil
 		}
 
@@ -143,18 +169,73 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 				}
 			}
 		}
+
+		// 处理完成后移除 typing 表情
+		if chatType == "group" && messageID != "" {
+			f.removeTypingReaction(ctx, messageID)
+		}
 	}
 
 	return nil
 }
 
+// addTypingReaction 给消息添加 "处理中" 表情回复
+func (f *FeishuChannel) addTypingReaction(ctx context.Context, messageID string) {
+	_, err := f.client.Im.MessageReaction.Create(ctx, larkim.NewCreateMessageReactionReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
+			ReactionType(larkim.NewReactionTypeBuilder().
+				EmojiType("Typing").
+				Build()).
+			Build()).
+		Build())
+	if err != nil {
+		log.Printf("添加 Typing 表情失败: %v", err)
+	} else {
+		log.Printf("已添加 Typing 表情到消息 %s", messageID)
+	}
+}
+
+// removeTypingReaction 移除消息的 "处理中" 表情回复
+func (f *FeishuChannel) removeTypingReaction(ctx context.Context, messageID string) {
+	// 先获取表情列表找到 reaction_id
+	resp, err := f.client.Im.MessageReaction.List(ctx, larkim.NewListMessageReactionReqBuilder().
+		MessageId(messageID).
+		PageSize(50).
+		Build())
+	if err != nil {
+		log.Printf("获取表情列表失败: %v", err)
+		return
+	}
+
+	if resp == nil || resp.Data == nil || resp.Data.Items == nil {
+		return
+	}
+
+	// 找到 Typing 表情的 reaction_id
+	for _, item := range resp.Data.Items {
+		if item.ReactionType != nil && item.ReactionType.EmojiType != nil {
+			if *item.ReactionType.EmojiType == "Typing" && item.ReactionId != nil {
+				_, err := f.client.Im.MessageReaction.Delete(ctx, larkim.NewDeleteMessageReactionReqBuilder().
+					MessageId(messageID).
+					ReactionId(*item.ReactionId).
+					Build())
+				if err != nil {
+					log.Printf("移除 Typing 表情失败: %v", err)
+				} else {
+					log.Printf("已移除 Typing 表情")
+				}
+				return
+			}
+		}
+	}
+}
+
 // isBotMentioned 检查群聊中是否 @了机器人
 func (f *FeishuChannel) isBotMentioned(msg *larkim.EventMessage) bool {
-	// 检查 mentions 数组
 	if len(msg.Mentions) > 0 {
 		return true
 	}
-	// 检查内容中的 @_user_ 占位符
 	if msg.Content != nil {
 		matched, _ := regexp.MatchString(`@_user_\d+`, *msg.Content)
 		if matched {
@@ -282,7 +363,7 @@ func (f *FeishuChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Send 发送消息到飞书（Post 富文本格式）
+// Send 发送消息（Post 富文本格式）
 func (f *FeishuChannel) Send(ctx context.Context, chatID string, msg *channel.Message) error {
 	if f.client == nil {
 		return fmt.Errorf("飞书客户端未初始化")
@@ -304,7 +385,7 @@ func (f *FeishuChannel) Send(ctx context.Context, chatID string, msg *channel.Me
 	return nil
 }
 
-// Reply 回复飞书消息（Post 富文本格式）
+// Reply 回复消息（Post 富文本格式）
 func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channel.Message) error {
 	if f.client == nil {
 		return fmt.Errorf("飞书客户端未初始化")
@@ -328,7 +409,7 @@ func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channe
 	return nil
 }
 
-// buildPostContent 将 Markdown 文本转换为飞书 Post 格式
+// buildPostContent 将 Markdown 转换为飞书 Post 格式
 func buildPostContent(markdownText string) string {
 	post := map[string]any{
 		"zh_cn": map[string]any{
