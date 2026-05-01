@@ -57,7 +57,20 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, in
 		}
 	}
 	// 追加记忆写入指引
-	systemPrompt += "\n\n## 记忆写入指引\n你可以使用 memory_add 工具来记录重要信息。当用户说\"记住\"、\"记一下\"，或者对话中出现重要的偏好、决策、事实时，请主动调用 memory_add 工具。日常笔记用 daily 类型，重要偏好和决策用 longterm 类型。"
+	systemPrompt += `
+
+## 记忆工具使用指引
+
+你可以使用以下工具来管理记忆：
+- memory_add：记录重要信息。当用户说"记住"、"记一下"，或对话中出现重要的偏好、决策、事实时主动调用。日常笔记用 daily 类型，重要偏好和决策用 longterm 类型。
+- memory_search：搜索记忆文件中的相关内容。当你需要回忆之前记录的信息时使用。
+- delete_bootstrap：删除 BOOTSTRAP.md。完成初始化引导后必须调用此工具，避免重复触发。
+
+重要规则：
+- "心理备忘"不可靠，文件才能持久。想记住的东西一定要写入文件。
+- 当有人说"记住这个"→ 更新 memory/YYYY-MM-DD.md 或相关文件
+- 当你学到一个教训 → 更新 TOOLS.md 或相关文件
+- 完成初始化引导后，必须调用 delete_bootstrap 删除 BOOTSTRAP.md`
 
 	if systemPrompt != "" {
 		messages = append(messages, llm.ChatMessage{Role: "system", Content: systemPrompt})

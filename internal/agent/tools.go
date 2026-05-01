@@ -15,7 +15,7 @@ func GetMemoryTools() []llm.ToolDef {
 			Type: "function",
 			Function: llm.FunctionDef{
 				Name:        "memory_add",
-				Description: "将内容写入每日记忆文件。当用户要求记住某些事情、或者你认为重要的事实、偏好、决策需要持久化时使用。",
+				Description: "将内容写入记忆文件。用于记录重要信息、偏好、决策等需要持久化的内容。",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -25,8 +25,8 @@ func GetMemoryTools() []llm.ToolDef {
 						},
 						"memory_type": map[string]any{
 							"type":        "string",
-							"enum":        []string{"daily", "longterm"},
-							"description": "记忆类型：daily=每日笔记（默认），longterm=长期记忆（重要偏好和决策）",
+							"enum":        []string{"daily", "longterm", "identity", "user", "soul"},
+							"description": "记忆类型：daily=每日笔记（默认追加），longterm=长期记忆（重要偏好和决策），identity=身份信息，user=用户信息，soul=灵魂设定",
 						},
 					},
 					"required": []string{"content"},
@@ -50,6 +50,18 @@ func GetMemoryTools() []llm.ToolDef {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "delete_bootstrap",
+				Description: "删除 BOOTSTRAP.md 文件。当你完成初始化引导仪式后，调用此工具删除 BOOTSTRAP.md，避免重复触发初始化流程。",
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+					"required":   []string{},
+				},
+			},
+		},
 	}
 }
 
@@ -60,6 +72,8 @@ func ExecuteToolCall(call llm.ToolCall, memMgr *memory.MemoryManager) string {
 		return executeMemoryAdd(call.Function.Arguments, memMgr)
 	case "memory_search":
 		return executeMemorySearch(call.Function.Arguments, memMgr)
+	case "delete_bootstrap":
+		return executeDeleteBootstrap(memMgr)
 	default:
 		return `{"error": "未知工具: ` + call.Function.Name + `"}`
 	}
@@ -100,6 +114,14 @@ func executeMemorySearch(argsJSON string, memMgr *memory.MemoryManager) string {
 	}
 	resultJSON, _ := json.Marshal(map[string]any{"results": results})
 	return string(resultJSON)
+}
+
+// executeDeleteBootstrap 删除 BOOTSTRAP.md 文件
+func executeDeleteBootstrap(memMgr *memory.MemoryManager) string {
+	if err := memMgr.DeleteBootstrap(); err != nil {
+		return `{"error": "删除失败: ` + err.Error() + `"}`
+	}
+	return `{"success": true, "message": "已删除 BOOTSTRAP.md"}`
 }
 
 // truncateSearchResult 截取搜索结果上下文
