@@ -7,11 +7,13 @@ import (
 	"log"
 	"strings"
 
+	"tietiezhi/internal/hook"
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
 	"tietiezhi/internal/session"
 	"tietiezhi/internal/skill"
+	"tietiezhi/internal/subagent"
 )
 
 // Message Agent 消息
@@ -33,6 +35,8 @@ type BaseAgent struct {
 	memoryMgr    *memory.MemoryManager
 	skillLoader  *skill.Loader
 	mcpManager   *mcp.MCPManager
+	hookManager  *hook.HookManager
+	subAgentMgr  *subagent.SubAgentManager
 	cronMgr      interface {
 		GetCronTools() []llm.ToolDef
 		ExecuteCronTool(action string, args map[string]interface{}, sessionKey string, isGroup bool, chatID string) string
@@ -69,6 +73,16 @@ func (a *BaseAgent) SetCronManager(mgr interface{}) {
 	})
 }
 
+// SetHookManager 设置 Hook 管理器
+func (a *BaseAgent) SetHookManager(mgr *hook.HookManager) {
+	a.hookManager = mgr
+}
+
+// SetSubAgentManager 设置子代理管理器
+func (a *BaseAgent) SetSubAgentManager(mgr *subagent.SubAgentManager) {
+	a.subAgentMgr = mgr
+}
+
 // GetSkillLoader 获取技能加载器
 func (a *BaseAgent) GetSkillLoader() *skill.Loader {
 	return a.skillLoader
@@ -81,13 +95,41 @@ func (a *BaseAgent) GetMCPManager() *mcp.MCPManager {
 
 // Run 执行 Agent 对话（含工具调用循环）
 func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, chatID string, input *Message) (*Message, error) {
-	return a.runWithTools(ctx, sessionKey, isGroup, chatID, input, true)
+	// 触发 session_start hook
+	if a.hookManager != nil {
+		event := hook.NewHookEvent(hook.EventSessionStart, sessionKey)
+		a.hookManager.Fire(ctx, event)
+	}
+
+	// 触发 message_in hook
+	if a.hookManager != nil {
+		event := hook.NewHookEvent(hook.EventMessageIn, sessionKey)
+		event.Message = input.Content
+		a.hookManager.Fire(ctx, event)
+	}
+
+	result, err := a.runWithTools(ctx, sessionKey, isGroup, chatID, input, true)
+
+	// 触发 message_out hook
+	if a.hookManager != nil && result != nil {
+		event := hook.NewHookEvent(hook.EventMessageOut, sessionKey)
+		event.Message = result.Content
+		a.hookManager.Fire(ctx, event)
+	}
+
+	// 触发 session_end hook
+	if a.hookManager != nil {
+		event := hook.NewHookEvent(hook.EventSessionEnd, sessionKey)
+		a.hookManager.Fire(ctx, event)
+	}
+
+	return result, err
 }
 
 // RunCron 执行 cron 任务（隔离 session，不注入 cron 工具）
 func (a *BaseAgent) RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error) {
 	msg := &Message{Role: role, Content: content}
-	
+
 	// 使用 runWithTools，但注入 cron 工具
 	// 注意：cron session 会话 key 以 "cron:" 开头，所以 buildToolsList 会跳过 cron 工具
 	result, err := a.runWithTools(ctx, sessionKey, isGroup, "", msg, false)
@@ -159,7 +201,7 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 
 	for round := 0; round < maxToolRounds; round++ {
 		// 构建工具列表
-		tools := a.buildToolsList(injectCronTools)
+		tools := a.buildToolsList(injectCronTools, sessionKey)
 
 		req := &llm.ChatRequest{
 			Messages: messages,
@@ -220,7 +262,7 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 }
 
 // buildToolsList 构建工具列表
-func (a *BaseAgent) buildToolsList(injectCron bool) []llm.ToolDef {
+func (a *BaseAgent) buildToolsList(injectCron bool, sessionKey string) []llm.ToolDef {
 	var tools []llm.ToolDef
 
 	// 基础记忆工具
@@ -229,6 +271,11 @@ func (a *BaseAgent) buildToolsList(injectCron bool) []llm.ToolDef {
 	// 技能工具
 	if skillTools := GetSkillTools(a.skillLoader); len(skillTools) > 0 {
 		tools = append(tools, skillTools...)
+	}
+
+	// 子代理工具（递归防护：sub session 不注入 agent_spawn）
+	if !strings.HasPrefix(sessionKey, "sub:") && a.subAgentMgr != nil {
+		tools = append(tools, subagent.GetSubAgentTools()...)
 	}
 
 	// 定时任务工具（递归防护）
@@ -334,6 +381,28 @@ func (a *BaseAgent) GetMemoryMgr() *memory.MemoryManager {
 // ExecuteToolCall 执行工具调用
 func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*LoadedSkill, sessionKey string, isGroup bool, chatID string) string {
 	toolName := call.Function.Name
+	toolArgs := parseToolArgs(call.Function.Arguments)
+
+	// 触发 pre_tool_use hook
+	if a.hookManager != nil {
+		event := hook.NewHookEvent(hook.EventPreToolUse, sessionKey)
+		event.ToolName = toolName
+		event.ToolInput = toolArgs
+
+		proceed, hookResult := a.hookManager.ShouldProceed(context.Background(), event)
+		if !proceed {
+			log.Printf("[Hook] 工具 %s 被拒绝: %s", toolName, hookResult.Reason)
+			return fmt.Sprintf(`{"error": "tool blocked by hook", "reason": "%s"}`, hookResult.Reason)
+		}
+
+		// 如果 hook 返回了修改后的输入，应用它
+		if hookResult.Decision == hook.DecisionModify && hookResult.UpdatedInput != nil {
+			modifiedArgsJSON, _ := json.Marshal(hookResult.UpdatedInput)
+			toolArgs = hookResult.UpdatedInput
+			call.Function.Arguments = string(modifiedArgsJSON)
+			log.Printf("[Hook] 工具 %s 参数已修改", toolName)
+		}
+	}
 
 	// MCP 工具
 	if strings.HasPrefix(toolName, "mcp__") {
@@ -351,15 +420,37 @@ func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*
 	// cron 工具
 	if toolName == "cron_task" {
 		if a.cronMgr != nil {
-			args := parseToolArgs(call.Function.Arguments)
-			action, _ := args["action"].(string)
-			return a.cronMgr.ExecuteCronTool(action, args, sessionKey, isGroup, chatID)
+			action, _ := toolArgs["action"].(string)
+			return a.cronMgr.ExecuteCronTool(action, toolArgs, sessionKey, isGroup, chatID)
 		}
 		return `{"error": "定时任务管理器未初始化"}`
 	}
 
+	// agent_spawn 子代理工具
+	if toolName == "agent_spawn" {
+		if a.subAgentMgr != nil {
+			result, err := subagent.ExecuteSpawn(a.subAgentMgr, toolArgs, sessionKey, chatID, isGroup)
+			if err != nil {
+				return fmt.Sprintf(`{"error": "%s"}`, err.Error())
+			}
+			return result
+		}
+		return `{"error": "子代理管理器未初始化"}`
+	}
+
 	// 其他工具（记忆相关）
-	return ExecuteToolCall(call, a.memoryMgr)
+	result := ExecuteToolCall(call, a.memoryMgr)
+
+	// 触发 post_tool_use hook
+	if a.hookManager != nil {
+		event := hook.NewHookEvent(hook.EventPostToolUse, sessionKey)
+		event.ToolName = toolName
+		event.ToolInput = toolArgs
+		event.ToolOutput = result
+		a.hookManager.Fire(context.Background(), event)
+	}
+
+	return result
 }
 
 // parseToolArgs 解析工具参数

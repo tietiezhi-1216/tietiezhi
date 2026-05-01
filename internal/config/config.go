@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+	"tietiezhi/internal/hook"
 )
 
 // Config 顶层配置结构
@@ -20,6 +21,7 @@ type Config struct {
 	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
 	Log       LogConfig       `yaml:"log"`
 	Session   SessionConfig   `yaml:"session"`
+	Hooks     HooksConfig     `yaml:"hooks"`
 }
 
 // ServerConfig 服务器配置
@@ -39,7 +41,7 @@ type LLMConfig struct {
 // AgentConfig Agent 配置
 type AgentConfig struct {
 	MaxToolCalls  int    `yaml:"max_tool_calls"`
-	SystemPrompt  string `yaml:"system_prompt"`
+	SystemPrompt string `yaml:"system_prompt"`
 	LoopDetection bool   `yaml:"loop_detection"`
 }
 
@@ -95,6 +97,12 @@ type SessionConfig struct {
 	MaxHistoryTurns int    `yaml:"max_history_turns"`
 	PersistPath     string `yaml:"persist_path"`
 	AutoSaveSeconds int    `yaml:"auto_save_seconds"`
+}
+
+// HooksConfig Hook 配置
+type HooksConfig struct {
+	Enabled bool            `yaml:"enabled"`
+	Rules   []hook.HookRule `yaml:"rules"`
 }
 
 // Load 从 YAML 文件加载配置
@@ -157,6 +165,10 @@ func (c *Config) applyDefaults(configPath string) {
 	}
 	if c.Session.AutoSaveSeconds == 0 {
 		c.Session.AutoSaveSeconds = 60
+	}
+	// Hooks 默认值
+	if c.Hooks.Rules == nil {
+		c.Hooks.Rules = []hook.HookRule{}
 	}
 
 	// 解析相对路径为绝对路径

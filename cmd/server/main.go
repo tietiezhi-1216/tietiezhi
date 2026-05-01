@@ -16,6 +16,7 @@ import (
 	"tietiezhi/internal/config"
 	"tietiezhi/internal/cron"
 	"tietiezhi/internal/heartbeat"
+	"tietiezhi/internal/hook"
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
@@ -85,11 +86,22 @@ func main() {
 		log.Printf("心跳管理器已创建: interval=%dmin", cfg.Heartbeat.Interval)
 	}
 
+	// 初始化 Hook 管理器
+	hookManager := hook.NewHookManager(cfg.Hooks.Rules, cfg.Hooks.Enabled)
+	if cfg.Hooks.Enabled {
+		hook.RegisterBuiltinScripts(hookManager)
+		log.Printf("Hook 系统已初始化: %d 条规则", len(cfg.Hooks.Rules))
+	} else {
+		log.Println("Hook 系统已禁用")
+	}
+
 	// 初始化 Agent
 	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr, memoryMgr)
 	ag.SetSkillLoader(skillLoader)
 	ag.SetMCPManager(mcpManager)
 	ag.SetCronManager(cronMgr)
+	ag.SetSubAgentManager(subAgentMgr)
+	ag.SetHookManager(hookManager)
 
 	// 初始化渠道注册表
 	channelRegistry := channel.NewRegistry()
@@ -130,6 +142,13 @@ func main() {
 			// 如果配置文件指定了 chatID，设置它
 			if cfg.Heartbeat.ChatID != "" {
 				heartbeatMgr.SetChatID(cfg.Heartbeat.ChatID)
+
+		// 设置子代理投递函数
+		if subAgentMgr != nil {
+			subAgentMgr.SetDeliveryFn(func(chatID, content string) error {
+				return feishuCh.Send(context.Background(), chatID, &channel.Message{Content: content})
+			})
+		}
 			}
 		}
 	}
