@@ -54,6 +54,7 @@ type FeishuConfig struct {
 	VerificationToken string `yaml:"verification_token"`
 	EncryptKey        string `yaml:"encrypt_key"`
 	Streaming         bool   `yaml:"streaming"`
+	BotOpenID         string `yaml:"bot_open_id"`
 }
 
 // MemoryConfig 记忆配置

@@ -26,6 +26,7 @@ import (
 type FeishuChannel struct {
 	appID        string
 	appSecret    string
+	botOpenID    string
 	client       *lark.Client
 	handler      func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
 	streamHandler func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error
@@ -36,12 +37,18 @@ type FeishuChannel struct {
 }
 
 // New 创建飞书渠道
-func New(appID, appSecret string) *FeishuChannel {
-	return &FeishuChannel{
+// New 创建飞书渠道（botOpenID 可选，如果 API 获取失败则使用配置值）
+func New(appID, appSecret string, botOpenID ...string) *FeishuChannel {
+	f := &FeishuChannel{
 		appID:     appID,
 		appSecret: appSecret,
 		processed: make(map[string]time.Time),
 	}
+	if len(botOpenID) > 0 && botOpenID[0] != "" {
+		f.botOpenID = botOpenID[0]
+		log.Printf("使用配置的机器人 OpenID: %s", f.botOpenID)
+	}
+	return f
 }
 
 // SetHandler 设置消息处理函数（同步模式）
@@ -78,6 +85,8 @@ func (f *FeishuChannel) Start(ctx context.Context) error {
 			log.Printf("飞书 WebSocket 连接异常: %v", err)
 		}
 	}()
+	// 获取机器人 OpenID
+	f.fetchBotOpenID(ctx)
 	go f.cleanProcessedCache()
 	f.running = true
 	log.Println("飞书渠道已启动（WebSocket 模式）")
@@ -307,8 +316,28 @@ func (f *FeishuChannel) removeReaction(ctx context.Context, messageID, emojiType
 	}
 }
 
-// isBotMentioned 检查机器人是否被提及
+// fetchBotOpenID 获取机器人 OpenID
+// 注意：如果 New 函数传入了 botOpenID，这里会打印确认；如果未传入，则只打印提示
+func (f *FeishuChannel) fetchBotOpenID(ctx context.Context) {
+	if f.botOpenID != "" {
+		log.Printf("使用配置的机器人 OpenID: %s", f.botOpenID)
+	} else {
+		log.Printf("未配置机器人 OpenID，将使用降级逻辑（任何 @ 都会响应）")
+	}
+}
+
+// isBotMentioned 检查机器人是否被提及（精确匹配）
 func (f *FeishuChannel) isBotMentioned(msg *larkim.EventMessage) bool {
+	// 如果已知 botOpenID，精确匹配
+	if f.botOpenID != "" && len(msg.Mentions) > 0 {
+		for _, mention := range msg.Mentions {
+			if mention.Id != nil && mention.Id.OpenId != nil && *mention.Id.OpenId == f.botOpenID {
+				return true
+			}
+		}
+		return false // mentions 中有人被@，但不是@机器人
+	}
+	// 如果未知 botOpenID，降级到旧行为（有 mention 就响应）
 	if len(msg.Mentions) > 0 {
 		return true
 	}
@@ -424,23 +453,52 @@ func (f *FeishuChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Send 发送卡片消息到指定会话
+// shouldUseCard 判断是否应该用卡片（参考 OpenClaw 的 shouldUseCard）
+func shouldUseCard(text string) bool {
+	// 代码块
+	if strings.Contains(text, "```") {
+		return true
+	}
+	// 表格
+	if matched, _ := regexp.MatchString(`\|.+\|[\r\n]+\|[-:| ]+\|`, text); matched {
+		return true
+	}
+	return false
+}
+
+// Send 发送消息到指定会话（自动选择文本/卡片）
 func (f *FeishuChannel) Send(ctx context.Context, chatID string, msg *channel.Message) error {
 	if f.client == nil {
 		return fmt.Errorf("飞书客户端未初始化")
 	}
-	cardJSON := buildCardContent(sanitizeMarkdown(msg.Content))
+	cleanContent := sanitizeMarkdown(msg.Content)
+
+	if shouldUseCard(cleanContent) {
+		// 卡片模式
+		cardJSON := buildCardContent(cleanContent)
+		_, err := f.client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
+			ReceiveIdType(larkim.ReceiveIdTypeChatId).
+			Body(larkim.NewCreateMessageReqBodyBuilder().MsgType("interactive").ReceiveId(chatID).Content(cardJSON).Build()).
+			Build())
+		if err != nil {
+			return fmt.Errorf("发送飞书卡片失败: %w", err)
+		}
+		return nil
+	}
+
+	// 文本模式
+	content := fmt.Sprintf(`{"text":%q}`, cleanContent)
 	_, err := f.client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
 		ReceiveIdType(larkim.ReceiveIdTypeChatId).
-		Body(larkim.NewCreateMessageReqBodyBuilder().MsgType("interactive").ReceiveId(chatID).Content(cardJSON).Build()).
+		Body(larkim.NewCreateMessageReqBodyBuilder().MsgType("text").ReceiveId(chatID).Content(content).Build()).
 		Build())
 	if err != nil {
-		return fmt.Errorf("发送飞书卡片失败: %w", err)
+		return fmt.Errorf("发送飞书文本失败: %w", err)
 	}
 	return nil
 }
 
-// Reply 回复卡片消息
+// Reply 回复消息（自动选择文本/卡片）
 func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channel.Message) error {
 	if f.client == nil {
 		return fmt.Errorf("飞书客户端未初始化")
@@ -448,12 +506,26 @@ func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channe
 	if messageID == "" {
 		return fmt.Errorf("消息 ID 为空")
 	}
-	cardJSON := buildCardContent(sanitizeMarkdown(msg.Content))
+	cleanContent := sanitizeMarkdown(msg.Content)
+
+	if shouldUseCard(cleanContent) {
+		cardJSON := buildCardContent(cleanContent)
+		_, err := f.client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
+			Body(larkim.NewReplyMessageReqBodyBuilder().MsgType("interactive").Content(cardJSON).Build()).
+			MessageId(messageID).Build())
+		if err != nil {
+			return fmt.Errorf("回复飞书卡片失败: %w", err)
+		}
+		return nil
+	}
+
+	// 文本模式
+	content := fmt.Sprintf(`{"text":%q}`, cleanContent)
 	_, err := f.client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
-		Body(larkim.NewReplyMessageReqBodyBuilder().MsgType("interactive").Content(cardJSON).Build()).
+		Body(larkim.NewReplyMessageReqBodyBuilder().MsgType("text").Content(content).Build()).
 		MessageId(messageID).Build())
 	if err != nil {
-		return fmt.Errorf("回复飞书卡片失败: %w", err)
+		return fmt.Errorf("回复飞书文本失败: %w", err)
 	}
 	return nil
 }

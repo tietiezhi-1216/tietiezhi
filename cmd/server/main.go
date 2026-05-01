@@ -59,7 +59,7 @@ func main() {
 
 	// 注册飞书渠道
 	if cfg.Channels.Feishu != nil && cfg.Channels.Feishu.Enabled {
-		feishuCh := feishu.New(cfg.Channels.Feishu.AppID, cfg.Channels.Feishu.AppSecret)
+		feishuCh := feishu.New(cfg.Channels.Feishu.AppID, cfg.Channels.Feishu.AppSecret, cfg.Channels.Feishu.BotOpenID)
 		feishu.SetAgentHandler(feishuCh, ag, cfg.Channels.Feishu.Streaming)
 		channelRegistry.Register(feishuCh)
 		mode := "非流式(Legacy)"
