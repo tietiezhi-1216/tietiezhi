@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/memory"
 	"tietiezhi/internal/session"
 )
 
@@ -25,31 +26,42 @@ type BaseAgent struct {
 	maxToolCalls int
 	loopDetector *LoopDetector
 	sessionMgr   *session.SessionManager
+	memoryMgr    *memory.MemoryManager
 }
 
 // NewBaseAgent 创建基础 Agent
-func NewBaseAgent(provider llm.Provider, systemPrompt string, maxToolCalls int, sessionMgr *session.SessionManager) *BaseAgent {
+func NewBaseAgent(provider llm.Provider, systemPrompt string, maxToolCalls int, sessionMgr *session.SessionManager, memoryMgr *memory.MemoryManager) *BaseAgent {
 	return &BaseAgent{
 		provider:     provider,
 		systemPrompt: systemPrompt,
 		maxToolCalls: maxToolCalls,
 		loopDetector: NewLoopDetector(maxToolCalls),
 		sessionMgr:   sessionMgr,
+		memoryMgr:    memoryMgr,
 	}
 }
 
 // Run 执行一次 Agent 对话
-func (a *BaseAgent) Run(ctx context.Context, sessionKey string, input *Message) (*Message, error) {
+// isGroup: 是否是群聊（影响是否注入 MEMORY.md）
+func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, input *Message) (*Message, error) {
 	history := a.sessionMgr.GetHistory(sessionKey)
 
 	// 构造消息列表
 	messages := make([]llm.ChatMessage, 0, len(history)+2)
 
-	// 系统提示词
-	if a.systemPrompt != "" {
+	// 系统提示词 = 基础 prompt + 记忆上下文
+	systemPrompt := a.systemPrompt
+	if a.memoryMgr != nil {
+		memoryContext := a.memoryMgr.BuildMemoryContext(isGroup)
+		if memoryContext != "" {
+			systemPrompt = systemPrompt + "\n\n" + memoryContext
+		}
+	}
+
+	if systemPrompt != "" {
 		messages = append(messages, llm.ChatMessage{
 			Role:    "system",
-			Content: a.systemPrompt,
+			Content: systemPrompt,
 		})
 	}
 
@@ -87,15 +99,25 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, input *Message) 
 }
 
 // RunStream 流式对话
-func (a *BaseAgent) RunStream(ctx context.Context, sessionKey string, input *Message) (<-chan llm.StreamChunk, error) {
+// isGroup: 是否是群聊（影响是否注入 MEMORY.md）
+func (a *BaseAgent) RunStream(ctx context.Context, sessionKey string, isGroup bool, input *Message) (<-chan llm.StreamChunk, error) {
 	history := a.sessionMgr.GetHistory(sessionKey)
 
 	messages := make([]llm.ChatMessage, 0, len(history)+2)
 
-	if a.systemPrompt != "" {
+	// 系统提示词 = 基础 prompt + 记忆上下文
+	systemPrompt := a.systemPrompt
+	if a.memoryMgr != nil {
+		memoryContext := a.memoryMgr.BuildMemoryContext(isGroup)
+		if memoryContext != "" {
+			systemPrompt = systemPrompt + "\n\n" + memoryContext
+		}
+	}
+
+	if systemPrompt != "" {
 		messages = append(messages, llm.ChatMessage{
 			Role:    "system",
-			Content: a.systemPrompt,
+			Content: systemPrompt,
 		})
 	}
 
@@ -130,6 +152,11 @@ func (a *BaseAgent) ClearHistory(sessionKey string) {
 // GetSessionMgr 获取会话管理器
 func (a *BaseAgent) GetSessionMgr() *session.SessionManager {
 	return a.sessionMgr
+}
+
+// GetMemoryMgr 获取记忆管理器
+func (a *BaseAgent) GetMemoryMgr() *memory.MemoryManager {
+	return a.memoryMgr
 }
 
 // truncate 截断字符串

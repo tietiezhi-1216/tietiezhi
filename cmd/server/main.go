@@ -14,6 +14,7 @@ import (
 	"tietiezhi/internal/channel/feishu"
 	"tietiezhi/internal/config"
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/memory"
 	"tietiezhi/internal/server"
 	"tietiezhi/internal/session"
 )
@@ -46,8 +47,12 @@ func main() {
 		cfg.Session.PersistPath,
 	)
 
+	// 初始化记忆管理器
+	memoryMgr := memory.NewMemoryManager(cfg.Memory.Path)
+	log.Printf("记忆系统已初始化: workspace=%s", memoryMgr.GetWorkspacePath())
+
 	// 初始化 Agent
-	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr)
+	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr, memoryMgr)
 
 	// 初始化渠道注册表
 	channelRegistry := channel.NewRegistry()

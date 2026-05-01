@@ -665,7 +665,7 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent, streaming bool) {
 
 			sessionKey := session.BuildSessionKey(msg.ChatType, msg.ChannelID, msg.UserID)
 
-			ch, err := ag.RunStream(ctx, sessionKey, &agent.Message{Role: "user", Content: msg.Content})
+			ch, err := ag.RunStream(ctx, sessionKey, msg.ChatType == "group", &agent.Message{Role: "user", Content: msg.Content})
 			if err != nil {
 				return err
 			}
@@ -745,7 +745,7 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent, streaming bool) {
 			log.Printf("[Legacy] 开始处理消息: sessionKey=%s, content=%s", sessionKey, msg.Content)
 
 			// 同步调用 LLM，等完整回复
-			reply, err := ag.Run(ctx, sessionKey, &agent.Message{Role: "user", Content: msg.Content})
+			reply, err := ag.Run(ctx, sessionKey, msg.ChatType == "group", &agent.Message{Role: "user", Content: msg.Content})
 			if err != nil {
 				log.Printf("[Legacy] LLM 调用失败: %v", err)
 				return &channel.Message{Content: "⚠️ 处理消息时发生错误，请稍后重试。"}, nil
