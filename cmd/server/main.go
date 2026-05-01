@@ -23,6 +23,7 @@ import (
 	"tietiezhi/internal/server"
 	"tietiezhi/internal/session"
 	"tietiezhi/internal/skill"
+	"tietiezhi/internal/subagent"
 )
 
 func main() {
@@ -73,7 +74,7 @@ func main() {
 		log.Printf("技能加载失败: %v", err)
 	}
 
-	// 初始化定时任务管理器（使用修复后的路径拼接）
+	// 初始化定时任务管理器
 	cronMgr := cron.NewCronManager(cfg.Scheduler.Path, cfg.Scheduler.ExecTimeout)
 	if cfg.Scheduler.Enabled {
 		log.Printf("定时任务管理器已创建: path=%s/jobs.json, timeout=%ds", cfg.Scheduler.Path, cfg.Scheduler.ExecTimeout)
@@ -84,6 +85,13 @@ func main() {
 	if cfg.Heartbeat.Enabled {
 		heartbeatMgr = heartbeat.NewHeartbeatManager(cfg.Heartbeat.Interval)
 		log.Printf("心跳管理器已创建: interval=%dmin", cfg.Heartbeat.Interval)
+	}
+
+	// 初始化子代理管理器
+	var subAgentMgr *subagent.SubAgentManager
+	if cfg.SubAgent.Enabled {
+		subAgentMgr = subagent.NewSubAgentManager(cfg.SubAgent.Path, cfg.SubAgent.Timeout)
+		log.Printf("子代理管理器已创建: path=%s, timeout=%ds", cfg.SubAgent.Path, cfg.SubAgent.Timeout)
 	}
 
 	// 初始化 Hook 管理器
@@ -142,14 +150,14 @@ func main() {
 			// 如果配置文件指定了 chatID，设置它
 			if cfg.Heartbeat.ChatID != "" {
 				heartbeatMgr.SetChatID(cfg.Heartbeat.ChatID)
+			}
+		}
 
 		// 设置子代理投递函数
 		if subAgentMgr != nil {
 			subAgentMgr.SetDeliveryFn(func(chatID, content string) error {
 				return feishuCh.Send(context.Background(), chatID, &channel.Message{Content: content})
 			})
-		}
-			}
 		}
 	}
 

@@ -21,6 +21,7 @@ type Config struct {
 	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
 	Log       LogConfig       `yaml:"log"`
 	Session   SessionConfig   `yaml:"session"`
+	SubAgent  SubAgentConfig  `yaml:"subagent"`
 	Hooks     HooksConfig     `yaml:"hooks"`
 }
 
@@ -41,7 +42,7 @@ type LLMConfig struct {
 // AgentConfig Agent 配置
 type AgentConfig struct {
 	MaxToolCalls  int    `yaml:"max_tool_calls"`
-	SystemPrompt string `yaml:"system_prompt"`
+	SystemPrompt  string `yaml:"system_prompt"`
 	LoopDetection bool   `yaml:"loop_detection"`
 }
 
@@ -97,6 +98,13 @@ type SessionConfig struct {
 	MaxHistoryTurns int    `yaml:"max_history_turns"`
 	PersistPath     string `yaml:"persist_path"`
 	AutoSaveSeconds int    `yaml:"auto_save_seconds"`
+}
+
+// SubAgentConfig 子代理配置
+type SubAgentConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Path     string `yaml:"path"`     // 存储路径，默认 ./data/subagents
+	Timeout  int    `yaml:"timeout"` // 默认超时，默认 300
 }
 
 // HooksConfig Hook 配置
@@ -166,6 +174,13 @@ func (c *Config) applyDefaults(configPath string) {
 	if c.Session.AutoSaveSeconds == 0 {
 		c.Session.AutoSaveSeconds = 60
 	}
+	// SubAgent 默认值
+	if c.SubAgent.Timeout == 0 {
+		c.SubAgent.Timeout = 300
+	}
+	if c.SubAgent.Path == "" {
+		c.SubAgent.Path = "./data/subagents"
+	}
 	// Hooks 默认值
 	if c.Hooks.Rules == nil {
 		c.Hooks.Rules = []hook.HookRule{}
@@ -176,6 +191,7 @@ func (c *Config) applyDefaults(configPath string) {
 	c.Skills.Path = resolvePath(c.Skills.Path, configPath)
 	c.Scheduler.Path = resolvePath(c.Scheduler.Path, configPath)
 	c.Session.PersistPath = resolvePath(c.Session.PersistPath, configPath)
+	c.SubAgent.Path = resolvePath(c.SubAgent.Path, configPath)
 }
 
 // resolvePath 解析相对路径为绝对路径
