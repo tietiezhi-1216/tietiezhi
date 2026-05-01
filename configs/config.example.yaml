@@ -45,3 +45,37 @@ scheduler:
 log:
   level: "info"                 # 日志级别：debug, info, warn, error
   format: "text"                # 日志格式：json, text
+
+# 会话配置
+session:
+  max_history_turns: 20         # 最大历史轮数
+  persist_path: "./data/sessions"  # 会话持久化目录
+  auto_save_seconds: 60         # 自动保存间隔
+
+# 定时任务配置（详细）
+scheduler:
+  enabled: false
+  path: "./data/cron"           # 任务存储路径
+  exec_timeout: 300             # 执行超时（秒）
+
+# 心跳配置
+heartbeat:
+  enabled: false
+  interval: 30                  # 检查间隔（分钟，最小5）
+  chat_id: ""                   # 投递目标飞书聊天ID（可选）
+
+# Hook 配置
+hooks:
+  enabled: false
+  rules: []
+  # - event: pre_tool_use       # 事件类型
+  #   matcher: "memory_*"       # 工具名匹配（可选，通配符）
+  #   type: command             # command / script
+  #   command: "python3 validate.py"
+  #   timeout: 5
+
+# 子代理配置
+subagent:
+  enabled: true
+  path: "./data/subagents"
+  timeout: 300                  # 默认超时（秒）
