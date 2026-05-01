@@ -23,15 +23,15 @@ import (
 
 // FeishuChannel 飞书渠道
 type FeishuChannel struct {
-	appID       string
-	appSecret   string
-	client      *lark.Client
-	handler     func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
-	streamHandler func(ctx context.Context, msg *channel.Message, sendFunc func(content string) error) error
-	mu          sync.Mutex
-	running     bool
-	processedMu sync.Mutex
-	processed   map[string]time.Time
+	appID        string
+	appSecret    string
+	client       *lark.Client
+	handler      func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
+	streamHandler func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error
+	mu           sync.Mutex
+	running      bool
+	processedMu  sync.Mutex
+	processed    map[string]time.Time
 }
 
 // New 创建飞书渠道
@@ -49,7 +49,7 @@ func (f *FeishuChannel) SetHandler(handler func(ctx context.Context, msg *channe
 }
 
 // SetStreamHandler 设置流式消息处理函数（流式模式）
-func (f *FeishuChannel) SetStreamHandler(handler func(ctx context.Context, msg *channel.Message, sendFunc func(content string) error) error) {
+func (f *FeishuChannel) SetStreamHandler(handler func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error) {
 	f.streamHandler = handler
 }
 
@@ -163,14 +163,29 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 		if f.streamHandler != nil {
 			// 流式模式：先发送初始卡片，然后逐步更新
 			var sentMessageID string
+			var replyMode bool
+			if messageID != "" {
+				replyMode = true
+			}
 
-			sendFunc := func(content string) error {
+			sendFunc := func(content string, isFinal bool) error {
+				// 清理 Markdown 格式
+				cleanContent := sanitizeMarkdown(content)
+
+				// 构建卡片内容
+				var cardJSON string
+				if isFinal {
+					// 最终内容使用 buildCardContent（含表格检测）
+					cardJSON = buildCardContent(cleanContent)
+				} else {
+					// 流式内容使用简单的 markdown 组件
+					cardJSON = buildStreamingCardContent(cleanContent, "streaming")
+				}
+
 				// 如果还没有发送消息，先发送
 				if sentMessageID == "" {
 					var err error
-					if messageID != "" {
-						// 回复模式
-						cardJSON := buildStreamingCardContent(content)
+					if replyMode {
 						resp, err := f.client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
 							Body(larkim.NewReplyMessageReqBodyBuilder().MsgType("interactive").Content(cardJSON).Build()).
 							MessageId(messageID).Build())
@@ -178,8 +193,6 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 							sentMessageID = *resp.Data.MessageId
 						}
 					} else {
-						// 发送模式
-						cardJSON := buildStreamingCardContent(content)
 						resp, err := f.client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
 							ReceiveIdType(larkim.ReceiveIdTypeChatId).
 							Body(larkim.NewCreateMessageReqBodyBuilder().MsgType("interactive").ReceiveId(chatID).Content(cardJSON).Build()).
@@ -191,11 +204,20 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 					return err
 				}
 
-				// 更新已发送的卡片
-				cardJSON := buildStreamingCardContent(content)
-				_, err := f.client.Im.Message.Patch(ctx, larkim.NewPatchMessageReqBuilder().
+				// 更新已发送的卡片（使用 UpdateMessage）
+				var updateContent string
+				if isFinal {
+					updateContent = buildCardContent(cleanContent)
+				} else {
+					updateContent = buildStreamingCardContent(cleanContent, "streaming")
+				}
+
+				_, err := f.client.Im.Message.Update(ctx, larkim.NewUpdateMessageReqBuilder().
 					MessageId(sentMessageID).
-					Body(larkim.NewPatchMessageReqBodyBuilder().Content(cardJSON).Build()).
+					Body(larkim.NewUpdateMessageReqBodyBuilder().
+						MsgType("interactive").
+						Content(updateContent).
+						Build()).
 					Build())
 				return err
 			}
@@ -203,6 +225,16 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 			err := f.streamHandler(ctx, input, sendFunc)
 			if err != nil {
 				log.Printf("处理飞书流式消息出错: %v", err)
+				// 发送错误提示卡片
+				if sentMessageID != "" {
+					f.client.Im.Message.Update(ctx, larkim.NewUpdateMessageReqBuilder().
+						MessageId(sentMessageID).
+						Body(larkim.NewUpdateMessageReqBodyBuilder().
+							MsgType("interactive").
+							Content(buildCardContent("⚠️ 处理消息时发生错误，请稍后重试。")).
+							Build()).
+						Build())
+				}
 				if chatType == "group" && messageID != "" {
 					f.removeReaction(ctx, messageID, "THINKING")
 				}
@@ -389,7 +421,7 @@ func (f *FeishuChannel) Send(ctx context.Context, chatID string, msg *channel.Me
 	if f.client == nil {
 		return fmt.Errorf("飞书客户端未初始化")
 	}
-	cardJSON := buildCardContent(msg.Content)
+	cardJSON := buildCardContent(sanitizeMarkdown(msg.Content))
 	_, err := f.client.Im.Message.Create(ctx, larkim.NewCreateMessageReqBuilder().
 		ReceiveIdType(larkim.ReceiveIdTypeChatId).
 		Body(larkim.NewCreateMessageReqBodyBuilder().MsgType("interactive").ReceiveId(chatID).Content(cardJSON).Build()).
@@ -408,7 +440,7 @@ func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channe
 	if messageID == "" {
 		return fmt.Errorf("消息 ID 为空")
 	}
-	cardJSON := buildCardContent(msg.Content)
+	cardJSON := buildCardContent(sanitizeMarkdown(msg.Content))
 	_, err := f.client.Im.Message.Reply(ctx, larkim.NewReplyMessageReqBuilder().
 		Body(larkim.NewReplyMessageReqBodyBuilder().MsgType("interactive").Content(cardJSON).Build()).
 		MessageId(messageID).Build())
@@ -416,6 +448,30 @@ func (f *FeishuChannel) Reply(ctx context.Context, messageID string, msg *channe
 		return fmt.Errorf("回复飞书卡片失败: %w", err)
 	}
 	return nil
+}
+
+// sanitizeMarkdown 清理 Markdown 格式，转换为飞书卡片兼容格式
+func sanitizeMarkdown(text string) string {
+	if text == "" {
+		return text
+	}
+
+	// 1. Checkbox 转换: - [ ] -> - ☐, - [x] 或 - [X] -> - ☑
+	text = regexp.MustCompile(`- \[ \]`).ReplaceAllString(text, "- ☐")
+	text = regexp.MustCompile(`- \[x\]`).ReplaceAllString(text, "- ☑")
+	text = regexp.MustCompile(`- \[X\]`).ReplaceAllString(text, "- ☑")
+
+	// 2. 图片语法转链接: ![alt](url) -> [alt](url)
+	text = regexp.MustCompile(`!\[([^\]]*)\]\(([^)]+)\)`).ReplaceAllString(text, "[$1]($2)")
+
+	// 3. 去除 HTML 标签
+	text = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(text, "")
+
+	// 4. 去除飞书不支持的语法
+	// 去除脚注语法 [^1]
+	text = regexp.MustCompile(`\[[\^]?\d+\]`).ReplaceAllString(text, "")
+
+	return text
 }
 
 // containsMarkdownTable 检测文本是否包含 Markdown 表格
@@ -431,7 +487,7 @@ func containsMarkdownTable(text string) bool {
 	return count >= 2
 }
 
-// buildCardContent 构建飞书卡片 JSON 2.0，自动拆分表格和非表格
+// buildCardContent 构建飞书卡片 JSON 2.0，自动拆分表格和非表格（无 header）
 func buildCardContent(markdownText string) string {
 	segments := splitByTables(markdownText)
 	var elements []map[string]any
@@ -449,19 +505,12 @@ func buildCardContent(markdownText string) string {
 		elements = append(elements, map[string]any{"tag": "markdown", "content": markdownText})
 	}
 
-	// 构建完整的卡片结构
+	// 构建完整的卡片结构（无 header）
 	card := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{
 			"wide_screen_mode": true,
 			"update_multi":     true,
-		},
-		"header": map[string]any{
-			"title": map[string]any{
-				"tag":     "plain_text",
-				"content": "AI 助手",
-			},
-			"template": "blue",
 		},
 		"body": map[string]any{
 			"elements": elements,
@@ -472,13 +521,13 @@ func buildCardContent(markdownText string) string {
 	return string(data)
 }
 
-// buildStreamingCardContent 构建流式卡片 JSON（用于打字机效果）
-func buildStreamingCardContent(content string) string {
+// buildStreamingCardContent 构建流式卡片 JSON（用于打字机效果，无 header）
+func buildStreamingCardContent(content string, streamingStatus string) string {
 	elements := []map[string]any{
 		{
 			"tag":        "markdown",
 			"content":    content,
-			"element_id": "markdown_content",
+			"element_id": "streaming_md",
 		},
 	}
 
@@ -487,14 +536,9 @@ func buildStreamingCardContent(content string) string {
 		"config": map[string]any{
 			"wide_screen_mode": true,
 			"update_multi":     true,
-			"streaming_mode":   true,
-		},
-		"header": map[string]any{
-			"title": map[string]any{
-				"tag":     "plain_text",
-				"content": "AI 助手",
+			"streaming": map[string]any{
+				"streaming_status": streamingStatus,
 			},
-			"template": "blue",
 		},
 		"body": map[string]any{
 			"elements": elements,
@@ -507,8 +551,8 @@ func buildStreamingCardContent(content string) string {
 
 // textSegment 文本片段
 type textSegment struct {
-	text     string
-	isTable  bool
+	text    string
+	isTable bool
 }
 
 // splitByTables 按表格分割文本
@@ -569,10 +613,10 @@ func markdownTableToCardTable(tableText string) map[string]any {
 	columns := make([]map[string]any, 0, len(headerCells))
 	for i, h := range headerCells {
 		columns = append(columns, map[string]any{
-			"name":        fmt.Sprintf("col_%d", i),
+			"name":         fmt.Sprintf("col_%d", i),
 			"display_name": h,
-			"data_type":   "text",
-			"width":       "auto",
+			"data_type":    "text",
+			"width":        "auto",
 		})
 	}
 	rows := make([]map[string]any, 0, len(dataRows))
@@ -588,18 +632,22 @@ func markdownTableToCardTable(tableText string) map[string]any {
 		rows = append(rows, row)
 	}
 	return map[string]any{
-		"tag":         "table",
-		"page_size":   10,
+		"tag":          "table",
+		"page_size":    10,
 		"header_style": map[string]any{"bold": true, "text_align": "left", "background_style": "blue", "text_color": "default"},
-		"columns":     columns,
-		"rows":        rows,
+		"columns":      columns,
+		"rows":         rows,
 	}
 }
 
 // SetAgentHandler 配置 Agent 处理函数（支持流式）
 func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent) {
 	// 使用流式处理实现打字机效果
-	f.SetStreamHandler(func(ctx context.Context, msg *channel.Message, sendFunc func(content string) error) error {
+	f.SetStreamHandler(func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error {
+		// 创建带超时的上下文（120秒整体超时）
+		ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+		defer cancel()
+
 		// 获取流式响应
 		ch, err := ag.RunStream(ctx, &agent.Message{Role: "user", Content: msg.Content})
 		if err != nil {
@@ -607,52 +655,70 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent) {
 		}
 
 		var fullContent strings.Builder
-		content := "正在思考中..."
-		if err := sendFunc(content); err != nil {
+		content := "🤔 思考中..."
+		if err := sendFunc(content, false); err != nil {
 			log.Printf("发送初始卡片失败: %v", err)
 		}
 
-		// 定时器：每 300ms 更新一次
-		ticker := time.NewTicker(300 * time.Millisecond)
-		defer ticker.Stop()
+		// 流式更新状态
+		var (
+			lastUpdateTime      = time.Now()
+			chunkCount          = 0
+			updateInterval      = 500 * time.Millisecond // 每 500ms 或每 5 个 chunk 更新一次
+			maxChunkBeforeUpdate = 5
+		)
 
 		for {
+			// 使用 select 读取 channel，支持超时
+			var chunk llm.StreamChunk
+			readCtx, readCancel := context.WithTimeout(ctx, 30*time.Second)
+
 			select {
-			case chunk, ok := <-ch:
-				if !ok {
-					// 流结束，发送最终内容
-					if fullContent.Len() > 0 {
-						sendFunc(fullContent.String())
-					}
-					return nil
-				}
-
-				// 解析 delta
-				for _, choice := range chunk.Choices {
-					delta := llm.StreamDelta{}
-					if err := json.Unmarshal(choice.Delta, &delta); err != nil {
-						continue
-					}
-					if delta.Content != "" {
-						fullContent.WriteString(delta.Content)
-						content = fullContent.String()
-					}
-				}
-
-			case <-ticker.C:
-				// 定时更新
+			case <-readCtx.Done():
+				readCancel()
+				// 读取超时或上下文取消，认为流结束
 				if fullContent.Len() > 0 {
-					if err := sendFunc(content); err != nil {
-						log.Printf("更新卡片失败: %v", err)
-					}
+					sendFunc(fullContent.String(), true)
 				}
-
+				return nil
+			case chunk = <-ch:
+				readCancel()
+				// channel 关闭时会触发 ctx.Done()
 			case <-ctx.Done():
-				// 上下文取消
+				readCancel()
 				if fullContent.Len() > 0 {
-					sendFunc(fullContent.String())
+					sendFunc(fullContent.String(), true)
 				}
 				return ctx.Err()
+			}
+
+			// 解析 delta
+			for _, choice := range chunk.Choices {
+				delta := llm.StreamDelta{}
+				if err := json.Unmarshal(choice.Delta, &delta); err != nil {
+					continue
+				}
+				if delta.Content != "" {
+					fullContent.WriteString(delta.Content)
+					content = fullContent.String()
+					chunkCount++
+				}
+			}
+
+			// 检查是否需要更新（每 500ms 或每 5 个 chunk）
+			shouldUpdate := false
+			if time.Since(lastUpdateTime) >= updateInterval {
+				shouldUpdate = true
+			} else if chunkCount >= maxChunkBeforeUpdate {
+				shouldUpdate = true
+			}
+
+			if shouldUpdate && fullContent.Len() > 0 {
+				if err := sendFunc(content, false); err != nil {
+					log.Printf("更新卡片失败: %v", err)
+				}
+				lastUpdateTime = time.Now()
+				chunkCount = 0
 			}
 		}
 	})
