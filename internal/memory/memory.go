@@ -167,6 +167,65 @@ func (mm *MemoryManager) appendToDailyNote(content string) error {
 	return err
 }
 
+// SearchMemory 搜索记忆（简单关键词匹配）
+func (mm *MemoryManager) SearchMemory(query string) []map[string]string {
+	var results []map[string]string
+	query = strings.ToLower(query)
+
+	// 搜索 MEMORY.md
+	if content := mm.readFile("MEMORY.md"); content != "" {
+		if strings.Contains(strings.ToLower(content), query) {
+			results = append(results, map[string]string{
+				"file":    "MEMORY.md",
+				"content": mm.truncateSearchResult(content, query),
+			})
+		}
+	}
+
+	// 搜索每日笔记（最近7天）
+	for i := 0; i < 7; i++ {
+		date := time.Now().AddDate(0, 0, -i).Format("2006-01-02")
+		if content := mm.readFile(filepath.Join("memory", date+".md")); content != "" {
+			if strings.Contains(strings.ToLower(content), query) {
+				results = append(results, map[string]string{
+					"file":    "memory/" + date + ".md",
+					"content": mm.truncateSearchResult(content, query),
+				})
+			}
+		}
+	}
+
+	return results
+}
+
+// truncateSearchResult 截取搜索结果上下文
+func (mm *MemoryManager) truncateSearchResult(content, query string) string {
+	lowerContent := strings.ToLower(content)
+	idx := strings.Index(lowerContent, strings.ToLower(query))
+	if idx == -1 {
+		if len(content) > 500 {
+			return content[:500] + "..."
+		}
+		return content
+	}
+	start := idx - 100
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(query) + 200
+	if end > len(content) {
+		end = len(content)
+	}
+	result := content[start:end]
+	if start > 0 {
+		result = "..." + result
+	}
+	if end < len(content) {
+		result = result + "..."
+	}
+	return result
+}
+
 // GetWorkspacePath 获取工作区路径
 func (mm *MemoryManager) GetWorkspacePath() string {
 	return mm.workspacePath

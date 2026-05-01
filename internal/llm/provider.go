@@ -7,8 +7,24 @@ import (
 
 // ChatMessage 聊天消息
 type ChatMessage struct {
-	Role    string `json:"role"`    // system, user, assistant, tool
-	Content string `json:"content"`
+	Role       string      `json:"role"`                        // system, user, assistant, tool
+	Content    string      `json:"content,omitempty"`          // 文本内容
+	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`       // assistant 发起的工具调用
+	ToolCallID string      `json:"tool_call_id,omitempty"`     // tool 角色对应的 tool_call ID
+	Name       string      `json:"name,omitempty"`              // tool 角色对应的函数名
+}
+
+// ToolCall 工具调用
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`     // "function"
+	Function FunctionCall `json:"function"`
+}
+
+// FunctionCall 函数调用
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"` // JSON 字符串
 }
 
 // ChatRequest 聊天请求
