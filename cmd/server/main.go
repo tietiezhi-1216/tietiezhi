@@ -183,6 +183,11 @@ func main() {
 	ag.SetMCPManager(mcpManager)
 	ag.SetCronManager(cronMgr)
 	ag.SetSubAgentManager(subAgentMgr)
+
+	// 设置 Agent 到子代理管理器（双向引用）
+	if subAgentMgr != nil {
+		subAgentMgr.SetAgent(ag)
+	}
 	ag.SetHookManager(hookManager)
 
 	// 初始化并设置文件分析工具
