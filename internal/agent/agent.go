@@ -186,7 +186,7 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, ch
 		a.hookManager.Fire(ctx, event)
 	}
 
-	result, err := a.runWithTools(ctx, sessionKey, isGroup, chatID, input, true, nil)
+	result, err := a.runWithTools(ctx, sessionKey, isGroup, chatID, input, true, nil, nil)
 
 	// 触发 message_out hook
 	if a.hookManager != nil && result != nil {
@@ -209,18 +209,15 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, ch
 func (a *BaseAgent) RunSubAgent(ctx context.Context, sessionKey string, isGroup bool, role, content string, opts *subagent.RunOptions) (string, error) {
 	msg := &Message{Role: role, Content: content}
 
-	// 为子代理/cron 任务创建独立的循环检测器，避免多个子代理共享计数导致误熔断
-	savedDetector := a.loopDetector
+	// 为子代理创建独立的循环检测器，避免多个子代理共享计数导致误熔断
+	var independentDetector *LoopDetector
 	if a.cfg != nil && a.cfg.LoopDetection {
-		a.loopDetector = NewLoopDetector(0, &a.cfg.LoopDetector)
+		independentDetector = NewLoopDetector(0, a.cfg.LoopDetector.SafeCopy())
 	}
-	defer func() {
-		a.loopDetector = savedDetector
-	}()
 
 	// 使用 runWithTools，但注入 cron 工具
 	// 注意：cron session 会话 key 以 "cron:" 开头，所以 buildToolsList 会跳过 cron 工具
-	result, err := a.runWithTools(ctx, sessionKey, isGroup, "", msg, false, opts)
+	result, err := a.runWithTools(ctx, sessionKey, isGroup, "", msg, false, opts, independentDetector)
 	if err != nil {
 		return "", err
 	}
@@ -231,7 +228,13 @@ func (a *BaseAgent) RunSubAgent(ctx context.Context, sessionKey string, isGroup 
 }
 
 // runWithTools 通用运行方法
-func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup bool, chatID string, input *Message, injectCronTools bool, opts *subagent.RunOptions) (*Message, error) {
+func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup bool, chatID string, input *Message, injectCronTools bool, opts *subagent.RunOptions, overrideDetector *LoopDetector) (*Message, error) {
+	// 确定使用哪个循环检测器：overrideDetector 优先（子代理用独立检测器），否则用 a.loopDetector
+	activeDetector := a.loopDetector
+	if overrideDetector != nil {
+		activeDetector = overrideDetector
+	}
+
 	history := a.sessionMgr.GetHistory(sessionKey)
 
 	messages := make([]llm.ChatMessage, 0, len(history)+2)
@@ -386,9 +389,11 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 			log.Printf("工具结果 [%s]: %s", sessionKey, truncate(result, 200))
 
 			// ========== 循环检测（基于结果） ==========
-			if a.loopDetector != nil && a.cfg != nil && a.cfg.LoopDetection {
-				if a.loopDetector.Check(toolCall.Function.Name, result, toolArgs) {
+			if activeDetector != nil && a.cfg != nil && a.cfg.LoopDetection {
+				if activeDetector.Check(toolCall.Function.Name, result, toolArgs) {
 					log.Printf("[循环检测] 检测到循环，已熔断")
+					// 补全尚未执行的 tool_calls 的 tool result，避免 API 报错
+					a.backfillToolResults(assistantMsg, toolCall.ID, sessionKey)
 					loopMsg := llm.ChatMessage{
 						Role:    "system",
 						Content: "⚠️ 检测到工具调用循环，已自动终止。请简化你的请求或改变策略。",
@@ -425,6 +430,29 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 	}
 
 	return nil, fmt.Errorf("工具调用轮数超限（%d次）", maxToolRounds)
+}
+
+// backfillToolResults 补全尚未执行的 tool_calls 的 tool result
+// 当循环检测熔断或出错时，assistant 消息可能包含多个 tool_calls，
+// 但只有部分被执行。未补全的 tool result 会导致下次 LLM API 调用失败。
+// currentToolCallID 是当前正在处理的 tool_call ID（已执行，不需要补全）
+func (a *BaseAgent) backfillToolResults(assistantMsg llm.ChatMessage, currentToolCallID, sessionKey string) {
+	// 收集已执行的和需要补全的 tool_call_id
+	for _, tc := range assistantMsg.ToolCalls {
+		if tc.ID == currentToolCallID {
+			continue // 当前这个已经执行了
+		}
+		// 检查是否已经有 tool result（通过 session 历史中查找）
+		// 简单做法：直接补一个"被中断"的 tool result
+		toolMsg := llm.ChatMessage{
+			Role:       "tool",
+			Content:    "工具调用被循环检测中断，未执行。",
+			ToolCallID: tc.ID,
+			Name:       tc.Function.Name,
+		}
+		a.sessionMgr.AppendMessage(sessionKey, toolMsg)
+		log.Printf("[循环检测] 补全 tool result: tool_call_id=%s, tool=%s", tc.ID, tc.Function.Name)
+	}
 }
 
 // buildToolsList 构建工具列表

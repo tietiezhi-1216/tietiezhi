@@ -32,9 +32,9 @@ func (s *Session) AppendMessage(msg llm.ChatMessage) {
 func (s *Session) GetHistory() []llm.ChatMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
-	// 过滤掉可能导致 API 调用失败的不合法消息
-	var result []llm.ChatMessage
+
+	// 第一遍：基本过滤
+	var filtered []llm.ChatMessage
 	for _, msg := range s.History {
 		// 跳过 system 角色（OpenAI API 不允许中间插入 system）
 		if msg.Role == "system" {
@@ -47,6 +47,52 @@ func (s *Session) GetHistory() []llm.ChatMessage {
 		// 跳过没有 tool_call_id 的 tool 消息
 		if msg.Role == "tool" && msg.ToolCallID == "" {
 			continue
+		}
+		filtered = append(filtered, msg)
+	}
+
+	// 第二遍：检查 assistant 消息的 tool_calls 是否有完整的 tool result
+	// 如果缺少 tool result，该 assistant 消息会导致 API 报错
+	var result []llm.ChatMessage
+	for i := 0; i < len(filtered); i++ {
+		msg := filtered[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			// 收集这个 assistant 消息后面紧跟的所有 tool result 的 tool_call_id
+			expectedIDs := make(map[string]bool)
+			for _, tc := range msg.ToolCalls {
+				expectedIDs[tc.ID] = true
+			}
+			// 向后查找 tool result
+			receivedIDs := make(map[string]bool)
+			for j := i + 1; j < len(filtered) && len(receivedIDs) < len(expectedIDs); j++ {
+				if filtered[j].Role == "tool" {
+					receivedIDs[filtered[j].ToolCallID] = true
+				} else if filtered[j].Role != "tool" {
+					break // tool result 必须紧跟 assistant
+				}
+			}
+			// 检查是否所有 tool_calls 都有对应的 tool result
+			allPresent := true
+			for id := range expectedIDs {
+				if !receivedIDs[id] {
+					allPresent = false
+					break
+				}
+			}
+			if !allPresent {
+				// 缺少 tool result，跳过这个 assistant 消息和后面不完整的 tool result
+				// 也跳过紧跟的 tool result（它们没有对应的 assistant 上下文）
+				skippedTools := 0
+				for j := i + 1; j < len(filtered); j++ {
+					if filtered[j].Role == "tool" && expectedIDs[filtered[j].ToolCallID] {
+						skippedTools++
+					} else {
+						break
+					}
+				}
+				i += skippedTools // 跳过不完整的 tool result
+				continue
+			}
 		}
 		result = append(result, msg)
 	}
