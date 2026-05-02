@@ -28,12 +28,28 @@ func (s *Session) AppendMessage(msg llm.ChatMessage) {
 	s.History = append(s.History, msg)
 }
 
-// GetHistory 获取历史（只读拷贝）
+// GetHistory 获取历史（只读拷贝，自动过滤不合法消息）
 func (s *Session) GetHistory() []llm.ChatMessage {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make([]llm.ChatMessage, len(s.History))
-	copy(result, s.History)
+	
+	// 过滤掉可能导致 API 调用失败的不合法消息
+	var result []llm.ChatMessage
+	for _, msg := range s.History {
+		// 跳过 system 角色（OpenAI API 不允许中间插入 system）
+		if msg.Role == "system" {
+			continue
+		}
+		// 跳过空的 assistant 消息（无 content 也无 tool_calls）
+		if msg.Role == "assistant" && msg.GetContentAsText() == "" && len(msg.ToolCalls) == 0 {
+			continue
+		}
+		// 跳过没有 tool_call_id 的 tool 消息
+		if msg.Role == "tool" && msg.ToolCallID == "" {
+			continue
+		}
+		result = append(result, msg)
+	}
 	return result
 }
 

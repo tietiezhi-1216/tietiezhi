@@ -366,7 +366,8 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 						Content: "⚠️ 检测到工具调用循环（重复调用相同工具或来回弹跳），已自动终止。请简化你的请求或改变策略。",
 					}
 					messages = append(messages, loopMsg)
-					a.sessionMgr.AppendMessage(sessionKey, loopMsg)
+					// 不持久化 system 消息到 session，避免破坏对话格式
+					a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求或改变策略。"})
 					return &Message{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求或改变策略。"}, nil
 				}
 			}
@@ -383,7 +384,8 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 						Content: "⚠️ 检测到工具调用循环（无新进展或结果重复），已自动终止。请简化你的请求。",
 					}
 					messages = append(messages, loopMsg)
-					a.sessionMgr.AppendMessage(sessionKey, loopMsg)
+					// 不持久化 system 消息到 session，避免破坏对话格式
+					a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求。"})
 					return &Message{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求。"}, nil
 				}
 			}
@@ -408,6 +410,7 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 				Name:       toolCall.Function.Name,
 			}
 			messages = append(messages, toolMsg)
+			a.sessionMgr.AppendMessage(sessionKey, toolMsg)
 		}
 	}
 
