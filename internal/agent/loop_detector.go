@@ -70,7 +70,7 @@ func NewLoopDetector(maxCalls int, cfg *config.LoopDetectorConfig) *LoopDetector
 
 	// 设置每个工具的调用上限（0=无限制，走全局熔断）
 	toolLimits := map[string]int{
-		"agent_spawn": 6,     // 最多同时生成6个子代理
+		// 暂无工具设置调用上限，全部走全局熔断
 	}
 
 	return &LoopDetector{
