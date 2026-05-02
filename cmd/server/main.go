@@ -13,6 +13,8 @@ import (
 	"tietiezhi/internal/agent"
 	"tietiezhi/internal/channel"
 	"tietiezhi/internal/channel/feishu"
+	"tietiezhi/internal/channel/telegram"
+	"tietiezhi/internal/command"
 	"tietiezhi/internal/config"
 	"tietiezhi/internal/cron"
 	"tietiezhi/internal/heartbeat"
@@ -20,6 +22,7 @@ import (
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
+	"tietiezhi/internal/observability"
 	"tietiezhi/internal/server"
 	"tietiezhi/internal/session"
 	"tietiezhi/internal/skill"
@@ -103,13 +106,38 @@ func main() {
 		log.Println("Hook 系统已禁用")
 	}
 
+	// 初始化命令管理器
+	commandRegistry := command.NewRegistry()
+	log.Printf("命令系统已初始化: %d 个默认命令", len(commandRegistry.ListCommands()))
+
 	// 初始化 Agent
 	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr, memoryMgr)
+	ag.SetModelName(cfg.LLM.Model) // 设置模型名称用于 Token 追踪
+
 	ag.SetSkillLoader(skillLoader)
 	ag.SetMCPManager(mcpManager)
 	ag.SetCronManager(cronMgr)
 	ag.SetSubAgentManager(subAgentMgr)
 	ag.SetHookManager(hookManager)
+
+	// 初始化可观测性系统
+	if cfg.Observability.Enabled {
+		// 初始化审计日志
+		if cfg.Observability.AuditLog.Enabled {
+			auditLogger, err := observability.NewAuditLogger(cfg.Observability.AuditLog.Path)
+			if err != nil {
+				log.Printf("审计日志初始化失败: %v", err)
+			} else {
+				ag.SetAuditLogger(auditLogger)
+				log.Printf("审计日志已启用: %s", cfg.Observability.AuditLog.Path)
+			}
+		}
+
+		// Token 追踪默认开启
+		if cfg.Observability.TokenTrack {
+			log.Printf("Token 追踪已启用")
+		}
+	}
 
 	// 初始化渠道注册表
 	channelRegistry := channel.NewRegistry()
@@ -161,8 +189,30 @@ func main() {
 		}
 	}
 
-	// 设置 Agent 的 CronManager
-	_ = cronMgr
+	// 注册 Telegram 渠道
+	if cfg.Channels.Telegram != nil && cfg.Channels.Telegram.Enabled {
+		if cfg.Channels.Telegram.BotToken == "" {
+			log.Println("Telegram 渠道已启用但未配置 BotToken，跳过注册")
+		} else {
+			telegramCh := telegram.New(cfg.Channels.Telegram.BotToken)
+
+			// 设置命令管理器
+			telegramCh.SetCommandManager(commandRegistry)
+
+			// 设置消息处理函数
+			telegramCh.SetHandler(func(ctx context.Context, msg *channel.Message) (*channel.Message, error) {
+				sessionKey := session.BuildSessionKey(msg.ChatType, msg.ChannelID, msg.UserID)
+				reply, err := ag.Run(ctx, sessionKey, msg.ChatType == "group", msg.ChannelID, &agent.Message{Role: "user", Content: msg.Content})
+				if err != nil {
+					return nil, err
+				}
+				return &channel.Message{Content: reply.Content}, nil
+			})
+
+			channelRegistry.Register(telegramCh)
+			log.Printf("Telegram 渠道已注册（Long Polling 模式）")
+		}
+	}
 
 	// 启动定时任务调度器
 	if cfg.Scheduler.Enabled {

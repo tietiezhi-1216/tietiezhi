@@ -23,6 +23,8 @@ type Config struct {
 	Session   SessionConfig   `yaml:"session"`
 	SubAgent  SubAgentConfig  `yaml:"subagent"`
 	Hooks     HooksConfig     `yaml:"hooks"`
+	Tools     ToolsConfig     `yaml:"tools"`
+	Approval  ApprovalConfig  `yaml:"approval"`
 }
 
 // ServerConfig 服务器配置
@@ -33,22 +35,52 @@ type ServerConfig struct {
 
 // LLMConfig 大模型配置
 type LLMConfig struct {
-	Provider string `yaml:"provider"`
-	BaseURL  string `yaml:"base_url"`
-	APIKey   string `yaml:"api_key"`
-	Model    string `yaml:"model"`
+	Provider     string `yaml:"provider"`
+	BaseURL      string `yaml:"base_url"`
+	APIKey       string `yaml:"api_key"`
+	Model        string `yaml:"model"`
+	CheapModel   string `yaml:"cheap_model"`    // 轻量级模型，用于压缩等简单任务
+	CheapBaseURL string `yaml:"cheap_base_url"` // 轻量级模型的 API 地址
+	CheapAPIKey  string `yaml:"cheap_api_key"`  // 轻量级模型的 API Key
 }
 
 // AgentConfig Agent 配置
 type AgentConfig struct {
-	MaxToolCalls  int    `yaml:"max_tool_calls"`
-	SystemPrompt  string `yaml:"system_prompt"`
-	LoopDetection bool   `yaml:"loop_detection"`
+	MaxToolCalls  int                   `yaml:"max_tool_calls"`
+	SystemPrompt  string                `yaml:"system_prompt"`
+	LoopDetection bool                  `yaml:"loop_detection"`
+	Compression   CompressionConfig     `yaml:"compression"`
+	LoopDetector  LoopDetectorConfig    `yaml:"loop_detector"`
+}
+
+// CompressionConfig 上下文压缩配置
+type CompressionConfig struct {
+	Enabled       bool   `yaml:"enabled"`        // 是否启用压缩
+	MaxChars      int    `yaml:"max_chars"`      // 触发压缩的字符阈值（默认 80000）
+	KeepRecent    int    `yaml:"keep_recent"`    // 保留最近 N 条消息（默认 10）
+	SummaryPrompt string `yaml:"summary_prompt"` // 总结提示词
+}
+
+// LoopDetectorConfig 循环检测器配置
+type LoopDetectorConfig struct {
+	GenericRepeatThreshold    int     `yaml:"generic_repeat_threshold"`     // 重复调用检测阈值（默认3次）
+	GenericRepeatSimilarity   float64 `yaml:"generic_repeat_similarity"`    // 参数相似度阈值（默认0.8）
+	NoProgressThreshold       int     `yaml:"no_progress_threshold"`         // 无进展检测阈值（默认5次）
+	PingPongWindow            int     `yaml:"ping_pong_window"`             // 来回弹跳检测窗口（默认8）
+	GlobalCircuitBreakerLimit int     `yaml:"global_circuit_breaker_limit"`  // 全局熔断上限（默认20）
+}
+
+// ApprovalConfig 审批流配置
+type ApprovalConfig struct {
+	Enabled         bool     `yaml:"enabled"`          // 是否启用审批
+	RequireApproval []string `yaml:"require_approval"`  // 需要审批的工具名列表
+	AutoApprove     []string `yaml:"auto_approve"`     // 自动放行的工具名列表
 }
 
 // ChannelsConfig 渠道配置
 type ChannelsConfig struct {
-	Feishu *FeishuConfig `yaml:"feishu"`
+	Feishu    *FeishuConfig    `yaml:"feishu"`
+	Telegram  *TelegramConfig  `yaml:"telegram"`
 }
 
 // FeishuConfig 飞书渠道配置
@@ -60,6 +92,13 @@ type FeishuConfig struct {
 	EncryptKey        string `yaml:"encrypt_key"`
 	Streaming         bool   `yaml:"streaming"`
 	BotOpenID         string `yaml:"bot_open_id"`
+}
+
+// TelegramConfig Telegram 渠道配置
+type TelegramConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	BotToken  string `yaml:"bot_token"`
+	AdminIDs  []int64 `yaml:"admin_ids"`
 }
 
 // MemoryConfig 记忆配置
@@ -111,6 +150,31 @@ type SubAgentConfig struct {
 type HooksConfig struct {
 	Enabled bool            `yaml:"enabled"`
 	Rules   []hook.HookRule `yaml:"rules"`
+}
+
+// ToolsConfig 内置工具配置
+type ToolsConfig struct {
+	Terminal  TerminalConfig  `yaml:"terminal"`
+	FileIO    FileIOConfig   `yaml:"file_io"`
+	WebSearch WebSearchConfig `yaml:"web_search"`
+	AllowedDirs []string      `yaml:"allowed_dirs"` // 允许文件操作的目录列表
+}
+
+// TerminalConfig 终端工具配置
+type TerminalConfig struct {
+	BlockedCmds []string `yaml:"blocked_cmds"` // 被阻止的命令
+}
+
+// FileIOConfig 文件 IO 配置
+type FileIOConfig struct {
+	AllowedDirs []string `yaml:"allowed_dirs"` // 允许文件操作的目录
+}
+
+// WebSearchConfig 网页搜索配置
+type WebSearchConfig struct {
+	Provider string `yaml:"provider"` // 搜索服务提供商
+	APIKey    string `yaml:"api_key"`  // API Key
+	BaseURL   string `yaml:"base_url"` // API 地址
 }
 
 // Load 从 YAML 文件加载配置
@@ -184,6 +248,61 @@ func (c *Config) applyDefaults(configPath string) {
 	// Hooks 默认值
 	if c.Hooks.Rules == nil {
 		c.Hooks.Rules = []hook.HookRule{}
+	}
+	// Tools 默认值
+	if c.Tools.Terminal.BlockedCmds == nil {
+		c.Tools.Terminal.BlockedCmds = []string{}
+	}
+	if c.Tools.FileIO.AllowedDirs == nil {
+		c.Tools.FileIO.AllowedDirs = []string{}
+	}
+
+	// 解析 AllowedDirs 为绝对路径
+	var resolvedDirs []string
+	for _, dir := range c.Tools.FileIO.AllowedDirs {
+		resolvedDirs = append(resolvedDirs, resolvePath(dir, configPath))
+	}
+	c.Tools.FileIO.AllowedDirs = resolvedDirs
+
+	// 兼容旧版本的 AllowedDirs
+	if len(c.Tools.AllowedDirs) == 0 && c.Memory.Path != "" {
+		c.Tools.AllowedDirs = []string{resolvePath(c.Memory.Path, configPath)}
+	}
+
+	// 压缩配置默认值
+	if c.Agent.Compression.MaxChars == 0 {
+		c.Agent.Compression.MaxChars = 80000 // 约 20K token
+	}
+	if c.Agent.Compression.KeepRecent == 0 {
+		c.Agent.Compression.KeepRecent = 10
+	}
+	if c.Agent.Compression.SummaryPrompt == "" {
+		c.Agent.Compression.SummaryPrompt = "请总结以下对话的核心内容，保留关键信息、决策和重要细节，用简洁的中文概括："
+	}
+
+	// 循环检测器默认值
+	if c.Agent.LoopDetector.GenericRepeatThreshold == 0 {
+		c.Agent.LoopDetector.GenericRepeatThreshold = 3
+	}
+	if c.Agent.LoopDetector.GenericRepeatSimilarity == 0 {
+		c.Agent.LoopDetector.GenericRepeatSimilarity = 0.8
+	}
+	if c.Agent.LoopDetector.NoProgressThreshold == 0 {
+		c.Agent.LoopDetector.NoProgressThreshold = 5
+	}
+	if c.Agent.LoopDetector.PingPongWindow == 0 {
+		c.Agent.LoopDetector.PingPongWindow = 8
+	}
+	if c.Agent.LoopDetector.GlobalCircuitBreakerLimit == 0 {
+		c.Agent.LoopDetector.GlobalCircuitBreakerLimit = 20
+	}
+
+	// 审批配置默认值
+	if c.Approval.RequireApproval == nil {
+		c.Approval.RequireApproval = []string{}
+	}
+	if c.Approval.AutoApprove == nil {
+		c.Approval.AutoApprove = []string{}
 	}
 
 	// 解析相对路径为绝对路径

@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 
+	"tietiezhi/internal/config"
 	"tietiezhi/internal/hook"
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
@@ -27,31 +28,84 @@ type Handler func(ctx context.Context, input *Message) (*Message, error)
 
 // BaseAgent 基础 Agent 实现
 type BaseAgent struct {
-	provider     llm.Provider
-	systemPrompt string
-	maxToolCalls int
-	loopDetector *LoopDetector
-	sessionMgr   *session.SessionManager
-	memoryMgr    *memory.MemoryManager
-	skillLoader  *skill.Loader
-	mcpManager   *mcp.MCPManager
-	hookManager  *hook.HookManager
-	subAgentMgr  *subagent.SubAgentManager
-	cronMgr      interface {
+	provider      llm.Provider
+	cheapProvider llm.Provider   // 轻量级模型（用于压缩等简单任务）
+	systemPrompt  string
+	maxToolCalls  int
+	loopDetector  *LoopDetector
+	compressor    *ContextCompressor
+	approvalMgr   *ApprovalManager
+	sessionMgr    *session.SessionManager
+	memoryMgr     *memory.MemoryManager
+	skillLoader   *skill.Loader
+	mcpManager    *mcp.MCPManager
+	hookManager   *hook.HookManager
+	subAgentMgr   *subagent.SubAgentManager
+	cronMgr       interface {
 		GetCronTools() []llm.ToolDef
 		ExecuteCronTool(action string, args map[string]interface{}, sessionKey string, isGroup bool, chatID string) string
 	}
+	cfg *config.AgentConfig
 }
 
 // NewBaseAgent 创建基础 Agent
 func NewBaseAgent(provider llm.Provider, systemPrompt string, maxToolCalls int, sessionMgr *session.SessionManager, memoryMgr *memory.MemoryManager) *BaseAgent {
-	return &BaseAgent{
+	agent := &BaseAgent{
 		provider:     provider,
 		systemPrompt: systemPrompt,
 		maxToolCalls: maxToolCalls,
-		loopDetector: NewLoopDetector(maxToolCalls),
 		sessionMgr:   sessionMgr,
 		memoryMgr:    memoryMgr,
+		cfg:          &config.AgentConfig{},
+	}
+
+	// 初始化循环检测器（使用默认值）
+	agent.loopDetector = NewLoopDetector(maxToolCalls, nil)
+
+	return agent
+}
+
+// NewBaseAgentWithConfig 创建基础 Agent（带配置）
+func NewBaseAgentWithConfig(provider llm.Provider, systemPrompt string, maxToolCalls int, sessionMgr *session.SessionManager, memoryMgr *memory.MemoryManager, cfg *config.AgentConfig) *BaseAgent {
+	if cfg == nil {
+		return NewBaseAgent(provider, systemPrompt, maxToolCalls, sessionMgr, memoryMgr)
+	}
+
+	agent := &BaseAgent{
+		provider:     provider,
+		systemPrompt: systemPrompt,
+		maxToolCalls: maxToolCalls,
+		sessionMgr:   sessionMgr,
+		memoryMgr:    memoryMgr,
+		cfg:          cfg,
+	}
+
+	// 初始化循环检测器
+	agent.loopDetector = NewLoopDetector(maxToolCalls, &cfg.LoopDetector)
+
+	// 初始化压缩器
+	if cfg.Compression.Enabled {
+		agent.compressor = NewContextCompressor(provider, &cfg.Compression)
+	}
+
+	// 初始化审批管理器
+	agent.approvalMgr = NewApprovalManager(nil)
+
+	return agent
+}
+
+// SetCheapProvider 设置轻量级模型
+func (a *BaseAgent) SetCheapProvider(provider llm.Provider) {
+	a.cheapProvider = provider
+	if a.compressor != nil {
+		a.compressor.SetCheapProvider(provider)
+	}
+}
+
+// SetApprovalConfig 设置审批配置
+func (a *BaseAgent) SetApprovalConfig(cfg *config.ApprovalConfig) {
+	if cfg != nil {
+		a.approvalMgr = NewApprovalManager(cfg)
 	}
 }
 
@@ -91,6 +145,16 @@ func (a *BaseAgent) GetSkillLoader() *skill.Loader {
 // GetMCPManager 获取 MCP 管理器
 func (a *BaseAgent) GetMCPManager() *mcp.MCPManager {
 	return a.mcpManager
+}
+
+// GetLoopDetector 获取循环检测器
+func (a *BaseAgent) GetLoopDetector() *LoopDetector {
+	return a.loopDetector
+}
+
+// GetApprovalManager 获取审批管理器
+func (a *BaseAgent) GetApprovalManager() *ApprovalManager {
+	return a.approvalMgr
 }
 
 // Run 执行 Agent 对话（含工具调用循环）
@@ -182,7 +246,17 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 
 ## 技能系统
 
-你可以使用 skill_load 工具加载技能来增强你的能力。加载技能后会注入相关知识到当前对话，部分技能还会提供额外的工具。`
+你可以使用 skill_load 工具加载技能来增强我的能力。加载技能后会注入相关知识到当前对话，部分技能还会提供额外的工具。`
+	}
+
+	// 追加审批系统指引
+	if a.approvalMgr != nil && a.approvalMgr.IsEnabled() {
+		systemPrompt += `
+
+## 审批确认系统
+
+某些操作需要用户确认后才能执行。如果工具返回 needs_approval=true，请告知用户需要确认并等待用户回复。
+当用户确认后，再次调用该工具即可执行。`
 	}
 
 	if systemPrompt != "" {
@@ -195,8 +269,24 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 	// 追加用户消息到 session
 	a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "user", Content: input.Content})
 
+	// ========== Context 压缩检查 ==========
+	if a.compressor != nil && a.compressor.IsEnabled() && a.compressor.ShouldCompress(messages) {
+		log.Printf("[压缩] 上下文过长（%d 字符），触发压缩", a.compressor.GetTotalChars(messages))
+		// 执行压缩
+		compressed, err := a.compressor.Compress(ctx, messages)
+		if err != nil {
+			log.Printf("[压缩] 压缩失败: %v，使用原始消息继续", err)
+		} else if compressed != nil {
+			messages = compressed
+			log.Printf("[压缩] 压缩完成：%d 条消息", len(messages))
+		}
+	}
+
 	// ReAct 循环
-	maxToolRounds := 5
+	maxToolRounds := a.maxToolCalls
+	if maxToolRounds <= 0 {
+		maxToolRounds = 20
+	}
 	loadedSkills := make(map[string]*LoadedSkill)
 
 	for round := 0; round < maxToolRounds; round++ {
@@ -231,9 +321,40 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 
 		// 执行每个工具调用
 		for _, toolCall := range assistantMsg.ToolCalls {
+			toolArgs := parseToolArgs(toolCall.Function.Arguments)
+
 			log.Printf("工具调用 [%s]: %s(%s)", sessionKey, toolCall.Function.Name, toolCall.Function.Arguments)
+
+			// ========== 循环检测（前置） ==========
+			if a.loopDetector != nil && a.cfg != nil && a.cfg.LoopDetection {
+				if a.loopDetector.Check(toolCall.Function.Name, "", toolArgs) {
+					log.Printf("[循环检测] 检测到循环，已熔断")
+					loopMsg := llm.ChatMessage{
+						Role:    "system",
+						Content: "⚠️ 检测到工具调用循环（重复调用相同工具或来回弹跳），已自动终止。请简化你的请求或改变策略。",
+					}
+					messages = append(messages, loopMsg)
+					a.sessionMgr.AppendMessage(sessionKey, loopMsg)
+					return &Message{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求或改变策略。"}, nil
+				}
+			}
+
 			result := a.ExecuteToolCall(toolCall, loadedSkills, sessionKey, isGroup, chatID)
 			log.Printf("工具结果 [%s]: %s", sessionKey, truncate(result, 200))
+
+			// ========== 循环检测（基于结果） ==========
+			if a.loopDetector != nil && a.cfg != nil && a.cfg.LoopDetection {
+				if a.loopDetector.Check(toolCall.Function.Name, result, toolArgs) {
+					log.Printf("[循环检测] 基于结果检测到循环，已熔断")
+					loopMsg := llm.ChatMessage{
+						Role:    "system",
+						Content: "⚠️ 检测到工具调用循环（无新进展或结果重复），已自动终止。请简化你的请求。",
+					}
+					messages = append(messages, loopMsg)
+					a.sessionMgr.AppendMessage(sessionKey, loopMsg)
+					return &Message{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求。"}, nil
+				}
+			}
 
 			// 检查是否是 skill_load 结果
 			if toolCall.Function.Name == "skill_load" {
@@ -258,7 +379,7 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 		}
 	}
 
-	return nil, fmt.Errorf("工具调用轮数超限")
+	return nil, fmt.Errorf("工具调用轮数超限（%d次）", maxToolRounds)
 }
 
 // buildToolsList 构建工具列表
@@ -365,7 +486,9 @@ func (a *BaseAgent) AppendToSession(sessionKey, content string) {
 func (a *BaseAgent) ClearHistory(sessionKey string) {
 	s := a.sessionMgr.GetOrCreate(sessionKey)
 	s.Clear()
-	a.loopDetector.Reset()
+	if a.loopDetector != nil {
+		a.loopDetector.Reset()
+	}
 }
 
 // GetSessionMgr 获取会话管理器
@@ -382,6 +505,15 @@ func (a *BaseAgent) GetMemoryMgr() *memory.MemoryManager {
 func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*LoadedSkill, sessionKey string, isGroup bool, chatID string) string {
 	toolName := call.Function.Name
 	toolArgs := parseToolArgs(call.Function.Arguments)
+
+	// ========== 审批检查 ==========
+	if a.approvalMgr != nil && a.approvalMgr.IsEnabled() && a.approvalMgr.NeedsApproval(toolName) {
+		if !a.approvalMgr.IsApproved(sessionKey, toolName) {
+			// 请求审批
+			req := a.approvalMgr.RequestApproval(sessionKey, toolName, toolArgs)
+			return a.approvalMgr.BuildApprovalMessage(req)
+		}
+	}
 
 	// 触发 pre_tool_use hook
 	if a.hookManager != nil {
@@ -451,6 +583,15 @@ func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*
 	}
 
 	return result
+}
+
+// ApproveToolCall 批准工具调用
+// 由外部调用（如消息处理中识别到用户确认）
+func (a *BaseAgent) ApproveToolCall(sessionKey, toolName string, approvedBy string) bool {
+	if a.approvalMgr == nil {
+		return false
+	}
+	return a.approvalMgr.Approve(sessionKey, toolName, approvedBy)
 }
 
 // parseToolArgs 解析工具参数

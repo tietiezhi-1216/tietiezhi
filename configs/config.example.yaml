@@ -11,13 +11,40 @@ llm:
   provider: "openai"            # 目前仅支持 openai
   base_url: "https://api.openai.com/v1"  # API 基础地址，可替换为兼容接口
   api_key: "sk-your-api-key"    # 你的 API Key
-  model: "gpt-4o"              # 默认模型
+  model: "gpt-4o"               # 默认模型
+  # cheap_model: "gpt-4o-mini"  # 轻量级模型（可选，用于压缩等简单任务）
+  # cheap_base_url: ""           # 轻量级模型的 API 地址
+  # cheap_api_key: ""            # 轻量级模型的 API Key
 
 # Agent 配置
 agent:
   max_tool_calls: 20            # 单次对话最大工具调用次数
   system_prompt: "你是一个有用的AI助手"  # 默认系统提示词
   loop_detection: true          # 启用工具调用循环检测
+  
+  # 上下文压缩配置
+  compression:
+    enabled: true               # 是否启用压缩
+    max_chars: 80000            # 触发压缩的字符阈值（约20K token）
+    keep_recent: 10              # 保留最近N条消息
+    summary_prompt: "请总结以下对话的核心内容，保留关键信息、决策和重要细节，用简洁的中文概括："
+  
+  # 循环检测器配置
+  loop_detector:
+    generic_repeat_threshold: 3       # 重复调用检测阈值
+    generic_repeat_similarity: 0.8    # 参数相似度阈值（0-1）
+    no_progress_threshold: 5          # 无进展检测阈值
+    ping_pong_window: 8               # 来回弹跳检测窗口大小
+    global_circuit_breaker_limit: 20 # 全局熔断上限
+
+# 审批流配置
+approval:
+  enabled: true                  # 是否启用审批
+  require_approval:               # 需要审批的工具名列表
+    - "terminal_exec"             # 终端命令
+    - "file_delete"              # 文件删除
+    - "agent_spawn"             # 子代理创建
+  auto_approve: []                # 自动放行的工具名列表
 
 # 渠道配置
 channels:
