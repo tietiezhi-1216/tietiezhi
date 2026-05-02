@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,8 +20,9 @@ import (
 
 	"tietiezhi/internal/agent"
 	"tietiezhi/internal/channel"
-	"tietiezhi/internal/llm"
 	"tietiezhi/internal/command"
+	"tietiezhi/internal/llm"
+	"tietiezhi/internal/media"
 	"tietiezhi/internal/session"
 )
 
@@ -32,6 +35,7 @@ type FeishuChannel struct {
 	commandMgr  *command.Registry
 	appSecret    string
 	botOpenID    string
+	uploadDir    string
 	client       *lark.Client
 	handler      func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
 	streamHandler func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error
@@ -55,6 +59,11 @@ func New(appID, appSecret string, botOpenID ...string) *FeishuChannel {
 		log.Printf("使用配置的机器人 OpenID: %s", f.botOpenID)
 	}
 	return f
+}
+
+// SetUploadDir 设置上传目录（用于保存媒体文件）
+func (f *FeishuChannel) SetUploadDir(dir string) {
+	f.uploadDir = dir
 }
 
 // SetHandler 设置消息处理函数（同步模式）
@@ -178,11 +187,11 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 	if event.Event.Sender != nil && event.Event.Sender.SenderId != nil {
 		userID = *event.Event.Sender.SenderId.OpenId
 	}
-	content := f.parseMessageContent(msg)
-	if content == "" {
+	content, media := f.parseMessageContent(msg)
+	if content == "" && len(media) == 0 {
 		return nil
 	}
-	log.Printf("收到飞书消息: chatType=%s, userID=%s, content=%s", chatType, userID, content)
+	log.Printf("收到飞书消息: chatType=%s, userID=%s, content=%s, mediaCount=%d", chatType, userID, content, len(media))
 
 	if f.handler != nil || f.streamHandler != nil {
 		// 所有消息都加 THINKING 表情（不管群聊还是私聊）
@@ -195,7 +204,7 @@ func (f *FeishuChannel) handleMessage(ctx context.Context, event *larkim.P2Messa
 		if chatType == "group" && userID != "" {
 			messageContent = fmt.Sprintf("[%s]: %s", userID, content)
 		}
-		input := &channel.Message{ChannelID: chatID, UserID: userID, Content: messageContent, ChatType: chatType}
+		input := &channel.Message{ChannelID: chatID, UserID: userID, Content: messageContent, ChatType: chatType, Media: media}
 
 		// 优先使用流式处理
 		if f.streamHandler != nil {
@@ -373,34 +382,149 @@ func (f *FeishuChannel) isBotMentioned(msg *larkim.EventMessage) bool {
 }
 
 // parseMessageContent 解析消息内容
-func (f *FeishuChannel) parseMessageContent(msg *larkim.EventMessage) string {
+func (f *FeishuChannel) parseMessageContent(msg *larkim.EventMessage) (string, []string) {
 	if msg.Content == nil {
-		return ""
+		return "", nil
 	}
 	msgType := ""
 	if msg.MessageType != nil {
 		msgType = *msg.MessageType
 	}
 	rawContent := *msg.Content
+
+	var mediaList []string
+
 	switch msgType {
 	case "text":
 		var textMsg struct{ Text string `json:"text"` }
 		if err := json.Unmarshal([]byte(rawContent), &textMsg); err == nil {
-			return cleanMentionPlaceholders(textMsg.Text)
+			return cleanMentionPlaceholders(textMsg.Text), nil
 		}
 	case "post":
-		return parsePostContent(rawContent)
+		content, media := parsePostContent(rawContent)
+		return content, media
+	case "image":
+		// 图片消息
+		var imageMsg struct{ ImageKey string `json:"image_key"` }
+		if err := json.Unmarshal([]byte(rawContent), &imageMsg); err == nil && imageMsg.ImageKey != "" {
+			path, err := f.downloadImage(imageMsg.ImageKey)
+			if err != nil {
+				log.Printf("下载图片失败: %v", err)
+				return "[图片下载失败]", nil
+			}
+			mediaList = append(mediaList, path)
+			return "[图片]", mediaList
+		}
+	case "file":
+		// 文件消息
+		var fileMsg struct {
+			FileKey  string `json:"file_key"`
+			FileName string `json:"file_name"`
+		}
+		if err := json.Unmarshal([]byte(rawContent), &fileMsg); err == nil && fileMsg.FileKey != "" {
+			path, err := f.downloadFile(fileMsg.FileKey, fileMsg.FileName)
+			if err != nil {
+				log.Printf("下载文件失败: %v", err)
+				return fmt.Sprintf("[文件: %s 下载失败]", fileMsg.FileName), nil
+			}
+			mediaList = append(mediaList, path)
+			return fmt.Sprintf("[文件: %s]", fileMsg.FileName), mediaList
+		}
+	case "sticker":
+		// 表情贴纸
+		return "[表情]", nil
+	case "audio":
+		// 语音消息
+		return "[语音消息]", nil
+	case "video":
+		// 视频消息
+		return "[视频消息]", nil
+	case "interactive":
+		// 卡片消息（忽略 bot 自己的卡片）
+		return "", nil
 	default:
 		log.Printf("暂不支持的消息类型: %s", msgType)
 	}
-	return rawContent
+	return rawContent, nil
+}
+
+// downloadImage 下载飞书图片
+func (f *FeishuChannel) downloadImage(imageKey string) (string, error) {
+	if f.uploadDir == "" {
+		// 如果没有设置上传目录，使用临时目录
+		f.uploadDir = "./data/uploads"
+		os.MkdirAll(f.uploadDir, 0755)
+	}
+	um := media.NewUploadManager(f.uploadDir)
+
+	// 使用飞书 SDK 下载图片
+	resp, err := f.client.Im.Image.Get(context.Background(),
+		larkim.NewGetImageReqBuilder().ImageKey(imageKey).Build())
+	if err != nil {
+		return "", fmt.Errorf("下载图片请求失败: %w", err)
+	}
+	if !resp.Success() {
+		return "", fmt.Errorf("下载图片失败: code=%d, msg=%s", resp.Code, resp.Msg)
+	}
+
+	// 读取图片数据
+	data, err := io.ReadAll(resp.File)
+	if err != nil {
+		return "", fmt.Errorf("读取图片数据失败: %w", err)
+	}
+
+	// 保存图片
+	filename := fmt.Sprintf("%s.png", imageKey)
+	path, err := um.SaveFile(filename, data)
+	if err != nil {
+		return "", fmt.Errorf("保存图片失败: %w", err)
+	}
+
+	log.Printf("图片已下载: %s", path)
+	return path, nil
+}
+
+// downloadFile 下载飞书文件
+func (f *FeishuChannel) downloadFile(fileKey, fileName string) (string, error) {
+	if f.uploadDir == "" {
+		f.uploadDir = "./data/uploads"
+		os.MkdirAll(f.uploadDir, 0755)
+	}
+	um := media.NewUploadManager(f.uploadDir)
+
+	// 使用飞书 SDK 下载文件
+	resp, err := f.client.Im.File.Get(context.Background(),
+		larkim.NewGetFileReqBuilder().FileKey(fileKey).Build())
+	if err != nil {
+		return "", fmt.Errorf("下载文件请求失败: %w", err)
+	}
+	if !resp.Success() {
+		return "", fmt.Errorf("下载文件失败: code=%d, msg=%s", resp.Code, resp.Msg)
+	}
+
+	// 读取文件数据
+	data, err := io.ReadAll(resp.File)
+	if err != nil {
+		return "", fmt.Errorf("读取文件数据失败: %w", err)
+	}
+
+	// 保存文件
+	path, err := um.SaveFile(fileName, data)
+	if err != nil {
+		return "", fmt.Errorf("保存文件失败: %w", err)
+	}
+
+	log.Printf("文件已下载: %s", path)
+	return path, nil
 }
 
 // parsePostContent 解析富文本消息内容（保留，用于接收用户发送的 Post 消息）
-func parsePostContent(rawContent string) string {
+// 返回文本内容和媒体列表
+func parsePostContent(rawContent string) (string, []string) {
+	var mediaList []string
 	var postWrapper map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(rawContent), &postWrapper); err != nil {
-		return rawContent
+		return rawContent, nil
 	}
 	var postContent struct {
 		Title   string              `json:"title"`
@@ -457,7 +581,7 @@ func parsePostContent(rawContent string) string {
 			parts = append(parts, strings.Join(lineParts, ""))
 		}
 	}
-	return cleanMentionPlaceholders(strings.Join(parts, "\n"))
+	return cleanMentionPlaceholders(strings.Join(parts, "\n")), mediaList
 }
 
 // cleanMentionPlaceholders 清理提及占位符
@@ -716,7 +840,7 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent, streaming bool) {
 
 			sessionKey := session.BuildSessionKey(msg.ChatType, msg.ChannelID, msg.UserID)
 
-			ch, err := ag.RunStream(ctx, sessionKey, msg.ChatType == "group", &agent.Message{Role: "user", Content: msg.Content})
+			ch, err := ag.RunStream(ctx, sessionKey, msg.ChatType == "group", &agent.Message{Role: "user", Content: msg.Content, Media: msg.Media})
 			if err != nil {
 				return err
 			}
@@ -796,7 +920,7 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent, streaming bool) {
 			log.Printf("[Legacy] 开始处理消息: sessionKey=%s, content=%s", sessionKey, msg.Content)
 
 			// 同步调用 LLM，等完整回复
-			reply, err := ag.Run(ctx, sessionKey, msg.ChatType == "group", msg.ChannelID, &agent.Message{Role: "user", Content: msg.Content})
+			reply, err := ag.Run(ctx, sessionKey, msg.ChatType == "group", msg.ChannelID, &agent.Message{Role: "user", Content: msg.Content, Media: msg.Media})
 			if err != nil {
 				log.Printf("[Legacy] LLM 调用失败: %v", err)
 				return &channel.Message{Content: "⚠️ 处理消息时发生错误，请稍后重试。"}, nil

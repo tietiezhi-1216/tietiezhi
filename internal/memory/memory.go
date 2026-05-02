@@ -30,6 +30,7 @@ func (mm *MemoryManager) initWorkspace() {
 	dirs := []string{
 		mm.workspacePath,
 		filepath.Join(mm.workspacePath, "memory"),
+		filepath.Join(mm.workspacePath, "uploads"),
 	}
 	for _, dir := range dirs {
 		os.MkdirAll(dir, 0755)
@@ -329,6 +330,7 @@ func (mm *MemoryManager) appendToDailyNote(content string) error {
 
 	// 确保目录存在
 	os.MkdirAll(filepath.Join(mm.workspacePath, "memory"), 0755)
+	os.MkdirAll(filepath.Join(mm.workspacePath, "uploads"), 0755)
 
 	// 如果文件不存在，先创建带 header 的文件
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -440,4 +442,9 @@ func (mm *MemoryManager) GetWorkspacePath() string {
 // ReadFile 读取工作区文件（公开方法，供 HeartbeatManager 使用）
 func (mm *MemoryManager) ReadFile(relativePath string) string {
 	return mm.readFile(relativePath)
+}
+
+// GetUploadDir 获取上传目录路径
+func (mm *MemoryManager) GetUploadDir() string {
+	return filepath.Join(mm.workspacePath, "uploads")
 }

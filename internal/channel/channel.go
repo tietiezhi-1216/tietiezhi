@@ -4,10 +4,11 @@ import "context"
 
 // Message 渠道消息
 type Message struct {
-	ChannelID string `json:"channel_id"`
-	UserID    string `json:"user_id"`
-	Content   string `json:"content"`
-	ChatType  string `json:"chat_type,omitempty"` // p2p 或 group
+	ChannelID string   `json:"channel_id"`
+	UserID    string   `json:"user_id"`
+	Content   string   `json:"content"`
+	ChatType  string   `json:"chat_type,omitempty"` // p2p 或 group
+	Media     []string `json:"media,omitempty"`     // 媒体文件路径/URL列表
 }
 
 // Handler 消息处理函数类型

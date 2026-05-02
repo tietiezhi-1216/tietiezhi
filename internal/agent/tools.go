@@ -6,7 +6,21 @@ import (
 
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/memory"
+	"tietiezhi/internal/tool/builtin"
 )
+
+// 终端工具实例（全局单例，用于沙箱支持）
+var terminalToolInstance *builtin.TerminalTool
+
+// SetTerminalTool 设置终端工具实例
+func SetTerminalTool(t *builtin.TerminalTool) {
+	terminalToolInstance = t
+}
+
+// GetTerminalTool 获取终端工具实例
+func GetTerminalTool() *builtin.TerminalTool {
+	return terminalToolInstance
+}
 
 // GetMemoryTools 获取记忆相关工具定义
 func GetMemoryTools() []llm.ToolDef {
@@ -65,6 +79,79 @@ func GetMemoryTools() []llm.ToolDef {
 	}
 }
 
+// GetTerminalTools 获取终端执行工具定义
+func GetTerminalTools() []llm.ToolDef {
+	if terminalToolInstance == nil {
+		// 返回默认的工具定义（沙箱未配置时）
+		return []llm.ToolDef{
+			{
+				Type: "function",
+				Function: llm.FunctionDef{
+					Name:        "terminal_exec",
+					Description: "执行 Shell 命令，返回 stdout 和 stderr。\n⚠️ 危险命令提醒：rm -rf /, mkfs, dd 等命令会永久损坏系统，请勿执行。\n参数：\n- command: 要执行的命令（必填）\n- timeout: 超时时间秒数（可选，默认30）\n- workdir: 工作目录（可选）\n- use_sandbox: 是否使用沙箱执行（可选）\n返回：{\"stdout\": \"...\", \"stderr\": \"...\", \"exit_code\": 0, \"error\": \"\"}",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"command": map[string]any{
+								"type":        "string",
+								"description": "要执行的 Shell 命令",
+							},
+							"timeout": map[string]any{
+								"type":        "integer",
+								"description": "超时时间（秒），默认30",
+							},
+							"workdir": map[string]any{
+								"type":        "string",
+								"description": "工作目录路径（可选）",
+							},
+							"use_sandbox": map[string]any{
+								"type":        "boolean",
+								"description": "是否使用沙箱执行（可选，默认跟随全局配置）",
+							},
+							"sandbox_config": map[string]any{
+								"type":        "object",
+								"description": "沙箱配置（可选）",
+								"properties": map[string]any{
+									"image": map[string]any{
+										"type":        "string",
+										"description": "沙箱镜像",
+									},
+									"network": map[string]any{
+										"type":        "string",
+										"description": "网络模式（none/bridge）",
+									},
+									"memory": map[string]any{
+										"type":        "string",
+										"description": "内存限制",
+									},
+								},
+							},
+						},
+						"required": []string{"command"},
+					},
+				},
+			},
+		}
+	}
+
+	// 使用已配置的终端工具定义
+	params := terminalToolInstance.Parameters()
+	if _, ok := params.(map[string]any); ok {
+		return []llm.ToolDef{
+			{
+				Type: "function",
+				Function: llm.FunctionDef{
+					Name:        "terminal_exec",
+					Description: terminalToolInstance.Description(),
+					Parameters:  params,
+				},
+			},
+		}
+	}
+
+	return []llm.ToolDef{}
+}
+
 // ExecuteToolCall 执行工具调用
 func ExecuteToolCall(call llm.ToolCall, memMgr *memory.MemoryManager) string {
 	switch call.Function.Name {
@@ -77,6 +164,33 @@ func ExecuteToolCall(call llm.ToolCall, memMgr *memory.MemoryManager) string {
 	default:
 		return `{"error": "未知工具: ` + call.Function.Name + `"}`
 	}
+}
+
+// ExecuteTerminalToolCall 执行终端工具调用
+func ExecuteTerminalToolCall(call llm.ToolCall) string {
+	if terminalToolInstance == nil {
+		return `{"error": "终端工具未初始化"}`
+	}
+
+	// 解析参数
+	var args map[string]any
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
+		return `{"error": "参数解析失败"}`
+	}
+
+	// 转换为 map[string]interface{}
+	input := make(map[string]any)
+	for k, v := range args {
+		input[k] = v
+	}
+
+	// 执行工具
+	result, err := terminalToolInstance.Execute(input)
+	if err != nil {
+		return `{"error": "` + err.Error() + `"}`
+	}
+
+	return result
 }
 
 // executeMemoryAdd 执行记忆写入

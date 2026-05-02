@@ -15,6 +15,12 @@ llm:
   # cheap_model: "gpt-4o-mini"  # 轻量级模型（可选，用于压缩等简单任务）
   # cheap_base_url: ""           # 轻量级模型的 API 地址
   # cheap_api_key: ""            # 轻量级模型的 API Key
+  # 模型能力映射（用于 delegate_task 工具）
+  model_capabilities:
+    - model: "gpt-4o"           # 支持多模态的模型
+      capabilities: ["vision", "coding"]
+    - model: "gpt-4o-mini"     # 轻量级模型
+      capabilities: ["vision", "coding"]
 
 # Agent 配置
 agent:

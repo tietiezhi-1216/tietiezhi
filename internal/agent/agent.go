@@ -10,6 +10,7 @@ import (
 	"tietiezhi/internal/config"
 	"tietiezhi/internal/hook"
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/media"
 	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
 	"tietiezhi/internal/session"
@@ -19,8 +20,9 @@ import (
 
 // Message Agent 消息
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Media   []string `json:"media,omitempty"` // 媒体引用（路径或URL）
 }
 
 // Handler 消息处理函数类型
@@ -259,14 +261,37 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 当用户确认后，再次调用该工具即可执行。`
 	}
 
+	// 追加多模态能力指引
+	systemPrompt += `
+
+## 多模态支持
+
+你可以处理图片和文本的混合输入。当你收到图片时，可以直接理解图片内容。
+支持的图片格式：PNG、JPEG、GIF、WebP。`
+
 	if systemPrompt != "" {
 		messages = append(messages, llm.ChatMessage{Role: "system", Content: systemPrompt})
 	}
 
 	messages = append(messages, history...)
-	messages = append(messages, llm.ChatMessage{Role: "user", Content: input.Content})
 
-	// 追加用户消息到 session
+	// 构建用户消息（支持多模态）
+	var userMsg llm.ChatMessage
+	if len(input.Media) > 0 {
+		// 有媒体文件，构建多模态消息
+		mmMsg, err := media.BuildMultimodalMessage("user", input.Content, input.Media)
+		if err != nil {
+			// 媒体处理失败，回退到纯文本
+			userMsg = llm.ChatMessage{Role: "user", Content: input.Content}
+		} else {
+			userMsg = mmMsg
+		}
+	} else {
+		userMsg = llm.ChatMessage{Role: "user", Content: input.Content}
+	}
+	messages = append(messages, userMsg)
+
+	// 追加用户消息到 session（只保存文本内容）
 	a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "user", Content: input.Content})
 
 	// ========== Context 压缩检查 ==========
@@ -310,9 +335,9 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 
 		// 如果没有工具调用，返回最终回复
 		if len(assistantMsg.ToolCalls) == 0 {
-			a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: assistantMsg.Role, Content: assistantMsg.Content})
-			log.Printf("Agent 响应 [%s]: %s", sessionKey, truncate(assistantMsg.Content, 200))
-			return &Message{Role: "assistant", Content: assistantMsg.Content}, nil
+			a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: assistantMsg.Role, Content: assistantMsg.GetContentAsText()})
+			log.Printf("Agent 响应 [%s]: %s", sessionKey, truncate(assistantMsg.GetContentAsText(), 200))
+			return &Message{Role: "assistant", Content: assistantMsg.GetContentAsText()}, nil
 		}
 
 		// 有工具调用
@@ -361,7 +386,7 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 				if injectedPrompt := a.handleSkillLoadResult(result, loadedSkills); injectedPrompt != "" {
 					for i := range messages {
 						if messages[i].Role == "system" {
-							messages[i].Content += injectedPrompt
+							messages[i].Content = messages[i].GetContentAsText() + injectedPrompt
 							break
 						}
 					}
@@ -389,6 +414,9 @@ func (a *BaseAgent) buildToolsList(injectCron bool, sessionKey string) []llm.Too
 	// 基础记忆工具
 	tools = append(tools, GetMemoryTools()...)
 
+	// 终端执行工具（Docker 沙箱）
+	tools = append(tools, GetTerminalTools()...)
+
 	// 技能工具
 	if skillTools := GetSkillTools(a.skillLoader); len(skillTools) > 0 {
 		tools = append(tools, skillTools...)
@@ -397,6 +425,11 @@ func (a *BaseAgent) buildToolsList(injectCron bool, sessionKey string) []llm.Too
 	// 子代理工具（递归防护：sub session 不注入 agent_spawn）
 	if !strings.HasPrefix(sessionKey, "sub:") && a.subAgentMgr != nil {
 		tools = append(tools, subagent.GetSubAgentTools()...)
+	}
+
+	// delegate_task 工具（递归防护：sub session 不注入）
+	if !strings.HasPrefix(sessionKey, "sub:") {
+		tools = append(tools, GetDelegateTools()...)
 	}
 
 	// 定时任务工具（递归防护）
@@ -462,10 +495,20 @@ func (a *BaseAgent) RunStream(ctx context.Context, sessionKey string, isGroup bo
 	}
 
 	messages = append(messages, history...)
-	messages = append(messages, llm.ChatMessage{
-		Role:    "user",
-		Content: input.Content,
-	})
+
+	// 构建用户消息（支持多模态）
+	var userMsg llm.ChatMessage
+	if len(input.Media) > 0 {
+		mmMsg, err := media.BuildMultimodalMessage("user", input.Content, input.Media)
+		if err != nil {
+			userMsg = llm.ChatMessage{Role: "user", Content: input.Content}
+		} else {
+			userMsg = mmMsg
+		}
+	} else {
+		userMsg = llm.ChatMessage{Role: "user", Content: input.Content}
+	}
+	messages = append(messages, userMsg)
 
 	a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "user", Content: input.Content})
 
@@ -558,6 +601,11 @@ func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*
 		return `{"error": "定时任务管理器未初始化"}`
 	}
 
+	// delegate_task 工具
+	if toolName == "delegate_task" {
+		return ExecuteDelegate(call.Function.Arguments, a.provider)
+	}
+
 	// agent_spawn 子代理工具
 	if toolName == "agent_spawn" {
 		if a.subAgentMgr != nil {
@@ -571,7 +619,12 @@ func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*
 	}
 
 	// 其他工具（记忆相关）
-	result := ExecuteToolCall(call, a.memoryMgr)
+	var result string
+	if call.Function.Name == "terminal_exec" {
+		result = ExecuteTerminalToolCall(call)
+	} else {
+		result = ExecuteToolCall(call, a.memoryMgr)
+	}
 
 	// 触发 post_tool_use hook
 	if a.hookManager != nil {

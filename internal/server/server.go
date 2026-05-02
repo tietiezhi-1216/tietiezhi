@@ -93,7 +93,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var userMsg string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
-			userMsg = req.Messages[i].Content
+			userMsg = req.Messages[i].GetContentAsText()
 			break
 		}
 	}

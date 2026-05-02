@@ -11,21 +11,22 @@ import (
 
 // Config 顶层配置结构
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	LLM       LLMConfig       `yaml:"llm"`
-	Agent     AgentConfig     `yaml:"agent"`
-	Channels  ChannelsConfig  `yaml:"channels"`
-	Memory    MemoryConfig    `yaml:"memory"`
-	Skills    SkillsConfig    `yaml:"skills"`
-	Scheduler SchedulerConfig `yaml:"scheduler"`
-	Heartbeat HeartbeatConfig `yaml:"heartbeat"`
-	Log       LogConfig       `yaml:"log"`
-	Session   SessionConfig   `yaml:"session"`
-	SubAgent  SubAgentConfig  `yaml:"subagent"`
-	Hooks     HooksConfig     `yaml:"hooks"`
-	Tools          ToolsConfig          `yaml:"tools"`
-	Approval     ApprovalConfig     `yaml:"approval"`
+	Server       ServerConfig        `yaml:"server"`
+	LLM          LLMConfig           `yaml:"llm"`
+	Agent        AgentConfig         `yaml:"agent"`
+	Channels     ChannelsConfig      `yaml:"channels"`
+	Memory       MemoryConfig        `yaml:"memory"`
+	Skills       SkillsConfig        `yaml:"skills"`
+	Scheduler    SchedulerConfig     `yaml:"scheduler"`
+	Heartbeat    HeartbeatConfig     `yaml:"heartbeat"`
+	Log          LogConfig           `yaml:"log"`
+	Session      SessionConfig       `yaml:"session"`
+	SubAgent     SubAgentConfig      `yaml:"subagent"`
+	Hooks        HooksConfig         `yaml:"hooks"`
+	Tools        ToolsConfig         `yaml:"tools"`
+	Approval     ApprovalConfig      `yaml:"approval"`
 	Observability ObservabilityConfig `yaml:"observability"`
+	Sandbox      SandboxConfig       `yaml:"sandbox"` // 沙箱配置
 }
 
 // ServerConfig 服务器配置
@@ -34,8 +35,15 @@ type ServerConfig struct {
 	Port int    `yaml:"port"`
 }
 
+// ModelCapability 模型能力映射
+type ModelCapability struct {
+	Model        string   `yaml:"model"`         // 模型名称
+	Capabilities []string `yaml:"capabilities"`  // 支持的能力列表，如 vision, audio, coding
+}
+
 // LLMConfig 大模型配置
 type LLMConfig struct {
+	ModelCapabilities []ModelCapability `yaml:"model_capabilities"` // 模型能力映射
 	Provider     string `yaml:"provider"`
 	BaseURL      string `yaml:"base_url"`
 	APIKey       string `yaml:"api_key"`
@@ -155,10 +163,10 @@ type HooksConfig struct {
 
 // ToolsConfig 内置工具配置
 type ToolsConfig struct {
-	Terminal  TerminalConfig  `yaml:"terminal"`
-	FileIO    FileIOConfig   `yaml:"file_io"`
-	WebSearch WebSearchConfig `yaml:"web_search"`
-	AllowedDirs []string      `yaml:"allowed_dirs"` // 允许文件操作的目录列表
+	Terminal    TerminalConfig    `yaml:"terminal"`
+	FileIO      FileIOConfig     `yaml:"file_io"`
+	WebSearch   WebSearchConfig  `yaml:"web_search"`
+	AllowedDirs []string         `yaml:"allowed_dirs"` // 允许文件操作的目录列表
 }
 
 // TerminalConfig 终端工具配置
@@ -176,6 +184,24 @@ type WebSearchConfig struct {
 	Provider string `yaml:"provider"` // 搜索服务提供商
 	APIKey    string `yaml:"api_key"`  // API Key
 	BaseURL   string `yaml:"base_url"` // API 地址
+}
+
+// SandboxConfig 沙箱配置
+type SandboxConfig struct {
+	Enabled     bool                  `yaml:"enabled"`      // 是否启用沙箱
+	Image       string                `yaml:"image"`        // 沙箱镜像
+	NetworkMode string                `yaml:"network_mode"` // 网络模式：none/bridge
+	MemoryLimit string                `yaml:"memory_limit"` // 内存限制
+	CPULimit    float64               `yaml:"cpu_limit"`    // CPU 限制
+	WorkDir     string                `yaml:"work_dir"`     // 容器内工作目录
+	Volumes     []VolumeMountConfig   `yaml:"volumes"`      // 卷挂载
+}
+
+// VolumeMountConfig 卷挂载配置
+type VolumeMountConfig struct {
+	HostPath      string `yaml:"host_path"`
+	ContainerPath string `yaml:"container_path"`
+	ReadOnly      bool   `yaml:"read_only"`
 }
 
 // Load 从 YAML 文件加载配置
@@ -312,6 +338,26 @@ func (c *Config) applyDefaults(configPath string) {
 	c.Scheduler.Path = resolvePath(c.Scheduler.Path, configPath)
 	c.Session.PersistPath = resolvePath(c.Session.PersistPath, configPath)
 	c.SubAgent.Path = resolvePath(c.SubAgent.Path, configPath)
+
+	// 沙箱配置默认值
+	if c.Sandbox.Image == "" {
+		c.Sandbox.Image = "alpine:latest"
+	}
+	if c.Sandbox.NetworkMode == "" {
+		c.Sandbox.NetworkMode = "none"
+	}
+	if c.Sandbox.MemoryLimit == "" {
+		c.Sandbox.MemoryLimit = "128m"
+	}
+	if c.Sandbox.CPULimit == 0 {
+		c.Sandbox.CPULimit = 0.5
+	}
+	if c.Sandbox.WorkDir == "" {
+		c.Sandbox.WorkDir = "/workspace"
+	}
+	if c.Sandbox.Volumes == nil {
+		c.Sandbox.Volumes = []VolumeMountConfig{}
+	}
 }
 
 
@@ -337,4 +383,3 @@ func resolvePath(path string, configPath string) string {
 	configDir := filepath.Dir(absConfigPath)
 	return filepath.Join(configDir, path)
 }
-

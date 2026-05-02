@@ -64,7 +64,8 @@ func (c *ContextCompressor) ShouldCompress(messages []llm.ChatMessage) bool {
 		if msg.Role == "system" {
 			continue
 		}
-		totalChars += len(msg.Content)
+		content := msg.GetContentAsText()
+		totalChars += len(content)
 	}
 
 	return totalChars > c.maxChars
@@ -74,7 +75,7 @@ func (c *ContextCompressor) ShouldCompress(messages []llm.ChatMessage) bool {
 func (c *ContextCompressor) GetTotalChars(messages []llm.ChatMessage) int {
 	total := 0
 	for _, msg := range messages {
-		total += len(msg.Content)
+		total += len(msg.GetContentAsText())
 	}
 	return total
 }
@@ -171,7 +172,7 @@ func (c *ContextCompressor) buildSummaryContent(messages []llm.ChatMessage) stri
 		}
 
 		// 截取内容（如果太长）
-		content := msg.Content
+		content := msg.GetContentAsText()
 		if len(content) > 1000 {
 			content = content[:1000] + "...(已截断)"
 		}
@@ -206,7 +207,7 @@ func (c *ContextCompressor) summarize(ctx context.Context, provider llm.Provider
 		return "", fmt.Errorf("总结返回空响应")
 	}
 
-	return resp.Choices[0].Message.Content, nil
+	return resp.Choices[0].Message.GetContentAsText(), nil
 }
 
 // QuickSummary 快速总结（不调用 LLM，直接生成简单摘要）
