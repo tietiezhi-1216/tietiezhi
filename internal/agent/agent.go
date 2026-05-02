@@ -16,6 +16,7 @@ import (
 	"tietiezhi/internal/session"
 	"tietiezhi/internal/skill"
 	"tietiezhi/internal/subagent"
+	"tietiezhi/internal/tool/builtin"
 )
 
 // Message Agent 消息
@@ -48,9 +49,7 @@ type BaseAgent struct {
 		ExecuteCronTool(action string, args map[string]interface{}, sessionKey string, isGroup bool, chatID string) string
 	}
 	cfg              *config.AgentConfig
-	fileAnalyzeTool  interface {
-		Execute(input map[string]interface{}) (string, error)
-	} // 文件分析工具（需要 LLM Provider）
+	fileAnalyzeTool  *builtin.FileAnalyzeTool // 文件分析工具（需要 LLM Provider）
 }
 
 // NewBaseAgent 创建基础 Agent
@@ -143,7 +142,7 @@ func (a *BaseAgent) SetSubAgentManager(mgr *subagent.SubAgentManager) {
 }
 
 // SetFileAnalyzeTool 设置文件分析工具
-func (a *BaseAgent) SetFileAnalyzeTool(tool interface{}) {
+func (a *BaseAgent) SetFileAnalyzeTool(tool *builtin.FileAnalyzeTool) {
 	a.fileAnalyzeTool = tool
 }
 
@@ -631,7 +630,7 @@ func (a *BaseAgent) ExecuteToolCall(call llm.ToolCall, loadedSkills map[string]*
 	if call.Function.Name == "terminal_exec" {
 		result = ExecuteTerminalToolCall(call)
 	} else {
-		result = ExecuteToolCall(call, a.memoryMgr)
+		result = ExecuteToolCall(call, a.memoryMgr, a.fileAnalyzeTool)
 	}
 
 	// 触发 post_tool_use hook

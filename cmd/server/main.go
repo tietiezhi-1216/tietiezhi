@@ -19,6 +19,7 @@ import (
 	"tietiezhi/internal/hook"
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
+	"tietiezhi/internal/media"
 	"tietiezhi/internal/memory"
 	"tietiezhi/internal/sandbox"
 	"tietiezhi/internal/server"
@@ -184,6 +185,15 @@ func main() {
 	ag.SetSubAgentManager(subAgentMgr)
 	ag.SetHookManager(hookManager)
 
+	// 初始化并设置文件分析工具
+	fileAnalyzeTool := builtin.NewFileAnalyzeTool(provider)
+	ag.SetFileAnalyzeTool(fileAnalyzeTool)
+	log.Println("文件分析工具已初始化")
+
+	// 初始化上传目录
+	media.NewUploadManager(memoryMgr.GetUploadDir())
+	log.Printf("媒体上传目录已初始化: %s", memoryMgr.GetUploadDir())
+
 	// 打印压缩配置
 	if cfg.Agent.Compression.Enabled {
 		log.Printf("上下文压缩已启用: max_chars=%d, keep_recent=%d",
@@ -204,6 +214,9 @@ func main() {
 	// 注册飞书渠道
 	if cfg.Channels.Feishu != nil && cfg.Channels.Feishu.Enabled {
 		feishuCh := feishu.New(cfg.Channels.Feishu.AppID, cfg.Channels.Feishu.AppSecret, cfg.Channels.Feishu.BotOpenID)
+
+		// 设置上传目录（用于保存媒体文件）
+		feishuCh.SetUploadDir(memoryMgr.GetUploadDir())
 
 		// 设置心跳消息回调（更新 chatID）
 		if heartbeatMgr != nil {

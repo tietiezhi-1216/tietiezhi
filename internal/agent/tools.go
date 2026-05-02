@@ -153,7 +153,7 @@ func GetTerminalTools() []llm.ToolDef {
 }
 
 // ExecuteToolCall 执行工具调用
-func ExecuteToolCall(call llm.ToolCall, memMgr *memory.MemoryManager) string {
+func ExecuteToolCall(call llm.ToolCall, memMgr *memory.MemoryManager, fileAnalyzeTool interface{}) string {
 	switch call.Function.Name {
 	case "memory_add":
 		return executeMemoryAdd(call.Function.Arguments, memMgr)
@@ -161,6 +161,8 @@ func ExecuteToolCall(call llm.ToolCall, memMgr *memory.MemoryManager) string {
 		return executeMemorySearch(call.Function.Arguments, memMgr)
 	case "delete_bootstrap":
 		return executeDeleteBootstrap(memMgr)
+	case "file_analyze":
+		return executeFileAnalyze(call.Function.Arguments, fileAnalyzeTool)
 	default:
 		return `{"error": "未知工具: ` + call.Function.Name + `"}`
 	}
@@ -236,6 +238,39 @@ func executeDeleteBootstrap(memMgr *memory.MemoryManager) string {
 		return `{"error": "删除失败: ` + err.Error() + `"}`
 	}
 	return `{"success": true, "message": "已删除 BOOTSTRAP.md"}`
+}
+
+// executeFileAnalyze 执行文件分析
+func executeFileAnalyze(argsJSON string, fileAnalyzeTool interface{}) string {
+	var args struct {
+		Path     string `json:"path"`
+		Question string `json:"question"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return `{"error": "参数解析失败"}`
+	}
+	if args.Path == "" {
+		return `{"error": "path 参数必填"}`
+	}
+
+	if fileAnalyzeTool == nil {
+		return `{"error": "文件分析工具未初始化"}`
+	}
+
+	input := map[string]interface{}{
+		"path": args.Path,
+	}
+	if args.Question != "" {
+		input["question"] = args.Question
+	}
+
+	result, err := fileAnalyzeTool.(interface {
+		Execute(input map[string]interface{}) (string, error)
+	}).Execute(input)
+	if err != nil {
+		return `{"error": "执行失败: ` + err.Error() + `"}`
+	}
+	return result
 }
 
 // truncateSearchResult 截取搜索结果上下文
