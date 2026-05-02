@@ -144,17 +144,6 @@ func (m *HeartbeatManager) executeHeartbeat(ctx context.Context) {
 	}
 
 	heartbeatContent := m.memoryMgr.ReadFile("HEARTBEAT.md")
-	if heartbeatContent == "" {
-		log.Println("心跳检查跳过: HEARTBEAT.md 内容为空")
-		return
-	}
-
-	// 检查内容是否是旧模板（包含"暂时为空"或"尚未实现"）
-	lowerContent := strings.ToLower(heartbeatContent)
-	if strings.Contains(lowerContent, "暂时为空") || strings.Contains(lowerContent, "尚未实现") {
-		log.Println("心跳检查跳过: HEARTBEAT.md 是旧模板")
-		return
-	}
 
 	// 获取 pending events
 	var pendingSection string
@@ -166,6 +155,23 @@ func (m *HeartbeatManager) executeHeartbeat(ctx context.Context) {
 			pendingSection = m.buildPendingSection(events)
 			hasPendingEvents = true
 		}
+	}
+
+	// 检查是否有实际检查项（以 "- " 开头的行），没有则跳过
+	hasCheckItems := false
+	if heartbeatContent != "" {
+		for _, line := range strings.Split(heartbeatContent, "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "- ") {
+				hasCheckItems = true
+				break
+			}
+		}
+	}
+
+	if !hasCheckItems && !hasPendingEvents {
+		log.Println("心跳检查跳过: 无检查项且无待处理事件")
+		return
 	}
 
 	// 构建检查 prompt
@@ -234,20 +240,13 @@ func (m *HeartbeatManager) buildPendingSection(events []*cron.PendingEvent) stri
 
 // buildHeartbeatPrompt 构建心跳检查 prompt
 func (m *HeartbeatManager) buildHeartbeatPrompt(heartbeatContent string, pendingSection string) string {
-	prompt := fmt.Sprintf(`你正在进行心跳检查。以下是你的检查清单，请逐项快速检查：
-
-%s`, heartbeatContent)
+	prompt := fmt.Sprintf("你正在进行心跳检查。以下是你的检查清单，请逐项快速检查：\n\n%s", heartbeatContent)
 
 	if pendingSection != "" {
 		prompt += pendingSection
 	}
 
-	prompt += `
-检查规则：
-- 逐项检查，如果某项没有需要通知的情况，就跳过
-- 只有确实需要通知用户的事项才回复
-- 如果所有检查项都正常且无需处理任何定时任务事件，请只回复 NO_REPLY（不要回复其他任何内容）
-- 回复要简洁，每项一两句话即可`
+	prompt += "\n检查规则：\n- 逐项检查，如果某项没有需要通知的情况，就跳过\n- 只有确实需要通知用户的事项才回复\n- 如果所有检查项都正常且无需处理任何定时任务事件，请只回复 NO_REPLY（不要回复其他任何内容）\n- 回复要简洁，每项一两句话即可"
 
 	return prompt
 }
