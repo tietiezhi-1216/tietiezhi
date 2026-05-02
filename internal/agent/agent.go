@@ -59,7 +59,7 @@ func NewBaseAgent(provider llm.Provider, systemPrompt string, maxToolCalls int, 
 		systemPrompt: systemPrompt,
 		maxToolCalls: maxToolCalls,
 		sessionMgr:   sessionMgr,
-		memoryMgr:    memoryMgr,
+		memoryMgr:   memoryMgr,
 		cfg:          &config.AgentConfig{},
 	}
 
@@ -80,8 +80,8 @@ func NewBaseAgentWithConfig(provider llm.Provider, systemPrompt string, maxToolC
 		systemPrompt: systemPrompt,
 		maxToolCalls: maxToolCalls,
 		sessionMgr:   sessionMgr,
-		memoryMgr:    memoryMgr,
-		cfg:          cfg,
+		memoryMgr:   memoryMgr,
+		cfg:         cfg,
 	}
 
 	// 初始化循环检测器
@@ -186,7 +186,7 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, ch
 		a.hookManager.Fire(ctx, event)
 	}
 
-	result, err := a.runWithTools(ctx, sessionKey, isGroup, chatID, input, true)
+	result, err := a.runWithTools(ctx, sessionKey, isGroup, chatID, input, true, nil)
 
 	// 触发 message_out hook
 	if a.hookManager != nil && result != nil {
@@ -204,8 +204,9 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, ch
 	return result, err
 }
 
-// RunCron 执行 cron 任务（隔离 session，不注入 cron 工具）
-func (a *BaseAgent) RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error) {
+// RunSubAgent 执行子代理任务（支持 RunOptions 配置）
+// opts 可以为 nil（向后兼容 RunCron 调用）
+func (a *BaseAgent) RunSubAgent(ctx context.Context, sessionKey string, isGroup bool, role, content string, opts *subagent.RunOptions) (string, error) {
 	msg := &Message{Role: role, Content: content}
 
 	// 为子代理/cron 任务创建独立的循环检测器，避免多个子代理共享计数导致误熔断
@@ -219,7 +220,7 @@ func (a *BaseAgent) RunCron(ctx context.Context, sessionKey string, isGroup bool
 
 	// 使用 runWithTools，但注入 cron 工具
 	// 注意：cron session 会话 key 以 "cron:" 开头，所以 buildToolsList 会跳过 cron 工具
-	result, err := a.runWithTools(ctx, sessionKey, isGroup, "", msg, false)
+	result, err := a.runWithTools(ctx, sessionKey, isGroup, "", msg, false, opts)
 	if err != nil {
 		return "", err
 	}
@@ -230,13 +231,16 @@ func (a *BaseAgent) RunCron(ctx context.Context, sessionKey string, isGroup bool
 }
 
 // runWithTools 通用运行方法
-func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup bool, chatID string, input *Message, injectCronTools bool) (*Message, error) {
+func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup bool, chatID string, input *Message, injectCronTools bool, opts *subagent.RunOptions) (*Message, error) {
 	history := a.sessionMgr.GetHistory(sessionKey)
 
 	messages := make([]llm.ChatMessage, 0, len(history)+2)
 
-	// 系统提示词
+	// 系统提示词：优先使用覆盖值
 	systemPrompt := a.systemPrompt
+	if opts != nil && opts.SystemPromptOverride != "" {
+		systemPrompt = opts.SystemPromptOverride
+	}
 
 	// 检查 BOOTSTRAP.md 是否存在
 	if !isGroup && a.memoryMgr != nil {
@@ -335,16 +339,23 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 	}
 	loadedSkills := make(map[string]*LoadedSkill)
 
+	// 确定使用的 provider（支持模型切换）
+	activeProvider := a.provider
+	if opts != nil && opts.UseCheapModel && a.cheapProvider != nil {
+		activeProvider = a.cheapProvider
+		log.Printf("[SubAgent] 切换到轻量模型: cheap")
+	}
+
 	for round := 0; round < maxToolRounds; round++ {
 		// 构建工具列表
-		tools := a.buildToolsList(injectCronTools, sessionKey)
+		tools := a.buildToolsList(injectCronTools, sessionKey, opts)
 
 		req := &llm.ChatRequest{
 			Messages: messages,
 			Tools:    tools,
 		}
 
-		resp, err := a.provider.Chat(ctx, req)
+		resp, err := activeProvider.Chat(ctx, req)
 		if err != nil {
 			return nil, fmt.Errorf("LLM 调用失败: %w", err)
 		}
@@ -417,7 +428,7 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 }
 
 // buildToolsList 构建工具列表
-func (a *BaseAgent) buildToolsList(injectCron bool, sessionKey string) []llm.ToolDef {
+func (a *BaseAgent) buildToolsList(injectCron bool, sessionKey string, opts *subagent.RunOptions) []llm.ToolDef {
 	var tools []llm.ToolDef
 
 	// 基础记忆工具
@@ -438,18 +449,35 @@ func (a *BaseAgent) buildToolsList(injectCron bool, sessionKey string) []llm.Too
 	}
 
 	// 子代理工具（递归防护：sub session 不注入 agent_spawn）
-	if !strings.HasPrefix(sessionKey, "sub:") && a.subAgentMgr != nil {
+	if !strings.HasPrefix(sessionKey, "sub:") && !strings.HasPrefix(sessionKey, "sub-persist:") && a.subAgentMgr != nil {
 		tools = append(tools, subagent.GetSubAgentTools()...)
 	}
 
 	// delegate_task 工具（递归防护：sub session 不注入）
-	if !strings.HasPrefix(sessionKey, "sub:") {
+	if !strings.HasPrefix(sessionKey, "sub:") && !strings.HasPrefix(sessionKey, "sub-persist:") {
 		tools = append(tools, GetDelegateTools()...)
 	}
 
 	// 定时任务工具（递归防护）
 	if injectCron && a.cronMgr != nil {
 		tools = append(tools, a.cronMgr.GetCronTools()...)
+	}
+
+	// ========== 工具白名单过滤（支持 params 配置） ==========
+	if opts != nil && len(opts.ToolWhitelist) > 0 {
+		whitelist := make(map[string]bool)
+		for _, t := range opts.ToolWhitelist {
+			whitelist[t] = true
+		}
+
+		var filtered []llm.ToolDef
+		for _, t := range tools {
+			if whitelist[t.Function.Name] {
+				filtered = append(filtered, t)
+			}
+		}
+		tools = filtered
+		log.Printf("[SubAgent] 工具白名单过滤后剩余 %d 个工具", len(tools))
 	}
 
 	return tools

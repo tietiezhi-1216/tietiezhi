@@ -15,6 +15,7 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/subagent"
 )
 
 // PendingEvent 待处理事件（Main 模式）
@@ -65,7 +66,7 @@ type CronManager struct {
 	pendingPath string                 // pending.json 路径
 	execTimeout time.Duration          // 执行超时
 	agent       interface {
-		RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error)
+		RunSubAgent(ctx context.Context, sessionKey string, isGroup bool, role, content string, opts *subagent.RunOptions) (string, error)
 	}
 	deliveryFn func(chatID, content string) error // 投递函数
 	mu         sync.RWMutex
@@ -97,9 +98,9 @@ func NewCronManager(storePath string, execTimeout int) *CronManager {
 
 // SetAgent 设置 Agent（用于执行任务）
 func (m *CronManager) SetAgent(ag interface{}) {
-	// 直接断言为包含 RunCron 方法的类型
+	// 直接断言为包含 RunSubAgent 方法的类型
 	if a, ok := ag.(interface {
-		RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error)
+		RunSubAgent(ctx context.Context, sessionKey string, isGroup bool, role, content string, opts *subagent.RunOptions) (string, error)
 	}); ok {
 		m.agent = a
 		return
@@ -115,7 +116,7 @@ type cronAgentWrapper struct {
 }
 
 // RunCron 执行 cron 任务（包装器）
-func (w *cronAgentWrapper) RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error) {
+func (w *cronAgentWrapper) RunSubAgent(ctx context.Context, sessionKey string, isGroup bool, role, content string, opts *subagent.RunOptions) (string, error) {
 	type runner interface {
 		RunCron(ctx context.Context, sessionKey string, isGroup bool, input interface{}) (interface{}, error)
 	}
@@ -150,7 +151,7 @@ func (w *cronAgentWrapper) RunCron(ctx context.Context, sessionKey string, isGro
 		return "", nil
 	}
 	
-	return "", fmt.Errorf("agent 不支持 RunCron 方法")
+	return "", fmt.Errorf("agent 不支持 RunSubAgent 方法")
 }
 
 // SetDeliveryFn 设置投递函数
@@ -337,7 +338,7 @@ func (m *CronManager) executeJob(job *CronJob) {
 	ctx, cancel := context.WithTimeout(context.Background(), m.execTimeout)
 	defer cancel()
 
-	reply, err := m.agent.RunCron(ctx, sessionKey, job.IsGroup, "user", job.Message)
+	reply, err := m.agent.RunSubAgent(ctx, sessionKey, job.IsGroup, "user", job.Message, nil)
 	if err != nil {
 		log.Printf("定时任务执行失败: %s, error: %v", job.Name, err)
 		return

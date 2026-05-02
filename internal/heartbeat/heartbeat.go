@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tietiezhi/internal/cron"
+	"tietiezhi/internal/subagent"
 
 	"gopkg.in/yaml.v3"
 )
@@ -31,9 +32,9 @@ type HeartbeatState struct {
 // HeartbeatManager 心跳管理器
 // 每隔固定时间（默认 30 分钟），Agent 自动醒来检查 HEARTBEAT.md 中的检查清单
 type HeartbeatManager struct {
-	interval       time.Duration // 检查间隔，默认 30 分钟
-	agent         interface {
-		RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error)
+	interval  time.Duration // 检查间隔，默认 30 分钟
+	agent     interface {
+		RunSubAgent(ctx context.Context, sessionKey string, isGroup bool, role, content string, opts *subagent.RunOptions) (string, error)
 	}
 	memoryMgr interface {
 		ReadFile(relativePath string) string
@@ -62,7 +63,7 @@ func NewHeartbeatManager(intervalMinutes int) *HeartbeatManager {
 // SetAgent 设置 Agent（用于执行心跳检查）
 func (m *HeartbeatManager) SetAgent(ag interface{}) {
 	m.agent = ag.(interface {
-		RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error)
+		RunSubAgent(ctx context.Context, sessionKey string, isGroup bool, role, content string, opts *subagent.RunOptions) (string, error)
 	})
 }
 
@@ -159,12 +160,12 @@ func parseTasksBlock(content string) ([]HeartbeatTask, string) {
 	// 查找 ```tasks ... ``` 代码块
 	startMarker := "```tasks"
 	endMarker := "```"
-	
+
 	startIdx := strings.Index(content, startMarker)
 	if startIdx == -1 {
 		return nil, content
 	}
-	
+
 	// 找到开始标记的结束位置
 	codeStart := startIdx + len(startMarker)
 	// 确保在 ```tasks 后有换行
@@ -178,7 +179,7 @@ func parseTasksBlock(content string) ([]HeartbeatTask, string) {
 	if codeStart < len(content) && content[codeStart] == '\n' {
 		codeStart++
 	}
-	
+
 	// 找到结束标记
 	endIdx := strings.Index(content[codeStart:], endMarker)
 	if endIdx == -1 {
@@ -186,20 +187,20 @@ func parseTasksBlock(content string) ([]HeartbeatTask, string) {
 		return nil, content
 	}
 	endIdx += codeStart // 转换为绝对索引
-	
+
 	// 提取代码块内容
 	tasksContent := content[codeStart:endIdx]
-	
+
 	// 去掉 tasks 代码块后的剩余内容
 	remainingContent := content[:startIdx] + content[endIdx+len(endMarker):]
 	remainingContent = strings.TrimRight(remainingContent, " \t\r\n")
-	
+
 	// 解析 YAML
 	// tasks 代码块内容应该是 tasks: [...] 格式
 	var wrapper struct {
 		Tasks []HeartbeatTask `yaml:"tasks"`
 	}
-	
+
 	// 如果没有 tasks: 前缀，手动包装
 	var yamlContent string
 	if strings.Contains(tasksContent, "tasks:") {
@@ -207,12 +208,12 @@ func parseTasksBlock(content string) ([]HeartbeatTask, string) {
 	} else {
 		yamlContent = "tasks:\n" + tasksContent
 	}
-	
+
 	if err := yaml.Unmarshal([]byte(yamlContent), &wrapper); err != nil {
 		log.Printf("解析 tasks 代码块失败: %v", err)
 		return nil, remainingContent
 	}
-	
+
 	return wrapper.Tasks, remainingContent
 }
 
@@ -221,7 +222,7 @@ func isEmptyOrCommentOnly(content string) bool {
 	if content == "" {
 		return true
 	}
-	
+
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
 		// 跳过空行
@@ -249,7 +250,7 @@ func (m *HeartbeatManager) getStateFilePath() string {
 // loadState 加载心跳状态
 func (m *HeartbeatManager) loadState() (*HeartbeatState, error) {
 	stateFile := m.getStateFilePath()
-	
+
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -260,30 +261,30 @@ func (m *HeartbeatManager) loadState() (*HeartbeatState, error) {
 		}
 		return nil, err
 	}
-	
+
 	var state HeartbeatState
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, err
 	}
-	
+
 	return &state, nil
 }
 
 // saveState 保存心跳状态
 func (m *HeartbeatManager) saveState(state *HeartbeatState) error {
 	stateFile := m.getStateFilePath()
-	
+
 	// 确保目录存在
 	dir := filepath.Dir(stateFile)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	
+
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(stateFile, data, 0644)
 }
 
@@ -307,7 +308,7 @@ func (m *HeartbeatManager) executeHeartbeat(ctx context.Context) {
 
 	// 解析 tasks 代码块
 	tasks, remainingContent := parseTasksBlock(heartbeatContent)
-	
+
 	// 加载心跳状态
 	state, err := m.loadState()
 	if err != nil {
@@ -364,7 +365,7 @@ func (m *HeartbeatManager) executeHeartbeat(ctx context.Context) {
 		return
 	}
 
-	reply, err := m.agent.RunCron(ctx, "heartbeat:main", false, "user", prompt)
+	reply, err := m.agent.RunSubAgent(ctx, "heartbeat:main", false, "user", prompt, nil)
 	if err != nil {
 		log.Printf("心跳检查执行失败: %v", err)
 		return
