@@ -129,8 +129,9 @@ func (d *LoopDetector) Check(toolName string, result string, args map[string]int
 		}
 	}
 
-	// 3. 无进展检测 (no_progress) — 仅当结果非空时检测
-	if result != "" {
+	// 3. 无进展检测 (no_progress) — 仅当结果非空且工具不在豁免名单时检测
+	// 豁免工具（如 agent_spawn）可能天然返回相似格式结果，不应触发无进展检测
+	if result != "" && !isExempt {
 		if d.checkNoProgress(result) {
 			d.progressCount++
 			if d.progressCount >= d.config.NoProgressThreshold {

@@ -208,6 +208,15 @@ func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, ch
 func (a *BaseAgent) RunCron(ctx context.Context, sessionKey string, isGroup bool, role, content string) (string, error) {
 	msg := &Message{Role: role, Content: content}
 
+	// 为子代理/cron 任务创建独立的循环检测器，避免多个子代理共享计数导致误熔断
+	savedDetector := a.loopDetector
+	if a.cfg != nil && a.cfg.LoopDetection {
+		a.loopDetector = NewLoopDetector(0, &a.cfg.LoopDetector)
+	}
+	defer func() {
+		a.loopDetector = savedDetector
+	}()
+
 	// 使用 runWithTools，但注入 cron 工具
 	// 注意：cron session 会话 key 以 "cron:" 开头，所以 buildToolsList 会跳过 cron 工具
 	result, err := a.runWithTools(ctx, sessionKey, isGroup, "", msg, false)
