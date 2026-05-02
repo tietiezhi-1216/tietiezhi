@@ -1,8 +1,136 @@
+# tietiezhi 配置示例文件
+# 复制为 config.yaml 并修改后使用
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 18178
+
+# LLM 配置
+llm:
+  provider: "openai"
+  base_url: "https://api.openai.com/v1"
+  api_key: "your-api-key"
+  model: "gpt-4o"
+  # 轻量级模型（用于压缩等简单任务，可选）
+  cheap_model: ""
+  cheap_base_url: ""
+  cheap_api_key: ""
+  # 模型能力映射（用于 delegate_task 能力委托）
+  model_capabilities:
+    - model: "gpt-4o"
+      capabilities: ["vision", "coding"]
+    - model: "gpt-4o-mini"
+      capabilities: ["vision"]
+
+# Agent 配置
+agent:
+  max_tool_calls: 20
+  system_prompt: "你是一个有用的AI助手"
+  loop_detection: true
+  # 上下文压缩
+  compression:
+    enabled: false
+    max_chars: 80000       # 触发压缩的字符阈值
+    keep_recent: 10        # 保留最近 N 条消息
+    summary_prompt: "请总结以下对话的核心内容，保留关键信息、决策和重要细节，用简洁的中文概括："
+  # 循环检测器
+  loop_detector:
+    generic_repeat_threshold: 3      # 重复调用检测阈值
+    generic_repeat_similarity: 0.8   # 参数相似度阈值
+    no_progress_threshold: 5         # 无进展检测阈值
+    ping_pong_window: 8              # 来回弹跳检测窗口
+    global_circuit_breaker_limit: 20 # 全局熔断上限
+
+# 渠道配置
+channels:
+  feishu:
+    enabled: false
+    app_id: ""
+    app_secret: ""
+    verification_token: ""
+    encrypt_key: ""
+    streaming: false
+    bot_open_id: ""
+  telegram:
+    enabled: false
+    bot_token: ""
+    admin_ids: []
+
+# 记忆配置
+memory:
+  type: "markdown"
+  path: "./data/workspace"
+
+# 技能配置
+skills:
+  path: "./data/workspace/skills"
+
+# 定时任务配置
+scheduler:
+  enabled: true
+  path: "./data/cron"
+  exec_timeout: 300
+
+# 心跳配置
+heartbeat:
+  enabled: true
+  interval: 30     # 检查间隔，分钟（最小 5）
+  chat_id: ""      # 默认投递目标聊天 ID（可选）
+
+# 日志配置
+log:
+  level: "info"
+  format: "text"
+
+# 会话配置
+session:
+  max_history_turns: 20
+  persist_path: "./data/sessions"
+  auto_save_seconds: 60
+
+# Hook 配置
+hooks:
+  enabled: false
+  rules: []
+
+# 子代理配置
+subagent:
+  enabled: true
+  path: "./data/subagents"
+  timeout: 300
+
+# 内置工具配置
+tools:
+  terminal:
+    blocked_cmds: []       # 被阻止的命令
+  file_io:
+    allowed_dirs: []       # 允许文件操作的目录
+  web_search:
+    provider: ""
+    api_key: ""
+    base_url: ""
+  allowed_dirs: []         # 允许文件操作的目录列表（兼容旧版）
+
+# 审批流配置
+approval:
+  enabled: false
+  require_approval: ["agent_spawn", "terminal_exec"]  # 需要审批的工具
+  auto_approve: []         # 自动放行的工具
+
+# 可观测性配置
+observability:
+  enabled: false
+  audit_log:
+    enabled: false
+    path: "./data/audit"
+  token_track: false
+
 # 沙箱配置
 sandbox:
-  enabled: true
+  enabled: false
   image: "alpine:latest"
-  network_mode: "none"         # none=禁止网络，bridge=允许网络
+  network_mode: "none"    # none=禁止网络，bridge=允许网络
   memory_limit: "128m"
   cpu_limit: 0.5
   work_dir: "/workspace"
