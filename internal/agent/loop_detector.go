@@ -34,6 +34,11 @@ type LoopDetector struct {
 	lastArgsJSON string               // 上次调用的参数（JSON字符串）
 	progressCount int                 // 无进展计数
 	lastResultHash string             // 上次结果哈希
+
+	// 工具豁免与限制
+	repeatExemptTools map[string]bool // 豁免重复检测的工具（如 agent_spawn 天然需要多次调用）
+	toolCallCounts    map[string]int  // 每个工具的累计调用次数
+	toolCallLimits    map[string]int  // 每个工具的调用上限（0=无限制）
 }
 
 // NewLoopDetector 创建循环检测器
@@ -53,9 +58,27 @@ func NewLoopDetector(maxCalls int, cfg *config.LoopDetectorConfig) *LoopDetector
 		cfg.GlobalCircuitBreakerLimit = maxCalls
 	}
 
+	// 设置豁免重复检测的工具（天然需要多次调用）
+	exemptTools := map[string]bool{
+		"agent_spawn": true,   // 子代理生成天然需要多次调用
+		"file_read":   true,   // 可能需要读取多个文件
+		"file_write":  true,   // 可能需要写入多个文件
+		"web_search":  true,   // 可能需要多次搜索不同关键词
+		"web_fetch":   true,   // 可能需要获取多个页面
+		"memory_add":  true,   // 可能需要写入多条记忆
+	}
+
+	// 设置每个工具的调用上限（0=无限制，走全局熔断）
+	toolLimits := map[string]int{
+		"agent_spawn": 6,     // 最多同时生成6个子代理
+	}
+
 	return &LoopDetector{
-		config:      *cfg,
-		callHistory: make([]ToolCallRecord, 0),
+		config:            *cfg,
+		callHistory:       make([]ToolCallRecord, 0),
+		repeatExemptTools: exemptTools,
+		toolCallCounts:    make(map[string]int),
+		toolCallLimits:    toolLimits,
 	}
 }
 
@@ -69,6 +92,9 @@ func (d *LoopDetector) Check(toolName string, result string, args map[string]int
 
 	d.totalCalls++
 
+	// 记录每个工具的调用次数
+	d.toolCallCounts[toolName]++
+
 	// 记录调用
 	record := ToolCallRecord{
 		ToolName:   toolName,
@@ -78,19 +104,29 @@ func (d *LoopDetector) Check(toolName string, result string, args map[string]int
 	}
 	d.callHistory = append(d.callHistory, record)
 
+	// 0. 单工具调用上限检测（优先于其他检测）
+	if limit, ok := d.toolCallLimits[toolName]; ok && limit > 0 {
+		if d.toolCallCounts[toolName] > limit {
+			return true
+		}
+	}
+
 	// 1. 全局熔断检测
 	if d.totalCalls > d.config.GlobalCircuitBreakerLimit {
 		return true
 	}
 
-	// 2. 重复调用检测 (generic_repeat)
-	if d.checkGenericRepeat(toolName, args) {
-		d.repeatCount++
-		if d.repeatCount >= d.config.GenericRepeatThreshold {
-			return true
+	// 2. 重复调用检测 (generic_repeat) — 豁免工具跳过
+	isExempt := d.repeatExemptTools[toolName]
+	if !isExempt {
+		if d.checkGenericRepeat(toolName, args) {
+			d.repeatCount++
+			if d.repeatCount >= d.config.GenericRepeatThreshold {
+				return true
+			}
+		} else {
+			d.repeatCount = 1 // 重置
 		}
-	} else {
-		d.repeatCount = 1 // 重置
 	}
 
 	// 3. 无进展检测 (no_progress)
@@ -177,6 +213,9 @@ func (d *LoopDetector) Reset() {
 	d.lastArgsJSON = ""
 	d.progressCount = 0
 	d.lastResultHash = ""
+	for k := range d.toolCallCounts {
+		delete(d.toolCallCounts, k)
+	}
 }
 
 // GetTotalCalls 获取总调用次数
