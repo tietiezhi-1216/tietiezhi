@@ -168,6 +168,11 @@ func (a *BaseAgent) GetApprovalManager() *ApprovalManager {
 
 // Run 执行 Agent 对话（含工具调用循环）
 func (a *BaseAgent) Run(ctx context.Context, sessionKey string, isGroup bool, chatID string, input *Message) (*Message, error) {
+	// 重置循环检测器（每轮对话独立计数）
+	if a.loopDetector != nil {
+		a.loopDetector.Reset()
+	}
+
 	// 触发 session_start hook
 	if a.hookManager != nil {
 		event := hook.NewHookEvent(hook.EventSessionStart, sessionKey)
@@ -357,36 +362,21 @@ func (a *BaseAgent) runWithTools(ctx context.Context, sessionKey string, isGroup
 
 			log.Printf("工具调用 [%s]: %s(%s)", sessionKey, toolCall.Function.Name, toolCall.Function.Arguments)
 
-			// ========== 循环检测（前置） ==========
-			if a.loopDetector != nil && a.cfg != nil && a.cfg.LoopDetection {
-				if a.loopDetector.Check(toolCall.Function.Name, "", toolArgs) {
-					log.Printf("[循环检测] 检测到循环，已熔断")
-					loopMsg := llm.ChatMessage{
-						Role:    "system",
-						Content: "⚠️ 检测到工具调用循环（重复调用相同工具或来回弹跳），已自动终止。请简化你的请求或改变策略。",
-					}
-					messages = append(messages, loopMsg)
-					// 不持久化 system 消息到 session，避免破坏对话格式
-					a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求或改变策略。"})
-					return &Message{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求或改变策略。"}, nil
-				}
-			}
-
 			result := a.ExecuteToolCall(toolCall, loadedSkills, sessionKey, isGroup, chatID)
 			log.Printf("工具结果 [%s]: %s", sessionKey, truncate(result, 200))
 
 			// ========== 循环检测（基于结果） ==========
 			if a.loopDetector != nil && a.cfg != nil && a.cfg.LoopDetection {
 				if a.loopDetector.Check(toolCall.Function.Name, result, toolArgs) {
-					log.Printf("[循环检测] 基于结果检测到循环，已熔断")
+					log.Printf("[循环检测] 检测到循环，已熔断")
 					loopMsg := llm.ChatMessage{
 						Role:    "system",
-						Content: "⚠️ 检测到工具调用循环（无新进展或结果重复），已自动终止。请简化你的请求。",
+						Content: "⚠️ 检测到工具调用循环，已自动终止。请简化你的请求或改变策略。",
 					}
 					messages = append(messages, loopMsg)
 					// 不持久化 system 消息到 session，避免破坏对话格式
-					a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求。"})
-					return &Message{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求。"}, nil
+					a.sessionMgr.AppendMessage(sessionKey, llm.ChatMessage{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求或改变策略。"})
+					return &Message{Role: "assistant", Content: "检测到工具调用循环，已自动终止。请简化你的请求或改变策略。"}, nil
 				}
 			}
 

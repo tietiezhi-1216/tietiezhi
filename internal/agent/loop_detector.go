@@ -129,14 +129,16 @@ func (d *LoopDetector) Check(toolName string, result string, args map[string]int
 		}
 	}
 
-	// 3. 无进展检测 (no_progress)
-	if result != "" && d.checkNoProgress(result) {
-		d.progressCount++
-		if d.progressCount >= d.config.NoProgressThreshold {
-			return true
+	// 3. 无进展检测 (no_progress) — 仅当结果非空时检测
+	if result != "" {
+		if d.checkNoProgress(result) {
+			d.progressCount++
+			if d.progressCount >= d.config.NoProgressThreshold {
+				return true
+			}
+		} else {
+			d.progressCount = 0 // 重置
 		}
-	} else {
-		d.progressCount = 0 // 重置
 	}
 
 	// 4. 来回弹跳检测 (ping_pong)
@@ -182,7 +184,8 @@ func (d *LoopDetector) checkNoProgress(result string) bool {
 // A→B→A→B 交替调用模式
 func (d *LoopDetector) checkPingPong() bool {
 	windowSize := d.config.PingPongWindow
-	if len(d.callHistory) < windowSize {
+	// 至少需要 6 次调用（3 轮 A-B-A-B）才有意义
+	if len(d.callHistory) < 6 || len(d.callHistory) < windowSize {
 		return false
 	}
 
