@@ -79,6 +79,12 @@ type LoopDetectorConfig struct {
 	GlobalCircuitBreakerLimit int     `yaml:"global_circuit_breaker_limit"`  // 全局熔断上限（默认20）
 }
 
+// SafeCopy 返回配置的值拷贝，避免指针修改影响原始配置
+func (c LoopDetectorConfig) SafeCopy() *LoopDetectorConfig {
+	cp := c
+	return &cp
+}
+
 // ApprovalConfig 审批流配置
 type ApprovalConfig struct {
 	Enabled         bool     `yaml:"enabled"`          // 是否启用审批

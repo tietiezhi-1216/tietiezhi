@@ -51,6 +51,10 @@ func NewLoopDetector(maxCalls int, cfg *config.LoopDetectorConfig) *LoopDetector
 			PingPongWindow:            8,
 			GlobalCircuitBreakerLimit: 20,
 		}
+	} else {
+		// 值拷贝，避免修改影响原始配置
+		cp := *cfg
+		cfg = &cp
 	}
 
 	// 如果传入的 maxCalls 更小，使用较小的值
