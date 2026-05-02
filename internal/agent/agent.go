@@ -30,24 +30,27 @@ type Handler func(ctx context.Context, input *Message) (*Message, error)
 
 // BaseAgent 基础 Agent 实现
 type BaseAgent struct {
-	provider      llm.Provider
-	cheapProvider llm.Provider   // 轻量级模型（用于压缩等简单任务）
-	systemPrompt  string
-	maxToolCalls  int
-	loopDetector  *LoopDetector
-	compressor    *ContextCompressor
-	approvalMgr   *ApprovalManager
-	sessionMgr    *session.SessionManager
-	memoryMgr     *memory.MemoryManager
-	skillLoader   *skill.Loader
-	mcpManager    *mcp.MCPManager
-	hookManager   *hook.HookManager
-	subAgentMgr   *subagent.SubAgentManager
-	cronMgr       interface {
+	provider        llm.Provider
+	cheapProvider   llm.Provider   // 轻量级模型（用于压缩等简单任务）
+	systemPrompt    string
+	maxToolCalls    int
+	loopDetector    *LoopDetector
+	compressor      *ContextCompressor
+	approvalMgr     *ApprovalManager
+	sessionMgr      *session.SessionManager
+	memoryMgr       *memory.MemoryManager
+	skillLoader     *skill.Loader
+	mcpManager      *mcp.MCPManager
+	hookManager     *hook.HookManager
+	subAgentMgr     *subagent.SubAgentManager
+	cronMgr         interface {
 		GetCronTools() []llm.ToolDef
 		ExecuteCronTool(action string, args map[string]interface{}, sessionKey string, isGroup bool, chatID string) string
 	}
-	cfg *config.AgentConfig
+	cfg              *config.AgentConfig
+	fileAnalyzeTool  interface {
+		Execute(input map[string]interface{}) (string, error)
+	} // 文件分析工具（需要 LLM Provider）
 }
 
 // NewBaseAgent 创建基础 Agent
@@ -137,6 +140,11 @@ func (a *BaseAgent) SetHookManager(mgr *hook.HookManager) {
 // SetSubAgentManager 设置子代理管理器
 func (a *BaseAgent) SetSubAgentManager(mgr *subagent.SubAgentManager) {
 	a.subAgentMgr = mgr
+}
+
+// SetFileAnalyzeTool 设置文件分析工具
+func (a *BaseAgent) SetFileAnalyzeTool(tool interface{}) {
+	a.fileAnalyzeTool = tool
 }
 
 // GetSkillLoader 获取技能加载器

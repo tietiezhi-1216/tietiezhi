@@ -301,3 +301,30 @@ func GetSkillSaveTools() []llm.ToolDef {
 		},
 	}
 }
+
+// GetFileAnalyzeTools 获取文件分析工具定义
+func GetFileAnalyzeTools() []llm.ToolDef {
+	return []llm.ToolDef{
+		{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "file_analyze",
+				Description: "分析文件内容，支持图片、PDF、文本等文件类型。\n参数：\n- path: 文件路径（必填）\n- question: 针对文件的问题（可选，不填则返回文件摘要）\n\n支持的图片类型：png, jpg, jpeg, gif, webp, bmp\n返回格式：JSON {file_type, content, summary}",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "文件路径",
+						},
+						"question": map[string]any{
+							"type":        "string",
+							"description": "针对文件的问题（可选）",
+						},
+					},
+					"required": []string{"path"},
+				},
+			},
+		},
+	}
+}

@@ -20,10 +20,12 @@ import (
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
+	"tietiezhi/internal/sandbox"
 	"tietiezhi/internal/server"
 	"tietiezhi/internal/session"
 	"tietiezhi/internal/skill"
 	"tietiezhi/internal/subagent"
+	"tietiezhi/internal/tool/builtin"
 )
 
 func main() {
@@ -37,6 +39,31 @@ func main() {
 	}
 
 	log.Printf("配置加载成功: server=%s:%d, llm=%s/%s", cfg.Server.Host, cfg.Server.Port, cfg.LLM.Provider, cfg.LLM.Model)
+
+	// ========== 沙箱初始化 ==========
+	var sandboxMgr *sandbox.SandboxManager
+	if cfg.Sandbox.Enabled {
+		sandboxMgr = builtin.NewSandboxManagerFromConfig(&cfg.Sandbox)
+		
+		// 检查 Docker 是否可用
+		if err := sandboxMgr.HealthCheck(); err != nil {
+			log.Printf("⚠️ Docker 不可用，沙箱功能已禁用: %v", err)
+			sandboxMgr = sandbox.NewSandboxManager(false, nil)
+		} else {
+			log.Printf("✓ Docker 可用，沙箱已启用")
+			
+			// 确保镜像存在
+			ctx := context.Background()
+			if err := sandboxMgr.EnsureImage(ctx); err != nil {
+				log.Printf("⚠️ 拉取沙箱镜像失败: %v，沙箱将不可用", err)
+				sandboxMgr = sandbox.NewSandboxManager(false, nil)
+			} else {
+				log.Printf("✓ 沙箱镜像 %s 已就绪", cfg.Sandbox.Image)
+			}
+		}
+	} else {
+		log.Println("沙箱功能已禁用")
+	}
 
 	// 初始化 LLM Provider 工厂
 	factory := llm.NewProviderFactory()
@@ -79,6 +106,18 @@ func main() {
 	// 初始化记忆管理器
 	memoryMgr := memory.NewMemoryManager(cfg.Memory.Path)
 	log.Printf("记忆系统已初始化: workspace=%s", memoryMgr.GetWorkspacePath())
+
+	// ========== 初始化终端工具（带沙箱支持）==========
+	if sandboxMgr != nil && sandboxMgr.IsEnabled() {
+		terminalTool := builtin.NewTerminalToolWithSandbox(sandboxMgr, true, cfg.Tools.Terminal.BlockedCmds...)
+		agent.SetTerminalTool(terminalTool)
+		log.Printf("终端工具已初始化（沙箱模式）: image=%s, network=%s, memory=%s", 
+			cfg.Sandbox.Image, cfg.Sandbox.NetworkMode, cfg.Sandbox.MemoryLimit)
+	} else {
+		terminalTool := builtin.NewTerminalTool(cfg.Tools.Terminal.BlockedCmds...)
+		agent.SetTerminalTool(terminalTool)
+		log.Println("终端工具已初始化（直接执行模式）")
+	}
 
 	// 初始化 MCP 管理器
 	mcpManager := mcp.NewMCPManager()

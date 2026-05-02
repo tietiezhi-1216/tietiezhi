@@ -1,14 +1,19 @@
 package builtin
 
 import (
+	"tietiezhi/internal/config"
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/sandbox"
 	"tietiezhi/internal/tool"
 )
 
 // RegisterBuiltinTools 注册所有内置工具到 Registry
-func RegisterBuiltinTools(registry *tool.Registry, workspacePath string, allowedDirs []string, blockedCmds []string, searchConfig *SearchConfig) {
-	// 终端执行工具
-	terminalTool := NewTerminalTool(blockedCmds...)
+func RegisterBuiltinTools(registry *tool.Registry, workspacePath string, allowedDirs []string, blockedCmds []string, searchConfig *SearchConfig, sandboxConfig *config.SandboxConfig) {
+	// 创建沙箱管理器
+	sandboxMgr := NewSandboxManagerFromConfig(sandboxConfig)
+
+	// 终端执行工具（带沙箱支持）
+	terminalTool := NewTerminalToolWithSandbox(sandboxMgr, sandboxConfig.Enabled, blockedCmds...)
 	registry.Register(terminalTool)
 
 	// 文件读取工具
@@ -73,4 +78,32 @@ func GetBuiltinToolDefsByNames(registry *tool.Registry, names []string) []llm.To
 	}
 
 	return toolDefs
+}
+
+// NewSandboxManagerFromConfig 从配置创建沙箱管理器
+func NewSandboxManagerFromConfig(cfg *config.SandboxConfig) *sandbox.SandboxManager {
+	if cfg == nil || !cfg.Enabled {
+		return sandbox.NewSandboxManager(false, nil)
+	}
+
+	// 转换配置
+	sandboxConfig := &sandbox.SandboxConfig{
+		Enabled:     cfg.Enabled,
+		Image:       cfg.Image,
+		NetworkMode: cfg.NetworkMode,
+		MemoryLimit: cfg.MemoryLimit,
+		CPULimit:    cfg.CPULimit,
+		WorkDir:     cfg.WorkDir,
+	}
+
+	// 转换卷挂载
+	for _, v := range cfg.Volumes {
+		sandboxConfig.Volumes = append(sandboxConfig.Volumes, sandbox.VolumeMountConfig{
+			HostPath:      v.HostPath,
+			ContainerPath: v.ContainerPath,
+			ReadOnly:      v.ReadOnly,
+		})
+	}
+
+	return sandbox.NewSandboxManager(true, sandboxConfig)
 }
