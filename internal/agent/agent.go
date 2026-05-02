@@ -424,6 +424,12 @@ func (a *BaseAgent) buildToolsList(injectCron bool, sessionKey string) []llm.Too
 	// 终端执行工具（Docker 沙箱）
 	tools = append(tools, GetTerminalTools()...)
 
+	// 网页工具（web_search, web_fetch）
+	tools = append(tools, GetWebTools()...)
+
+	// 文件读写工具（file_read, file_write）
+	tools = append(tools, GetFileIOTools()...)
+
 	// 技能工具
 	if skillTools := GetSkillTools(a.skillLoader); len(skillTools) > 0 {
 		tools = append(tools, skillTools...)

@@ -9,8 +9,14 @@ import (
 	"tietiezhi/internal/tool/builtin"
 )
 
-// 终端工具实例（全局单例，用于沙箱支持）
-var terminalToolInstance *builtin.TerminalTool
+// 内置工具实例（全局单例）
+var (
+	terminalToolInstance  *builtin.TerminalTool
+	webSearchToolInstance *builtin.WebSearchTool
+	webFetchToolInstance  *builtin.WebFetchTool
+	fileReadToolInstance  *builtin.FileReadTool
+	fileWriteToolInstance *builtin.FileWriteTool
+)
 
 // SetTerminalTool 设置终端工具实例
 func SetTerminalTool(t *builtin.TerminalTool) {
@@ -20,6 +26,126 @@ func SetTerminalTool(t *builtin.TerminalTool) {
 // GetTerminalTool 获取终端工具实例
 func GetTerminalTool() *builtin.TerminalTool {
 	return terminalToolInstance
+}
+
+// SetWebSearchTool 设置网页搜索工具实例
+func SetWebSearchTool(t *builtin.WebSearchTool) {
+	webSearchToolInstance = t
+}
+
+// SetWebFetchTool 设置网页获取工具实例
+func SetWebFetchTool(t *builtin.WebFetchTool) {
+	webFetchToolInstance = t
+}
+
+// SetFileReadTool 设置文件读取工具实例
+func SetFileReadTool(t *builtin.FileReadTool) {
+	fileReadToolInstance = t
+}
+
+// SetFileWriteTool 设置文件写入工具实例
+func SetFileWriteTool(t *builtin.FileWriteTool) {
+	fileWriteToolInstance = t
+}
+
+// GetWebTools 获取网页工具定义
+func GetWebTools() []llm.ToolDef {
+	return []llm.ToolDef{
+		{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "web_search",
+				Description: "通过搜索引擎执行网页搜索。返回搜索结果列表，包含标题、URL和摘要。\n参数：\n- query: 搜索关键词（必填）\n- count: 返回结果数量（可选，默认5，最大10）\n返回：{\"results\": [{\"title\": \"...\", \"url\": \"...\", \"snippet\": \"...\"}]}",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "搜索关键词",
+						},
+						"count": map[string]any{
+							"type":        "integer",
+							"description": "返回结果数量（默认5，最大10）",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "web_fetch",
+				Description: "获取网页内容，支持纯文本和HTML格式。\n参数：\n- url: 网页地址（必填）\n- format: 返回格式（可选）：text=纯文本（默认），html=原始HTML\n返回：{\"content\": \"...\", \"url\": \"...\", \"status_code\": 200}",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"url": map[string]any{
+							"type":        "string",
+							"description": "网页地址",
+						},
+						"format": map[string]any{
+							"type":        "string",
+							"description": "返回格式：text(默认)/html",
+						},
+					},
+					"required": []string{"url"},
+				},
+			},
+		},
+	}
+}
+
+// GetFileIOTools 获取文件读写工具定义
+func GetFileIOTools() []llm.ToolDef {
+	return []llm.ToolDef{
+		{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "file_read",
+				Description: "读取文件内容。\n参数：\n- path: 文件路径（必填）\n- offset: 起始行号（可选，从0开始）\n- limit: 读取行数（可选）\n返回：{\"content\": \"...\", \"path\": \"...\", \"lines\": 100}",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "文件路径",
+						},
+						"offset": map[string]any{
+							"type":        "integer",
+							"description": "起始行号（从0开始）",
+						},
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": "读取行数",
+						},
+					},
+					"required": []string{"path"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "file_write",
+				Description: "写入文件内容。如果文件不存在会创建，存在则覆盖。\n参数：\n- path: 文件路径（必填）\n- content: 文件内容（必填）\n返回：{\"success\": true, \"path\": \"...\", \"bytes_written\": 1234}",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "文件路径",
+						},
+						"content": map[string]any{
+							"type":        "string",
+							"description": "文件内容",
+						},
+					},
+					"required": []string{"path", "content"},
+				},
+			},
+		},
+	}
 }
 
 // GetMemoryTools 获取记忆相关工具定义
@@ -163,9 +289,81 @@ func ExecuteToolCall(call llm.ToolCall, memMgr *memory.MemoryManager, fileAnalyz
 		return executeDeleteBootstrap(memMgr)
 	case "file_analyze":
 		return executeFileAnalyze(call.Function.Arguments, fileAnalyzeTool)
+	case "web_search":
+		return executeWebSearch(call.Function.Arguments)
+	case "web_fetch":
+		return executeWebFetch(call.Function.Arguments)
+	case "file_read":
+		return executeFileRead(call.Function.Arguments)
+	case "file_write":
+		return executeFileWrite(call.Function.Arguments)
 	default:
 		return `{"error": "未知工具: ` + call.Function.Name + `"}`
 	}
+}
+
+// executeWebSearch 执行网页搜索工具
+func executeWebSearch(argsJSON string) string {
+	if webSearchToolInstance == nil {
+		return `{"error": "网页搜索工具未初始化"}`
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return `{"error": "参数解析失败"}`
+	}
+	result, err := webSearchToolInstance.Execute(args)
+	if err != nil {
+		return `{"error": "` + err.Error() + `"}`
+	}
+	return result
+}
+
+// executeWebFetch 执行网页获取工具
+func executeWebFetch(argsJSON string) string {
+	if webFetchToolInstance == nil {
+		return `{"error": "网页获取工具未初始化"}`
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return `{"error": "参数解析失败"}`
+	}
+	result, err := webFetchToolInstance.Execute(args)
+	if err != nil {
+		return `{"error": "` + err.Error() + `"}`
+	}
+	return result
+}
+
+// executeFileRead 执行文件读取工具
+func executeFileRead(argsJSON string) string {
+	if fileReadToolInstance == nil {
+		return `{"error": "文件读取工具未初始化"}`
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return `{"error": "参数解析失败"}`
+	}
+	result, err := fileReadToolInstance.Execute(args)
+	if err != nil {
+		return `{"error": "` + err.Error() + `"}`
+	}
+	return result
+}
+
+// executeFileWrite 执行文件写入工具
+func executeFileWrite(argsJSON string) string {
+	if fileWriteToolInstance == nil {
+		return `{"error": "文件写入工具未初始化"}`
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return `{"error": "参数解析失败"}`
+	}
+	result, err := fileWriteToolInstance.Execute(args)
+	if err != nil {
+		return `{"error": "` + err.Error() + `"}`
+	}
+	return result
 }
 
 // ExecuteTerminalToolCall 执行终端工具调用

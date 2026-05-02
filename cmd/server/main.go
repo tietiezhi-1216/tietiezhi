@@ -120,6 +120,29 @@ func main() {
 		log.Println("终端工具已初始化（直接执行模式）")
 	}
 
+	// ========== 初始化网页工具 ==========
+	searchConfig := &builtin.SearchConfig{
+		Provider: cfg.Tools.WebSearch.Provider,
+		APIKey:   cfg.Tools.WebSearch.APIKey,
+		BaseURL:  cfg.Tools.WebSearch.BaseURL,
+	}
+	webSearchTool := builtin.NewWebSearchTool(searchConfig)
+	agent.SetWebSearchTool(webSearchTool)
+	webFetchTool := builtin.NewWebFetchTool()
+	agent.SetWebFetchTool(webFetchTool)
+	log.Println("网页工具已初始化（web_search, web_fetch）")
+
+	// ========== 初始化文件读写工具 ==========
+	allowedDirs := cfg.Tools.FileIO.AllowedDirs
+	if len(allowedDirs) == 0 {
+		allowedDirs = []string{memoryMgr.GetWorkspacePath()}
+	}
+	fileReadTool := builtin.NewFileReadTool(allowedDirs...)
+	agent.SetFileReadTool(fileReadTool)
+	fileWriteTool := builtin.NewFileWriteTool(allowedDirs...)
+	agent.SetFileWriteTool(fileWriteTool)
+	log.Printf("文件工具已初始化（file_read, file_write），允许目录: %v", allowedDirs)
+
 	// 初始化 MCP 管理器
 	mcpManager := mcp.NewMCPManager()
 	log.Println("MCP 管理器已初始化")
