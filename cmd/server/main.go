@@ -13,8 +13,6 @@ import (
 	"tietiezhi/internal/agent"
 	"tietiezhi/internal/channel"
 	"tietiezhi/internal/channel/feishu"
-	"tietiezhi/internal/channel/telegram"
-	"tietiezhi/internal/command"
 	"tietiezhi/internal/config"
 	"tietiezhi/internal/cron"
 	"tietiezhi/internal/heartbeat"
@@ -22,7 +20,6 @@ import (
 	"tietiezhi/internal/llm"
 	"tietiezhi/internal/mcp"
 	"tietiezhi/internal/memory"
-	"tietiezhi/internal/observability"
 	"tietiezhi/internal/server"
 	"tietiezhi/internal/session"
 	"tietiezhi/internal/skill"
@@ -41,13 +38,35 @@ func main() {
 
 	log.Printf("配置加载成功: server=%s:%d, llm=%s/%s", cfg.Server.Host, cfg.Server.Port, cfg.LLM.Provider, cfg.LLM.Model)
 
-	// 初始化 LLM Provider
+	// 初始化 LLM Provider 工厂
+	factory := llm.NewProviderFactory()
+
+	// 初始化主 LLM Provider
 	var provider llm.Provider
 	switch cfg.LLM.Provider {
 	case "openai":
-		provider = llm.NewOpenAIProvider(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
+		provider, err = factory.CreateMainProvider(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
+		if err != nil {
+			log.Fatalf("初始化主 LLM Provider 失败: %v", err)
+		}
 	default:
 		log.Fatalf("不支持的 LLM Provider: %s", cfg.LLM.Provider)
+	}
+
+	// 初始化 cheap LLM Provider（用于压缩等简单任务）
+	var cheapProvider llm.Provider
+	if cfg.LLM.CheapModel != "" || cfg.LLM.CheapBaseURL != "" {
+		cheapProvider, err = factory.CreateCheapProvider(
+			cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model,
+			cfg.LLM.CheapBaseURL, cfg.LLM.CheapAPIKey, cfg.LLM.CheapModel,
+		)
+		if err != nil {
+			log.Printf("初始化 cheap LLM Provider 失败: %v，将使用主模型", err)
+		} else {
+			log.Printf("cheap LLM Provider 已初始化: %s", cfg.LLM.CheapModel)
+		}
+	} else {
+		log.Println("cheap LLM Provider 未配置，将使用主模型进行所有操作")
 	}
 
 	// 初始化会话管理器
@@ -106,13 +125,19 @@ func main() {
 		log.Println("Hook 系统已禁用")
 	}
 
-	// 初始化命令管理器
-	commandRegistry := command.NewRegistry()
-	log.Printf("命令系统已初始化: %d 个默认命令", len(commandRegistry.ListCommands()))
+	// 初始化 Agent（使用带配置的构造函数）
+	ag := agent.NewBaseAgentWithConfig(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr, memoryMgr, &cfg.Agent)
 
-	// 初始化 Agent
-	ag := agent.NewBaseAgent(provider, cfg.Agent.SystemPrompt, cfg.Agent.MaxToolCalls, sessionMgr, memoryMgr)
-	ag.SetModelName(cfg.LLM.Model) // 设置模型名称用于 Token 追踪
+	// 设置 cheap provider（用于压缩等简单任务）
+	if cheapProvider != nil {
+		ag.SetCheapProvider(cheapProvider)
+	}
+
+	// 设置审批配置
+	if cfg.Approval.Enabled {
+		ag.SetApprovalConfig(&cfg.Approval)
+		log.Printf("审批系统已启用: %d 个工具需要审批", len(cfg.Approval.RequireApproval))
+	}
 
 	ag.SetSkillLoader(skillLoader)
 	ag.SetMCPManager(mcpManager)
@@ -120,23 +145,18 @@ func main() {
 	ag.SetSubAgentManager(subAgentMgr)
 	ag.SetHookManager(hookManager)
 
-	// 初始化可观测性系统
-	if cfg.Observability.Enabled {
-		// 初始化审计日志
-		if cfg.Observability.AuditLog.Enabled {
-			auditLogger, err := observability.NewAuditLogger(cfg.Observability.AuditLog.Path)
-			if err != nil {
-				log.Printf("审计日志初始化失败: %v", err)
-			} else {
-				ag.SetAuditLogger(auditLogger)
-				log.Printf("审计日志已启用: %s", cfg.Observability.AuditLog.Path)
-			}
-		}
+	// 打印压缩配置
+	if cfg.Agent.Compression.Enabled {
+		log.Printf("上下文压缩已启用: max_chars=%d, keep_recent=%d",
+			cfg.Agent.Compression.MaxChars, cfg.Agent.Compression.KeepRecent)
+	}
 
-		// Token 追踪默认开启
-		if cfg.Observability.TokenTrack {
-			log.Printf("Token 追踪已启用")
-		}
+	// 打印循环检测配置
+	if cfg.Agent.LoopDetection {
+		log.Printf("循环检测已启用: global_limit=%d, repeat_threshold=%d, ping_pong_window=%d",
+			cfg.Agent.LoopDetector.GlobalCircuitBreakerLimit,
+			cfg.Agent.LoopDetector.GenericRepeatThreshold,
+			cfg.Agent.LoopDetector.PingPongWindow)
 	}
 
 	// 初始化渠道注册表
@@ -189,30 +209,8 @@ func main() {
 		}
 	}
 
-	// 注册 Telegram 渠道
-	if cfg.Channels.Telegram != nil && cfg.Channels.Telegram.Enabled {
-		if cfg.Channels.Telegram.BotToken == "" {
-			log.Println("Telegram 渠道已启用但未配置 BotToken，跳过注册")
-		} else {
-			telegramCh := telegram.New(cfg.Channels.Telegram.BotToken)
-
-			// 设置命令管理器
-			telegramCh.SetCommandManager(commandRegistry)
-
-			// 设置消息处理函数
-			telegramCh.SetHandler(func(ctx context.Context, msg *channel.Message) (*channel.Message, error) {
-				sessionKey := session.BuildSessionKey(msg.ChatType, msg.ChannelID, msg.UserID)
-				reply, err := ag.Run(ctx, sessionKey, msg.ChatType == "group", msg.ChannelID, &agent.Message{Role: "user", Content: msg.Content})
-				if err != nil {
-					return nil, err
-				}
-				return &channel.Message{Content: reply.Content}, nil
-			})
-
-			channelRegistry.Register(telegramCh)
-			log.Printf("Telegram 渠道已注册（Long Polling 模式）")
-		}
-	}
+	// 设置 Agent 的 CronManager
+	_ = cronMgr
 
 	// 启动定时任务调度器
 	if cfg.Scheduler.Enabled {

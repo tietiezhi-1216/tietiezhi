@@ -19,6 +19,7 @@ import (
 	"tietiezhi/internal/agent"
 	"tietiezhi/internal/channel"
 	"tietiezhi/internal/llm"
+	"tietiezhi/internal/command"
 	"tietiezhi/internal/session"
 )
 
@@ -28,6 +29,7 @@ type OnMessageFunc func(chatType, chatID string)
 // FeishuChannel 飞书渠道
 type FeishuChannel struct {
 	appID        string
+	commandMgr  *command.Registry
 	appSecret    string
 	botOpenID    string
 	client       *lark.Client
@@ -63,6 +65,11 @@ func (f *FeishuChannel) SetHandler(handler func(ctx context.Context, msg *channe
 // SetStreamHandler 设置流式消息处理函数（流式模式）
 func (f *FeishuChannel) SetStreamHandler(handler func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error) {
 	f.streamHandler = handler
+}
+
+// SetCommandManager 设置命令管理器
+func (f *FeishuChannel) SetCommandManager(mgr *command.Registry) {
+	f.commandMgr = mgr
 }
 
 // SetOnMessage 设置消息回调（用于心跳 chatID 更新）

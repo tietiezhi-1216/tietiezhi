@@ -23,7 +23,7 @@ type Config struct {
 	Session   SessionConfig   `yaml:"session"`
 	SubAgent  SubAgentConfig  `yaml:"subagent"`
 	Hooks     HooksConfig     `yaml:"hooks"`
-	Tools     ToolsConfig     `yaml:"tools"`
+	Tools          ToolsConfig          `yaml:"tools"`
 	Approval     ApprovalConfig     `yaml:"approval"`
 	Observability ObservabilityConfig `yaml:"observability"`
 }
@@ -337,3 +337,4 @@ func resolvePath(path string, configPath string) string {
 	configDir := filepath.Dir(absConfigPath)
 	return filepath.Join(configDir, path)
 }
+

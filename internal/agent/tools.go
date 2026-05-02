@@ -151,3 +151,39 @@ func truncateSearchResult(content, query string) string {
 	}
 	return result
 }
+
+// GetSkillSaveTools 获取技能保存工具
+func GetSkillSaveTools() []llm.ToolDef {
+	return []llm.ToolDef{
+		{
+			Type: "function",
+			Function: llm.FunctionDef{
+				Name:        "skill_save",
+				Description: "保存技能文档。当你完成一个复杂任务（涉及5次以上工具调用）后，将解决过程沉淀为技能以便后续复用。",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"name": map[string]any{
+							"type":        "string",
+							"description": "技能名称（英文，用于目录命名）",
+						},
+						"description": map[string]any{
+							"type":        "string",
+							"description": "技能描述（中文，简短说明技能用途）",
+						},
+						"content": map[string]any{
+							"type":        "string",
+							"description": "技能内容（Markdown 格式，应包含：问题分析、解决步骤、关键代码/命令、注意事项）",
+						},
+						"tags": map[string]any{
+							"type":        "array",
+							"items":       map[string]any{"type": "string"},
+							"description": "技能标签列表",
+						},
+					},
+					"required": []string{"name", "description", "content"},
+				},
+			},
+		},
+	}
+}

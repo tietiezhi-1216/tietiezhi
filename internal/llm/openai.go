@@ -120,3 +120,45 @@ func (p *OpenAIProvider) sendRequest(ctx context.Context, req *ChatRequest) (*ht
 
 	return p.client.Do(httpReq)
 }
+
+// ProviderFactory LLM Provider 工厂
+// 用于创建主 Provider 和 cheap Provider
+type ProviderFactory struct{}
+
+// NewProviderFactory 创建 Provider 工厂
+func NewProviderFactory() *ProviderFactory {
+	return &ProviderFactory{}
+}
+
+// CreateMainProvider 创建主 Provider
+func (f *ProviderFactory) CreateMainProvider(baseURL, apiKey, model string) (Provider, error) {
+	if baseURL == "" {
+		return nil, fmt.Errorf("base_url 不能为空")
+	}
+	if apiKey == "" {
+		return nil, fmt.Errorf("api_key 不能为空")
+	}
+	if model == "" {
+		return nil, fmt.Errorf("model 不能为空")
+	}
+	return NewOpenAIProvider(baseURL, apiKey, model), nil
+}
+
+// CreateCheapProvider 创建 cheap Provider（用于简单任务如压缩总结）
+// 如果 cheap 配置为空，使用主 Provider
+func (f *ProviderFactory) CreateCheapProvider(
+	mainBaseURL, mainAPIKey, mainModel string,
+	cheapBaseURL, cheapAPIKey, cheapModel string,
+) (Provider, error) {
+	// 如果 cheap 配置完整，使用 cheap 配置
+	if cheapBaseURL != "" && cheapAPIKey != "" && cheapModel != "" {
+		return NewOpenAIProvider(cheapBaseURL, cheapAPIKey, cheapModel), nil
+	}
+
+	// 否则回退到主 Provider
+	if mainBaseURL != "" && mainAPIKey != "" && mainModel != "" {
+		return NewOpenAIProvider(mainBaseURL, mainAPIKey, mainModel), nil
+	}
+
+	return nil, fmt.Errorf("LLM 配置不完整")
+}
