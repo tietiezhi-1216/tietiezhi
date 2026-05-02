@@ -106,3 +106,31 @@ subagent:
   enabled: true
   path: "./data/subagents"
   timeout: 300                  # 默认超时（秒）
+
+# 内置工具配置
+tools:
+  terminal:
+    blocked_cmds:             # 禁止执行的命令
+      - "rm -rf /"
+      - "mkfs"
+      - "dd if=/dev/zero"
+  file_io:
+    allowed_dirs: []           # 允许文件操作的目录（空=不限制）
+  web_search:
+    provider: ""               # 搜索服务：serper/brave/custom（空=不可用）
+    api_key: ""
+    base_url: ""
+
+# Telegram 渠道配置（可选）
+  # telegram:
+  #   enabled: false
+  #   bot_token: ""
+  #   admin_ids: []
+
+# 可观测性配置
+observability:
+  enabled: false               # 是否启用可观测性
+  audit_log:
+    enabled: false             # 是否启用审计日志
+    path: "./data/workspace/memory/audit.jsonl"  # 审计日志路径
+  token_track: true            # 是否追踪 Token 使用
