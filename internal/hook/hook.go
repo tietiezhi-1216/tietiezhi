@@ -246,3 +246,12 @@ func matchWildcard(name, pattern string) bool {
 	// 完全匹配
 	return name == pattern
 }
+
+// GetRules 获取所有 Hook 规则（只读副本）
+func (m *HookManager) GetRules() []HookRule {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rules := make([]HookRule, len(m.rules))
+	copy(rules, m.rules)
+	return rules
+}

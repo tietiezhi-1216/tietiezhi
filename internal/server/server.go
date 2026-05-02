@@ -16,6 +16,7 @@ import (
 type Server struct {
 	cfg    *config.Config
 	agent  *agent.BaseAgent
+	mgmt   *ManagementAPI
 	mux    *http.ServeMux
 	srv    *http.Server
 }
@@ -31,10 +32,19 @@ func New(cfg *config.Config, ag *agent.BaseAgent) *Server {
 	return s
 }
 
+// SetManagementAPI 设置管理 API
+func (s *Server) SetManagementAPI(mgmt *ManagementAPI) {
+	s.mgmt = mgmt
+	if mgmt != nil {
+		mgmt.RegisterRoutes(s.mux)
+	}
+}
+
 // registerRoutes 注册路由
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
+	s.mux.HandleFunc("/v1/models", s.handleModels)
 }
 
 // Start 启动服务器
@@ -69,11 +79,29 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleModels 模型列表
+func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	models := []map[string]string{
+		{"id": s.cfg.LLM.Model, "owned_by": "tietiezhi"},
+	}
+	if s.cfg.LLM.CheapModel != "" {
+		models = append(models, map[string]string{"id": s.cfg.LLM.CheapModel, "owned_by": "tietiezhi"})
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"data": models,
+	})
+}
+
 // chatRequest OpenAI 兼容请求格式
 type chatRequest struct {
-	Model    string           `json:"model"`
+	Model    string            `json:"model"`
 	Messages []llm.ChatMessage `json:"messages"`
-	Stream   bool             `json:"stream"`
+	Stream   bool              `json:"stream"`
 }
 
 // handleChatCompletions OpenAI 兼容聊天接口
@@ -89,7 +117,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 取最后一条用户消息
 	var userMsg string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
@@ -158,7 +185,6 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, input 
 
 	for chunk := range ch {
 		for _, choice := range chunk.Choices {
-			// 解析 delta
 			delta := llm.StreamDelta{}
 			if err := json.Unmarshal(choice.Delta, &delta); err != nil {
 				continue
@@ -169,9 +195,9 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, input 
 			}
 
 			data, _ := json.Marshal(map[string]any{
-				"id":      chunk.ID,
-				"object":  "chat.completion.chunk",
-				"model":   s.cfg.LLM.Model,
+				"id":     chunk.ID,
+				"object": "chat.completion.chunk",
+				"model":  s.cfg.LLM.Model,
 				"choices": []map[string]any{
 					{
 						"index": choice.Index,
@@ -188,8 +214,6 @@ func (s *Server) handleStreamChat(w http.ResponseWriter, r *http.Request, input 
 		}
 	}
 
-	// 发送结束标记
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
 }
-

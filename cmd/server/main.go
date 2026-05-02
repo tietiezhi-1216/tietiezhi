@@ -312,6 +312,11 @@ func main() {
 	// 创建 HTTP 服务器
 	srv := server.New(cfg, ag)
 
+	// 注入管理 API
+	mgmtAPI := server.NewManagementAPI(cfg, skillLoader, mcpManager, hookManager, subAgentMgr, cronMgr, memoryMgr, sessionMgr)
+	srv.SetManagementAPI(mgmtAPI)
+	log.Println("管理 API 已注册")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

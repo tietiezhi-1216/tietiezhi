@@ -508,3 +508,24 @@ func getMap(m map[string]interface{}, key string) map[string]interface{} {
 	}
 	return nil
 }
+
+// GetClients 获取所有 MCP 客户端（只读）
+func (m *MCPManager) GetClients() map[string]*MCPClient {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make(map[string]*MCPClient, len(m.clients))
+	for k, v := range m.clients {
+		result[k] = v
+	}
+	return result
+}
+
+// GetClientTools 获取 MCPClient 的工具列表（公开方法）
+func (c *MCPClient) GetTools() []MCPToolDef {
+	return c.tools
+}
+
+// GetName 获取 MCPClient 的名称
+func (c *MCPClient) GetName() string {
+	return c.name
+}

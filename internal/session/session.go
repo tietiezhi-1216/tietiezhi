@@ -305,3 +305,25 @@ func (sm *SessionManager) StartAutoSave(ctx context.Context) {
 		}
 	}()
 }
+
+// SessionInfo 会话摘要信息
+type SessionInfo struct {
+	Key      string `json:"key"`
+	Messages int    `json:"messages"`
+}
+
+// ListSessions 列出所有会话摘要
+func (sm *SessionManager) ListSessions() []SessionInfo {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	result := make([]SessionInfo, 0, len(sm.sessions))
+	for _, s := range sm.sessions {
+		s.mu.RLock()
+		result = append(result, SessionInfo{
+			Key:      s.Key,
+			Messages: len(s.History),
+		})
+		s.mu.RUnlock()
+	}
+	return result
+}

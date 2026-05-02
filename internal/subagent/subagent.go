@@ -457,3 +457,42 @@ func (m *SubAgentManager) loadSpawns() error {
 	log.Printf("已加载 %d 个子代理任务", len(spawns))
 	return nil
 }
+
+// KillSpawn 终止一个 spawn
+func (m *SubAgentManager) KillSpawn(spawnID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	spawn, ok := m.spawns[spawnID]
+	if !ok {
+		return fmt.Errorf("spawn 不存在: %s", spawnID)
+	}
+
+	if spawn.Status == "running" || spawn.Status == "pending" {
+		spawn.Status = "killed"
+		now := time.Now()
+		spawn.EndedAt = &now
+		m.saveSpawnsLocked()
+	}
+
+	return nil
+}
+
+// saveSpawnsLocked 持久化 spawn 结果（调用者已持锁）
+func (m *SubAgentManager) saveSpawnsLocked() {
+	dir := filepath.Dir(m.storePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Printf("创建目录失败: %v", err)
+		return
+	}
+
+	data, err := json.MarshalIndent(m.spawns, "", "  ")
+	if err != nil {
+		log.Printf("序列化 spawns 失败: %v", err)
+		return
+	}
+
+	if err := os.WriteFile(m.storePath, data, 0644); err != nil {
+		log.Printf("写入 spawns 文件失败: %v", err)
+	}
+}
