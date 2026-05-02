@@ -24,7 +24,8 @@ type Config struct {
 	SubAgent  SubAgentConfig  `yaml:"subagent"`
 	Hooks     HooksConfig     `yaml:"hooks"`
 	Tools     ToolsConfig     `yaml:"tools"`
-	Approval  ApprovalConfig  `yaml:"approval"`
+	Approval     ApprovalConfig     `yaml:"approval"`
+	Observability ObservabilityConfig `yaml:"observability"`
 }
 
 // ServerConfig 服务器配置
@@ -311,6 +312,20 @@ func (c *Config) applyDefaults(configPath string) {
 	c.Scheduler.Path = resolvePath(c.Scheduler.Path, configPath)
 	c.Session.PersistPath = resolvePath(c.Session.PersistPath, configPath)
 	c.SubAgent.Path = resolvePath(c.SubAgent.Path, configPath)
+}
+
+
+// ObservabilityConfig 可观测性配置
+type ObservabilityConfig struct {
+	Enabled    bool           `yaml:"enabled"`     // 是否启用可观测性
+	AuditLog   AuditLogConfig `yaml:"audit_log"`  // 审计日志配置
+	TokenTrack bool           `yaml:"token_track"` // 是否追踪 Token 使用
+}
+
+// AuditLogConfig 审计日志配置
+type AuditLogConfig struct {
+	Enabled bool   `yaml:"enabled"` // 是否启用审计日志
+	Path    string `yaml:"path"`   // 审计日志路径
 }
 
 // resolvePath 解析相对路径为绝对路径
