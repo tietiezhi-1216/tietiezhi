@@ -1,184 +1,153 @@
-# tietiezhi AGENTS.md
+# AGENTS.md
 
-本文件是 coding agent 的项目操作手册。README 面向人类读者，AGENTS.md 面向自动化编码代理；这里写代理执行任务时必须遵守的架构、编码、测试和提交流程。
-
-## 适用范围与优先级
-
-- 根目录 `AGENTS.md` 适用于整个仓库。
-- 如子目录存在更近的 `AGENTS.md` 或 `AGENTS.override.md`，以更近文件的规则为准。
-- 用户在当前对话中的明确要求优先于本文件。
-- 指令必须具体、可执行、可验证；避免写泛泛的价值观口号。
-- 文件使用标准 Markdown，不需要 front matter。
+本文件是 tietiezhi 项目的开发代理指南。请只以当前仓库中的代码、配置和文档为准；如果 README 与代码不一致，优先相信代码和 `Taskfile.yml`。
 
 ## 项目定位
 
-- tietiezhi 是配置驱动的 Agent 服务。
-- 功能通过 YAML 配置开启或关闭，不做交互式引导。
-- 记忆使用 Markdown 文件，配置使用 YAML 文件，不引入数据库。
-- 文档、注释、配置以中文优先。
+tietiezhi 是一个用 Go 编写的轻量级本地 AI Agent 框架，主要以 Server 模式运行。它提供 OpenAI 兼容接口、渠道接入、内置工具、Skills、MCP、Hook、Markdown 记忆、定时任务、心跳、子代理、会话持久化和可选 Docker 沙箱。
 
-## 工作方式
+服务入口是 `cmd/server/main.go`，默认配置文件路径是 `configs/config.yaml`。示例配置在 `configs/config.example.yaml`，真实配置可能包含密钥，不要提交。
 
-- 实现前先确认任务目标、影响范围和验收方式。
-- 存在多种合理解释、破坏性操作或高风险变更时，先向用户说明并确认。
-- 优先选择能解决当前问题的最小实现，不添加未被要求的功能、抽象或可配置项。
-- 只修改与当前任务直接相关的代码；发现无关问题可以说明，不主动重构或删除。
-- 匹配现有代码风格，即使可以用另一种方式写得更漂亮。
-- 多步骤任务先给简短计划，并为每一步写清验证方式。
-- 修 bug 时优先写能复现问题的测试，再修复并让测试通过。
+## 常用命令
 
-## 核心原则
+优先使用 `task` 中已有命令：
 
-- **配置驱动**：所有功能通过 YAML 配置开启或关闭。
-- **接口优先**：先定义接口，再实现；消费方定义接口。
-- **扁平目录**：包不嵌套超过 2 层。
-- **依赖单向**：保持 `channel → agent → llm` 等单向依赖，不交叉引用。
-- **零数据库**：记忆用 Markdown 文件，配置用 YAML 文件。
-- **中文优先**：文档、注释、配置全中文。
+```bash
+task build
+task run
+task test
+task lint
+task tidy
+task clean
+```
+
+等价底层命令：
+
+```bash
+go build -o bin/tietiezhi ./cmd/server
+go test ./...
+go vet ./...
+go mod tidy
+```
+
+本项目使用 `go.mod` 中声明的 Go 版本。提交 Go 代码前运行 `gofmt`，涉及依赖时运行 `go mod tidy`。
+
+## 本地运行
+
+1. 从示例配置复制真实配置：
+
+   ```bash
+   cp configs/config.example.yaml configs/config.yaml
+   ```
+
+2. 填写 `llm.api_key`、`llm.base_url`、`llm.model` 等必要配置。
+
+3. 运行：
+
+   ```bash
+   task run
+   ```
+
+4. 健康检查：
+
+   ```bash
+   curl http://localhost:18178/health
+   ```
+
+配置中的默认端口是 `18178`。README 中出现的端口或 Makefile 描述如果与代码不一致，以 `configs/config.example.yaml` 和 `Taskfile.yml` 为准。
 
 ## 目录结构
 
-```text
-tietiezhi/
-├── cmd/server/           # 入口，加载配置 → 启动 Server
-├── internal/
-│   ├── config/           # YAML 配置加载与校验
-│   ├── server/           # HTTP Server，路由注册
-│   ├── llm/              # LLM Provider 接口 + OpenAI 实现
-│   ├── agent/            # Agent 核心 + 循环检测
-│   ├── channel/          # Channel 接口 + 各渠道实现
-│   │   └── feishu/       # 飞书渠道
-│   ├── tool/             # Tool 接口 + 注册表
-│   │   └── builtin/      # 内置工具
-│   ├── skill/            # Skill 加载器（Anthropic MD 规范）
-│   ├── hook/             # Hook 接口 + 执行链
-│   ├── mcp/              # MCP 协议客户端
-│   ├── memory/           # Memory 接口 + Markdown 实现
-│   ├── scheduler/        # 定时任务调度
-│   └── workspace/        # 工作区管理
-├── configs/              # 配置文件
-├── skills/               # 技能包目录
-└── workspaces/           # 工作区目录
+- `cmd/server/`: 服务启动入口，负责装配配置、LLM、Agent、工具、渠道、管理 API 和生命周期。
+- `internal/config/`: YAML 配置结构、默认值和相对路径解析。
+- `internal/server/`: OpenAI 兼容 HTTP API 与管理 API。
+- `internal/llm/`: LLM 抽象与 OpenAI 协议实现。
+- `internal/agent/`: Agent 主循环、工具调用、循环检测、上下文压缩、审批、技能和子代理编排。
+- `internal/tool/`: 通用工具接口与注册表。
+- `internal/tool/builtin/`: 内置工具，包括 `terminal_exec`、`file_read`、`file_write`、`file_analyze`、`web_search`、`web_fetch`。
+- `internal/channel/`: 渠道抽象与渠道实现，目前包含飞书、Telegram、HTTP 相关代码。
+- `internal/memory/`: Markdown 工作区记忆系统，会生成 `AGENTS.md`、`SOUL.md`、`USER.md`、`MEMORY.md`、每日笔记和上传目录。
+- `internal/skill/`: Anthropic Markdown 风格技能加载与解析。
+- `internal/mcp/`: MCP 客户端管理。
+- `internal/hook/`: Hook 事件、规则和内置脚本。
+- `internal/cron/`: 定时任务存储、调度和 Agent 执行。
+- `internal/heartbeat/`: 心跳检查与投递。
+- `internal/subagent/`: 子代理 spawn、同步/异步执行与持久化记录。
+- `internal/session/`: 会话历史和自动保存。
+- `internal/media/`: 上传文件与媒体处理。
+- `internal/sandbox/`: Docker 沙箱执行支持。
+- `configs/`: 配置示例；真实 `configs/config.yaml` 被忽略。
+- `skills/`: 技能目录，目前只有占位文件。
+- `workspaces/`: 本地工作区目录，只提交 `.gitkeep`。
+
+## 配置与路径约定
+
+- `config.Load` 会调用默认值填充，并把 `memory.path`、`skills.path`、`scheduler.path`、`session.persist_path`、`subagent.path` 解析为相对于配置文件目录的绝对路径。
+- 示例配置里多个运行时路径在 `./data/...` 下；这些目录不应提交。
+- `tools.file_io.allowed_dirs` 会被解析为绝对路径。未配置时，主程序会将文件工具限制到记忆工作区。
+- `sandbox.enabled` 为 true 时会检查 Docker 和镜像；不可用时会降级为禁用沙箱。
+- `llm.provider` 当前只支持 `openai`，但实现是 OpenAI 协议兼容，不限定具体供应商。
+
+## 开发原则
+
+- 保持单二进制、零数据库的设计取向。新增持久化能力时优先考虑现有 JSON/Markdown 文件存储模式。
+- 保持配置驱动。新增功能应在 `internal/config/config.go` 增加结构、默认值和示例配置。
+- 新增 HTTP 能力时优先放在 `internal/server/management.go` 或 `internal/server/server.go` 的现有路由体系里。
+- 新增工具时实现 `internal/tool.Tool` 接口，并在内置工具注册或 Agent 工具列表构建处接入。
+- 新增渠道时实现 `internal/channel.Channel`，并在启动入口按配置注册。
+- 需要跨包交互时优先使用小接口，延续现有 `cron`、`subagent` 等包的依赖方式，避免引入循环依赖。
+- 不要把密钥、真实配置、运行时数据、会话、上传文件或构建产物提交到仓库。
+
+## Go 代码风格
+
+- 使用标准库优先，避免为小功能引入新依赖。
+- 错误信息和日志目前以中文为主，新增代码保持一致。
+- 公共类型和导出函数保留简洁中文注释，符合 Go 文档习惯。
+- 结构体字段使用明确的 `json` 或 `yaml` tag；配置字段要同步更新示例配置。
+- HTTP handler 要校验方法、请求体和必填字段，返回合理状态码。
+- 长时间运行或外部调用要接收并传递 `context.Context`。
+- goroutine 中执行外部任务时注意超时、错误日志和资源释放。
+- 不要吞掉关键错误；如果兼容旧行为需要降级，记录清楚日志。
+
+## 功能边界提示
+
+- Agent 主流程在 `BaseAgent.Run`、`RunStream` 和内部 `runWithTools` 附近，改动前先确认工具循环、Hook、记忆注入、压缩和会话历史的顺序。
+- 记忆系统会自动初始化工作区默认文件。修改默认内容时确认 `BuildMemoryContext` 的注入顺序和群聊隐私规则。
+- 定时任务支持 `at`、`every`、`cron` 三类 schedule，`cron` 输入是 5 位表达式，内部转换为带秒的表达式。
+- 子代理支持工具白名单、cheap 模型、system prompt 覆盖、同步/异步和 ephemeral/persistent 会话模式。
+- 文件和终端工具有安全边界；改动时不要放宽默认限制，除非配置明确要求。
+- 管理 API 会掩码返回 API key；新增敏感字段时也要做类似处理。
+
+## 测试与验证
+
+当前仓库没有 `_test.go` 文件。新增或修改行为逻辑时，请优先补充聚焦的单元测试，尤其是：
+
+- 配置默认值和路径解析。
+- 工具参数校验与安全限制。
+- Agent 工具循环、循环检测、压缩和审批。
+- HTTP handler 的方法、状态码和响应结构。
+- Cron schedule 解析和持久化。
+- Markdown 记忆读写和群聊隐私边界。
+
+提交前至少运行：
+
+```bash
+task test
+task lint
 ```
 
-## 依赖方向
+文档或注释-only 变更可不运行完整测试，但应说明未运行原因。
 
-```text
-server → agent → llm
-              → tool
-              → memory
-       → channel → agent
-       → scheduler → agent
-```
+## 文件安全
 
-- `channel` 依赖 `agent`，负责将外部消息转发给 Agent 处理。
-- `agent` 不依赖 `channel`，避免渠道逻辑污染核心流程。
-- `server` 负责组装配置、注册路由、启动服务，不承载业务细节。
-- 新增依赖前先检查是否会破坏现有单向依赖。
+- `configs/config.yaml`、`data/`、`configs/data/`、`bin/`、`workspaces/*/`、日志文件和系统临时文件都在 `.gitignore` 中，保持忽略。
+- 不要把真实 LLM key、飞书/Telegram token、MCP 凭证或用户记忆写入仓库文件。
+- 对用户工作区文件做写入功能时，默认使用可恢复、可审计的方式；危险操作需要明确配置或用户确认。
 
-## 核心接口
+## 给后续代理的工作方式
 
-```go
-// Provider 定义 LLM 提供者能力。
-type Provider interface {
-    Chat(ctx, req) (*ChatResponse, error)
-    ChatStream(ctx, req) (<-chan StreamChunk, error)
-}
-
-// Agent 定义智能体执行入口。
-type Agent interface {
-    Run(ctx, input) (*Message, error)
-}
-
-// Channel 定义外部渠道生命周期与消息发送能力。
-type Channel interface {
-    ID() string
-    Start(ctx) error
-    Stop(ctx) error
-    Send(ctx, channelID, msg) error
-}
-
-// Tool 定义工具元信息与执行能力。
-type Tool interface {
-    Name() string
-    Description() string
-    Parameters() any
-    Execute(input) (string, error)
-}
-
-// Memory 定义记忆读取、写入和搜索能力。
-type Memory interface {
-    Load(ctx, key) (string, error)
-    Save(ctx, key, content) error
-    Search(ctx, query) ([]string, error)
-}
-
-// Hook 定义扩展点执行能力。
-type Hook interface {
-    Name() string
-    Point() HookPoint
-    Execute(ctx, data) (any, error)
-}
-```
-
-## 代码规范
-
-- 每个函数写一行中文注释说明职责。
-- 长函数按步骤分段，必要时加过程日志。
-- 不封装只转调一行的函数。
-- 不添加当前任务之外的功能。
-- 不做 speculative abstraction，不为未来可能性提前设计。
-- 只清理本次修改造成的无用 import、变量、函数或测试夹具。
-- 不主动删除或重构任务无关的历史代码。
-- HTTP 路由使用标准库 `net/http`，不用第三方路由库。
-- Go 代码变更后运行 `gofmt`。
-
-## 配置规范
-
-- 配置格式使用 YAML。
-- 配置注释使用中文。
-- 本地配置文件路径为 `configs/config.yaml`，该文件由 `.gitignore` 忽略。
-- 示例配置文件为 `configs/config.example.yaml`，需要提交到仓库。
-- 配置加载和默认值填充放在 `internal/config/config.go`。
-- 新功能必须先设计配置项，再实现功能逻辑。
-
-## 记忆系统规范
-
-- 记忆类型为 Markdown 文件。
-- 记忆文件包括 `SOUL.md`、`MEMORY.md`、`USER.md`。
-- 记忆目录为 `workspaces/{workspace-id}/`。
-- 记忆接口只暴露 `Load`、`Save`、`Search`。
-- 不为记忆系统引入数据库。
-
-## 技能包规范
-
-- 技能包遵循 Anthropic MD 文件规范。
-- 技能包结构为 `skill-name/SKILL.md`、`references/`、`scripts/`。
-- 技能加载器放在 `internal/skill/loader.go`。
-- 技能内容优先中文，命令和代码标识保持原文。
-
-## 测试与验收
-
-- 涉及 Go 代码变更后必须运行 `go test ./...`。
-- 仅文档变更可运行 `git diff --check` 验证格式，并在最终回复说明未运行 Go 测试的原因。
-- 修复 bug 时新增或更新能覆盖问题的测试。
-- 新增接口、配置或行为时补充对应测试或说明无法测试的原因。
-- 测试失败时先判断是否由本次修改引入；只修复与任务相关的失败。
-- 完成前检查 diff，确保每一处改动都能对应到用户需求。
-
-## 提交规范
-
-- 提交信息使用英文。
-- 格式为 `type(scope): message`。
-- `type` 可选：`feat`、`fix`、`refactor`、`docs`、`test`、`chore`。
-- `scope` 使用模块名，例如 `llm`、`agent`、`config`。
-- 示例：`feat(llm): implement OpenAI streaming response`
-
-## AGENTS 文档维护规范
-
-- 优先把稳定、长期有效的项目规则写入本文件。
-- 临时任务要求留在对话里，不写入 AGENTS.md。
-- 新增章节时按这个顺序组织：项目定位、工作方式、架构约束、目录结构、编码规范、模块规范、测试验收、提交规范。
-- 每条规则尽量包含明确路径、命令或判断标准。
-- 避免写“保持高质量”“注意安全”这类不可验证描述，改成具体动作。
-- 文件过长时按子目录拆分更近的 `AGENTS.md`，不要让根文件承载所有细节。
+- 先读相关代码再改，不要只根据 README 或计划表判断实现状态。
+- 小步修改，保持包边界清晰。
+- 修改配置结构时同步更新 `configs/config.example.yaml` 和相关启动装配。
+- 修改可观测行为时更新 README 或本文件中对应说明。
+- 遇到已有未提交改动时，先判断是否与任务相关；不要回滚无关改动。
