@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tietiezhi/internal/config"
 )
 
 // UploadManager 上传文件管理器
@@ -16,11 +18,19 @@ type UploadManager struct {
 // NewUploadManager 创建上传文件管理器
 func NewUploadManager(uploadDir string) *UploadManager {
 	if uploadDir == "" {
-		uploadDir = "./data/uploads"
+		uploadDir = defaultUploadDir()
 	}
 	// 确保目录存在
 	os.MkdirAll(uploadDir, 0755)
 	return &UploadManager{uploadDir: uploadDir}
+}
+
+func defaultUploadDir() string {
+	appDir, err := config.AppHomeDir()
+	if err != nil {
+		return filepath.Join(".", config.AppDirName, "workspace", "uploads")
+	}
+	return filepath.Join(appDir, "workspace", "uploads")
 }
 
 // GetUploadDir 获取上传目录路径
@@ -39,14 +49,14 @@ func (um *UploadManager) SaveFile(filename string, data []byte) (string, error) 
 	name := strings.TrimSuffix(filename, ext)
 	safeName := sanitizeFilename(name)
 	newFilename := fmt.Sprintf("%d_%s%s", timestamp, safeName, ext)
-	
+
 	filePath := filepath.Join(um.uploadDir, newFilename)
-	
+
 	err := os.WriteFile(filePath, data, 0644)
 	if err != nil {
 		return "", fmt.Errorf("保存文件失败: %w", err)
 	}
-	
+
 	return filePath, nil
 }
 
@@ -61,7 +71,7 @@ func (um *UploadManager) ListFiles() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var files []string
 	for _, entry := range entries {
 		if !entry.IsDir() {

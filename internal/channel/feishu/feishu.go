@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -31,19 +30,19 @@ type OnMessageFunc func(chatType, chatID string)
 
 // FeishuChannel 飞书渠道
 type FeishuChannel struct {
-	appID        string
-	commandMgr  *command.Registry
-	appSecret    string
-	botOpenID    string
-	uploadDir    string
-	client       *lark.Client
-	handler      func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
+	appID         string
+	commandMgr    *command.Registry
+	appSecret     string
+	botOpenID     string
+	uploadDir     string
+	client        *lark.Client
+	handler       func(ctx context.Context, msg *channel.Message) (*channel.Message, error)
 	streamHandler func(ctx context.Context, msg *channel.Message, sendFunc func(content string, isFinal bool) error) error
 	onMessage     OnMessageFunc // 消息回调（用于心跳 chatID 更新）
-	mu           sync.Mutex
-	running      bool
-	processedMu  sync.Mutex
-	processed    map[string]time.Time
+	mu            sync.Mutex
+	running       bool
+	processedMu   sync.Mutex
+	processed     map[string]time.Time
 }
 
 // New 创建飞书渠道
@@ -396,7 +395,9 @@ func (f *FeishuChannel) parseMessageContent(msg *larkim.EventMessage) (string, [
 
 	switch msgType {
 	case "text":
-		var textMsg struct{ Text string `json:"text"` }
+		var textMsg struct {
+			Text string `json:"text"`
+		}
 		if err := json.Unmarshal([]byte(rawContent), &textMsg); err == nil {
 			return cleanMentionPlaceholders(textMsg.Text), nil
 		}
@@ -405,7 +406,9 @@ func (f *FeishuChannel) parseMessageContent(msg *larkim.EventMessage) (string, [
 		return content, media
 	case "image":
 		// 图片消息
-		var imageMsg struct{ ImageKey string `json:"image_key"` }
+		var imageMsg struct {
+			ImageKey string `json:"image_key"`
+		}
 		if err := json.Unmarshal([]byte(rawContent), &imageMsg); err == nil && imageMsg.ImageKey != "" {
 			path, err := f.downloadImage(imageMsg.ImageKey)
 			if err != nil {
@@ -450,12 +453,10 @@ func (f *FeishuChannel) parseMessageContent(msg *larkim.EventMessage) (string, [
 
 // downloadImage 下载飞书图片
 func (f *FeishuChannel) downloadImage(imageKey string) (string, error) {
-	if f.uploadDir == "" {
-		// 如果没有设置上传目录，使用临时目录
-		f.uploadDir = "./data/uploads"
-		os.MkdirAll(f.uploadDir, 0755)
-	}
 	um := media.NewUploadManager(f.uploadDir)
+	if f.uploadDir == "" {
+		f.uploadDir = um.GetUploadDir()
+	}
 
 	// 使用飞书 SDK 下载图片
 	resp, err := f.client.Im.Image.Get(context.Background(),
@@ -486,11 +487,10 @@ func (f *FeishuChannel) downloadImage(imageKey string) (string, error) {
 
 // downloadFile 下载飞书文件
 func (f *FeishuChannel) downloadFile(fileKey, fileName string) (string, error) {
-	if f.uploadDir == "" {
-		f.uploadDir = "./data/uploads"
-		os.MkdirAll(f.uploadDir, 0755)
-	}
 	um := media.NewUploadManager(f.uploadDir)
+	if f.uploadDir == "" {
+		f.uploadDir = um.GetUploadDir()
+	}
 
 	// 使用飞书 SDK 下载文件
 	resp, err := f.client.Im.File.Get(context.Background(),
@@ -872,7 +872,7 @@ func SetAgentHandler(f *FeishuChannel, ag *agent.BaseAgent, streaming bool) {
 					return nil
 				case chunk = <-ch:
 					readCancel()
-			case <-ctx.Done():
+				case <-ctx.Done():
 					readCancel()
 					if fullContent.Len() > 0 {
 						ag.AppendToSession(sessionKey, fullContent.String())

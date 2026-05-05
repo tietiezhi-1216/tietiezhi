@@ -40,8 +40,8 @@ func NewManagementAPI(
 	hookManager *hook.HookManager,
 	subAgentMgr *subagent.SubAgentManager,
 	cronMgr *cron.CronManager,
-	memoryMgr   *memory.MemoryManager,
-	sessionMgr  *session.SessionManager,
+	memoryMgr *memory.MemoryManager,
+	sessionMgr *session.SessionManager,
 ) *ManagementAPI {
 	return &ManagementAPI{
 		cfg:         cfg,
@@ -88,6 +88,11 @@ func (m *ManagementAPI) handleConfig(w http.ResponseWriter, r *http.Request) {
 func (m *ManagementAPI) getConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
+		"runtime": map[string]interface{}{
+			"config_path": m.cfg.ConfigPath,
+			"app_dir":     m.cfg.AppDir,
+			"workspace":   m.cfg.Memory.Path,
+		},
 		"server": map[string]interface{}{
 			"host": m.cfg.Server.Host,
 			"port": m.cfg.Server.Port,
@@ -100,9 +105,9 @@ func (m *ManagementAPI) getConfig(w http.ResponseWriter, r *http.Request) {
 			"cheap_model": m.cfg.LLM.CheapModel,
 		},
 		"agent": map[string]interface{}{
-			"max_tool_calls":  m.cfg.Agent.MaxToolCalls,
-			"loop_detection":  m.cfg.Agent.LoopDetection,
-			"compression":     m.cfg.Agent.Compression.Enabled,
+			"max_tool_calls": m.cfg.Agent.MaxToolCalls,
+			"loop_detection": m.cfg.Agent.LoopDetection,
+			"compression":    m.cfg.Agent.Compression.Enabled,
 		},
 		"channels": map[string]interface{}{
 			"feishu":   m.cfg.Channels.Feishu != nil && m.cfg.Channels.Feishu.Enabled,
@@ -138,10 +143,15 @@ func (m *ManagementAPI) updateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := m.cfg.Save(); err != nil {
+		http.Error(w, fmt.Sprintf("保存配置失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-		"message": "配置已更新（部分配置需重启生效）",
+		"message": "配置已更新并保存（部分配置需重启生效）",
 	})
 }
 
@@ -327,8 +337,8 @@ func (m *ManagementAPI) handleHooks(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"rules":  rules,
-		"total":  len(rules),
+		"rules":   rules,
+		"total":   len(rules),
 		"enabled": m.hookManager != nil && m.hookManager.IsEnabled(),
 	})
 }
@@ -458,12 +468,7 @@ func (m *ManagementAPI) handleWorkspace(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var workspacePath string
-	if m.memoryMgr != nil {
-		workspacePath = m.memoryMgr.GetWorkspacePath()
-	} else {
-		workspacePath = "./data/workspace"
-	}
+	workspacePath := m.workspacePath()
 
 	files := make([]map[string]interface{}, 0)
 	filepath.WalkDir(workspacePath, func(path string, d fs.DirEntry, err error) error {
@@ -516,12 +521,7 @@ func (m *ManagementAPI) getWorkspaceFile(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var workspacePath string
-	if m.memoryMgr != nil {
-		workspacePath = m.memoryMgr.GetWorkspacePath()
-	} else {
-		workspacePath = "./data/workspace"
-	}
+	workspacePath := m.workspacePath()
 
 	fullPath := filepath.Join(workspacePath, filePath)
 	if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(workspacePath)) {
@@ -553,12 +553,7 @@ func (m *ManagementAPI) updateWorkspaceFile(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var workspacePath string
-	if m.memoryMgr != nil {
-		workspacePath = m.memoryMgr.GetWorkspacePath()
-	} else {
-		workspacePath = "./data/workspace"
-	}
+	workspacePath := m.workspacePath()
 
 	fullPath := filepath.Join(workspacePath, req.Path)
 	if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(workspacePath)) {
@@ -578,6 +573,20 @@ func (m *ManagementAPI) updateWorkspaceFile(w http.ResponseWriter, r *http.Reque
 		"success": true,
 		"path":    req.Path,
 	})
+}
+
+func (m *ManagementAPI) workspacePath() string {
+	if m.memoryMgr != nil {
+		return m.memoryMgr.GetWorkspacePath()
+	}
+	if m.cfg != nil && m.cfg.Memory.Path != "" {
+		return m.cfg.Memory.Path
+	}
+	appDir, err := config.AppHomeDir()
+	if err != nil {
+		return filepath.Join(".", config.AppDirName, "workspace")
+	}
+	return filepath.Join(appDir, "workspace")
 }
 
 // ==================== Status ====================

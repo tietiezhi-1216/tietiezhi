@@ -6,7 +6,7 @@
 
 tietiezhi 是一个用 Go 编写的轻量级本地 AI Agent 框架，主要以 Server 模式运行。它提供 OpenAI 兼容接口、渠道接入、内置工具、Skills、MCP、Hook、Markdown 记忆、定时任务、心跳、子代理、会话持久化和可选 Docker 沙箱。
 
-服务入口是 `cmd/server/main.go`，默认配置文件路径是 `configs/config.yaml`。示例配置在 `configs/config.example.yaml`，真实配置可能包含密钥，不要提交。
+服务入口是 `cmd/server/main.go`，默认配置文件路径是 `~/.tietiezhi/config.yaml`。示例配置在 `configs/config.example.yaml`，真实配置可能包含密钥，不要提交。
 
 ## 常用命令
 
@@ -34,13 +34,9 @@ go mod tidy
 
 ## 本地运行
 
-1. 从示例配置复制真实配置：
+1. 首次运行会自动初始化 `~/.tietiezhi/config.yaml`。
 
-   ```bash
-   cp configs/config.example.yaml configs/config.yaml
-   ```
-
-2. 填写 `llm.api_key`、`llm.base_url`、`llm.model` 等必要配置。
+2. 填写 `llm.api_key`、`llm.base_url`、`llm.model` 等必要配置。后续也可以通过管理 API 或 WebUI 修改配置。
 
 3. 运行：
 
@@ -59,7 +55,7 @@ go mod tidy
 ## 目录结构
 
 - `cmd/server/`: 服务启动入口，负责装配配置、LLM、Agent、工具、渠道、管理 API 和生命周期。
-- `internal/config/`: YAML 配置结构、默认值和相对路径解析。
+- `internal/config/`: YAML 配置结构、默认值、默认配置初始化和本地目录派生。
 - `internal/server/`: OpenAI 兼容 HTTP API 与管理 API。
 - `internal/llm/`: LLM 抽象与 OpenAI 协议实现。
 - `internal/agent/`: Agent 主循环、工具调用、循环检测、上下文压缩、审批、技能和子代理编排。
@@ -76,15 +72,15 @@ go mod tidy
 - `internal/session/`: 会话历史和自动保存。
 - `internal/media/`: 上传文件与媒体处理。
 - `internal/sandbox/`: Docker 沙箱执行支持。
-- `configs/`: 配置示例；真实 `configs/config.yaml` 被忽略。
+- `configs/`: 配置示例；真实配置默认在 `~/.tietiezhi/config.yaml`。
 - `skills/`: 技能目录，目前只有占位文件。
 - `workspaces/`: 本地工作区目录，只提交 `.gitkeep`。
 
 ## 配置与路径约定
 
-- `config.Load` 会调用默认值填充，并把 `memory.path`、`skills.path`、`scheduler.path`、`session.persist_path`、`subagent.path` 解析为相对于配置文件目录的绝对路径。
-- 示例配置里多个运行时路径在 `./data/...` 下；这些目录不应提交。
-- `tools.file_io.allowed_dirs` 会被解析为绝对路径。未配置时，主程序会将文件工具限制到记忆工作区。
+- `config.Load` 会在配置文件不存在时初始化 YAML 模板，并把运行时文件统一派生到 `~/.tietiezhi/` 下。
+- YAML 中不暴露 path 配置；`memory`、`skills`、`scheduler`、`session`、`subagent`、审计日志、文件工具目录和沙箱挂载都由 `internal/config` 统一决定。
+- 文件读写工具默认只允许访问 `~/.tietiezhi/workspace`。
 - `sandbox.enabled` 为 true 时会检查 Docker 和镜像；不可用时会降级为禁用沙箱。
 - `llm.provider` 当前只支持 `openai`，但实现是 OpenAI 协议兼容，不限定具体供应商。
 
@@ -140,7 +136,7 @@ task lint
 
 ## 文件安全
 
-- `configs/config.yaml`、`data/`、`configs/data/`、`bin/`、`workspaces/*/`、日志文件和系统临时文件都在 `.gitignore` 中，保持忽略。
+- `~/.tietiezhi/config.yaml`、`.tietiezhi/`、旧版 `configs/config.yaml`、`data/`、`configs/data/`、`bin/`、`workspaces/*/`、日志文件和系统临时文件都应保持忽略或位于仓库外。
 - 不要把真实 LLM key、飞书/Telegram token、MCP 凭证或用户记忆写入仓库文件。
 - 对用户工作区文件做写入功能时，默认使用可恢复、可审计的方式；危险操作需要明确配置或用户确认。
 

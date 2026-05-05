@@ -12,16 +12,16 @@ import (
 
 // AuditEntry 审计日志条目
 type AuditEntry struct {
-	Timestamp  string                 `json:"timestamp"`            // 时间戳（ISO 8601）
-	SessionKey string                 `json:"session_key"`         // 会话 key
-	EventType  string                 `json:"event_type"`          // tool_call, message_in, message_out, session_start, session_end
-	ToolName   string                 `json:"tool_name,omitempty"` // 工具名称（仅 tool_call 时）
-	ToolInput  map[string]interface{} `json:"tool_input,omitempty"` // 工具输入参数
+	Timestamp  string                 `json:"timestamp"`             // 时间戳（ISO 8601）
+	SessionKey string                 `json:"session_key"`           // 会话 key
+	EventType  string                 `json:"event_type"`            // tool_call, message_in, message_out, session_start, session_end
+	ToolName   string                 `json:"tool_name,omitempty"`   // 工具名称（仅 tool_call 时）
+	ToolInput  map[string]interface{} `json:"tool_input,omitempty"`  // 工具输入参数
 	ToolOutput string                 `json:"tool_output,omitempty"` // 工具输出结果
 	Duration   int64                  `json:"duration_ms,omitempty"` // 执行耗时（毫秒）
 	TokenUsage *TokenUsage            `json:"token_usage,omitempty"` // Token 使用量
-	Model      string                 `json:"model,omitempty"`      // 模型名称
-	Error      string                 `json:"error,omitempty"`      // 错误信息
+	Model      string                 `json:"model,omitempty"`       // 模型名称
+	Error      string                 `json:"error,omitempty"`       // 错误信息
 }
 
 // TokenUsage Token 使用量
@@ -41,7 +41,11 @@ type AuditLogger struct {
 // NewAuditLogger 创建审计日志记录器
 func NewAuditLogger(logPath string) (*AuditLogger, error) {
 	if logPath == "" {
-		logPath = "./data/workspace/memory/audit.jsonl"
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("获取用户目录失败: %w", err)
+		}
+		logPath = filepath.Join(home, ".tietiezhi", "audit", "audit.jsonl")
 	}
 
 	// 确保目录存在

@@ -49,12 +49,11 @@
 git clone <repo-url>
 cd tietiezhi
 
-cp configs/config.example.yaml configs/config.yaml
-# 编辑 configs/config.yaml，填入 LLM 和渠道配置
-
 task build
 task run
 ```
+
+首次启动会在 `~/.tietiezhi/config.yaml` 初始化配置模板。填入 LLM 和渠道配置后再次启动即可；后续 WebUI 也会围绕这个文件做配置读写。
 
 服务默认监听 `0.0.0.0:18178`。启动后检查：
 
@@ -66,8 +65,10 @@ curl http://localhost:18178/health
 
 ```bash
 go build -o bin/tietiezhi ./cmd/server
-./bin/tietiezhi -c configs/config.yaml
+./bin/tietiezhi
 ```
+
+也可以用 `-c` 指定其他配置文件，但运行时文件仍会统一保存在 `~/.tietiezhi/` 下。
 
 ## 配置示例
 
@@ -102,14 +103,9 @@ channels:
 
 memory:
   type: "markdown"
-  path: "./data/workspace"
-
-skills:
-  path: "./data/workspace/skills"
 
 scheduler:
   enabled: true
-  path: "./data/cron"
   exec_timeout: 300
 
 heartbeat:
@@ -164,7 +160,7 @@ tietiezhi/
 
 ```bash
 task build   # 编译 bin/tietiezhi
-task run     # 编译并使用 configs/config.yaml 启动
+task run     # 编译并使用 ~/.tietiezhi/config.yaml 启动
 task test    # go test ./...
 task lint    # go vet ./...
 task tidy    # go mod tidy

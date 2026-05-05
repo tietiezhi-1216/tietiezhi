@@ -1,5 +1,6 @@
 # tietiezhi 配置示例文件
-# 复制为 config.yaml 并修改后使用
+# 首次启动会自动复制模板到 ~/.tietiezhi/config.yaml
+# 所有运行时文件、记忆、会话、任务和上传内容都会保存在 ~/.tietiezhi/ 下。
 
 # 服务器配置
 server:
@@ -60,16 +61,10 @@ channels:
 # 记忆配置
 memory:
   type: "markdown"
-  path: "./data/workspace"
-
-# 技能配置
-skills:
-  path: "./data/workspace/skills"
 
 # 定时任务配置
 scheduler:
   enabled: true
-  path: "./data/cron"
   exec_timeout: 300
 
 # 心跳配置
@@ -86,7 +81,6 @@ log:
 # 会话配置
 session:
   max_history_turns: 20
-  persist_path: "./data/sessions"
   auto_save_seconds: 60
 
 # Hook 配置
@@ -97,20 +91,16 @@ hooks:
 # 子代理配置
 subagent:
   enabled: true
-  path: "./data/subagents"
   timeout: 300
 
 # 内置工具配置
 tools:
   terminal:
     blocked_cmds: []       # 被阻止的命令
-  file_io:
-    allowed_dirs: []       # 允许文件操作的目录
   web_search:
     provider: ""
     api_key: ""
     base_url: ""
-  allowed_dirs: []         # 允许文件操作的目录列表（兼容旧版）
 
 # 审批流配置
 approval:
@@ -123,7 +113,6 @@ observability:
   enabled: false
   audit_log:
     enabled: false
-    path: "./data/audit"
   token_track: false
 
 # 沙箱配置
@@ -134,7 +123,3 @@ sandbox:
   memory_limit: "128m"
   cpu_limit: 0.5
   work_dir: "/workspace"
-  volumes:
-    - host_path: "./data/workspace"
-      container_path: "/workspace"
-      read_only: true

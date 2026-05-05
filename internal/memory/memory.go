@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tietiezhi/internal/config"
 )
 
 // MemoryManager 记忆管理器
@@ -17,11 +19,19 @@ type MemoryManager struct {
 // NewMemoryManager 创建记忆管理器
 func NewMemoryManager(workspacePath string) *MemoryManager {
 	if workspacePath == "" {
-		workspacePath = "./data/workspace"
+		workspacePath = defaultWorkspacePath()
 	}
 	mm := &MemoryManager{workspacePath: workspacePath}
 	mm.initWorkspace()
 	return mm
+}
+
+func defaultWorkspacePath() string {
+	appDir, err := config.AppHomeDir()
+	if err != nil {
+		return filepath.Join(".", config.AppDirName, "workspace")
+	}
+	return filepath.Join(appDir, "workspace")
 }
 
 // initWorkspace 初始化工作区目录和默认文件

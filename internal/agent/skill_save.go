@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"tietiezhi/internal/config"
 	"tietiezhi/internal/memory"
 )
 
@@ -39,7 +40,7 @@ func ExecuteSkillSave(argsJSON string, mm *memory.MemoryManager) string {
 	}
 
 	// 获取工作区路径
-	workspacePath := "./data/workspace"
+	workspacePath := defaultWorkspacePath()
 	if mm != nil {
 		workspacePath = mm.GetWorkspacePath()
 	}
@@ -68,6 +69,14 @@ func ExecuteSkillSave(argsJSON string, mm *memory.MemoryManager) string {
 
 	resultJSON, _ := json.Marshal(result)
 	return string(resultJSON)
+}
+
+func defaultWorkspacePath() string {
+	appDir, err := config.AppHomeDir()
+	if err != nil {
+		return filepath.Join(".", config.AppDirName, "workspace")
+	}
+	return filepath.Join(appDir, "workspace")
 }
 
 // buildSkillMarkdown 构建技能 Markdown 内容

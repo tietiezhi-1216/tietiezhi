@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"tietiezhi/internal/agent"
@@ -30,7 +29,11 @@ import (
 )
 
 func main() {
-	configPath := flag.String("c", "configs/config.yaml", "配置文件路径")
+	defaultConfigPath, err := config.DefaultConfigPath()
+	if err != nil {
+		log.Fatalf("获取默认配置路径失败: %v", err)
+	}
+	configPath := flag.String("c", defaultConfigPath, "配置文件路径")
 	flag.Parse()
 
 	// 加载配置
@@ -39,20 +42,20 @@ func main() {
 		log.Fatalf("加载配置失败: %v", err)
 	}
 
-	log.Printf("配置加载成功: server=%s:%d, llm=%s/%s", cfg.Server.Host, cfg.Server.Port, cfg.LLM.Provider, cfg.LLM.Model)
+	log.Printf("配置加载成功: path=%s, home=%s, server=%s:%d, llm=%s/%s", cfg.ConfigPath, cfg.AppDir, cfg.Server.Host, cfg.Server.Port, cfg.LLM.Provider, cfg.LLM.Model)
 
 	// ========== 沙箱初始化 ==========
 	var sandboxMgr *sandbox.SandboxManager
 	if cfg.Sandbox.Enabled {
 		sandboxMgr = builtin.NewSandboxManagerFromConfig(&cfg.Sandbox)
-		
+
 		// 检查 Docker 是否可用
 		if err := sandboxMgr.HealthCheck(); err != nil {
 			log.Printf("⚠️ Docker 不可用，沙箱功能已禁用: %v", err)
 			sandboxMgr = sandbox.NewSandboxManager(false, nil)
 		} else {
 			log.Printf("✓ Docker 可用，沙箱已启用")
-			
+
 			// 确保镜像存在
 			ctx := context.Background()
 			if err := sandboxMgr.EnsureImage(ctx); err != nil {
@@ -112,7 +115,7 @@ func main() {
 	if sandboxMgr != nil && sandboxMgr.IsEnabled() {
 		terminalTool := builtin.NewTerminalToolWithSandbox(sandboxMgr, true, cfg.Tools.Terminal.BlockedCmds...)
 		agent.SetTerminalTool(terminalTool)
-		log.Printf("终端工具已初始化（沙箱模式）: image=%s, network=%s, memory=%s", 
+		log.Printf("终端工具已初始化（沙箱模式）: image=%s, network=%s, memory=%s",
 			cfg.Sandbox.Image, cfg.Sandbox.NetworkMode, cfg.Sandbox.MemoryLimit)
 	} else {
 		terminalTool := builtin.NewTerminalTool(cfg.Tools.Terminal.BlockedCmds...)
@@ -148,13 +151,7 @@ func main() {
 	log.Println("MCP 管理器已初始化")
 
 	// 初始化技能加载器
-	skillsPath := cfg.Skills.Path
-	if !filepath.IsAbs(skillsPath) {
-		absConfigPath, _ := filepath.Abs(*configPath)
-		configDir := filepath.Dir(absConfigPath)
-		skillsPath = filepath.Join(configDir, skillsPath)
-	}
-	skillLoader := skill.NewLoader(skillsPath)
+	skillLoader := skill.NewLoader(cfg.Skills.Path)
 	if err := skillLoader.LoadAll(); err != nil {
 		log.Printf("技能加载失败: %v", err)
 	}

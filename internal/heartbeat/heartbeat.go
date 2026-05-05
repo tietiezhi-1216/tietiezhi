@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"tietiezhi/internal/config"
 	"tietiezhi/internal/cron"
 	"tietiezhi/internal/subagent"
 
@@ -32,8 +33,8 @@ type HeartbeatState struct {
 // HeartbeatManager 心跳管理器
 // 每隔固定时间（默认 30 分钟），Agent 自动醒来检查 HEARTBEAT.md 中的检查清单
 type HeartbeatManager struct {
-	interval  time.Duration // 检查间隔，默认 30 分钟
-	agent     interface {
+	interval time.Duration // 检查间隔，默认 30 分钟
+	agent    interface {
 		RunSubAgent(ctx context.Context, sessionKey string, isGroup bool, role, content string, opts *subagent.RunOptions) (string, error)
 	}
 	memoryMgr interface {
@@ -41,9 +42,9 @@ type HeartbeatManager struct {
 		FileExists(relativePath string) bool
 		GetWorkspacePath() string
 	}
-	cronMgr    *cron.CronManager // Cron 管理器（用于获取 pending events）
+	cronMgr    *cron.CronManager                  // Cron 管理器（用于获取 pending events）
 	deliveryFn func(chatID, content string) error // 投递函数
-	chatID     string                            // 默认投递目标（飞书聊天 ID）
+	chatID     string                             // 默认投递目标（飞书聊天 ID）
 	mu         sync.Mutex
 	running    bool
 	stopCh     chan struct{}
@@ -244,7 +245,11 @@ func (m *HeartbeatManager) getStateFilePath() string {
 	if m.memoryMgr != nil {
 		return filepath.Join(m.memoryMgr.GetWorkspacePath(), "memory", "heartbeat-state.json")
 	}
-	return "./data/workspace/memory/heartbeat-state.json"
+	appDir, err := config.AppHomeDir()
+	if err != nil {
+		return filepath.Join(".", config.AppDirName, "workspace", "memory", "heartbeat-state.json")
+	}
+	return filepath.Join(appDir, "workspace", "memory", "heartbeat-state.json")
 }
 
 // loadState 加载心跳状态
