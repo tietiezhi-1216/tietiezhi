@@ -178,6 +178,30 @@ func (sm *SessionManager) GetHistory(sessionKey string) []llm.ChatMessage {
 	return s.GetHistory()
 }
 
+// GetSession 获取指定会话，不存在时返回 nil
+func (sm *SessionManager) GetSession(key string) *Session {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.sessions[key]
+}
+
+// Clear 清空指定会话
+func (sm *SessionManager) Clear(key string) {
+	sm.mu.RLock()
+	s := sm.sessions[key]
+	sm.mu.RUnlock()
+	if s != nil {
+		s.Clear()
+	}
+}
+
+// Count 获取会话数量
+func (sm *SessionManager) Count() int {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return len(sm.sessions)
+}
+
 // BuildSessionKey 构建 session key
 func BuildSessionKey(chatType, chatID, userID string) string {
 	if chatType == "group" {

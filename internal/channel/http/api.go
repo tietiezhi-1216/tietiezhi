@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"tietiezhi/internal/agent"
@@ -20,11 +19,11 @@ import (
 // HTTPChannel HTTP API 渠道
 // 增强版：除了 chat/completions，还支持会话管理端点
 type HTTPChannel struct {
-	cfg         *config.Config
-	agent       *agent.BaseAgent
-	sessionMgr  *session.SessionManager
-	server      *http.Server
-	mux         *http.ServeMux
+	cfg        *config.Config
+	agent      *agent.BaseAgent
+	sessionMgr *session.SessionManager
+	server     *http.Server
+	mux        *http.ServeMux
 }
 
 // New 创建 HTTP API 渠道
@@ -105,8 +104,8 @@ func (h *HTTPChannel) handleV1Health(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "ok",
-		"model":  h.cfg.LLM.Model,
+		"status":  "ok",
+		"model":   h.cfg.LLM.Model,
 		"version": "1.0",
 	})
 }
@@ -175,7 +174,7 @@ func (h *HTTPChannel) handleListSessions(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"sessions": sessions,
-		"total":     len(sessions),
+		"total":    len(sessions),
 	})
 }
 
@@ -219,10 +218,10 @@ func (h *HTTPChannel) handleCreateSession(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"id":         sessionID,
+		"id":          sessionID,
 		"session_key": sessionKey,
-		"chat_type":  chatType,
-		"created_at": time.Now().Unix(),
+		"chat_type":   chatType,
+		"created_at":  time.Now().Unix(),
 	})
 }
 
@@ -266,9 +265,9 @@ func (h *HTTPChannel) handleDeleteSession(w http.ResponseWriter, r *http.Request
 
 // chatRequest OpenAI 兼容请求格式
 type chatRequest struct {
-	Model    string           `json:"model"`
+	Model    string            `json:"model"`
 	Messages []llm.ChatMessage `json:"messages"`
-	Stream   bool             `json:"stream"`
+	Stream   bool              `json:"stream"`
 }
 
 // handleChatCompletions OpenAI 兼容聊天接口
@@ -296,7 +295,7 @@ func (h *HTTPChannel) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	var userMsg string
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if req.Messages[i].Role == "user" {
-			userMsg = req.Messages[i].Content
+			userMsg = req.Messages[i].GetContentAsText()
 			break
 		}
 	}
@@ -372,9 +371,9 @@ func (h *HTTPChannel) handleStreamChat(w http.ResponseWriter, r *http.Request, s
 			}
 
 			data, _ := json.Marshal(map[string]any{
-				"id":      chunk.ID,
-				"object":  "chat.completion.chunk",
-				"model":   h.cfg.LLM.Model,
+				"id":     chunk.ID,
+				"object": "chat.completion.chunk",
+				"model":  h.cfg.LLM.Model,
 				"choices": []map[string]any{
 					{
 						"index": choice.Index,
@@ -394,46 +393,4 @@ func (h *HTTPChannel) handleStreamChat(w http.ResponseWriter, r *http.Request, s
 	// 发送结束标记
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
-}
-
-// ==================== 扩展 SessionManager ====================
-
-// ListSessions 列出所有会话（添加到 session 包）
-func (sm *session.SessionManager) ListSessions() []map[string]interface{} {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	sessions := make([]map[string]interface{}, 0, len(sm.sessions))
-	for key, s := range sm.sessions {
-		s.mu.RLock()
-		sessions = append(sessions, map[string]interface{}{
-			"key":      key,
-			"messages": len(s.History),
-		})
-		s.mu.RUnlock()
-	}
-	return sessions
-}
-
-// GetSession 获取指定会话
-func (sm *session.SessionManager) GetSession(key string) *session.Session {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return sm.sessions[key]
-}
-
-// Clear 清空指定会话
-func (sm *session.SessionManager) Clear(key string) {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-	if s, ok := sm.sessions[key]; ok {
-		s.Clear()
-	}
-}
-
-// Count 获取会话数量
-func (sm *session.SessionManager) Count() int {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return len(sm.sessions)
 }
