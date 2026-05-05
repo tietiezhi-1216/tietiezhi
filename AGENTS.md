@@ -72,6 +72,7 @@ go mod tidy
 - `internal/session/`: 会话历史和自动保存。
 - `internal/media/`: 上传文件与媒体处理。
 - `internal/sandbox/`: Docker 沙箱执行支持。
+- `web/`: SvelteKit + Tailwind CSS + shadcn-svelte 前端 WebUI 项目。
 
 ## 配置与路径约定
 
@@ -137,6 +138,13 @@ task lint
 - 提交前先确认 `git status`，只提交本次任务相关文件，不要把无关未提交改动、真实配置、密钥或运行时数据混入提交。
 - 提交信息使用 Conventional Commits 风格：`type(scope): summary` 或 `type: summary`，例如 `feat(config): 统一本地配置目录`、`fix(server): 修复配置保存错误`、`docs: 添加提交规范`。
 - 常用类型包括 `feat`、`fix`、`docs`、`refactor`、`test`、`chore`；summary 使用简洁中文，说明本次提交的实际效果。
+
+## 前端 WebUI
+
+- `web/` 是 SvelteKit + Tailwind CSS + shadcn-svelte 前端项目，使用 pnpm 管理依赖。
+- shadcn-svelte 官方 LLM 参考文件应保存在 `web/docs/shadcn-svelte-llms.txt`；开发 `web/` 时可以先参考该文件了解组件、CLI 和文档入口。
+- 前端开发优先使用官方 CLI：`pnpm dlx sv create ... --add tailwindcss`、`pnpm dlx shadcn-svelte@latest init` 和 `pnpm dlx shadcn-svelte@latest add <component>`。
+- 前端验证命令在 `web/` 目录运行：`pnpm check`、`pnpm build`。
 
 ## 文件安全
 
