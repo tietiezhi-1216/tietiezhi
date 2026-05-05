@@ -3,18 +3,76 @@ version: '3'
 vars:
   BINARY: bin/tietiezhi
   CONFIG: ~/.tietiezhi/config.yaml
+  WEB_DIR: web
+  WEB_DIST: internal/webui/dist
+  WEB_PORT: 5173
 
 tasks:
   build:
-    desc: 编译项目
+    desc: 构建 WebUI 并编译单二进制
+    deps:
+      - task: web:build
+    cmds:
+      - go build -o {{.BINARY}} ./cmd/server
+
+  build:server:
+    desc: 仅编译 Go 服务端
     cmds:
       - go build -o {{.BINARY}} ./cmd/server
 
   run:
-    desc: 编译并运行
+    desc: 构建单二进制并运行
     cmds:
       - task: build
       - ./{{.BINARY}} -c {{.CONFIG}}
+
+  dev:
+    desc: 前后端联调（后端 18178，前端 5173）
+    deps:
+      - task: dev:server
+      - task: web:dev
+
+  dev:server:
+    desc: 运行后端开发服务
+    cmds:
+      - go run ./cmd/server -c {{.CONFIG}}
+
+  web:install:
+    desc: 安装 WebUI 依赖
+    dir: '{{.WEB_DIR}}'
+    cmds:
+      - pnpm install --frozen-lockfile
+
+  web:dev:
+    desc: 运行 WebUI 开发服务
+    dir: '{{.WEB_DIR}}'
+    deps:
+      - task: web:install
+    cmds:
+      - pnpm dev -- --host 127.0.0.1 --port {{.WEB_PORT}}
+
+  web:build:
+    desc: 构建 WebUI 静态文件并同步到 Go embed 目录
+    cmds:
+      - task: web:check
+      - cd {{.WEB_DIR}} && pnpm build
+      - mkdir -p {{.WEB_DIST}}
+      - find {{.WEB_DIST}} -mindepth 1 ! -name .gitignore -delete
+      - cp -R {{.WEB_DIR}}/build/. {{.WEB_DIST}}/
+
+  web:check:
+    desc: 检查 WebUI 类型和 Svelte 语法
+    dir: '{{.WEB_DIR}}'
+    deps:
+      - task: web:install
+    cmds:
+      - pnpm check
+
+  web:preview:
+    desc: 预览 WebUI 静态构建
+    dir: '{{.WEB_DIR}}'
+    cmds:
+      - pnpm preview -- --host 127.0.0.1 --port 4173
 
   test:
     desc: 运行测试
@@ -30,6 +88,8 @@ tasks:
     desc: 清理构建产物
     cmds:
       - rm -rf bin/
+      - rm -rf {{.WEB_DIR}}/build
+      - find {{.WEB_DIST}} -mindepth 1 ! -name .gitignore -delete
 
   lint:
     desc: 代码检查

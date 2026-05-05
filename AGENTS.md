@@ -15,6 +15,7 @@ tietiezhi 是一个用 Go 编写的轻量级本地 AI Agent 框架，主要以 S
 ```bash
 task build
 task run
+task dev
 task test
 task lint
 task tidy
@@ -72,6 +73,7 @@ go mod tidy
 - `internal/session/`: 会话历史和自动保存。
 - `internal/media/`: 上传文件与媒体处理。
 - `internal/sandbox/`: Docker 沙箱执行支持。
+- `internal/webui/`: 嵌入到 Go 二进制中的 WebUI 静态文件，`dist/` 内容由 `task web:build` 生成。
 - `web/`: SvelteKit + Tailwind CSS + shadcn-svelte 前端 WebUI 项目。
 
 ## 配置与路径约定
@@ -144,11 +146,13 @@ task lint
 - `web/` 是 SvelteKit + Tailwind CSS + shadcn-svelte 前端项目，使用 pnpm 管理依赖。
 - shadcn-svelte 官方 LLM 参考文件应保存在 `web/docs/shadcn-svelte-llms.txt`；开发 `web/` 时可以先参考该文件了解组件、CLI 和文档入口。
 - 前端开发优先使用官方 CLI：`pnpm dlx sv create ... --add tailwindcss`、`pnpm dlx shadcn-svelte@latest init` 和 `pnpm dlx shadcn-svelte@latest add <component>`。
-- 前端验证命令在 `web/` 目录运行：`pnpm check`、`pnpm build`。
+- 本地联调用 `task dev`，会同时启动后端 `18178` 和前端 Vite `5173`；Vite 会把 `/health` 和 `/v1/*` 代理到后端。
+- 单二进制构建用 `task build`，它会运行 WebUI 静态构建并同步到 `internal/webui/dist`，随后由 `go:embed` 打进 `bin/tietiezhi`。
+- 前端验证命令优先使用 Task：`task web:check`、`task web:build`；直接在 `web/` 下也可运行 `pnpm check`、`pnpm build`。
 
 ## 文件安全
 
-- `~/.tietiezhi/config.yaml`、`.tietiezhi/`、`data/`、`bin/`、日志文件和系统临时文件都应保持忽略或位于仓库外。
+- `~/.tietiezhi/config.yaml`、`.tietiezhi/`、`data/`、`bin/`、`web/build/`、`internal/webui/dist/` 中的生成文件、日志文件和系统临时文件都应保持忽略或位于仓库外。
 - 不要把真实 LLM key、飞书/Telegram token、MCP 凭证或用户记忆写入仓库文件。
 - 对用户工作区文件做写入功能时，默认使用可恢复、可审计的方式；危险操作需要明确配置或用户确认。
 

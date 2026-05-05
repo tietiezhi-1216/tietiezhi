@@ -14,11 +14,11 @@ import (
 
 // Server HTTP 服务器
 type Server struct {
-	cfg    *config.Config
-	agent  *agent.BaseAgent
-	mgmt   *ManagementAPI
-	mux    *http.ServeMux
-	srv    *http.Server
+	cfg   *config.Config
+	agent *agent.BaseAgent
+	mgmt  *ManagementAPI
+	mux   *http.ServeMux
+	srv   *http.Server
 }
 
 // New 创建服务器实例
@@ -45,6 +45,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("/v1/models", s.handleModels)
+	s.registerWebUIRoutes()
 }
 
 // Start 启动服务器

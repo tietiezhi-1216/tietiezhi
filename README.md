@@ -53,7 +53,7 @@ task build
 task run
 ```
 
-首次启动会在 `~/.tietiezhi/config.yaml` 初始化配置模板。填入 LLM 和渠道配置后再次启动即可；后续 WebUI 也会围绕这个文件做配置读写。
+`task build` 会先构建 WebUI 静态页面，再把页面打包进 `bin/tietiezhi` 这个单二进制。首次启动会在 `~/.tietiezhi/config.yaml` 初始化配置模板。填入 LLM 和渠道配置后再次启动即可；后续 WebUI 也会围绕这个文件做配置读写。
 
 服务默认监听 `0.0.0.0:18178`。启动后检查：
 
@@ -69,6 +69,19 @@ go build -o bin/tietiezhi ./cmd/server
 ```
 
 也可以用 `-c` 指定其他配置文件，但运行时文件仍会统一保存在 `~/.tietiezhi/` 下。
+
+## 本地联调
+
+```bash
+task dev
+```
+
+`task dev` 会同时启动：
+
+- 后端：`http://127.0.0.1:18178`
+- 前端 Vite dev server：`http://127.0.0.1:5173`
+
+开发模式下，前端会把 `/health` 和 `/v1/*` 代理到后端。打包模式下，WebUI 由 Go 服务直接从二进制中提供，打开 `http://127.0.0.1:18178/` 即可访问。
 
 ## 配置示例
 
@@ -148,7 +161,9 @@ tietiezhi/
 │   ├── session/          # 会话历史和持久化
 │   ├── skill/            # Skills 加载
 │   ├── subagent/         # 子代理管理
-│   └── tool/             # 工具接口和内置工具
+│   ├── tool/             # 工具接口和内置工具
+│   └── webui/            # 嵌入到 Go 二进制中的 WebUI 静态文件
+├── web/                  # SvelteKit + Tailwind CSS + shadcn-svelte WebUI
 ├── Taskfile.yml          # 构建、运行、测试命令
 └── AGENTS.md             # 给开发代理的项目说明
 ```
@@ -156,12 +171,17 @@ tietiezhi/
 ## 开发命令
 
 ```bash
-task build   # 编译 bin/tietiezhi
-task run     # 编译并使用 ~/.tietiezhi/config.yaml 启动
-task test    # go test ./...
-task lint    # go vet ./...
-task tidy    # go mod tidy
-task clean   # 删除 bin/
+task dev           # 前后端联调
+task build         # 构建 WebUI 并编译单二进制 bin/tietiezhi
+task build:server  # 仅编译 Go 服务端
+task run           # 构建单二进制并使用 ~/.tietiezhi/config.yaml 启动
+task web:dev       # 仅启动 WebUI 开发服务
+task web:build     # 仅构建 WebUI 静态文件并同步到 Go embed 目录
+task web:check     # 检查 WebUI 类型和 Svelte 语法
+task test          # go test ./...
+task lint          # go vet ./...
+task tidy          # go mod tidy
+task clean         # 删除 bin/ 和前端构建产物
 ```
 
 ## 开发说明
