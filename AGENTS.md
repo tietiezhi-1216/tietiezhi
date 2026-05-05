@@ -134,6 +134,13 @@ task lint
 
 文档或注释-only 变更可不运行完整测试，但应说明未运行原因。
 
+## 提交规范
+
+- 任何代码、配置或文档修改完成后都需要创建 Git commit；除非用户明确要求暂不提交，或仓库状态存在无法安全提交的未解决冲突。
+- 提交前先确认 `git status`，只提交本次任务相关文件，不要把无关未提交改动、真实配置、密钥或运行时数据混入提交。
+- 提交信息使用 Conventional Commits 风格：`type(scope): summary` 或 `type: summary`，例如 `feat(config): 统一本地配置目录`、`fix(server): 修复配置保存错误`、`docs: 添加提交规范`。
+- 常用类型包括 `feat`、`fix`、`docs`、`refactor`、`test`、`chore`；summary 使用简洁中文，说明本次提交的实际效果。
+
 ## 文件安全
 
 - `~/.tietiezhi/config.yaml`、`.tietiezhi/`、旧版 `configs/config.yaml`、`data/`、`configs/data/`、`bin/`、`workspaces/*/`、日志文件和系统临时文件都应保持忽略或位于仓库外。
