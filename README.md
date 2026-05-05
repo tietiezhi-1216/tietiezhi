@@ -114,7 +114,7 @@ heartbeat:
   chat_id: ""
 ```
 
-完整配置请看 [configs/config.example.yaml](configs/config.example.yaml)。
+完整配置模板由服务首次启动时写入 `~/.tietiezhi/config.yaml`。
 
 ## 飞书群里的使用方向
 
@@ -135,7 +135,7 @@ tietiezhi/
 ├── internal/
 │   ├── agent/            # Agent 主循环、工具调用、压缩、审批、循环检测
 │   ├── channel/          # 渠道抽象与飞书、Telegram 等实现
-│   ├── config/           # YAML 配置结构、默认值和路径解析
+│   ├── config/           # YAML 配置结构、默认值、模板初始化和本地目录派生
 │   ├── cron/             # 定时任务管理
 │   ├── heartbeat/        # 心跳检查
 │   ├── hook/             # Hook 事件和规则
@@ -149,9 +149,6 @@ tietiezhi/
 │   ├── skill/            # Skills 加载
 │   ├── subagent/         # 子代理管理
 │   └── tool/             # 工具接口和内置工具
-├── configs/              # 配置示例
-├── skills/               # 技能目录
-├── workspaces/           # 工作区占位目录
 ├── Taskfile.yml          # 构建、运行、测试命令
 └── AGENTS.md             # 给开发代理的项目说明
 ```
@@ -169,7 +166,7 @@ task clean   # 删除 bin/
 
 ## 开发说明
 
-开发规范和项目边界请看 [AGENTS.md](AGENTS.md)。后续改动如果涉及配置结构，请同步更新 [configs/config.example.yaml](configs/config.example.yaml)。
+开发规范和项目边界请看 [AGENTS.md](AGENTS.md)。后续改动如果涉及配置结构，请同步更新 `internal/config/config.go` 中的默认配置模板。
 
 ## License
 

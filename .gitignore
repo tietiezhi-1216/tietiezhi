@@ -3,13 +3,9 @@ tietiezhi-server
 bin/
 *.exe
 
-# 配置文件（含敏感信息）
-configs/config.yaml
+# 本地配置和运行时数据
 .tietiezhi/
-
-# 运行时数据
 data/
-configs/data/
 
 # 日志
 *.log
@@ -22,7 +18,3 @@ configs/data/
 # OS
 .DS_Store
 Thumbs.db
-
-# 工作区数据
-workspaces/*/
-!workspaces/.gitkeep

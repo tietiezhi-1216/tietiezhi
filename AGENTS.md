@@ -6,7 +6,7 @@
 
 tietiezhi 是一个用 Go 编写的轻量级本地 AI Agent 框架，主要以 Server 模式运行。它提供 OpenAI 兼容接口、渠道接入、内置工具、Skills、MCP、Hook、Markdown 记忆、定时任务、心跳、子代理、会话持久化和可选 Docker 沙箱。
 
-服务入口是 `cmd/server/main.go`，默认配置文件路径是 `~/.tietiezhi/config.yaml`。示例配置在 `configs/config.example.yaml`，真实配置可能包含密钥，不要提交。
+服务入口是 `cmd/server/main.go`，默认配置文件路径是 `~/.tietiezhi/config.yaml`。配置模板内置在 `internal/config/config.go`，真实配置可能包含密钥，不要提交。
 
 ## 常用命令
 
@@ -50,7 +50,7 @@ go mod tidy
    curl http://localhost:18178/health
    ```
 
-配置中的默认端口是 `18178`。README 中出现的端口或 Makefile 描述如果与代码不一致，以 `configs/config.example.yaml` 和 `Taskfile.yml` 为准。
+配置中的默认端口是 `18178`。README 中出现的端口或 Makefile 描述如果与代码不一致，以 `internal/config/config.go` 和 `Taskfile.yml` 为准。
 
 ## 目录结构
 
@@ -72,9 +72,6 @@ go mod tidy
 - `internal/session/`: 会话历史和自动保存。
 - `internal/media/`: 上传文件与媒体处理。
 - `internal/sandbox/`: Docker 沙箱执行支持。
-- `configs/`: 配置示例；真实配置默认在 `~/.tietiezhi/config.yaml`。
-- `skills/`: 技能目录，目前只有占位文件。
-- `workspaces/`: 本地工作区目录，只提交 `.gitkeep`。
 
 ## 配置与路径约定
 
@@ -87,7 +84,7 @@ go mod tidy
 ## 开发原则
 
 - 保持单二进制、零数据库的设计取向。新增持久化能力时优先考虑现有 JSON/Markdown 文件存储模式。
-- 保持配置驱动。新增功能应在 `internal/config/config.go` 增加结构、默认值和示例配置。
+- 保持配置驱动。新增功能应在 `internal/config/config.go` 增加结构、默认值和内置配置模板。
 - 新增 HTTP 能力时优先放在 `internal/server/management.go` 或 `internal/server/server.go` 的现有路由体系里。
 - 新增工具时实现 `internal/tool.Tool` 接口，并在内置工具注册或 Agent 工具列表构建处接入。
 - 新增渠道时实现 `internal/channel.Channel`，并在启动入口按配置注册。
@@ -143,7 +140,7 @@ task lint
 
 ## 文件安全
 
-- `~/.tietiezhi/config.yaml`、`.tietiezhi/`、旧版 `configs/config.yaml`、`data/`、`configs/data/`、`bin/`、`workspaces/*/`、日志文件和系统临时文件都应保持忽略或位于仓库外。
+- `~/.tietiezhi/config.yaml`、`.tietiezhi/`、`data/`、`bin/`、日志文件和系统临时文件都应保持忽略或位于仓库外。
 - 不要把真实 LLM key、飞书/Telegram token、MCP 凭证或用户记忆写入仓库文件。
 - 对用户工作区文件做写入功能时，默认使用可恢复、可审计的方式；危险操作需要明确配置或用户确认。
 
@@ -151,6 +148,6 @@ task lint
 
 - 先读相关代码再改，不要只根据 README 或计划表判断实现状态。
 - 小步修改，保持包边界清晰。
-- 修改配置结构时同步更新 `configs/config.example.yaml` 和相关启动装配。
+- 修改配置结构时同步更新 `internal/config/config.go` 的默认配置模板和相关启动装配。
 - 修改可观测行为时更新 README 或本文件中对应说明。
 - 遇到已有未提交改动时，先判断是否与任务相关；不要回滚无关改动。
