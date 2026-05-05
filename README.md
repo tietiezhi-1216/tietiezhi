@@ -1,83 +1,91 @@
-# tietiezhi
+# Tietiezhi（铁铁汁）
 
-> 🇨🇳 轻量级本地 AI Agent 框架 — 一个配置文件搞定所有功能
+> 一个面向飞书群和团队现场的 Agent 项目。中文名叫“铁铁汁”，英文名叫 `Tietiezhi`，平时一般叫它“铁汁”。
 
-tietiezhi 是一个用 Go 开发的轻量级 AI Agent 框架，聚焦 **Server 模式**，将市面上所有 Agent 功能整合到一个好配置、好使用、好管理的服务中。
+“铁汁”来自中国人聊天里那种亲近、熟络、能一起扛事的称呼。Tietiezhi 不是又一个只停留在聊天窗口里的助手。它更像团队群里的一个成员：能接住上下文，记住约定，跟进工作进度，查看代码库和文件，定时提醒，也能把复杂任务拆给子代理继续做。
 
-## 为什么做 tietiezhi？
+它可以作为个人 Agent 使用，但更主要的目标是团队 Agent。尤其是在飞书群里，铁汁应该能陪一个团队维护项目日常：需求推进、代码库状态、任务提醒、会议后续、知识沉淀、周期性检查，以及那些没人想每天手动整理但又很重要的事情。
 
-市面上有很多 Agent 框架，但它们要么太重（需要数据库、Redis），要么功能碎片化（只做渠道、只做工具、只做记忆），要么配置复杂（交互式引导、多层嵌套配置）。
+## 想做什么
 
-tietiezhi 的定位很明确：
+- 在飞书群里响应团队问题，而不是只服务单人对话。
+- 把项目上下文、团队约定、长期记忆沉淀成 Markdown 文件。
+- 通过工具读取文件、分析材料、执行命令、访问网页，并把结果带回对话。
+- 用定时任务和心跳机制跟进工作进度、提醒待办、触发周期性检查。
+- 用子代理处理更长、更分散的任务，比如代码库巡检、资料整理、方案拆解。
+- 保持 OpenAI 兼容接口，让不同模型和调用方可以接进来。
+- 以一个 YAML 配置启动完整服务，不强迫引入数据库或额外平台。
 
-- **功能全**：渠道、Agent、Hook、定时任务、Skills、MCP、记忆、LLM — 全都整合在一个服务里
-- **配置简**：一个 YAML 文件搞定，不搞交互式引导，不搞多余代码
-- **零依赖**：零数据库，Markdown 驱动的记忆系统，单二进制部署
-- **协议通**：原生支持 OpenAI 协议，兼容主流大模型
+## 适合的场景
 
-## 核心特性
+- 飞书项目群里的进度跟进、日报/周报辅助、待办提醒。
+- 团队代码库维护，例如让 Agent 阅读仓库文件、总结变更、辅助排查问题。
+- 长期项目知识库，把团队规则、决策、复盘和背景信息写进工作区。
+- 个人 Agent，把自己的偏好、上下文、资料和自动化任务放在自己的服务中。
+- 多 Agent 工作流，把主 Agent 收到的任务拆给子代理异步或同步执行。
 
-| 特性 | 说明 |
+## 当前能力
+
+| 模块 | 说明 |
 |------|------|
-| 🎯 配置驱动 | 一个 YAML 文件搞定所有功能，清晰明了 |
-| 🔌 OpenAI 协议 | 原生支持，兼容 OpenAI / Azure / 国产模型 |
-| 📦 零数据库 | Markdown 文件记忆，SOUL.md / MEMORY.md / USER.md |
-| 🚀 开箱即用 | 单二进制部署，无外部依赖 |
-| 📡 多渠道 | 飞书、钉钉、Telegram、Discord... |
-| 🛠️ 工具系统 | 内置工具 + 技能包（Anthropic MD 规范）+ MCP 协议 |
-| 🪝 Hook 链 | LLM 调用前后、工具调用前后、消息收发前后 |
-| ⏰ 定时任务 | Cron 表达式驱动，定时执行任务 |
-| 🔄 循环检测 | 多策略检测工具调用循环，防止 Agent 陷入死循环 |
-| 🇨🇳 中文优先 | 文档、配置、注释全中文 |
-
-## 功能状态
-
-- ✅ YAML 配置驱动
-- ✅ 项目骨架与核心接口
-✅ LLM 接入（OpenAI 协议，含流式）
-✅ Agent 对话引擎（单轮对话 + 对话历史）
-✅ 工具调用循环检测框架
-🔄 渠道接入（飞书已对接 WebSocket 长连接）
-- 📋 技能包系统（Anthropic MD 规范）
-- 📋 Hook 系统（6 个核心触发点）
-- 📋 MCP 协议支持
-- 📋 Markdown 记忆系统
-- 📋 定时任务调度
-- 📋 工作区管理
+| Server | 提供 `/health`、OpenAI 兼容的 `/v1/chat/completions`、`/v1/models`，并包含管理 API |
+| LLM | OpenAI 协议 Provider，支持同步和流式响应，可配置 cheap model |
+| Agent | 对话历史、工具调用、循环检测、上下文压缩、审批、Hook、记忆注入 |
+| 飞书 | 已有飞书渠道代码，可通过配置启用，并支持流式/非流式模式 |
+| Telegram | 已有配置结构和渠道实现，当前启动装配以飞书为重点 |
+| 工具 | `terminal_exec`、`file_read`、`file_write`、`file_analyze`、`web_search`、`web_fetch` |
+| 记忆 | Markdown 工作区，包含身份、用户、长期记忆、每日笔记和上传目录 |
+| 定时任务 | 支持 `at`、`every`、`cron` 三类计划，任务持久化为 JSON |
+| 心跳 | 可周期性检查并通过渠道投递结果 |
+| 子代理 | 支持同步/异步 spawn、工具白名单、模型选择、会话模式和文件注入 |
+| Skills / MCP / Hook | 已有加载、管理和执行框架 |
+| 沙箱 | 可选 Docker 沙箱，用于终端工具执行隔离 |
 
 ## 快速开始
 
+安装 [Task](https://taskfile.dev/) 后可以直接使用仓库中的 `Taskfile.yml`。
+
 ```bash
-# 克隆项目
-git clone https://tietiezhi.git
+git clone <repo-url>
 cd tietiezhi
 
-# 配置
 cp configs/config.example.yaml configs/config.yaml
-# 编辑 config.yaml，填入你的 API Key
+# 编辑 configs/config.yaml，填入 LLM 和渠道配置
 
-# 构建并运行
-task build && task run
+task build
+task run
 ```
 
-服务启动后访问 `http://localhost:8080/health` 检查状态。
+服务默认监听 `0.0.0.0:18178`。启动后检查：
+
+```bash
+curl http://localhost:18178/health
+```
+
+也可以直接使用 Go 命令：
+
+```bash
+go build -o bin/tietiezhi ./cmd/server
+./bin/tietiezhi -c configs/config.yaml
+```
 
 ## 配置示例
 
 ```yaml
 server:
   host: "0.0.0.0"
-  port: 8080
+  port: 18178
 
 llm:
   provider: "openai"
   base_url: "https://api.openai.com/v1"
-  api_key: "sk-your-api-key"
+  api_key: "your-api-key"
   model: "gpt-4o"
+  cheap_model: ""
 
 agent:
   max_tool_calls: 20
-  system_prompt: "你是一个有用的AI助手"
+  system_prompt: "你是一个能维护团队进度和项目上下文的 Agent"
   loop_detection: true
 
 channels:
@@ -85,63 +93,87 @@ channels:
     enabled: false
     app_id: ""
     app_secret: ""
+    streaming: false
+    bot_open_id: ""
+  telegram:
+    enabled: false
+    bot_token: ""
+    admin_ids: []
 
 memory:
   type: "markdown"
-  path: "./workspaces"
+  path: "./data/workspace"
 
 skills:
-  path: "./skills"
+  path: "./data/workspace/skills"
+
+scheduler:
+  enabled: true
+  path: "./data/cron"
+  exec_timeout: 300
+
+heartbeat:
+  enabled: true
+  interval: 30
+  chat_id: ""
 ```
 
-完整配置参考 [configs/config.example.yaml](configs/config.example.yaml)。
+完整配置请看 [configs/config.example.yaml](configs/config.example.yaml)。
+
+## 飞书群里的使用方向
+
+铁汁的核心使用场景不是“问一句答一句”，而是长期留在团队群里做上下文维护：
+
+- 记录项目关键决策和进展，沉淀到 Markdown 记忆。
+- 定时检查某些任务是否推进，必要时在群里提醒。
+- 帮团队整理会议后续、风险点、负责人和下一步动作。
+- 读取代码库或工作区文件，回答“现在这个项目到哪了”。
+- 通过子代理并行处理多个检查项，再把结果汇总回主会话。
+- 用 Hook、MCP、Skills 把团队已有工具逐步接进来。
 
 ## 项目结构
 
-```
+```text
 tietiezhi/
-├── cmd/server/           # 入口
+├── cmd/server/           # 服务入口
 ├── internal/
-│   ├── config/           # 配置加载
-│   ├── server/           # HTTP 服务
-│   ├── llm/              # LLM 接入层
-│   ├── agent/            # Agent 引擎 + 循环检测
-│   ├── channel/          # 渠道层
-│   │   └── feishu/       # 飞书渠道
-│   ├── tool/             # 工具系统
-│   │   └── builtin/      # 内置工具
-│   ├── skill/            # 技能包（Anthropic MD 规范）
-│   ├── hook/             # Hook 链
-│   ├── mcp/              # MCP 协议
-│   ├── memory/           # 记忆系统
-│   ├── scheduler/        # 定时任务
-│   └── workspace/        # 工作区管理
-├── configs/              # 配置文件
-├── skills/               # 技能包目录
-├── workspaces/           # 工作区目录
-├── AGENTS.md             # 开发规范
-└── Makefile              # 构建命令
+│   ├── agent/            # Agent 主循环、工具调用、压缩、审批、循环检测
+│   ├── channel/          # 渠道抽象与飞书、Telegram 等实现
+│   ├── config/           # YAML 配置结构、默认值和路径解析
+│   ├── cron/             # 定时任务管理
+│   ├── heartbeat/        # 心跳检查
+│   ├── hook/             # Hook 事件和规则
+│   ├── llm/              # LLM Provider 和 OpenAI 协议实现
+│   ├── mcp/              # MCP 管理
+│   ├── media/            # 上传和媒体处理
+│   ├── memory/           # Markdown 记忆系统
+│   ├── sandbox/          # Docker 沙箱
+│   ├── server/           # HTTP API 和管理 API
+│   ├── session/          # 会话历史和持久化
+│   ├── skill/            # Skills 加载
+│   ├── subagent/         # 子代理管理
+│   └── tool/             # 工具接口和内置工具
+├── configs/              # 配置示例
+├── skills/               # 技能目录
+├── workspaces/           # 工作区占位目录
+├── Taskfile.yml          # 构建、运行、测试命令
+└── AGENTS.md             # 给开发代理的项目说明
 ```
 
-## 开发计划
+## 开发命令
 
-| 阶段 | 内容 | 状态 |
-|------|------|------|
-| Phase 1 | 配置加载 + LLM 接入（OpenAI） + 单轮对话 + HTTP API | 🔄 |
-| Phase 2 | Agent 多轮对话 + 工具调用 + 循环检测 | 📋 |
-| Phase 3 | 渠道接入（飞书） | 📋 |
-| Phase 4 | 技能包 + Hook 系统 | 📋 |
-| Phase 5 | MCP 协议 + 记忆系统 | 📋 |
-| Phase 6 | 定时任务 + 工作区管理 | 📋 |
-| Phase 7 | 打磨优化 + 文档完善 | 📋 |
+```bash
+task build   # 编译 bin/tietiezhi
+task run     # 编译并使用 configs/config.yaml 启动
+task test    # go test ./...
+task lint    # go vet ./...
+task tidy    # go mod tidy
+task clean   # 删除 bin/
+```
 
-## 开发规范
+## 开发说明
 
-详见 [AGENTS.md](AGENTS.md)。
-
-## 贡献
-
-欢迎 PR！请先阅读 [AGENTS.md](AGENTS.md) 了解开发规范。
+开发规范和项目边界请看 [AGENTS.md](AGENTS.md)。后续改动如果涉及配置结构，请同步更新 [configs/config.example.yaml](configs/config.example.yaml)。
 
 ## License
 
