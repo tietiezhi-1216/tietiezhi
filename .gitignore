@@ -10,6 +10,8 @@ build/
 target/
 **/target/
 Cargo.lock.bak
+# Tauri generated files (schemas, etc.)
+src-tauri/gen/
 
 # ---- Logs ----
 *.log
