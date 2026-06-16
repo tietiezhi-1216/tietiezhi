@@ -58,28 +58,24 @@ async fn run_session(app: AppHandle, mut ctrl_rx: mpsc::Receiver<SessionCtrl>) {
     let state = app.state::<Arc<AppState>>().inner().clone();
     let settings = state.settings.lock().clone();
 
-    let asr = match settings.asr_model().cloned() {
-        Some(m) => m,
-        None => {
-            emit_error(&app, "未选择语音识别模型，请在「模型」里添加并选择。");
-            return finish_idle(&app, &state);
-        }
-    };
-    let resolved = match settings.resolve(&asr) {
-        Some(r) => r,
-        None => {
-            emit_error(&app, "所选语音识别模型没有对应的服务商。");
-            return finish_idle(&app, &state);
-        }
-    };
-
+    // Show the pill immediately so the hotkey always gives visible feedback,
+    // even if recognition is misconfigured.
     show_pill(&app);
     emit_state(&app, "recording", "", 0.0);
 
-    let recognized = if resolved.transport == "realtime_ws" {
-        run_realtime(&app, &resolved, &mut ctrl_rx).await
-    } else {
-        run_http(&app, &resolved, &mut ctrl_rx).await
+    let asr = match settings.asr_model().cloned() {
+        Some(m) => m,
+        None => return fail(&app, &state, "未选择语音识别模型，请在「模型」里添加并选择。").await,
+    };
+    let resolved = match settings.resolve(&asr) {
+        Some(r) => r,
+        None => return fail(&app, &state, "所选语音识别模型没有对应的服务商。").await,
+    };
+
+    let recognized = match resolved.transport.as_str() {
+        "realtime_ws" => run_realtime(&app, &resolved, &mut ctrl_rx).await,
+        "volcano_ws" => run_volcano(&app, &resolved, &mut ctrl_rx).await,
+        _ => run_http(&app, &resolved, &mut ctrl_rx).await,
     };
 
     let text = match recognized {
@@ -90,11 +86,7 @@ async fn run_session(app: AppHandle, mut ctrl_rx: mpsc::Receiver<SessionCtrl>) {
             emit_state(&app, "idle", "", 0.0);
             return finish_idle(&app, &state);
         }
-        Err(e) => {
-            emit_error(&app, &format!("识别失败：{e}"));
-            hide_pill(&app);
-            return finish_idle(&app, &state);
-        }
+        Err(e) => return fail(&app, &state, &format!("识别失败：{e}")).await,
     };
 
     let mut final_text = text;
@@ -251,6 +243,86 @@ async fn run_realtime(
     }
 }
 
+/// 火山引擎 (Volcano / 豆包语音) streaming ASR over its binary WebSocket protocol.
+async fn run_volcano(
+    app: &AppHandle,
+    model: &ResolvedModel,
+    ctrl_rx: &mut mpsc::Receiver<SessionCtrl>,
+) -> anyhow::Result<Option<String>> {
+    let ws = crate::volcano::connect(model).await?;
+    let (mut write, mut read) = ws.split();
+    write
+        .send(Message::Binary(crate::volcano::full_client_request(model)))
+        .await?;
+
+    let (frames_tx, mut frames_rx) = mpsc::channel::<Vec<i16>>(64);
+    let capture = crate::audio::start(16_000, frames_tx)?;
+
+    let mut text = String::new();
+    let mut seq: i32 = 1;
+    let mut committing = false;
+    let mut cancelled = false;
+    let mut deadline: Option<tokio::time::Instant> = None;
+
+    loop {
+        tokio::select! {
+            frame = frames_rx.recv() => {
+                if let Some(frame) = frame {
+                    if !committing {
+                        seq += 1;
+                        let pcm = crate::audio::pcm16_to_bytes(&frame);
+                        emit_state(app, "recording", &text, crate::audio::level(&frame));
+                        let _ = write.send(Message::Binary(
+                            crate::volcano::audio_request(&pcm, seq, false))).await;
+                    }
+                }
+            }
+            ctrl = ctrl_rx.recv() => match ctrl {
+                Some(SessionCtrl::Commit) | None => {
+                    committing = true;
+                    capture.stop();
+                    seq += 1;
+                    let _ = write.send(Message::Binary(
+                        crate::volcano::audio_request(&[], seq, true))).await;
+                    deadline = Some(tokio::time::Instant::now() + Duration::from_secs(6));
+                    emit_state(app, "transcribing", &text, 0.0);
+                }
+                Some(SessionCtrl::Cancel) => { cancelled = true; break; }
+            },
+            msg = read.next() => match msg {
+                Some(Ok(Message::Binary(data))) => {
+                    match crate::volcano::parse_response(&data) {
+                        crate::volcano::VolcEvent::Result { text: t, is_final } => {
+                            if !t.is_empty() { text = t; }
+                            emit_state(app, if committing { "transcribing" } else { "recording" }, &text, 0.0);
+                            if committing && is_final { break; }
+                        }
+                        crate::volcano::VolcEvent::Error(e) => { capture.stop(); return Err(anyhow::anyhow!(e)); }
+                        crate::volcano::VolcEvent::Other => {}
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => { capture.stop(); return Err(e.into()); }
+            },
+            _ = async {
+                match deadline {
+                    Some(d) => tokio::time::sleep_until(d).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => break,
+        }
+    }
+
+    capture.stop();
+    let _ = write.send(Message::Close(None)).await;
+    if cancelled {
+        Ok(None)
+    } else {
+        Ok(Some(text))
+    }
+}
+
 // ---- Helpers ---------------------------------------------------------------
 
 fn finish_idle(app: &AppHandle, state: &Arc<AppState>) {
@@ -258,6 +330,15 @@ fn finish_idle(app: &AppHandle, state: &Arc<AppState>) {
     dict.active = false;
     dict.ctrl_tx = None;
     let _ = app;
+}
+
+/// Show an error in the pill briefly, then hide and reset.
+async fn fail(app: &AppHandle, state: &Arc<AppState>, msg: &str) {
+    emit_error(app, msg);
+    tokio::time::sleep(Duration::from_millis(1800)).await;
+    hide_pill(app);
+    emit_state(app, "idle", "", 0.0);
+    finish_idle(app, state);
 }
 
 fn emit_state(app: &AppHandle, status: &str, text: &str, level: f32) {

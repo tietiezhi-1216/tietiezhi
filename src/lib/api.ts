@@ -16,3 +16,6 @@ export const dictationCancel = () => invoke<void>("dictation_cancel");
 
 export const testProvider = (provider: Provider) =>
   invoke<string>("test_provider", { provider });
+
+export const fetchModels = (provider: Provider) =>
+  invoke<string[]>("fetch_models", { provider });

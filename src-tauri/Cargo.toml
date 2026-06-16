@@ -44,6 +44,7 @@ anyhow = "1"
 parking_lot = "0.12"
 once_cell = "1"
 uuid = { version = "1", features = ["v4"] }
+flate2 = "1"
 
 # Global hotkey via a CGEventTap (keycode-only — no main-thread HIToolbox calls)
 [target.'cfg(target_os = "macos")'.dependencies]

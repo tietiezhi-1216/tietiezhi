@@ -32,6 +32,7 @@ import type {
 } from "@/lib/types";
 
 const OPENAI_BASE = "https://api.openai.com/v1";
+const VOLC_RESOURCE = "volc.bigasr.sauc.duration";
 
 const TABS = [
   { id: "providers", label: "服务商", icon: Server },
@@ -49,7 +50,6 @@ interface SectionProps {
 
 const uid = () => crypto.randomUUID();
 
-// macOS 虚拟键码 → 友好名称（用于快捷键显示）。
 const KEYCODE_LABELS: Record<string, string> = {
   "54": "右 ⌘",
   "55": "左 ⌘",
@@ -114,13 +114,7 @@ export default function App() {
   );
 }
 
-function Sidebar({
-  tab,
-  setTab,
-}: {
-  tab: TabId;
-  setTab: (t: TabId) => void;
-}) {
+function Sidebar({ tab, setTab }: { tab: TabId; setTab: (t: TabId) => void }) {
   return (
     <aside className="flex w-56 shrink-0 flex-col gap-1 border-r p-4">
       <div className="mb-4 flex items-center gap-2 px-2">
@@ -155,22 +149,17 @@ function Sidebar({
 
 function Section({
   title,
-  desc,
   action,
   children,
 }: {
   title: string;
-  desc?: string;
   action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start gap-3">
-        <div className="flex flex-col gap-1">
-          <h2 className="text-xl font-semibold">{title}</h2>
-          {desc && <p className="text-muted-foreground text-sm">{desc}</p>}
-        </div>
+      <div className="flex items-center gap-3">
+        <h2 className="text-xl font-semibold">{title}</h2>
         <div className="flex-1" />
         {action}
       </div>
@@ -187,20 +176,11 @@ function Empty({ children }: { children: ReactNode }) {
   );
 }
 
-function Labeled({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: ReactNode;
-}) {
+function Labeled({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className="text-sm font-medium">{label}</span>
       {children}
-      {hint && <span className="text-muted-foreground text-xs">{hint}</span>}
     </label>
   );
 }
@@ -228,17 +208,20 @@ function Row({
 function Select({
   value,
   onChange,
+  disabled,
   children,
 }: {
   value: string;
   onChange: (v: string) => void;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
     <select
       value={value}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className="border-input dark:bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-[3px]"
+      className="border-input dark:bg-input/30 focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-[3px] disabled:opacity-50"
     >
       {children}
     </select>
@@ -248,7 +231,7 @@ function Select({
 // ---- 服务商 ---------------------------------------------------------------
 
 function ProvidersSection({ settings, update }: SectionProps) {
-  const add = () =>
+  const addOpenAI = () =>
     update({
       ...settings,
       providers: [
@@ -259,6 +242,24 @@ function ProvidersSection({ settings, update }: SectionProps) {
           kind: "openai",
           base_url: OPENAI_BASE,
           api_key: "",
+          app_id: "",
+          resource_id: "",
+        },
+      ],
+    });
+  const addVolcano = () =>
+    update({
+      ...settings,
+      providers: [
+        ...settings.providers,
+        {
+          id: uid(),
+          name: "火山引擎",
+          kind: "volcano",
+          base_url: "",
+          api_key: "",
+          app_id: "",
+          resource_id: VOLC_RESOURCE,
         },
       ],
     });
@@ -278,16 +279,21 @@ function ProvidersSection({ settings, update }: SectionProps) {
   return (
     <Section
       title="服务商"
-      desc="模型厂商与接口地址。内置 OpenAI；改一下 Base URL 即可接入任何兼容 OpenAI 的端点。"
       action={
-        <Button size="sm" onClick={add}>
-          <Plus className="size-4" />
-          添加服务商
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={addOpenAI}>
+            <Plus className="size-4" />
+            OpenAI
+          </Button>
+          <Button size="sm" onClick={addVolcano}>
+            <Plus className="size-4" />
+            火山引擎
+          </Button>
+        </div>
       }
     >
       {settings.providers.length === 0 && (
-        <Empty>还没有服务商，先添加一个。</Empty>
+        <Empty>还没有服务商，添加一个开始。</Empty>
       )}
       {settings.providers.map((p) => (
         <ProviderCard
@@ -311,6 +317,7 @@ function ProviderCard({
   onRemove: () => void;
 }) {
   const [test, setTest] = useState("");
+  const isVolcano = provider.kind === "volcano";
   const runTest = async () => {
     setTest("testing");
     try {
@@ -327,8 +334,11 @@ function ProviderCard({
           <Input
             value={provider.name}
             onChange={(e) => onEdit({ name: e.target.value })}
-            className="max-w-[220px] font-medium"
+            className="max-w-[200px] font-medium"
           />
+          <span className="bg-secondary text-muted-foreground rounded px-2 py-0.5 text-xs">
+            {isVolcano ? "火山引擎" : "OpenAI"}
+          </span>
           <div className="flex-1" />
           <Button variant="outline" size="sm" onClick={runTest}>
             测试
@@ -337,20 +347,47 @@ function ProviderCard({
             <Trash2 className="size-4" />
           </Button>
         </div>
-        <Labeled label="接口地址 (Base URL)">
-          <Input
-            value={provider.base_url}
-            onChange={(e) => onEdit({ base_url: e.target.value })}
-          />
-        </Labeled>
-        <Labeled label="API Key" hint="仅保存在本地的 Orbit 配置文件中。">
-          <Input
-            type="password"
-            value={provider.api_key}
-            onChange={(e) => onEdit({ api_key: e.target.value })}
-            placeholder="sk-…"
-          />
-        </Labeled>
+
+        {isVolcano ? (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Labeled label="AppID">
+              <Input
+                value={provider.app_id}
+                onChange={(e) => onEdit({ app_id: e.target.value })}
+              />
+            </Labeled>
+            <Labeled label="Access Token">
+              <Input
+                type="password"
+                value={provider.api_key}
+                onChange={(e) => onEdit({ api_key: e.target.value })}
+              />
+            </Labeled>
+            <Labeled label="Resource ID">
+              <Input
+                value={provider.resource_id}
+                onChange={(e) => onEdit({ resource_id: e.target.value })}
+              />
+            </Labeled>
+          </div>
+        ) : (
+          <>
+            <Labeled label="Base URL">
+              <Input
+                value={provider.base_url}
+                onChange={(e) => onEdit({ base_url: e.target.value })}
+              />
+            </Labeled>
+            <Labeled label="API Key">
+              <Input
+                type="password"
+                value={provider.api_key}
+                onChange={(e) => onEdit({ api_key: e.target.value })}
+                placeholder="sk-…"
+              />
+            </Labeled>
+          </>
+        )}
         {test && (
           <p className="text-muted-foreground text-xs">
             {test === "testing" ? "测试中…" : test}
@@ -364,22 +401,32 @@ function ProviderCard({
 // ---- 模型 -----------------------------------------------------------------
 
 function ModelsSection({ settings, update }: SectionProps) {
-  const addModel = (type: ModelType) =>
+  const [modelTab, setModelTab] = useState<ModelType>("asr");
+
+  const addModel = () => {
+    const provider = settings.providers[0];
+    const isVolc = provider?.kind === "volcano";
     update({
       ...settings,
       models: [
         ...settings.models,
         {
           id: uid(),
-          provider_id: settings.providers[0]?.id ?? "",
-          name: type === "asr" ? "语音识别" : "润色模型",
-          model: type === "asr" ? "gpt-4o-transcribe" : "gpt-4o-mini",
-          type,
-          transport: "http",
+          provider_id: provider?.id ?? "",
+          name: modelTab === "asr" ? "语音识别" : "大模型",
+          model:
+            modelTab === "asr"
+              ? isVolc
+                ? "bigmodel"
+                : "gpt-4o-transcribe"
+              : "gpt-4o-mini",
+          type: modelTab,
+          transport: modelTab === "asr" && isVolc ? "volcano_ws" : "http",
           language: null,
         },
       ],
     });
+  };
   const edit = (id: string, patch: Partial<Model>) =>
     update({
       ...settings,
@@ -393,64 +440,60 @@ function ModelsSection({ settings, update }: SectionProps) {
       models: settings.models.filter((m) => m.id !== id),
     });
 
-  const asr = settings.models.filter((m) => m.type === "asr");
-  const llm = settings.models.filter((m) => m.type === "llm");
+  const list = settings.models.filter((m) => m.type === modelTab);
+  const activeId =
+    modelTab === "asr" ? settings.asr_model_id : settings.llm_model_id;
+  const setActive = (v: string) =>
+    update(
+      modelTab === "asr"
+        ? { ...settings, asr_model_id: v || null }
+        : { ...settings, llm_model_id: v || null },
+    );
 
   return (
     <Section
       title="模型"
-      desc="配置语音识别（ASR）与大模型（LLM），再选择听写要用哪一个。"
+      action={
+        <Button size="sm" onClick={addModel} disabled={!settings.providers.length}>
+          <Plus className="size-4" />
+          添加{modelTab === "asr" ? "语音识别" : "大模型"}
+        </Button>
+      }
     >
-      {settings.providers.length === 0 && (
-        <Empty>请先在「服务商」里添加一个，再到这里创建模型。</Empty>
+      <div className="bg-secondary/50 flex w-fit gap-1 rounded-lg p-1">
+        {(["asr", "llm"] as ModelType[]).map((t) => (
+          <button
+            key={t}
+            onClick={() => setModelTab(t)}
+            className={cn(
+              "rounded-md px-3 py-1.5 text-sm transition-colors",
+              modelTab === t
+                ? "bg-background shadow-sm"
+                : "text-muted-foreground",
+            )}
+          >
+            {t === "asr" ? "语音识别" : "大模型"}
+          </button>
+        ))}
+      </div>
+
+      {settings.providers.length === 0 && <Empty>请先添加服务商。</Empty>}
+
+      <Labeled label={modelTab === "asr" ? "当前语音识别模型" : "当前大模型"}>
+        <Select value={activeId ?? ""} onChange={setActive}>
+          <option value="">— 无 —</option>
+          {list.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </Select>
+      </Labeled>
+
+      {list.length === 0 && settings.providers.length > 0 && (
+        <Empty>还没有模型，点右上角添加。</Empty>
       )}
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Labeled label="当前语音识别 (ASR) 模型">
-          <Select
-            value={settings.asr_model_id ?? ""}
-            onChange={(v) => update({ ...settings, asr_model_id: v || null })}
-          >
-            <option value="">— 无 —</option>
-            {asr.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </Select>
-        </Labeled>
-        <Labeled label="当前大模型 (LLM)">
-          <Select
-            value={settings.llm_model_id ?? ""}
-            onChange={(v) => update({ ...settings, llm_model_id: v || null })}
-          >
-            <option value="">— 无 —</option>
-            {llm.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.name}
-              </option>
-            ))}
-          </Select>
-        </Labeled>
-      </div>
-
-      <div className="flex items-center gap-2">
-        <h3 className="text-muted-foreground text-sm font-medium">
-          已配置的模型
-        </h3>
-        <div className="flex-1" />
-        <Button size="sm" variant="outline" onClick={() => addModel("asr")}>
-          <Plus className="size-4" />
-          加 ASR
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => addModel("llm")}>
-          <Plus className="size-4" />
-          加 LLM
-        </Button>
-      </div>
-
-      {settings.models.length === 0 && <Empty>还没有配置任何模型。</Empty>}
-      {[...asr, ...llm].map((m) => (
+      {list.map((m) => (
         <ModelCard
           key={m.id}
           model={m}
@@ -474,6 +517,31 @@ function ModelCard({
   onEdit: (p: Partial<Model>) => void;
   onRemove: () => void;
 }) {
+  const provider = providers.find((p) => p.id === model.provider_id);
+  const isVolcano = provider?.kind === "volcano";
+  const [fetched, setFetched] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const loadModels = async () => {
+    if (!provider) return;
+    setLoading(true);
+    try {
+      setFetched(await api.fetchModels(provider));
+    } catch (e) {
+      console.error(e);
+      setFetched([]);
+    }
+    setLoading(false);
+  };
+
+  const options = fetched.length
+    ? fetched.includes(model.model)
+      ? fetched
+      : [model.model, ...fetched]
+    : model.model
+      ? [model.model]
+      : [];
+
   return (
     <Card>
       <CardContent className="grid gap-3 pt-6 sm:grid-cols-2">
@@ -483,18 +551,20 @@ function ModelCard({
             onChange={(e) => onEdit({ name: e.target.value })}
           />
         </Labeled>
-        <Labeled label="模型 ID">
-          <Input
-            value={model.model}
-            onChange={(e) => onEdit({ model: e.target.value })}
-          />
-        </Labeled>
         <Labeled label="服务商">
           <Select
             value={model.provider_id}
-            onChange={(v) => onEdit({ provider_id: v })}
+            onChange={(v) => {
+              const np = providers.find((p) => p.id === v);
+              const transport: Transport =
+                np?.kind === "volcano"
+                  ? "volcano_ws"
+                  : model.transport === "volcano_ws"
+                    ? "http"
+                    : model.transport;
+              onEdit({ provider_id: v, transport });
+            }}
           >
-            {providers.length === 0 && <option value="">— 无 —</option>}
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -502,31 +572,47 @@ function ModelCard({
             ))}
           </Select>
         </Labeled>
-        <Labeled label="类型">
-          <Select
-            value={model.type}
-            onChange={(v) => onEdit({ type: v as ModelType })}
-          >
-            <option value="asr">语音识别 (ASR)</option>
-            <option value="llm">大模型 (LLM)</option>
-          </Select>
+        <Labeled label="模型">
+          <div className="flex gap-2">
+            <Select value={model.model} onChange={(v) => onEdit({ model: v })}>
+              {options.length === 0 && <option value="">— 获取列表 —</option>}
+              {options.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
+            </Select>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={loadModels}
+              disabled={loading || !provider}
+            >
+              {loading ? "获取中…" : "获取列表"}
+            </Button>
+          </div>
         </Labeled>
         {model.type === "asr" && (
           <Labeled label="传输方式">
-            <Select
-              value={model.transport}
-              onChange={(v) => onEdit({ transport: v as Transport })}
-            >
-              <option value="http">HTTP（停止后上传）</option>
-              <option value="realtime_ws">实时 WebSocket</option>
-            </Select>
+            {isVolcano ? (
+              <Input value="火山引擎流式" disabled />
+            ) : (
+              <Select
+                value={model.transport}
+                onChange={(v) => onEdit({ transport: v as Transport })}
+              >
+                <option value="http">HTTP（停止后上传）</option>
+                <option value="realtime_ws">实时 WebSocket</option>
+              </Select>
+            )}
           </Labeled>
         )}
         {model.type === "asr" && (
-          <Labeled label="语言" hint="可选，如 zh / en">
+          <Labeled label="语言">
             <Input
               value={model.language ?? ""}
               onChange={(e) => onEdit({ language: e.target.value || null })}
+              placeholder="zh / en"
             />
           </Labeled>
         )}
@@ -574,19 +660,16 @@ function DictationSection({ settings, update }: SectionProps) {
   };
 
   return (
-    <Section
-      title="听写"
-      desc="按一下快捷键开始录音，再按一下（或点 ✓）进行识别。✗ 取消。"
-    >
+    <Section title="听写">
       <Card>
         <CardHeader>
           <CardTitle>快捷键</CardTitle>
           <CardDescription>
-            可以是单独一个键（如右 ⌘），也可以录制任意按键。按一下开始，再按一下识别。
+            按一下开始录音，再按一下识别。可用单个键（如右 ⌘）或录制任意键。
           </CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-3">
-          <code className="rounded-md bg-secondary px-3 py-1.5 text-sm">
+          <code className="bg-secondary rounded-md px-3 py-1.5 text-sm">
             {hotkeyLabel(settings.hotkey)}
           </code>
           <Button
@@ -617,10 +700,7 @@ function DictationSection({ settings, update }: SectionProps) {
               onCheckedChange={(v) => update({ ...settings, auto_insert: v })}
             />
           </Row>
-          <Row
-            label="用大模型润色"
-            hint="在输入前，先让当前大模型把识别文本润色一遍。"
-          >
+          <Row label="用大模型润色" hint="在输入前，用当前大模型把识别文本润色一遍。">
             <Switch
               checked={settings.llm_polish_enabled}
               onCheckedChange={(v) =>
@@ -628,25 +708,13 @@ function DictationSection({ settings, update }: SectionProps) {
               }
             />
           </Row>
-          <Labeled
-            label="模板占位符"
-            hint="提示词模板里 {{…}} 内使用的名称。"
-          >
-            <Input
-              value={settings.insert_position}
-              onChange={(e) =>
-                update({ ...settings, insert_position: e.target.value })
-              }
-              className="max-w-[220px]"
-            />
-          </Labeled>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
           <CardTitle>麦克风</CardTitle>
-          <CardDescription>Orbit 从系统默认输入设备录音。</CardDescription>
+          <CardDescription>从系统默认输入设备录音。</CardDescription>
         </CardHeader>
         <CardContent>
           <ul className="text-muted-foreground space-y-1 text-sm">
@@ -674,7 +742,10 @@ function TemplatesSection({ settings, update }: SectionProps) {
         { id: uid(), name: "新模板", template: placeholder },
       ],
     });
-  const edit = (id: string, patch: Partial<{ name: string; template: string }>) =>
+  const edit = (
+    id: string,
+    patch: Partial<{ name: string; template: string }>,
+  ) =>
     update({
       ...settings,
       templates: settings.templates.map((t) =>
@@ -690,7 +761,6 @@ function TemplatesSection({ settings, update }: SectionProps) {
   return (
     <Section
       title="提示词模板"
-      desc={`润色步骤用的可复用提示词。把 ${placeholder} 放在你希望插入识别文本的位置。`}
       action={
         <Button size="sm" onClick={add}>
           <Plus className="size-4" />
@@ -701,7 +771,9 @@ function TemplatesSection({ settings, update }: SectionProps) {
       <Labeled label="当前模板">
         <Select
           value={settings.active_template_id ?? ""}
-          onChange={(v) => update({ ...settings, active_template_id: v || null })}
+          onChange={(v) =>
+            update({ ...settings, active_template_id: v || null })
+          }
         >
           <option value="">— 无 —</option>
           {settings.templates.map((t) => (
@@ -711,6 +783,9 @@ function TemplatesSection({ settings, update }: SectionProps) {
           ))}
         </Select>
       </Labeled>
+      <p className="text-muted-foreground text-xs">
+        用 {placeholder} 标记识别文本插入的位置。
+      </p>
 
       {settings.templates.map((t) => (
         <Card key={t.id}>

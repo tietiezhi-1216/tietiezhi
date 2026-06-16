@@ -21,8 +21,9 @@ fn default_transport() -> String {
     "http".to_string()
 }
 
-/// A model vendor / endpoint. OpenAI is the first-class `kind`; any
-/// OpenAI-compatible endpoint works by overriding `base_url`.
+/// A model vendor / endpoint. `kind` selects the wire protocol:
+/// `openai` (or any OpenAI-compatible endpoint via `base_url`) or `volcano`
+/// (火山引擎 / 豆包语音 — uses `app_id` + `api_key` as Access Token + `resource_id`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Provider {
     pub id: String,
@@ -31,8 +32,15 @@ pub struct Provider {
     pub kind: String,
     #[serde(default = "default_base_url")]
     pub base_url: String,
+    /// OpenAI API key, or — for `volcano` — the Access Token (X-Api-Access-Key).
     #[serde(default)]
     pub api_key: String,
+    /// Volcano AppID (X-Api-App-Key). Unused for OpenAI.
+    #[serde(default)]
+    pub app_id: String,
+    /// Volcano resource id (X-Api-Resource-Id), default `volc.bigasr.sauc.duration`.
+    #[serde(default)]
+    pub resource_id: String,
 }
 
 /// A concrete model belonging to a provider, tagged by `type` (`asr` | `llm`)
@@ -129,8 +137,11 @@ impl Settings {
 /// Resolved credentials + model id ready for an API call.
 #[derive(Debug, Clone)]
 pub struct ResolvedModel {
+    pub kind: String,
     pub base_url: String,
     pub api_key: String,
+    pub app_id: String,
+    pub resource_id: String,
     pub model: String,
     pub transport: String,
     pub language: Option<String>,
@@ -139,9 +150,17 @@ pub struct ResolvedModel {
 impl Settings {
     pub fn resolve(&self, model: &Model) -> Option<ResolvedModel> {
         let provider = self.provider(&model.provider_id)?;
+        let resource_id = if provider.resource_id.trim().is_empty() {
+            "volc.bigasr.sauc.duration".to_string()
+        } else {
+            provider.resource_id.clone()
+        };
         Some(ResolvedModel {
+            kind: provider.kind.clone(),
             base_url: provider.base_url.clone(),
             api_key: provider.api_key.clone(),
+            app_id: provider.app_id.clone(),
+            resource_id,
             model: model.model.clone(),
             transport: model.transport.clone(),
             language: model.language.clone(),

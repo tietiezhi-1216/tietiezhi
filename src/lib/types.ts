@@ -1,14 +1,21 @@
 // Mirrors the Rust `config` module (serde JSON shapes).
 
 export type ModelType = "asr" | "llm";
-export type Transport = "http" | "realtime_ws";
+export type Transport = "http" | "realtime_ws" | "volcano_ws";
+
+export type ProviderKind = "openai" | "volcano";
 
 export interface Provider {
   id: string;
   name: string;
   kind: string;
   base_url: string;
+  /** OpenAI API key, or — for volcano — the Access Token. */
   api_key: string;
+  /** Volcano AppID (X-Api-App-Key). */
+  app_id: string;
+  /** Volcano resource id (X-Api-Resource-Id). */
+  resource_id: string;
 }
 
 export interface Model {

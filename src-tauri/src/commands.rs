@@ -46,9 +46,49 @@ pub fn dictation_cancel(app: AppHandle) {
     crate::dictation::cancel(&app);
 }
 
+/// Fetch the list of model ids a provider exposes (so users pick instead of
+/// typing). OpenAI-compatible providers use `GET /models`; Volcano has a fixed
+/// streaming-ASR model.
+#[tauri::command]
+pub async fn fetch_models(provider: Provider) -> Result<Vec<String>, String> {
+    if provider.kind == "volcano" {
+        return Ok(vec!["bigmodel".to_string()]);
+    }
+    let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
+    let resp = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(&provider.api_key)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        return Err(format!("HTTP {status}: {body}"));
+    }
+    let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let mut ids: Vec<String> = v
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    Ok(ids)
+}
+
 /// Ping a provider's `/models` endpoint to validate base URL + API key.
 #[tauri::command]
 pub async fn test_provider(provider: Provider) -> Result<String, String> {
+    if provider.kind == "volcano" {
+        if provider.app_id.trim().is_empty() || provider.api_key.trim().is_empty() {
+            return Err("请填写 AppID 与 Access Token".to_string());
+        }
+        return Ok("已填写（火山引擎需真机识别时验证）".to_string());
+    }
     let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
     let resp = reqwest::Client::new()
         .get(url)

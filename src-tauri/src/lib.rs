@@ -8,6 +8,7 @@ mod insert;
 mod llm;
 mod realtime;
 mod state;
+mod volcano;
 
 use std::sync::Arc;
 
@@ -61,6 +62,7 @@ pub fn run() {
             commands::dictation_toggle,
             commands::dictation_cancel,
             commands::test_provider,
+            commands::fetch_models,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
