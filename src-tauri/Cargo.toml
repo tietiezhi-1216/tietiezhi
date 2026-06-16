@@ -36,8 +36,7 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 base64 = "0.22"
 
-# Global input listening + auto-typing
-rdev = "0.5"
+# Auto-typing for inserting recognized text
 enigo = "0.2"
 
 # Utilities
@@ -45,4 +44,9 @@ anyhow = "1"
 parking_lot = "0.12"
 once_cell = "1"
 uuid = { version = "1", features = ["v4"] }
+
+# Global hotkey via a CGEventTap (keycode-only — no main-thread HIToolbox calls)
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.25"
+core-foundation = "0.10"
 

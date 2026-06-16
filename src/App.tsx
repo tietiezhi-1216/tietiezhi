@@ -49,6 +49,27 @@ interface SectionProps {
 
 const uid = () => crypto.randomUUID();
 
+// macOS virtual keycode → friendly label (for the hotkey display).
+const KEYCODE_LABELS: Record<string, string> = {
+  "54": "Right ⌘",
+  "55": "Left ⌘",
+  "59": "Left ⌃",
+  "62": "Right ⌃",
+  "56": "Left ⇧",
+  "60": "Right ⇧",
+  "58": "Left ⌥",
+  "61": "Right ⌥",
+  "63": "Fn",
+  "49": "Space",
+  "36": "Return",
+  "53": "Esc",
+  "48": "Tab",
+  "51": "Delete",
+  "57": "Caps Lock",
+};
+const hotkeyLabel = (code: string) =>
+  !code ? "—" : (KEYCODE_LABELS[code] ?? `Key ${code}`);
+
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [tab, setTab] = useState<TabId>("providers");
@@ -561,13 +582,13 @@ function DictationSection({ settings, update }: SectionProps) {
         <CardHeader>
           <CardTitle>Shortcut</CardTitle>
           <CardDescription>
-            A single key like right ⌘ (<code>MetaRight</code>) or any key you
-            record.
+            A single key like right ⌘, or any key you record. Press it once to
+            start, again to transcribe.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-3">
           <code className="rounded-md bg-secondary px-3 py-1.5 text-sm">
-            {settings.hotkey || "—"}
+            {hotkeyLabel(settings.hotkey)}
           </code>
           <Button
             variant="outline"

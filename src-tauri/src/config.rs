@@ -69,7 +69,8 @@ pub struct Settings {
     pub providers: Vec<Provider>,
     pub models: Vec<Model>,
     pub templates: Vec<PromptTemplate>,
-    /// rdev key name that toggles dictation (e.g. `MetaRight` for right ⌘).
+    /// macOS virtual keycode (as a string) that toggles dictation.
+    /// Default `54` = right ⌘.
     pub hotkey: String,
     pub asr_model_id: Option<String>,
     pub llm_model_id: Option<String>,
@@ -90,7 +91,7 @@ impl Default for Settings {
                 name: "Polish (default)".to_string(),
                 template: "You are a dictation assistant. Rewrite the text between the markers so it is clear, correctly punctuated and natural, keeping the original meaning and language. Output only the rewritten text.\n\n{{transcript}}".to_string(),
             }],
-            hotkey: "MetaRight".to_string(),
+            hotkey: "54".to_string(),
             asr_model_id: None,
             llm_model_id: None,
             active_template_id: Some("default-polish".to_string()),
@@ -153,10 +154,15 @@ fn file(dir: &Path) -> std::path::PathBuf {
 }
 
 pub fn load(dir: &Path) -> Settings {
-    match fs::read_to_string(file(dir)) {
+    let mut settings = match fs::read_to_string(file(dir)) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
         Err(_) => Settings::default(),
+    };
+    // Migrate any pre-keycode hotkey (e.g. the old "MetaRight") to right ⌘.
+    if settings.hotkey.parse::<i64>().is_err() {
+        settings.hotkey = "54".to_string();
     }
+    settings
 }
 
 pub fn save(dir: &Path, settings: &Settings) -> anyhow::Result<()> {

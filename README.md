@@ -120,7 +120,7 @@ The goal: dictation that is **fast, private-by-default, hackable, and free**.
 
 1. **Add a provider** (Settings → Providers): name, base URL (`https://api.openai.com/v1`), API key. "Test" pings `/models`.
 2. **Add models** (Settings → Models): an **ASR** model (e.g. `gpt-4o-transcribe`) with transport **HTTP** or **Realtime WebSocket**, and optionally an **LLM** model (e.g. `gpt-4o-mini`) for polishing. Pick the active ASR/LLM model.
-3. **Set your shortcut** (Settings → Dictation): record any key, or use right ⌘ (`MetaRight`). Toggle **auto-insert** and **LLM polish**.
+3. **Set your shortcut** (Settings → Dictation): defaults to right ⌘, or record any key. Toggle **auto-insert** and **LLM polish**.
 4. **Dictate anywhere**: press the shortcut → a recording pill appears bottom-center (✗ cancel · live level/partial text · ✓ done). Press again or ✓ to transcribe → optional LLM polish → text is typed into the focused app.
 5. **Prompt templates** (Settings → Templates): reusable polish prompts with a `{{transcript}}` placeholder marking where the recognized text goes.
 
