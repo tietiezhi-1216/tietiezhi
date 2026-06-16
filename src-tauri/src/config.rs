@@ -88,8 +88,8 @@ impl Default for Settings {
             models: Vec::new(),
             templates: vec![PromptTemplate {
                 id: "default-polish".to_string(),
-                name: "Polish (default)".to_string(),
-                template: "You are a dictation assistant. Rewrite the text between the markers so it is clear, correctly punctuated and natural, keeping the original meaning and language. Output only the rewritten text.\n\n{{transcript}}".to_string(),
+                name: "默认润色".to_string(),
+                template: "你是一个听写助手。请把下面的文本改写得通顺、标点正确、自然流畅，保持原意和原语言。只输出改写后的文本。\n\n{{transcript}}".to_string(),
             }],
             hotkey: "54".to_string(),
             asr_model_id: None,

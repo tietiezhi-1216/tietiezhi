@@ -37,7 +37,7 @@ fn to_ws_url(base_url: &str) -> String {
 
 pub async fn connect(model: &ResolvedModel) -> anyhow::Result<WsStream> {
     if model.api_key.trim().is_empty() {
-        anyhow::bail!("missing API key for the selected ASR provider");
+        anyhow::bail!("所选语音识别服务商缺少 API Key");
     }
     let mut request = to_ws_url(&model.base_url).into_client_request()?;
     let headers = request.headers_mut();

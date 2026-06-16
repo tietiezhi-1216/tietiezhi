@@ -7,6 +7,16 @@ import type { DictState } from "@/lib/types";
 
 const BARS = 5;
 
+const STATUS_LABELS: Record<string, string> = {
+  recording: "录音中",
+  transcribing: "识别中",
+  polishing: "润色中",
+  inserting: "输入中",
+  idle: "完成",
+  error: "出错",
+};
+const statusLabel = (s: string) => STATUS_LABELS[s] ?? s;
+
 export default function Pill() {
   const [st, setSt] = useState<DictState>({
     status: "recording",
@@ -29,7 +39,7 @@ export default function Pill() {
         <button
           onClick={() => api.dictationCancel()}
           className="grid size-8 place-items-center rounded-full bg-white/5 transition-colors hover:bg-red-500/80"
-          title="Cancel"
+          title="取消"
         >
           <X className="size-4" />
         </button>
@@ -55,15 +65,15 @@ export default function Pill() {
               })}
             </div>
           )}
-          <span className="text-[10px] uppercase tracking-wide text-neutral-400">
-            {st.status}
+          <span className="text-[10px] tracking-wide text-neutral-400">
+            {statusLabel(st.status)}
           </span>
         </div>
 
         <button
           onClick={() => api.dictationToggle()}
           className="grid size-8 place-items-center rounded-full bg-emerald-500/90 transition-colors hover:bg-emerald-400"
-          title="Done"
+          title="完成"
         >
           <Check className="size-4" />
         </button>

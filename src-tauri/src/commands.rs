@@ -57,7 +57,7 @@ pub async fn test_provider(provider: Provider) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
     if resp.status().is_success() {
-        Ok("Connection OK".to_string())
+        Ok("连接正常".to_string())
     } else {
         Err(format!("HTTP {}", resp.status()))
     }

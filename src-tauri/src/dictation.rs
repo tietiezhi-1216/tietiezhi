@@ -61,14 +61,14 @@ async fn run_session(app: AppHandle, mut ctrl_rx: mpsc::Receiver<SessionCtrl>) {
     let asr = match settings.asr_model().cloned() {
         Some(m) => m,
         None => {
-            emit_error(&app, "No ASR model selected — add one in Settings → Models.");
+            emit_error(&app, "未选择语音识别模型，请在「模型」里添加并选择。");
             return finish_idle(&app, &state);
         }
     };
     let resolved = match settings.resolve(&asr) {
         Some(r) => r,
         None => {
-            emit_error(&app, "The selected ASR model has no provider.");
+            emit_error(&app, "所选语音识别模型没有对应的服务商。");
             return finish_idle(&app, &state);
         }
     };
@@ -91,7 +91,7 @@ async fn run_session(app: AppHandle, mut ctrl_rx: mpsc::Receiver<SessionCtrl>) {
             return finish_idle(&app, &state);
         }
         Err(e) => {
-            emit_error(&app, &format!("Recognition failed: {e}"));
+            emit_error(&app, &format!("识别失败：{e}"));
             hide_pill(&app);
             return finish_idle(&app, &state);
         }
@@ -113,7 +113,7 @@ async fn run_session(app: AppHandle, mut ctrl_rx: mpsc::Receiver<SessionCtrl>) {
                 {
                     Ok(t) if !t.is_empty() => final_text = t,
                     Ok(_) => {}
-                    Err(e) => emit_error(&app, &format!("Polish failed: {e}")),
+                    Err(e) => emit_error(&app, &format!("润色失败：{e}")),
                 }
             }
         }

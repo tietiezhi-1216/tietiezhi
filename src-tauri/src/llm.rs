@@ -22,7 +22,7 @@ pub async fn polish(
     transcript: &str,
 ) -> anyhow::Result<String> {
     if model.api_key.trim().is_empty() {
-        anyhow::bail!("missing API key for the selected LLM provider");
+        anyhow::bail!("所选大模型服务商缺少 API Key");
     }
     let content = render_prompt(template, placeholder, transcript);
     let url = format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
@@ -42,7 +42,7 @@ pub async fn polish(
     let status = resp.status();
     let text = resp.text().await?;
     if !status.is_success() {
-        anyhow::bail!("LLM request failed ({status}): {text}");
+        anyhow::bail!("大模型请求失败（{status}）：{text}");
     }
 
     let v: serde_json::Value = serde_json::from_str(&text)?;

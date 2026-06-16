@@ -34,10 +34,10 @@ import type {
 const OPENAI_BASE = "https://api.openai.com/v1";
 
 const TABS = [
-  { id: "providers", label: "Providers", icon: Server },
-  { id: "models", label: "Models", icon: Boxes },
-  { id: "dictation", label: "Dictation", icon: Keyboard },
-  { id: "templates", label: "Templates", icon: FileText },
+  { id: "providers", label: "服务商", icon: Server },
+  { id: "models", label: "模型", icon: Boxes },
+  { id: "dictation", label: "听写", icon: Keyboard },
+  { id: "templates", label: "模板", icon: FileText },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -49,26 +49,26 @@ interface SectionProps {
 
 const uid = () => crypto.randomUUID();
 
-// macOS virtual keycode → friendly label (for the hotkey display).
+// macOS 虚拟键码 → 友好名称（用于快捷键显示）。
 const KEYCODE_LABELS: Record<string, string> = {
-  "54": "Right ⌘",
-  "55": "Left ⌘",
-  "59": "Left ⌃",
-  "62": "Right ⌃",
-  "56": "Left ⇧",
-  "60": "Right ⇧",
-  "58": "Left ⌥",
-  "61": "Right ⌥",
+  "54": "右 ⌘",
+  "55": "左 ⌘",
+  "59": "左 ⌃",
+  "62": "右 ⌃",
+  "56": "左 ⇧",
+  "60": "右 ⇧",
+  "58": "左 ⌥",
+  "61": "右 ⌥",
   "63": "Fn",
-  "49": "Space",
-  "36": "Return",
+  "49": "空格",
+  "36": "回车",
   "53": "Esc",
   "48": "Tab",
-  "51": "Delete",
-  "57": "Caps Lock",
+  "51": "删除",
+  "57": "大写锁定",
 };
 const hotkeyLabel = (code: string) =>
-  !code ? "—" : (KEYCODE_LABELS[code] ?? `Key ${code}`);
+  !code ? "—" : (KEYCODE_LABELS[code] ?? `键码 ${code}`);
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
@@ -86,7 +86,7 @@ export default function App() {
   if (!settings) {
     return (
       <div className="text-muted-foreground grid min-h-screen place-items-center bg-background">
-        Loading…
+        加载中…
       </div>
     );
   }
@@ -146,12 +146,12 @@ function Sidebar({
         );
       })}
       <div className="flex-1" />
-      <p className="text-muted-foreground/60 px-2 text-xs">Voice dictation</p>
+      <p className="text-muted-foreground/60 px-2 text-xs">语音听写</p>
     </aside>
   );
 }
 
-// ---- Shared layout helpers -------------------------------------------------
+// ---- 通用布局 -------------------------------------------------------------
 
 function Section({
   title,
@@ -245,7 +245,7 @@ function Select({
   );
 }
 
-// ---- Providers -------------------------------------------------------------
+// ---- 服务商 ---------------------------------------------------------------
 
 function ProvidersSection({ settings, update }: SectionProps) {
   const add = () =>
@@ -277,17 +277,17 @@ function ProvidersSection({ settings, update }: SectionProps) {
 
   return (
     <Section
-      title="Providers"
-      desc="Model vendors and endpoints. OpenAI is built in; any OpenAI-compatible endpoint works by changing the base URL."
+      title="服务商"
+      desc="模型厂商与接口地址。内置 OpenAI；改一下 Base URL 即可接入任何兼容 OpenAI 的端点。"
       action={
         <Button size="sm" onClick={add}>
           <Plus className="size-4" />
-          Add provider
+          添加服务商
         </Button>
       }
     >
       {settings.providers.length === 0 && (
-        <Empty>No providers yet. Add one to get started.</Empty>
+        <Empty>还没有服务商，先添加一个。</Empty>
       )}
       {settings.providers.map((p) => (
         <ProviderCard
@@ -331,19 +331,19 @@ function ProviderCard({
           />
           <div className="flex-1" />
           <Button variant="outline" size="sm" onClick={runTest}>
-            Test
+            测试
           </Button>
           <Button variant="ghost" size="icon" onClick={onRemove}>
             <Trash2 className="size-4" />
           </Button>
         </div>
-        <Labeled label="Base URL">
+        <Labeled label="接口地址 (Base URL)">
           <Input
             value={provider.base_url}
             onChange={(e) => onEdit({ base_url: e.target.value })}
           />
         </Labeled>
-        <Labeled label="API key" hint="Stored locally in your Orbit config file.">
+        <Labeled label="API Key" hint="仅保存在本地的 Orbit 配置文件中。">
           <Input
             type="password"
             value={provider.api_key}
@@ -353,7 +353,7 @@ function ProviderCard({
         </Labeled>
         {test && (
           <p className="text-muted-foreground text-xs">
-            {test === "testing" ? "Testing…" : test}
+            {test === "testing" ? "测试中…" : test}
           </p>
         )}
       </CardContent>
@@ -361,7 +361,7 @@ function ProviderCard({
   );
 }
 
-// ---- Models ----------------------------------------------------------------
+// ---- 模型 -----------------------------------------------------------------
 
 function ModelsSection({ settings, update }: SectionProps) {
   const addModel = (type: ModelType) =>
@@ -372,7 +372,7 @@ function ModelsSection({ settings, update }: SectionProps) {
         {
           id: uid(),
           provider_id: settings.providers[0]?.id ?? "",
-          name: type === "asr" ? "Transcribe" : "Polish model",
+          name: type === "asr" ? "语音识别" : "润色模型",
           model: type === "asr" ? "gpt-4o-transcribe" : "gpt-4o-mini",
           type,
           transport: "http",
@@ -398,20 +398,20 @@ function ModelsSection({ settings, update }: SectionProps) {
 
   return (
     <Section
-      title="Models"
-      desc="Configure speech (ASR) and language (LLM) models, then pick which ones dictation uses."
+      title="模型"
+      desc="配置语音识别（ASR）与大模型（LLM），再选择听写要用哪一个。"
     >
       {settings.providers.length === 0 && (
-        <Empty>Add a provider first, then create models here.</Empty>
+        <Empty>请先在「服务商」里添加一个，再到这里创建模型。</Empty>
       )}
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <Labeled label="Active ASR model">
+        <Labeled label="当前语音识别 (ASR) 模型">
           <Select
             value={settings.asr_model_id ?? ""}
             onChange={(v) => update({ ...settings, asr_model_id: v || null })}
           >
-            <option value="">— none —</option>
+            <option value="">— 无 —</option>
             {asr.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name}
@@ -419,12 +419,12 @@ function ModelsSection({ settings, update }: SectionProps) {
             ))}
           </Select>
         </Labeled>
-        <Labeled label="Active LLM model">
+        <Labeled label="当前大模型 (LLM)">
           <Select
             value={settings.llm_model_id ?? ""}
             onChange={(v) => update({ ...settings, llm_model_id: v || null })}
           >
-            <option value="">— none —</option>
+            <option value="">— 无 —</option>
             {llm.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name}
@@ -436,20 +436,20 @@ function ModelsSection({ settings, update }: SectionProps) {
 
       <div className="flex items-center gap-2">
         <h3 className="text-muted-foreground text-sm font-medium">
-          Configured models
+          已配置的模型
         </h3>
         <div className="flex-1" />
         <Button size="sm" variant="outline" onClick={() => addModel("asr")}>
           <Plus className="size-4" />
-          ASR
+          加 ASR
         </Button>
         <Button size="sm" variant="outline" onClick={() => addModel("llm")}>
           <Plus className="size-4" />
-          LLM
+          加 LLM
         </Button>
       </div>
 
-      {settings.models.length === 0 && <Empty>No models configured yet.</Empty>}
+      {settings.models.length === 0 && <Empty>还没有配置任何模型。</Empty>}
       {[...asr, ...llm].map((m) => (
         <ModelCard
           key={m.id}
@@ -477,24 +477,24 @@ function ModelCard({
   return (
     <Card>
       <CardContent className="grid gap-3 pt-6 sm:grid-cols-2">
-        <Labeled label="Name">
+        <Labeled label="名称">
           <Input
             value={model.name}
             onChange={(e) => onEdit({ name: e.target.value })}
           />
         </Labeled>
-        <Labeled label="Model id">
+        <Labeled label="模型 ID">
           <Input
             value={model.model}
             onChange={(e) => onEdit({ model: e.target.value })}
           />
         </Labeled>
-        <Labeled label="Provider">
+        <Labeled label="服务商">
           <Select
             value={model.provider_id}
             onChange={(v) => onEdit({ provider_id: v })}
           >
-            {providers.length === 0 && <option value="">— none —</option>}
+            {providers.length === 0 && <option value="">— 无 —</option>}
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -502,28 +502,28 @@ function ModelCard({
             ))}
           </Select>
         </Labeled>
-        <Labeled label="Type">
+        <Labeled label="类型">
           <Select
             value={model.type}
             onChange={(v) => onEdit({ type: v as ModelType })}
           >
-            <option value="asr">ASR (speech)</option>
-            <option value="llm">LLM (text)</option>
+            <option value="asr">语音识别 (ASR)</option>
+            <option value="llm">大模型 (LLM)</option>
           </Select>
         </Labeled>
         {model.type === "asr" && (
-          <Labeled label="Transport">
+          <Labeled label="传输方式">
             <Select
               value={model.transport}
               onChange={(v) => onEdit({ transport: v as Transport })}
             >
-              <option value="http">HTTP (upload after stop)</option>
-              <option value="realtime_ws">Realtime WebSocket</option>
+              <option value="http">HTTP（停止后上传）</option>
+              <option value="realtime_ws">实时 WebSocket</option>
             </Select>
           </Labeled>
         )}
         {model.type === "asr" && (
-          <Labeled label="Language" hint="optional, e.g. zh / en">
+          <Labeled label="语言" hint="可选，如 zh / en">
             <Input
               value={model.language ?? ""}
               onChange={(e) => onEdit({ language: e.target.value || null })}
@@ -533,7 +533,7 @@ function ModelCard({
         <div className="flex justify-end sm:col-span-2">
           <Button variant="ghost" size="sm" onClick={onRemove}>
             <Trash2 className="size-4" />
-            Remove
+            删除
           </Button>
         </div>
       </CardContent>
@@ -541,7 +541,7 @@ function ModelCard({
   );
 }
 
-// ---- Dictation -------------------------------------------------------------
+// ---- 听写 -----------------------------------------------------------------
 
 function DictationSection({ settings, update }: SectionProps) {
   const [capturing, setCapturing] = useState(false);
@@ -575,15 +575,14 @@ function DictationSection({ settings, update }: SectionProps) {
 
   return (
     <Section
-      title="Dictation"
-      desc="Press your shortcut to start recording, press it again (or ✓) to transcribe. ✗ cancels."
+      title="听写"
+      desc="按一下快捷键开始录音，再按一下（或点 ✓）进行识别。✗ 取消。"
     >
       <Card>
         <CardHeader>
-          <CardTitle>Shortcut</CardTitle>
+          <CardTitle>快捷键</CardTitle>
           <CardDescription>
-            A single key like right ⌘, or any key you record. Press it once to
-            start, again to transcribe.
+            可以是单独一个键（如右 ⌘），也可以录制任意按键。按一下开始，再按一下识别。
           </CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-3">
@@ -597,11 +596,11 @@ function DictationSection({ settings, update }: SectionProps) {
             disabled={capturing}
           >
             <Keyboard className="size-4" />
-            {capturing ? "Press any key…" : "Record shortcut"}
+            {capturing ? "请按下任意键…" : "录制快捷键"}
           </Button>
           {capturing && (
             <Button variant="ghost" size="sm" onClick={cancelCapture}>
-              Cancel
+              取消
             </Button>
           )}
         </CardContent>
@@ -610,8 +609,8 @@ function DictationSection({ settings, update }: SectionProps) {
       <Card>
         <CardContent className="flex flex-col gap-4 pt-6">
           <Row
-            label="Auto-insert result"
-            hint="Type the final text into the focused app (needs Accessibility permission)."
+            label="自动输入结果"
+            hint="把最终文本输入到当前聚焦的应用（需要辅助功能权限）。"
           >
             <Switch
               checked={settings.auto_insert}
@@ -619,8 +618,8 @@ function DictationSection({ settings, update }: SectionProps) {
             />
           </Row>
           <Row
-            label="Polish with LLM"
-            hint="Send the transcript through the active LLM model before inserting."
+            label="用大模型润色"
+            hint="在输入前，先让当前大模型把识别文本润色一遍。"
           >
             <Switch
               checked={settings.llm_polish_enabled}
@@ -630,8 +629,8 @@ function DictationSection({ settings, update }: SectionProps) {
             />
           </Row>
           <Labeled
-            label="Template placeholder"
-            hint="Token name used inside {{…}} in prompt templates."
+            label="模板占位符"
+            hint="提示词模板里 {{…}} 内使用的名称。"
           >
             <Input
               value={settings.insert_position}
@@ -646,17 +645,15 @@ function DictationSection({ settings, update }: SectionProps) {
 
       <Card>
         <CardHeader>
-          <CardTitle>Microphone</CardTitle>
-          <CardDescription>
-            Orbit records from the system default input device.
-          </CardDescription>
+          <CardTitle>麦克风</CardTitle>
+          <CardDescription>Orbit 从系统默认输入设备录音。</CardDescription>
         </CardHeader>
         <CardContent>
           <ul className="text-muted-foreground space-y-1 text-sm">
             {devices.length ? (
               devices.map((d, i) => <li key={i}>• {d}</li>)
             ) : (
-              <li>No input devices detected.</li>
+              <li>未检测到输入设备。</li>
             )}
           </ul>
         </CardContent>
@@ -665,7 +662,7 @@ function DictationSection({ settings, update }: SectionProps) {
   );
 }
 
-// ---- Templates -------------------------------------------------------------
+// ---- 提示词模板 -----------------------------------------------------------
 
 function TemplatesSection({ settings, update }: SectionProps) {
   const placeholder = `{{${settings.insert_position}}}`;
@@ -674,7 +671,7 @@ function TemplatesSection({ settings, update }: SectionProps) {
       ...settings,
       templates: [
         ...settings.templates,
-        { id: uid(), name: "New template", template: placeholder },
+        { id: uid(), name: "新模板", template: placeholder },
       ],
     });
   const edit = (id: string, patch: Partial<{ name: string; template: string }>) =>
@@ -692,21 +689,21 @@ function TemplatesSection({ settings, update }: SectionProps) {
 
   return (
     <Section
-      title="Prompt templates"
-      desc={`Reusable prompts for the polish step. Put ${placeholder} where the transcript should go.`}
+      title="提示词模板"
+      desc={`润色步骤用的可复用提示词。把 ${placeholder} 放在你希望插入识别文本的位置。`}
       action={
         <Button size="sm" onClick={add}>
           <Plus className="size-4" />
-          Add template
+          添加模板
         </Button>
       }
     >
-      <Labeled label="Active template">
+      <Labeled label="当前模板">
         <Select
           value={settings.active_template_id ?? ""}
           onChange={(v) => update({ ...settings, active_template_id: v || null })}
         >
-          <option value="">— none —</option>
+          <option value="">— 无 —</option>
           {settings.templates.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name}

@@ -27,7 +27,7 @@ pub fn encode_wav(samples: &[i16], rate: u32) -> anyhow::Result<Vec<u8>> {
 /// Transcribe a recorded WAV. Returns the recognized text.
 pub async fn transcribe_http(model: &ResolvedModel, wav: Vec<u8>) -> anyhow::Result<String> {
     if model.api_key.trim().is_empty() {
-        anyhow::bail!("missing API key for the selected ASR provider");
+        anyhow::bail!("所选语音识别服务商缺少 API Key");
     }
     let url = format!("{}/audio/transcriptions", model.base_url.trim_end_matches('/'));
 
@@ -54,7 +54,7 @@ pub async fn transcribe_http(model: &ResolvedModel, wav: Vec<u8>) -> anyhow::Res
     let status = resp.status();
     let body = resp.text().await?;
     if !status.is_success() {
-        anyhow::bail!("transcription failed ({status}): {body}");
+        anyhow::bail!("语音识别请求失败（{status}）：{body}");
     }
 
     let v: serde_json::Value = serde_json::from_str(&body)?;
