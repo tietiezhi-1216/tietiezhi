@@ -4,10 +4,10 @@
 
 **An open, multimodal AI platform for macOS — where every model is a satellite.**
 
-English · [简体中文](./README.zh-CN.md)
+English · [简体中文](./docs/README.zh-CN.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](./LICENSE)
-[![Status](https://img.shields.io/badge/status-pre--alpha-f59e0b.svg)](./ROADMAP.md)
+[![Status](https://img.shields.io/badge/status-pre--alpha-f59e0b.svg)](./docs/ROADMAP.md)
 [![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-000000.svg?logo=apple)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6-F05138.svg?logo=swift&logoColor=white)](https://swift.org)
 [![SwiftUI](https://img.shields.io/badge/SwiftUI-0A84FF.svg?logo=swift&logoColor=white)](https://developer.apple.com/xcode/swiftui/)
@@ -74,6 +74,7 @@ Orbit/
 ├── Package.swift            # SwiftPM manifest (executable target)
 ├── Info.plist              # bundle id, LSUIElement, usage strings
 ├── build.sh                # build → assemble .app → sign → run
+├── docs/                    # ROADMAP, translated README
 └── Sources/Orbit/
     ├── App/                 # entry point, AppDelegate, AppController
     ├── Models/              # Settings (the typed config document)
@@ -134,7 +135,7 @@ Settings are stored as JSON at `~/Library/Application Support/com.orbit.app/conf
 | **M5** | 🪐 Orchestration — chain modalities into workflows |
 | **M6** | 🌐 Open ecosystem — plugin/model registry, MCP bridge |
 
-**[→ Full roadmap](./ROADMAP.md)**
+**[→ Full roadmap](./docs/ROADMAP.md)**
 
 ## 📄 License
 
