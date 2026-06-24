@@ -1,76 +1,56 @@
 //  Settings.swift
-//  Typed configuration model — the Swift counterpart of the old Rust `config`
-//  module. Everything an integration needs is described here: which providers
-//  exist (OpenAI-compatible or 火山引擎), which models they expose, and how each
-//  model is reached. Persisted as JSON by `SettingsStore`.
+//  Typed configuration model. Describes which providers exist (OpenAI-compatible
+//  endpoints), which models they expose, and how each model is reached.
+//  Persisted as JSON by `SettingsStore`. Decoding is tolerant of older configs
+//  (e.g. the dropped 火山引擎 fields are simply ignored).
 
 import Foundation
 
 // MARK: - Enums
 
-/// A model vendor's wire protocol.
-enum ProviderKind: String, Codable, Hashable {
-    case openai   // OpenAI or any OpenAI-compatible endpoint (configurable base URL)
-    case volcano  // 火山引擎 / 豆包语音 — AppID + Access Token + Resource ID
-}
-
 /// What a model is used for.
 enum ModelKind: String, Codable, Hashable, CaseIterable {
     case asr  // speech → text
-    case llm  // text polish
+    case llm  // text (chat / polish)
 }
 
-/// How an ASR model streams audio.
+/// How an ASR model uploads audio. Only HTTP today (buffer the utterance, upload
+/// once). Kept as an enum so streaming transports can be added back later.
 enum Transport: String, Codable, Hashable {
-    case http                          // buffer the utterance, upload once
-    case realtimeWS = "realtime_ws"    // OpenAI Realtime WebSocket
-    case volcanoWS  = "volcano_ws"     // 火山引擎 binary WebSocket
+    case http
 }
 
 // MARK: - Provider
 
-/// A model vendor / endpoint.
+/// A model vendor / endpoint — an OpenAI-compatible base URL + API key.
 struct Provider: Identifiable, Codable, Hashable {
     var id: String
     var name: String
-    var kind: ProviderKind
     /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1`.
     var baseURL: String
-    /// OpenAI API key, or — for `volcano` — the Access Token (X-Api-Access-Key).
     var apiKey: String
-    /// Volcano AppID (X-Api-App-Key). Unused for OpenAI.
-    var appID: String
-    /// Volcano resource id (X-Api-Resource-Id).
-    var resourceID: String
 
     init(id: String = UUID().uuidString,
          name: String,
-         kind: ProviderKind = .openai,
          baseURL: String = Provider.openAIBase,
-         apiKey: String = "",
-         appID: String = "",
-         resourceID: String = "") {
+         apiKey: String = "") {
         self.id = id
         self.name = name
-        self.kind = kind
         self.baseURL = baseURL
         self.apiKey = apiKey
-        self.appID = appID
-        self.resourceID = resourceID
     }
 
     static let openAIBase = "https://api.openai.com/v1"
-    static let volcanoResource = "volc.bigasr.sauc.duration"
+
+    private enum CodingKeys: String, CodingKey { case id, name, baseURL, apiKey }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Provider"
-        kind = try c.decodeIfPresent(ProviderKind.self, forKey: .kind) ?? .openai
         baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? Provider.openAIBase
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
-        appID = try c.decodeIfPresent(String.self, forKey: .appID) ?? ""
-        resourceID = try c.decodeIfPresent(String.self, forKey: .resourceID) ?? ""
+        // Older configs may carry kind/appID/resourceID — ignored.
     }
 }
 
@@ -111,8 +91,9 @@ struct ModelConfig: Identifiable, Codable, Hashable {
         providerID = try c.decodeIfPresent(String.self, forKey: .providerID) ?? ""
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Model"
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? ""
-        kind = try c.decodeIfPresent(ModelKind.self, forKey: .kind) ?? .asr
-        transport = try c.decodeIfPresent(Transport.self, forKey: .transport) ?? .http
+        kind = (try? c.decode(ModelKind.self, forKey: .kind)) ?? .asr
+        // Old transports (realtime_ws / volcano_ws) no longer exist → default http.
+        transport = (try? c.decode(Transport.self, forKey: .transport)) ?? .http
         language = try c.decodeIfPresent(String.self, forKey: .language)
     }
 }
@@ -191,9 +172,11 @@ struct Settings: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Settings.defaults
-        providers = try c.decodeIfPresent([Provider].self, forKey: .providers) ?? d.providers
-        models = try c.decodeIfPresent([ModelConfig].self, forKey: .models) ?? d.models
-        templates = try c.decodeIfPresent([PromptTemplate].self, forKey: .templates) ?? d.templates
+        // Decode each array independently so one malformed collection can't wipe
+        // the others (or reset the whole document to empty defaults).
+        providers = (try? c.decode([Provider].self, forKey: .providers)) ?? d.providers
+        models = (try? c.decode([ModelConfig].self, forKey: .models)) ?? d.models
+        templates = (try? c.decode([PromptTemplate].self, forKey: .templates)) ?? d.templates
         hotkey = try c.decodeIfPresent(String.self, forKey: .hotkey) ?? d.hotkey
         asrModelID = try c.decodeIfPresent(String.self, forKey: .asrModelID)
         llmModelID = try c.decodeIfPresent(String.self, forKey: .llmModelID)
@@ -227,14 +210,9 @@ struct Settings: Codable {
     /// Resolve a model + its provider's credentials into a call-ready bundle.
     func resolve(_ model: ModelConfig) -> ResolvedModel? {
         guard let p = provider(id: model.providerID) else { return nil }
-        let resource = p.resourceID.trimmingCharacters(in: .whitespaces).isEmpty
-            ? Provider.volcanoResource : p.resourceID
         return ResolvedModel(
-            kind: p.kind,
             baseURL: p.baseURL,
             apiKey: p.apiKey,
-            appID: p.appID,
-            resourceID: resource,
             model: model.model,
             transport: model.transport,
             language: model.language
@@ -244,11 +222,8 @@ struct Settings: Codable {
 
 /// Resolved credentials + model id ready for an API call.
 struct ResolvedModel {
-    let kind: ProviderKind
     let baseURL: String
     let apiKey: String
-    let appID: String
-    let resourceID: String
     let model: String
     let transport: Transport
     let language: String?

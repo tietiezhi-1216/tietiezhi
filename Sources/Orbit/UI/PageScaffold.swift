@@ -7,8 +7,9 @@ import SwiftUI
 
 /// Shared layout metrics so every page lines up.
 enum Layout {
-    /// Top inset that keeps content clear of the (transparent-titlebar) traffic lights.
-    static let topInset: CGFloat = 30
+    /// Top inset for the page header (settings render inside a sheet now, so
+    /// there are no traffic lights to clear).
+    static let topInset: CGFloat = 16
     static let horizontalPadding: CGFloat = 24
 }
 

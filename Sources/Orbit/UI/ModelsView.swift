@@ -61,13 +61,12 @@ struct ModelsView: View {
 
     private func addModel() {
         guard let provider = store.settings.providers.first else { return }
-        let isVolcano = provider.kind == .volcano
         let model = ModelConfig(
             providerID: provider.id,
             name: tab == .asr ? "语音识别" : "大模型",
-            model: tab == .asr ? (isVolcano ? "bigmodel" : "gpt-4o-transcribe") : "gpt-4o-mini",
+            model: tab == .asr ? "gpt-4o-transcribe" : "gpt-4o-mini",
             kind: tab,
-            transport: (tab == .asr && isVolcano) ? .volcanoWS : .http,
+            transport: .http,
             language: nil
         )
         store.addModel(model)
@@ -81,10 +80,6 @@ private struct ModelSection: View {
 
     @State private var fetched: [String] = []
     @State private var loading = false
-
-    private var isVolcano: Bool {
-        providers.first { $0.id == model.providerID }?.kind == .volcano
-    }
 
     private var modelOptions: [String] {
         if fetched.isEmpty { return model.model.isEmpty ? [] : [model.model] }
@@ -104,7 +99,6 @@ private struct ModelSection: View {
             Picker("服务商", selection: $model.providerID) {
                 ForEach(providers) { p in Text(p.name).tag(p.id) }
             }
-            .onChange(of: model.providerID) { _, _ in adjustTransport() }
 
             HStack {
                 Picker("模型", selection: $model.model) {
@@ -118,14 +112,6 @@ private struct ModelSection: View {
             }
 
             if model.kind == .asr {
-                if isVolcano {
-                    LabeledContent("传输方式", value: "火山引擎流式")
-                } else {
-                    Picker("传输方式", selection: $model.transport) {
-                        Text("HTTP（停止后上传）").tag(Transport.http)
-                        Text("实时 WebSocket").tag(Transport.realtimeWS)
-                    }
-                }
                 TextField("语言（zh / en，可空）", text: languageBinding)
                     .textFieldStyle(.roundedBorder)
             }
@@ -138,14 +124,6 @@ private struct ModelSection: View {
             }
         } header: {
             Text(model.name)
-        }
-    }
-
-    private func adjustTransport() {
-        if isVolcano {
-            model.transport = .volcanoWS
-        } else if model.transport == .volcanoWS {
-            model.transport = .http
         }
     }
 

@@ -24,9 +24,23 @@ final class SettingsStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("config.json")
 
-        let loaded = SettingsStore.load(from: fileURL) ?? .defaults
+        var loaded = SettingsStore.load(from: fileURL) ?? .defaults
+        SettingsStore.migrate(&loaded)
         settings = loaded
         lastHotkey = loaded.hotkey
+    }
+
+    /// One-time cleanups for configs written by older builds. Currently: drop
+    /// providers with an empty Base URL — the signature of the removed 火山引擎
+    /// entry — and detach any models / active selections that referenced them.
+    private static func migrate(_ s: inout Settings) {
+        let before = s.providers.count
+        s.providers.removeAll { $0.baseURL.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard s.providers.count != before else { return }
+        let ids = Set(s.providers.map(\.id))
+        s.models.removeAll { !ids.contains($0.providerID) }
+        if let a = s.asrModelID, !s.models.contains(where: { $0.id == a }) { s.asrModelID = nil }
+        if let l = s.llmModelID, !s.models.contains(where: { $0.id == l }) { s.llmModelID = nil }
     }
 
     // MARK: Paths

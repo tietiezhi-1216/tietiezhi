@@ -23,20 +23,12 @@ enum ProviderAPI {
 
     /// Ping `/models` to validate base URL + API key. Returns a status string.
     static func test(_ provider: Provider) async throws -> String {
-        if provider.kind == .volcano {
-            guard !provider.appID.trimmed.isEmpty, !provider.apiKey.trimmed.isEmpty else {
-                throw ProviderAPIError.transport("请填写 AppID 与 Access Token")
-            }
-            return "已填写（火山引擎需真机识别时验证）"
-        }
         let (status, _) = try await getModels(provider)
         return status == 200 ? "连接正常" : "HTTP \(status)"
     }
 
-    /// List model ids. OpenAI-compatible providers use `GET /models`; Volcano
-    /// has a fixed streaming-ASR model.
+    /// List the model ids the provider exposes via `GET /models`.
     static func fetchModels(_ provider: Provider) async throws -> [String] {
-        if provider.kind == .volcano { return ["bigmodel"] }
         let (status, body) = try await getModels(provider)
         guard status == 200 else {
             throw ProviderAPIError.http(status, String(data: body, encoding: .utf8) ?? "")

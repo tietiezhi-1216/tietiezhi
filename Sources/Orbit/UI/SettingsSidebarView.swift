@@ -1,11 +1,10 @@
-//  SidebarView.swift
-//  A custom translucent sidebar: real vibrancy behind, a brand mark below the
-//  traffic lights, and accent-highlighted nav rows. Replaces NavigationSplitView
-//  so the window chrome stays identical on every page.
+//  SettingsSidebarView.swift
+//  The settings window's translucent left nav: real vibrancy behind, a brand
+//  mark below the traffic lights, and accent-highlighted section rows.
 
 import SwiftUI
 
-struct SidebarView: View {
+struct SettingsSidebarView: View {
     @Binding var selection: SettingsSection
 
     var body: some View {
@@ -16,7 +15,7 @@ struct SidebarView: View {
                 Text("Orbit").font(.system(size: 15, weight: .semibold))
             }
             .padding(.horizontal, 18)
-            .padding(.top, 34)
+            .padding(.top, 16)
             .padding(.bottom, 14)
 
             ForEach(SettingsSection.allCases) { section in

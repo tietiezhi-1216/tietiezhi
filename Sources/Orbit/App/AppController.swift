@@ -17,6 +17,9 @@ final class AppController: ObservableObject {
     @Published var axPermission: PermissionState = .notDetermined
     @Published var audioInputs: [String] = []
 
+    /// Drives the settings sheet presented inside the chat window.
+    @Published var settingsPresented = false
+
     /// Set by the dictation layer once it's constructed (avoids a hard
     /// compile-time dependency from the UI on the engine).
     var onBeginHotkeyCapture: (() -> Void)?

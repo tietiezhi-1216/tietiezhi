@@ -1,96 +1,86 @@
 //  ProvidersView.swift
-//  Manage model vendors (OpenAI-compatible or 火山引擎): credentials + a "Test"
-//  probe against /models.
+//  Manage OpenAI-compatible providers as a table: name, Base URL, masked API
+//  Key. Add / edit happen in a modal sheet (SwiftUI Table is read-only).
 
 import SwiftUI
 
 struct ProvidersView: View {
     @EnvironmentObject var store: SettingsStore
+
+    @State private var selectedID: Provider.ID?
     @State private var showingAdd = false
+    @State private var editingProvider: Provider?
+
+    private var selectedProvider: Provider? {
+        guard let id = selectedID else { return nil }
+        return store.settings.providers.first { $0.id == id }
+    }
 
     var body: some View {
         PageScaffold(title: "服务商") {
-            Button {
-                showingAdd = true
-            } label: {
-                Label("添加服务商", systemImage: "plus")
+            HStack(spacing: 8) {
+                Button {
+                    if let p = selectedProvider { editingProvider = p }
+                } label: {
+                    Label("编辑", systemImage: "pencil")
+                }
+                .disabled(selectedProvider == nil)
+
+                Button {
+                    if let id = selectedID {
+                        store.removeProvider(id: id)
+                        selectedID = nil
+                    }
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+                .disabled(selectedID == nil)
+
+                Button { showingAdd = true } label: {
+                    Label("添加服务商", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
             }
-            .buttonStyle(.bordered)
         } content: {
-            Form {
-                if store.settings.providers.isEmpty {
-                    Section {
-                        Text("还没有服务商，点右上角添加一个开始。")
-                            .foregroundStyle(.secondary)
-                    }
+            Table(store.settings.providers, selection: $selectedID) {
+                TableColumn("名称", value: \.name)
+                TableColumn("Base URL", value: \.baseURL)
+                TableColumn("API Key") { provider in
+                    Text(provider.apiKey.isEmpty ? "—" : "••••••••")
+                        .foregroundStyle(.secondary)
                 }
-                ForEach($store.settings.providers) { $provider in
-                    ProviderSection(provider: $provider) {
-                        store.removeProvider(id: provider.id)
+            }
+            .contextMenu(forSelectionType: Provider.ID.self) { ids in
+                if let id = ids.first,
+                   let provider = store.settings.providers.first(where: { $0.id == id }) {
+                    Button("编辑") { editingProvider = provider }
+                    Button("删除", role: .destructive) {
+                        store.removeProvider(id: id)
+                        if selectedID == id { selectedID = nil }
                     }
                 }
             }
-            .formStyle(.grouped)
+            .overlay {
+                if store.settings.providers.isEmpty {
+                    Text("还没有服务商，点右上角「添加服务商」开始。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
         }
         .sheet(isPresented: $showingAdd) {
             AddProviderSheet { newProvider in
                 store.addProvider(newProvider)
             }
         }
-    }
-}
-
-private struct ProviderSection: View {
-    @Binding var provider: Provider
-    var onRemove: () -> Void
-
-    @State private var status = ""
-    @State private var testing = false
-
-    var body: some View {
-        Section {
-            TextField("名称", text: $provider.name)
-                .textFieldStyle(.roundedBorder)
-
-            if provider.kind == .volcano {
-                TextField("AppID", text: $provider.appID)
-                    .textFieldStyle(.roundedBorder)
-                RevealableSecureField(title: "Access Token", text: $provider.apiKey)
-                TextField("Resource ID", text: $provider.resourceID)
-                    .textFieldStyle(.roundedBorder)
-            } else {
-                TextField("Base URL", text: $provider.baseURL)
-                    .textFieldStyle(.roundedBorder)
-                RevealableSecureField(title: "API Key（sk-…）", text: $provider.apiKey)
-            }
-
-            HStack {
-                Button(testing ? "测试中…" : "测试连接") { runTest() }
-                    .disabled(testing)
-                if !status.isEmpty {
-                    Text(status).font(.caption).foregroundStyle(.secondary)
+        .sheet(item: $editingProvider) { provider in
+            AddProviderSheet(editing: provider) { updated in
+                store.updateProvider(id: provider.id) { existing in
+                    existing.name = updated.name
+                    existing.baseURL = updated.baseURL
+                    existing.apiKey = updated.apiKey
                 }
-                Spacer()
-                Button(role: .destructive, action: onRemove) {
-                    Label("删除", systemImage: "trash")
-                }
-            }
-        } header: {
-            Text(provider.kind == .volcano ? "火山引擎 / 豆包语音" : "OpenAI 兼容")
-        }
-    }
-
-    private func runTest() {
-        testing = true
-        status = ""
-        let snapshot = provider
-        Task { @MainActor in
-            defer { testing = false }
-            do {
-                status = try await ProviderAPI.test(snapshot)
-            } catch {
-                status = (error as? ProviderAPIError)?.errorDescription
-                    ?? error.localizedDescription
             }
         }
     }

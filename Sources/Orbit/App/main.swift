@@ -1,7 +1,8 @@
 //  main.swift
-//  Entry point. Orbit runs as a menu-bar agent (LSUIElement / .accessory): no
-//  Dock icon by default, a status-bar item, a Settings window, and a floating
-//  recording pill.
+//  Entry point. Orbit is chat-first: the delegate opens a Chat window and
+//  promotes the app to a regular Dock app (.regular). It starts as .accessory
+//  here so the menu-bar status item + background dictation exist even before any
+//  window; the settings window and the floating recording pill are secondary.
 
 import AppKit
 

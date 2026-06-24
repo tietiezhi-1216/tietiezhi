@@ -36,13 +36,12 @@ struct SettingsRootView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(selection: $selection)
+            SettingsSidebarView(selection: $selection)
             Divider()
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 860, minHeight: 580)
-        .ignoresSafeArea()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder

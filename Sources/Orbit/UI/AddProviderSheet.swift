@@ -1,26 +1,34 @@
 //  AddProviderSheet.swift
-//  A modal form for creating a provider: name, protocol, and the credential
-//  fields for that protocol. The user can test the connection before saving.
-//  Replaces the old "pick a protocol from a dropdown" flow.
+//  A modal editor for creating or editing a provider: name, Base URL, API Key.
+//  The user can test the connection before saving. OpenAI-compatible only.
 
 import SwiftUI
 
 struct AddProviderSheet: View {
+    /// Pass an existing provider to edit it; nil to create a new one.
+    var editing: Provider?
     var onSave: (Provider) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var draft = Provider(name: "OpenAI", kind: .openai)
+    @State private var draft: Provider
     @State private var testStatus = ""
     @State private var testOK: Bool? = nil
     @State private var testing = false
 
+    init(editing: Provider? = nil, onSave: @escaping (Provider) -> Void) {
+        self.editing = editing
+        self.onSave = onSave
+        _draft = State(initialValue: editing ?? Provider(name: "OpenAI"))
+    }
+
+    private var isEditing: Bool { editing != nil }
     private var canSave: Bool { !draft.name.trimmed.isEmpty }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("添加服务商").font(.headline)
+                Text(isEditing ? "编辑服务商" : "添加服务商").font(.headline)
                 Spacer()
             }
             .padding(.horizontal, 20)
@@ -28,26 +36,11 @@ struct AddProviderSheet: View {
             .padding(.bottom, 6)
 
             Form {
-                Picker("协议", selection: $draft.kind) {
-                    Text("OpenAI 兼容").tag(ProviderKind.openai)
-                    Text("火山引擎 / 豆包语音").tag(ProviderKind.volcano)
-                }
-                .onChange(of: draft.kind) { _, newKind in applyKindDefaults(newKind) }
-
                 TextField("名称", text: $draft.name)
                     .textFieldStyle(.roundedBorder)
-
-                if draft.kind == .volcano {
-                    TextField("AppID", text: $draft.appID)
-                        .textFieldStyle(.roundedBorder)
-                    RevealableSecureField(title: "Access Token", text: $draft.apiKey)
-                    TextField("Resource ID", text: $draft.resourceID)
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    TextField("Base URL", text: $draft.baseURL)
-                        .textFieldStyle(.roundedBorder)
-                    RevealableSecureField(title: "API Key（sk-…）", text: $draft.apiKey)
-                }
+                TextField("Base URL", text: $draft.baseURL)
+                    .textFieldStyle(.roundedBorder)
+                RevealableSecureField(title: "API Key", text: $draft.apiKey)
             }
             .formStyle(.grouped)
 
@@ -75,22 +68,10 @@ struct AddProviderSheet: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
         }
-        .frame(width: 480, height: 420)
+        .frame(width: 480, height: 360)
     }
 
     // MARK: - Actions
-
-    private func applyKindDefaults(_ kind: ProviderKind) {
-        switch kind {
-        case .openai:
-            if draft.baseURL.trimmed.isEmpty { draft.baseURL = Provider.openAIBase }
-            if draft.name.trimmed.isEmpty || draft.name == "火山引擎" { draft.name = "OpenAI" }
-        case .volcano:
-            if draft.resourceID.trimmed.isEmpty { draft.resourceID = Provider.volcanoResource }
-            if draft.name.trimmed.isEmpty || draft.name == "OpenAI" { draft.name = "火山引擎" }
-        }
-        testStatus = ""; testOK = nil
-    }
 
     private func runTest() {
         testing = true
@@ -113,6 +94,7 @@ struct AddProviderSheet: View {
     private func save() {
         var provider = draft
         provider.name = provider.name.trimmed
+        provider.baseURL = provider.baseURL.trimmed
         onSave(provider)
         dismiss()
     }
