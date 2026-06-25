@@ -93,7 +93,9 @@ final class AudioCapture {
         return Int16(clamped * 32_767)
     }
 
-    /// RMS level mapped to a lively 0…1, for the recording meter.
+    /// Perceptual mic loudness mapped to 0…1 for the recording meter. A dB scale
+    /// (not raw RMS × gain, which pinned everything to the top) so quiet speech
+    /// reads low and loud speech approaches full with real spread in between.
     static func level(_ frame: [Int16]) -> Float {
         if frame.isEmpty { return 0 }
         var sum = 0.0
@@ -102,6 +104,16 @@ final class AudioCapture {
             sum += f * f
         }
         let rms = (sum / Double(frame.count)).squareRoot()
-        return Float(min(1.0, rms * 4.0))
+        guard rms > 0 else { return 0 }
+        let db = 20 * log10(rms)          // ≈ -∞ (silence) … 0 dBFS (full scale)
+        // Gate the noise floor hard so an idle room reads exactly 0 (flat), then map
+        // a speech window to 0…1 and expand the low end (^1.4) so light ambient
+        // stays near the floor and only real speech climbs. Tunable: lower `gateDB`
+        // = more sensitive; raise it if a noisy room still lifts the meter.
+        let gateDB = -38.0
+        let ceilDB = -10.0
+        guard db > gateDB else { return 0 }
+        let norm = min(1, (db - gateDB) / (ceilDB - gateDB))
+        return Float(pow(norm, 1.4))
     }
 }

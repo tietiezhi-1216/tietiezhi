@@ -19,8 +19,15 @@ struct PermissionsView: View {
                         openSettings: { Permissions.openMicrophoneSettings() }
                     )
                     permissionRow(
+                        title: "输入监控",
+                        hint: "监听全局热键，随处唤起听写",
+                        state: app.inputMonitoringPermission,
+                        grant: { app.requestInputMonitoring() },
+                        openSettings: { Permissions.openInputMonitoringSettings() }
+                    )
+                    permissionRow(
                         title: "辅助功能",
-                        hint: "全局热键 + 把文字粘贴进当前 App",
+                        hint: "把识别结果粘贴进当前 App",
                         state: app.axPermission,
                         grant: { app.requestAccessibility() },
                         openSettings: { Permissions.openAccessibilitySettings() }

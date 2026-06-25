@@ -29,6 +29,7 @@ struct SettingsRootView: View {
         case .dictationVocab:   DictationVocabView()
         case .dictationHistory: DictationHistoryView()
         case .dictationStats:   DictationStatsView()
+        case .feedbackSounds:   FeedbackSoundsView()
         case .about:            PermissionsView()
         }
     }

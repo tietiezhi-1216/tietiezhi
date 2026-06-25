@@ -6,6 +6,7 @@
 import AVFoundation
 import AppKit
 import ApplicationServices
+import IOKit.hid
 
 enum PermissionState {
     case granted, denied, notDetermined
@@ -44,6 +45,25 @@ enum Permissions {
         return AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
     }
 
+    // MARK: Input Monitoring (global hotkey event tap)
+
+    /// The listen-only CGEventTap behind the global hotkey needs Input Monitoring
+    /// — a SEPARATE grant from Accessibility. Recording can work while pasting
+    /// can't (and vice-versa), so we track and surface them independently.
+    static var inputMonitoring: PermissionState {
+        switch IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) {
+        case kIOHIDAccessTypeGranted: return .granted
+        case kIOHIDAccessTypeDenied:  return .denied
+        default:                      return .notDetermined
+        }
+    }
+
+    /// Triggers the system Input Monitoring prompt if not yet determined.
+    @discardableResult
+    static func requestInputMonitoring() -> Bool {
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+    }
+
     // MARK: Deep links into System Settings
 
     static func openMicrophoneSettings() {
@@ -52,6 +72,10 @@ enum Permissions {
 
     static func openAccessibilitySettings() {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+    }
+
+    static func openInputMonitoringSettings() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
     }
 
     private static func open(_ urlString: String) {

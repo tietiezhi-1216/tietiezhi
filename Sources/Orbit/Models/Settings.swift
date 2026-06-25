@@ -420,6 +420,12 @@ struct Settings: Codable {
     /// Strip AI preamble / code fences / wrapping quotes from the reply.
     var cleanOutput: Bool
 
+    // MARK: Feedback sounds (see FeedbackSound.swift)
+
+    /// Audible cues for the dictation start/stop gestures, plus their user-managed
+    /// sound library. Bindings map each `FeedbackEvent` to a cue.
+    var feedbackSounds: FeedbackSoundSettings
+
     static let defaultTemplateID = "default-polish"
 
     static var defaults: Settings {
@@ -452,7 +458,8 @@ struct Settings: Codable {
          outputLanguage: OutputLanguage = .auto,
          frontAppAware: Bool = true,
          injectionDefense: Bool = true,
-         cleanOutput: Bool = true) {
+         cleanOutput: Bool = true,
+         feedbackSounds: FeedbackSoundSettings = .defaults) {
         self.providers = providers
         self.models = models
         self.templates = templates
@@ -469,6 +476,7 @@ struct Settings: Codable {
         self.frontAppAware = frontAppAware
         self.injectionDefense = injectionDefense
         self.cleanOutput = cleanOutput
+        self.feedbackSounds = feedbackSounds
     }
 
     init(from decoder: Decoder) throws {
@@ -492,6 +500,7 @@ struct Settings: Codable {
         frontAppAware = try c.decodeIfPresent(Bool.self, forKey: .frontAppAware) ?? d.frontAppAware
         injectionDefense = try c.decodeIfPresent(Bool.self, forKey: .injectionDefense) ?? d.injectionDefense
         cleanOutput = try c.decodeIfPresent(Bool.self, forKey: .cleanOutput) ?? d.cleanOutput
+        feedbackSounds = (try? c.decode(FeedbackSoundSettings.self, forKey: .feedbackSounds)) ?? d.feedbackSounds
         // A hotkey must be a numeric keycode; migrate anything else to right ⌘.
         if Int(hotkey) == nil { hotkey = d.hotkey }
     }

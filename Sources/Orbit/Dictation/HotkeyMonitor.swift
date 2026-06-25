@@ -20,6 +20,10 @@ final class HotkeyMonitor {
     var onHotkeyUp: (() -> Void)?
     /// Fires when Esc is pressed, used to dismiss/cancel the dictation overlay.
     var onEscape: (() -> Void)?
+    /// Reports (on the main thread) whether the global event tap actually
+    /// installed. `false` means Input Monitoring isn't effective yet — typically
+    /// the grant only takes hold after a relaunch.
+    var onInstallResult: ((Bool) -> Void)?
 
     private var capturing = false
     private var hotkey: String
@@ -41,6 +45,7 @@ final class HotkeyMonitor {
     func cancelCapture() { capturing = false }
 
     func start() {
+        guard thread == nil else { return }   // idempotent — never stack taps
         let thread = Thread { [weak self] in self?.runTap() }
         thread.name = "com.orbit.hotkey"
         self.thread = thread
@@ -58,23 +63,32 @@ final class HotkeyMonitor {
                  | (CGEventMask(1) << CGEventType.keyUp.rawValue)
                  | (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
 
+        // An ACTIVE tap (.defaultTap) — even though we never modify events, just
+        // forward them — is gated on Accessibility, NOT Input Monitoring. A
+        // listen-only tap would require Input Monitoring, a separate grant that's
+        // both easy to miss and unreliable to query for a self-signed dev build.
+        // Since we already need Accessibility (to paste), this means ONE permission
+        // covers both the hotkey and the paste.
         guard let tap = CGEvent.tapCreate(
             tap: .cghidEventTap,
             place: .headInsertEventTap,
-            options: .listenOnly,
+            options: .defaultTap,
             eventsOfInterest: mask,
             callback: orbitHotkeyCallback,
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
             NSLog("[hotkey] 无法安装全局事件监听 — 请在「系统设置 → 隐私与安全性 → 辅助功能」授权 Orbit，然后重启应用。")
+            DispatchQueue.main.async { [weak self] in self?.onInstallResult?(false) }
             return
         }
+        NSLog("[hotkey] 事件监听已安装（active tap, 依赖辅助功能）")
 
         self.tap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        DispatchQueue.main.async { [weak self] in self?.onInstallResult?(true) }
         CFRunLoopRun()
     }
 

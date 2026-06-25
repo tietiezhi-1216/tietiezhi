@@ -944,51 +944,81 @@ private struct RecordingCard: View {
     }
 }
 
-/// A live waveform that fills the whole capsule width: a dense row of bars whose
-/// heights are driven by the mic level and ride a pair of fast-travelling sine
-/// waves, so the row flows quickly and jumps with the voice. At silence the bars
-/// settle to a thin idle line. Drawn in a Canvas (fills any width cheaply) and
-/// sampled by TimelineView at the display's pace, so the deck never re-lays-out on
-/// every audio buffer.
+/// A live, Siri-style equalizer filling the capsule width: a centered row of
+/// rounded bars. One amplitude — the real smoothed mic loudness (`level.value`) —
+/// scales the whole row, a bell envelope makes the center tallest and the edges
+/// shorter, and each bar bounces on its own irregular rhythm so the row jitters
+/// like a real level meter rather than a single coordinated wave. So:
+///   • silence → every bar rests at a dot, a still grey dotted line;
+///   • quiet speech → a low soft bounce; loud speech → a tall one.
+/// Colour tracks loudness: grey when quiet, brightening toward white as you get
+/// louder, with a faint amplitude-gated shimmer (闪烁). Every animated term is
+/// multiplied by amplitude, so a silent room shows no motion at all.
+///
+/// A run-loop `Timer` drives the dance/shimmer — `TimelineView(.animation)`'s
+/// display-link schedule doesn't tick inside this non-key floating `NSPanel`.
 private struct RecordingLevelBars: View {
-    let level: RecordingLevel
+    @ObservedObject var level: RecordingLevel
+    @State private var phase: Double = 0
+    @State private var timer: Timer?
     private let barWidth: CGFloat = 3
-    private let barStep: CGFloat = 5      // bar width + gap → density across the fill
+    private let barStep: CGFloat = 6      // bar width + gap → density across the fill
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
-            let t = timeline.date.timeIntervalSinceReferenceDate
-            Canvas { ctx, size in
-                drawBars(in: &ctx, size: size, t: t, level: Double(level.value))
-            }
-            .frame(height: 24)
+        Canvas { ctx, size in
+            drawBars(in: &ctx, size: size, amp: Double(level.value), phase: phase)
         }
+        .frame(height: 24)
+        .onAppear(perform: startTicking)
+        .onDisappear { timer?.invalidate(); timer = nil }
     }
 
-    /// Pulled out of `body` with every value pinned to `Double`. Inline, the mix of
-    /// CGFloat & Double inside the `sin` expressions blows up SwiftUI's type-checker
+    private func startTicking() {
+        timer?.invalidate()
+        let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { _ in
+            phase += 1.0 / 60.0
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    /// Kept out of `body` with every value pinned to `Double` — inline, the mixed
+    /// CGFloat/Double arithmetic in the `sin` terms blows up SwiftUI's type-checker
     /// on newer Swift toolchains ("unable to type-check in reasonable time").
-    private func drawBars(in ctx: inout GraphicsContext, size: CGSize, t: Double, level: Double) {
+    private func drawBars(in ctx: inout GraphicsContext, size: CGSize, amp rawAmp: Double, phase: Double) {
         let w = Double(size.width)
-        let height = Double(size.height)
-        let count = max(1, Int(w / Double(barStep)))
-        let midY = height / 2
+        let h = Double(size.height)
+        var count = max(3, Int(w / Double(barStep)))
+        if count % 2 == 0 { count -= 1 }             // odd → a true center bar
+        let mid = Double((count - 1) / 2)
+        let midY = h / 2
+        let dot = 2.5                                 // edge / idle dot height
+        let maxBar = h - 1                            // center height at full volume
+        let amp = min(1, max(0, rawAmp))
+
+        // Grey → white with loudness; a faint amp-gated shimmer so loud speech
+        // sparkles while silence stays a steady grey.
+        let shimmer = 1.0 + amp * (0.08 * sin(phase * 13) + 0.05 * sin(phase * 29))
+        let whiteness = 0.45 + 0.55 * amp
+        let color = Color(white: min(1, max(0, whiteness * shimmer)), opacity: 0.95)
+
         for i in 0..<count {
-            let p: Double = count > 1 ? Double(i) / Double(count - 1) : 0.5
-            let x: Double = w * (Double(i) + 0.5) / Double(count)
-            // A fast-travelling crest (two summed sines) shapes the row...
-            let wave: Double = 0.6 * sin(p * .pi * 3 - t * 5.6)
-                             + 0.4 * sin(p * .pi * 7 + t * 3.3)
-            let bell: Double = sin(p * .pi)                  // taper the two ends
-            // ...while the mic level sets how tall the bars jump: near-flat when
-            // silent, leaping when you speak.
-            let amp: Double = (1.0 + level * 36) * (0.5 + 0.5 * wave) * (0.4 + 0.6 * bell)
-            let barH: Double = max(2.0, min(height, 2.0 + amp))
+            let dist = abs(Double(i) - mid) / max(1, mid)   // 0 center … 1 edge
+            let bell = 0.4 + 0.6 * cos(dist * .pi / 2)      // taller center, shorter edges
+            // Each bar bounces on its OWN irregular rhythm: two incommensurate sines
+            // with per-bar phase seeds → the row jitters independently (like a real
+            // level meter) instead of moving as one coordinated wave. Gated by amp,
+            // so silence is perfectly still.
+            let n = 0.55 * sin(phase * 9.0 + Double(i) * 1.73)
+                  + 0.45 * sin(phase * 15.3 + Double(i) * 2.39)
+            let jitter = 0.10 + 0.90 * (0.5 + 0.5 * n)      // 0.10 … 1.0, irregular
+            let barH = max(dot, dot + amp * (maxBar - dot) * bell * jitter)
+            let x = w * (Double(i) + 0.5) / Double(count)
             let rect = CGRect(x: CGFloat(x) - barWidth / 2,
                               y: CGFloat(midY - barH / 2),
                               width: barWidth,
                               height: CGFloat(barH))
-            ctx.fill(Capsule().path(in: rect), with: .color(.white.opacity(0.95)))
+            ctx.fill(Capsule().path(in: rect), with: .color(color))
         }
     }
 }

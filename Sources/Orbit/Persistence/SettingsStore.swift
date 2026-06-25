@@ -158,4 +158,41 @@ final class SettingsStore: ObservableObject {
         guard let i = settings.templates.firstIndex(where: { $0.id == id }) else { return }
         mutate(&settings.templates[i])
     }
+
+    // MARK: Feedback sounds
+
+    func addSoundCue(_ cue: SoundCue) {
+        settings.feedbackSounds.cues.append(cue)
+    }
+
+    func updateSoundCue(id: String, _ mutate: (inout SoundCue) -> Void) {
+        guard let i = settings.feedbackSounds.cues.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&settings.feedbackSounds.cues[i])
+    }
+
+    func removeSoundCue(id: String) {
+        let removed = settings.feedbackSounds.cues.first { $0.id == id }
+        settings.feedbackSounds.cues.removeAll { $0.id == id }
+        // Drop any event bindings that pointed at it.
+        for (event, cueID) in settings.feedbackSounds.bindings where cueID == id {
+            settings.feedbackSounds.bindings.removeValue(forKey: event)
+        }
+        // If it was an imported file and nothing else references that file, delete it.
+        if case .file(let filename)? = removed?.source, !filename.isEmpty {
+            let stillUsed = settings.feedbackSounds.cues.contains {
+                if case .file(let other) = $0.source { return other == filename }
+                return false
+            }
+            if !stillUsed { FeedbackSoundPlayer.deleteFile(filename: filename) }
+        }
+    }
+
+    /// Bind an event to a cue (or to nothing, by passing `nil`).
+    func bindFeedback(event: FeedbackEvent, to cueID: String?) {
+        if let cueID {
+            settings.feedbackSounds.bindings[event.rawValue] = cueID
+        } else {
+            settings.feedbackSounds.bindings.removeValue(forKey: event.rawValue)
+        }
+    }
 }

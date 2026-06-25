@@ -8,17 +8,19 @@ import Foundation
 
 /// A top-level sidebar group (parent menu).
 enum SettingsGroup: Int, CaseIterable, Identifiable {
-    case access     // 服务商 + 模型 — where models come from
-    case dictation  // 听写功能的各个子页
-    case system     // 权限 & 关于
+    case access          // 服务商 + 模型 — where models come from
+    case dictation       // 听写功能的各个子页
+    case personalization // 个性化（提示音等）
+    case system          // 权限 & 关于
 
     var id: Int { rawValue }
 
     var title: String {
         switch self {
-        case .access:    return "模型服务"
-        case .dictation: return "听写"
-        case .system:    return "系统"
+        case .access:          return "模型服务"
+        case .dictation:       return "听写"
+        case .personalization: return "个性化"
+        case .system:          return "系统"
         }
     }
 }
@@ -31,6 +33,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case dictationVocab
     case dictationHistory
     case dictationStats
+    case feedbackSounds
     case about
 
     var id: Self { self }
@@ -42,6 +45,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
             return .access
         case .dictationBasic, .dictationModes, .dictationVocab, .dictationHistory, .dictationStats:
             return .dictation
+        case .feedbackSounds:
+            return .personalization
         case .about:
             return .system
         }
@@ -56,6 +61,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .dictationVocab:   return "词汇"
         case .dictationHistory: return "历史"
         case .dictationStats:   return "统计"
+        case .feedbackSounds:   return "提示音"
         case .about:            return "权限 & 关于"
         }
     }
@@ -69,6 +75,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .dictationVocab:   return "character.book.closed"
         case .dictationHistory: return "clock.arrow.circlepath"
         case .dictationStats:   return "chart.bar"
+        case .feedbackSounds:   return "speaker.wave.2.fill"
         case .about:            return "lock.shield"
         }
     }

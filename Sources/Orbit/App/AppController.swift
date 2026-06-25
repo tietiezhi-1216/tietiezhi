@@ -25,7 +25,23 @@ final class AppController: ObservableObject {
     @Published var capturingHotkey = false
     @Published var micPermission: PermissionState = .notDetermined
     @Published var axPermission: PermissionState = .notDetermined
+    @Published var inputMonitoringPermission: PermissionState = .notDetermined
     @Published var audioInputs: [String] = []
+
+    /// The two grants dictation truly can't work without: record (mic) and paste
+    /// the result (accessibility). Input Monitoring is intentionally NOT required
+    /// here — on current macOS the global hotkey's listen-only event tap installs
+    /// under Accessibility, and `IOHIDCheckAccess` is unreliable for our ad-hoc /
+    /// self-signed dev identity. Whether the hotkey actually works is decided by
+    /// whether the tap installs (HotkeyMonitor.onInstallResult), not by this flag.
+    var requiredPermissionsGranted: Bool {
+        micPermission == .granted && axPermission == .granted
+    }
+
+    /// Fired once, when polling first sees the required permissions granted (used
+    /// by the onboarding gate to hand off to the main window + start the hotkey).
+    var onPermissionsSatisfied: (() -> Void)?
+    private var pollTask: Task<Void, Never>?
 
     /// Set by the dictation layer once it's constructed (avoids a hard
     /// compile-time dependency from the UI on the engine).
@@ -43,7 +59,33 @@ final class AppController: ObservableObject {
     func refreshStatus() {
         micPermission = Permissions.microphone
         axPermission = Permissions.accessibility
+        inputMonitoringPermission = Permissions.inputMonitoring
         audioInputs = AudioDevices.inputNames()
+    }
+
+    /// Re-check permissions once a second until all three are granted, then fire
+    /// `onPermissionsSatisfied`. Drives the onboarding gate's live status so the
+    /// user sees grants land (and we advance) without a manual refresh.
+    func startPermissionPolling() {
+        refreshStatus()
+        pollTask?.cancel()
+        pollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self else { return }
+                self.refreshStatus()
+                if self.requiredPermissionsGranted {
+                    self.pollTask = nil
+                    self.onPermissionsSatisfied?()
+                    return
+                }
+            }
+        }
+    }
+
+    func stopPermissionPolling() {
+        pollTask?.cancel()
+        pollTask = nil
     }
 
     func openChatWorkspace() {
@@ -66,6 +108,15 @@ final class AppController: ObservableObject {
         Permissions.promptAccessibility()
         // The grant happens in System Settings; re-check shortly after.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.refreshStatus()
+        }
+    }
+
+    func requestInputMonitoring() {
+        // If still undetermined this shows the system prompt; once decided, macOS
+        // only opens System Settings, so re-check shortly after either way.
+        Permissions.requestInputMonitoring()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             self?.refreshStatus()
         }
     }

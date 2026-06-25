@@ -15,12 +15,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private var chatWindow: NSWindow?
+    private var onboardingWindow: NSWindow?
 
     private var engine: DictationEngine?
     private var hotkey: HotkeyMonitor?
     private var dictationQueue: DictationQueue!
     private var recordingState: RecordingState!
     private var resultStack: DictationStackController?
+
+    private var hotkeyStarted = false
+    private var didCompleteOnboarding = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store = SettingsStore()
@@ -34,11 +38,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         attachDictation()
 
-        // Chat is Orbit's primary surface (like Claude / Codex) → a regular Dock
-        // app. Dictation keeps running in the background regardless of windows.
-        showChat()
+        // Orbit is a regular Dock app (like Claude / Codex). Dictation keeps
+        // running in the background regardless of windows.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        controller.refreshStatus()
+        if controller.requiredPermissionsGranted {
+            // Mic + accessibility in place → start the hotkey and go straight to
+            // chat. If the tap can't install we surface Input Monitoring then.
+            startHotkeyMonitor()
+            showChat()
+        } else {
+            // Something's missing → don't fail silently in other apps. Gate on a
+            // permission screen that polls live and hands off once all granted.
+            controller.onPermissionsSatisfied = { [weak self] in self?.completeOnboarding() }
+            controller.startPermissionPolling()
+            showOnboarding()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -74,8 +91,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.onHotkeyDown = { [weak engine] in engine?.hotkeyDown() }
         monitor.onHotkeyUp = { [weak engine] in engine?.hotkeyUp() }
         monitor.onEscape = { [weak engine] in engine?.handleEscape() }
+        // The tap needs Input Monitoring, so it's started later — only once that
+        // grant is in place (see startHotkeyMonitor / the onboarding gate).
+    }
 
-        monitor.start()
+    // MARK: - Permission gate (onboarding)
+
+    /// Install the global hotkey tap exactly once, and surface a relaunch prompt
+    /// if Input Monitoring was just granted but the tap can't take hold until the
+    /// app restarts (a common macOS quirk for event taps).
+    private func startHotkeyMonitor() {
+        guard !hotkeyStarted else { return }
+        hotkeyStarted = true
+        hotkey?.onInstallResult = { [weak self] installed in
+            if !installed { self?.promptRelaunchForHotkey() }
+        }
+        hotkey?.start()
+    }
+
+    private func showOnboarding() {
+        if onboardingWindow == nil {
+            let root = OnboardingView(
+                controller: controller,
+                onContinue: { [weak self] in self?.completeOnboarding() },
+                onRelaunch: { [weak self] in self?.relaunch() }
+            )
+            let hosting = NSHostingController(rootView: root)
+            let window = NSWindow(contentViewController: hosting)
+            window.title = "欢迎使用 Orbit"
+            window.styleMask = [.titled, .closable, .fullSizeContentView]
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.titlebarSeparatorStyle = .none
+            window.isReleasedWhenClosed = false
+            window.setContentSize(NSSize(width: 460, height: 540))
+            window.center()
+            onboardingWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        onboardingWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Permissions are all in place (via the gate, or the user clicked 进入):
+    /// start the hotkey, drop the onboarding window, reveal chat. Runs once.
+    private func completeOnboarding() {
+        guard !didCompleteOnboarding else { return }
+        didCompleteOnboarding = true
+        controller.stopPermissionPolling()
+        startHotkeyMonitor()
+        onboardingWindow?.close()
+        onboardingWindow = nil
+        showChat()
+    }
+
+    private func promptRelaunchForHotkey() {
+        let alert = NSAlert()
+        alert.messageText = "全局热键未能启用"
+        alert.informativeText = "唤起听写的全局热键需要「输入监控」权限。请在「系统设置 → 隐私与安全性 → 输入监控」中开启 Orbit，然后重启 Orbit 使其生效。\n\n（其余功能不受影响：你仍可从菜单栏开始听写。）"
+        alert.addButton(withTitle: "打开输入监控设置")
+        alert.addButton(withTitle: "重启 Orbit")
+        alert.addButton(withTitle: "稍后")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: Permissions.openInputMonitoringSettings()
+        case .alertSecondButtonReturn: relaunch()
+        default: break
+        }
+    }
+
+    private func relaunch() {
+        let url = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
     // MARK: - Status bar

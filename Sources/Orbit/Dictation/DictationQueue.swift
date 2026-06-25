@@ -27,9 +27,30 @@ final class RecordingState: ObservableObject {
     var onCommit: (() -> Void)?
 }
 
+/// Per-frame mic loudness, smoothed and published. `value` is the single amplitude
+/// the waveform shapes itself around (a bell envelope + amplitude-gated ripple in
+/// the view); the loudness is perceptually mapped + gated upstream by
+/// `AudioCapture.level`, so silence pushes 0 → the wave collapses to a flat line.
 @MainActor
 final class RecordingLevel: ObservableObject {
+    /// Latest smoothed loudness (0…1).
     @Published var value: Float = 0
+    private var smoothed: Float = 0
+
+    /// Feed a fresh mic loudness. Fast attack so the wave leaps to speech, slower
+    /// release so it eases back to rest (no flicker between syllables).
+    func push(_ level: Float) {
+        let target = min(1, max(0, level))
+        let k: Float = target > smoothed ? 0.5 : 0.18   // attack vs release
+        smoothed += (target - smoothed) * k
+        value = smoothed
+    }
+
+    /// Back to rest — called whenever a recording starts or stops.
+    func reset() {
+        smoothed = 0
+        value = 0
+    }
 }
 
 /// One utterance moving through the pipeline. Observable so its deck card updates

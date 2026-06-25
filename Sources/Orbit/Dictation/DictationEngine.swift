@@ -46,6 +46,8 @@ final class DictationEngine {
     /// Used only for error notices now (the recording capsule moved into the deck).
     private let pill = PillController()
     private let sink = FrameSink()
+    /// Plays the start/stop feedback cues bound in settings.
+    private let sounds = FeedbackSoundPlayer()
     private var capture: AudioCapture?
 
     /// A confirmed session whose pill is on screen.
@@ -108,6 +110,7 @@ final class DictationEngine {
                 // Still held past the threshold → push-to-talk: no polish.
                 self.gesture = .holdRecording
                 self.polishThisSession = false
+                self.playFeedback(.holdPress)
             }
 
         case .tapRecording:
@@ -132,6 +135,7 @@ final class DictationEngine {
             holdTask?.cancel(); holdTask = nil
             gesture = .tapRecording
             polishThisSession = true
+            playFeedback(.clickStart)
 
         case .idle, .tapRecording:
             break
@@ -160,6 +164,7 @@ final class DictationEngine {
             beginCapture()
             polishThisSession = true
             gesture = .tapRecording
+            playFeedback(.clickStart)
         }
     }
 
@@ -176,9 +181,12 @@ final class DictationEngine {
         }
         // Capture the focused app now, while the user's target is still frontmost.
         frontApp = NSWorkspace.shared.frontmostApplication?.localizedName
+        // …and wake its AX tree now, so an Electron app's focused-element query has
+        // resolved by the time we deliver (else the first insert misses + parks).
+        TextInserter.primeFocusedAppAccessibility()
         active = true
         pill.hideNotice()
-        recording.level.value = 0
+        recording.level.reset()
         recording.active = true
         return true
     }
@@ -197,7 +205,7 @@ final class DictationEngine {
             let level = AudioCapture.level(frame)
             Task { @MainActor in
                 guard let self, self.active else { return }
-                self.recording.level.value = level
+                self.recording.level.push(level)
             }
         }
         self.capture = capture
@@ -214,6 +222,9 @@ final class DictationEngine {
 
     func commit() {
         guard active else { return }
+        // The stop cue depends on which gesture this session was: a held key that's
+        // now released vs. a click-to-stop on a hands-free toggle.
+        playFeedback(gesture == .holdRecording ? .holdRelease : .clickStop)
         let polish = polishThisSession
         let app = frontApp
         gesture = .idle
@@ -251,6 +262,13 @@ final class DictationEngine {
     }
 
     // MARK: - Helpers
+
+    /// Play the cue bound to a feedback event, if sounds are enabled.
+    private func playFeedback(_ event: FeedbackEvent) {
+        let fb = store.settings.feedbackSounds
+        guard fb.enabled, let cue = fb.cue(for: event) else { return }
+        sounds.play(cue, masterVolume: fb.masterVolume)
+    }
 
     private func cancelGestureTimers() {
         holdTask?.cancel(); holdTask = nil
