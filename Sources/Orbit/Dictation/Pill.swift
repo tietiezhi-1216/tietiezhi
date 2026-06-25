@@ -959,29 +959,36 @@ private struct RecordingLevelBars: View {
         TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             Canvas { ctx, size in
-                let lvl = CGFloat(level.value)
-                let count = max(1, Int(size.width / barStep))
-                let midY = size.height / 2
-                let maxH = size.height
-                for i in 0..<count {
-                    let p = count > 1 ? CGFloat(i) / CGFloat(count - 1) : 0.5
-                    let x = size.width * (CGFloat(i) + 0.5) / CGFloat(count)
-                    // A fast-travelling crest (two summed sines) shapes the row...
-                    let wave = 0.6 * sin(p * .pi * 3 - t * 5.6)
-                             + 0.4 * sin(p * .pi * 7 + t * 3.3)
-                    let bell = sin(p * .pi)                       // taper the two ends
-                    // ...while the mic level sets how tall the bars actually jump:
-                    // near-flat when silent, leaping when you speak.
-                    let amp = (1.0 + lvl * 36)
-                            * (0.5 + 0.5 * wave)
-                            * (0.4 + 0.6 * bell)
-                    let h = max(2.0, min(maxH, 2.0 + amp))
-                    let rect = CGRect(x: x - barWidth / 2, y: midY - h / 2,
-                                      width: barWidth, height: h)
-                    ctx.fill(Capsule().path(in: rect), with: .color(.white.opacity(0.95)))
-                }
+                drawBars(in: &ctx, size: size, t: t, level: Double(level.value))
             }
             .frame(height: 24)
+        }
+    }
+
+    /// Pulled out of `body` with every value pinned to `Double`. Inline, the mix of
+    /// CGFloat & Double inside the `sin` expressions blows up SwiftUI's type-checker
+    /// on newer Swift toolchains ("unable to type-check in reasonable time").
+    private func drawBars(in ctx: inout GraphicsContext, size: CGSize, t: Double, level: Double) {
+        let w = Double(size.width)
+        let height = Double(size.height)
+        let count = max(1, Int(w / Double(barStep)))
+        let midY = height / 2
+        for i in 0..<count {
+            let p: Double = count > 1 ? Double(i) / Double(count - 1) : 0.5
+            let x: Double = w * (Double(i) + 0.5) / Double(count)
+            // A fast-travelling crest (two summed sines) shapes the row...
+            let wave: Double = 0.6 * sin(p * .pi * 3 - t * 5.6)
+                             + 0.4 * sin(p * .pi * 7 + t * 3.3)
+            let bell: Double = sin(p * .pi)                  // taper the two ends
+            // ...while the mic level sets how tall the bars jump: near-flat when
+            // silent, leaping when you speak.
+            let amp: Double = (1.0 + level * 36) * (0.5 + 0.5 * wave) * (0.4 + 0.6 * bell)
+            let barH: Double = max(2.0, min(height, 2.0 + amp))
+            let rect = CGRect(x: CGFloat(x) - barWidth / 2,
+                              y: CGFloat(midY - barH / 2),
+                              width: barWidth,
+                              height: CGFloat(barH))
+            ctx.fill(Capsule().path(in: rect), with: .color(.white.opacity(0.95)))
         }
     }
 }
