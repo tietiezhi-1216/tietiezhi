@@ -6,6 +6,8 @@
 
 English · [简体中文](./docs/README.zh-CN.md)
 
+[![CI](https://github.com/tietiezhi-1216/Orbit/actions/workflows/ci.yml/badge.svg)](https://github.com/tietiezhi-1216/Orbit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/tietiezhi-1216/Orbit?include_prereleases&sort=semver&color=0A84FF)](https://github.com/tietiezhi-1216/Orbit/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-pre--alpha-f59e0b.svg)](./docs/ROADMAP.md)
 [![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-000000.svg?logo=apple)](https://www.apple.com/macos/)
@@ -51,6 +53,18 @@ Orbit's first satellite is **system-wide dictation** — talk anywhere, get text
 4. **Dictate anywhere:** press the hotkey → a recording pill appears bottom-center (✗ cancel · live level · ✓ done) → text is pasted into the focused app.
 
 > The recognized text is delivered by writing it to the clipboard and synthesizing ⌘V (then restoring your clipboard) — fast and reliable for CJK and long text.
+
+---
+
+## ⬇️ Download
+
+Grab the latest build from [**Releases**](https://github.com/tietiezhi-1216/Orbit/releases/latest).
+
+- **Apple Silicon only** (arm64) · **macOS 14+** — Intel Macs are not supported.
+- The build is **ad-hoc signed** (not notarized yet), so on first launch macOS blocks it: **right-click `Orbit.app` → Open**, then confirm. One time only.
+- Unzip, move `Orbit.app` to `/Applications`, and grant **Microphone** + **Accessibility** when prompted (see [Permissions](#permissions)).
+
+Prefer building from source? See [Getting started](#-getting-started).
 
 ---
 
