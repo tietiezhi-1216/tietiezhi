@@ -27,6 +27,7 @@ final class AppController: ObservableObject {
     @Published var axPermission: PermissionState = .notDetermined
     @Published var inputMonitoringPermission: PermissionState = .notDetermined
     @Published var audioInputs: [String] = []
+    @Published var updateStatus: UpdateStatus = .idle
 
     /// The two grants dictation truly can't work without: record (mic) and paste
     /// the result (accessibility). Input Monitoring is intentionally NOT required
@@ -49,6 +50,7 @@ final class AppController: ObservableObject {
     var onCancelHotkeyCapture: (() -> Void)?
     var onToggleDictation: (() -> Void)?
 
+    private var updateTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
     init(store: SettingsStore) {
@@ -141,5 +143,72 @@ final class AppController: ObservableObject {
 
     func toggleDictation() {
         onToggleDictation?()
+    }
+
+    // MARK: Software updates
+
+    var currentVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    }
+
+    var currentBuild: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+    }
+
+    var currentArchitecture: String {
+        GitHubUpdater.currentArchitecture
+    }
+
+    func checkForUpdates() {
+        updateTask?.cancel()
+        updateStatus = .checking
+
+        let currentVersion = self.currentVersion
+        let architecture = self.currentArchitecture
+        updateTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let update = try await GitHubUpdater.checkForUpdate(
+                    currentVersion: currentVersion,
+                    architecture: architecture
+                )
+                guard !Task.isCancelled else { return }
+                updateStatus = update.map(UpdateStatus.available) ?? .upToDate(version: currentVersion)
+            } catch {
+                guard !Task.isCancelled else { return }
+                updateStatus = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func downloadAndOpenUpdate(_ update: AppUpdate) {
+        updateTask?.cancel()
+        updateStatus = .downloading(update, progress: 0)
+
+        updateTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let fileURL = try await GitHubUpdater.downloadAndVerify(update) { progress in
+                    Task { @MainActor [weak self] in
+                        guard let self, !Task.isCancelled else { return }
+                        updateStatus = .downloading(update, progress: progress)
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                updateStatus = .downloaded(update, fileURL: fileURL)
+                NSWorkspace.shared.open(fileURL)
+            } catch {
+                guard !Task.isCancelled else { return }
+                updateStatus = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    func openReleasePage(_ url: URL = GitHubUpdater.releasesPage) {
+        NSWorkspace.shared.open(url)
+    }
+
+    func openDownloadedUpdate(_ fileURL: URL) {
+        NSWorkspace.shared.open(fileURL)
     }
 }

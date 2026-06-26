@@ -1,7 +1,7 @@
 name: Release
 
 # 仅在推送 v* tag（或手动 workflow_dispatch 指定版本）时触发：构建 release、
-# 把 Orbit.app 打成 zip、创建 GitHub Release 并上传产物 + SHA256。
+# 把 Orbit.app 打成 DMG、创建 GitHub Release 并上传产物 + SHA256 + 更新清单。
 # 不打 tag 就不会发布——首版先用 CI 跑通，确认产物后再打 tag。
 on:
   push:
@@ -37,6 +37,20 @@ jobs:
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "tag=v$V"   >> "$GITHUB_OUTPUT"
 
+      - name: Verify Info.plist version
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          PATCH="${VERSION##*.}"
+          PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
+          PLIST_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist)"
+          if [ "$PLIST_VERSION" != "$VERSION" ]; then
+            echo "::error::Info.plist version $PLIST_VERSION does not match release $VERSION"
+            exit 1
+          fi
+          if [ "$PLIST_BUILD" != "$PATCH" ]; then
+            echo "::warning::Info.plist build $PLIST_BUILD does not match patch number $PATCH"
+          fi
+
       - name: Build release bundle
         run: ./build.sh release
 
@@ -54,7 +68,31 @@ jobs:
           ln -s /Applications "$STAGE/Applications"          # drag-to-install target
           hdiutil create -volname "Orbit ${VER}" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
           shasum -a 256 "$DMG" | tee "$DMG.sha256"
+          SHA="$(cut -d ' ' -f 1 "$DMG.sha256")"
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Generate update manifest
+        id: manifest
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          DMG="${{ steps.pkg.outputs.dmg }}"
+          SHA="${{ steps.pkg.outputs.sha }}"
+          MANIFEST="Orbit-${VER}-update.json"
+          cat > "$MANIFEST" <<EOF
+          {
+            "version": "$VER",
+            "tag": "$TAG",
+            "minimumSystemVersion": "14.0",
+            "architecture": "$(uname -m)",
+            "asset": "$DMG",
+            "sha256": "$SHA",
+            "downloadURL": "https://github.com/${{ github.repository }}/releases/download/$TAG/$DMG"
+          }
+          EOF
+          cat "$MANIFEST"
+          echo "manifest=$MANIFEST" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -66,3 +104,4 @@ jobs:
           files: |
             ${{ steps.pkg.outputs.dmg }}
             ${{ steps.pkg.outputs.dmg }}.sha256
+            ${{ steps.manifest.outputs.manifest }}

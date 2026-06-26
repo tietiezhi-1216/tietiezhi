@@ -124,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.titleVisibility = .hidden
             window.titlebarSeparatorStyle = .none
             window.isReleasedWhenClosed = false
-            window.setContentSize(NSSize(width: 460, height: 540))
+            window.setContentSize(NSSize(width: 440, height: 430))
             window.center()
             onboardingWindow = window
         }
@@ -178,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "打开 Orbit", action: #selector(openChat(_:)), keyEquivalent: "")
         menu.addItem(withTitle: "设置…", action: #selector(showSettings(_:)), keyEquivalent: ",")
+        menu.addItem(withTitle: "检查更新…", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "开始 / 停止听写",
                      action: #selector(toggleDictation(_:)), keyEquivalent: "")
@@ -193,6 +194,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     @objc private func toggleDictation(_ sender: Any?) { controller.toggleDictation() }
     @objc private func quit(_ sender: Any?) { NSApp.terminate(nil) }
+    @objc private func checkForUpdates(_ sender: Any?) {
+        showChat()
+        controller.openSettingsWorkspace(.about)
+        controller.checkForUpdates()
+    }
 
     // MARK: - Windows
 
@@ -244,6 +250,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "关于 Orbit",
                         action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
                         keyEquivalent: "")
+        let updateItem = appMenu.addItem(withTitle: "检查更新…",
+                                         action: #selector(checkForUpdates(_:)),
+                                         keyEquivalent: "")
+        updateItem.target = self
         appMenu.addItem(.separator())
         let settingsItem = appMenu.addItem(withTitle: "设置…",
                                            action: #selector(showSettings(_:)),
