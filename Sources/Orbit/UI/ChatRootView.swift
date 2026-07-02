@@ -31,7 +31,9 @@ struct ChatRootView: View {
 private struct ChatWorkspaceView: View {
     let openSettings: () -> Void
 
-    @State private var sidebarWidth = 292.0
+    /// Persisted across launches; narrower default. Dragging the handle writes
+    /// straight through to UserDefaults via @AppStorage.
+    @AppStorage("orbit.chatSidebarWidth") private var sidebarWidth = 248.0
 
     var body: some View {
         ZStack(alignment: .topLeading) {

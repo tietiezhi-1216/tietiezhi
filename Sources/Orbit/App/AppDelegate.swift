@@ -210,7 +210,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Windows
 
     /// A window sharing Orbit's transparent, content-spanning titlebar chrome.
-    private func chromedWindow<Content: View>(title: String, size: NSSize, content: Content) -> NSWindow {
+    private func chromedWindow<Content: View>(title: String, size: NSSize,
+                                              autosaveName: String? = nil, content: Content) -> NSWindow {
         let hosting = NSHostingController(rootView: content)
         let window = NSWindow(contentViewController: hosting)
         window.title = title
@@ -220,7 +221,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = false
         window.setContentSize(size)
-        window.center()
+        // Remember the window's position + size across launches. On first launch
+        // (no saved frame) center it on screen; afterwards restore where it was.
+        if let autosaveName {
+            window.setFrameAutosaveName(autosaveName)
+            if !window.setFrameUsingName(autosaveName) { window.center() }
+        } else {
+            window.center()
+        }
         window.isReleasedWhenClosed = false
         return window
     }
@@ -234,7 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .environmentObject(historyStore)
                 .environmentObject(usageStore)
                 .environmentObject(generationStore)
-            chatWindow = chromedWindow(title: "Orbit", size: NSSize(width: 960, height: 680), content: root)
+            chatWindow = chromedWindow(title: "Orbit", size: NSSize(width: 960, height: 680),
+                                       autosaveName: "OrbitMainWindow", content: root)
         }
         NSApp.activate(ignoringOtherApps: true)
         chatWindow?.makeKeyAndOrderFront(nil)
