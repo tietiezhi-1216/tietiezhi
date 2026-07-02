@@ -23,7 +23,7 @@ enum LLM {
     static func polishStreamMessages(_ model: ResolvedModel,
                                      system: String,
                                      user: String,
-                                     onDelta: @MainActor @escaping (String) -> Void) async throws -> String {
+                                     onDelta: @MainActor @escaping (String) -> Void) async throws -> (text: String, usage: TokenUsage) {
         guard !model.apiKey.trimmed.isEmpty else {
             throw OrbitError("所选大模型服务商缺少 API Key。")
         }
@@ -32,11 +32,11 @@ enum LLM {
         messages.append(ChatMessage(role: .user, content: user))
 
         var full = ""
-        try await ChatClient.stream(model: model, messages: messages) { piece in
+        let usage = try await ChatClient.stream(model: model, messages: messages) { piece in
             full += piece
             onDelta(piece)
         }
-        return full.trimmed
+        return (full.trimmed, usage)
     }
 
     /// Streaming polish: same prompt as `polish`, but deltas are delivered to

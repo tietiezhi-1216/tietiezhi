@@ -224,25 +224,32 @@ struct Provider: Identifiable, Codable, Hashable {
     var apiKey: String
     var auth: AuthScheme
     var services: [Service]
+    /// Which `ChannelAdapter` this provider is an instance of. The adapter fixes
+    /// auth / wires / default base URL at creation; this id lets the UI hide the
+    /// manual protocol controls and lets model lookups find the metadata/pricing
+    /// catalog. Legacy configs without it are inferred in `init(from:)`.
+    var adapterID: String
 
     init(id: String = UUID().uuidString,
          name: String,
          baseURL: String = Provider.openAIBase,
          apiKey: String = "",
          auth: AuthScheme = .bearer,
-         services: [Service]? = nil) {
+         services: [Service]? = nil,
+         adapterID: String = ChannelAdapter.customID) {
         self.id = id
         self.name = name
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.auth = auth
         self.services = services ?? Service.seedCatalog(legacyAPI: nil)
+        self.adapterID = adapterID
     }
 
     static let openAIBase = "https://api.openai.com/v1"
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, baseURL, apiKey, auth, services
+        case id, name, baseURL, apiKey, auth, services, adapterID
         case api // legacy (provider-level protocol); decode-only.
     }
 
@@ -270,6 +277,11 @@ struct Provider: Identifiable, Codable, Hashable {
         } else {
             services = Service.seedCatalog(legacyAPI: legacyAPI)
         }
+
+        // New field: absent in old configs → infer from base URL + auth so an
+        // existing provider still maps to an adapter (falls back to "custom").
+        adapterID = try c.decodeIfPresent(String.self, forKey: .adapterID)
+            ?? ChannelAdapter.inferID(baseURL: baseURL, auth: auth)
     }
 
     /// Explicit so the decode-only legacy `api` key is never written back.
@@ -281,6 +293,7 @@ struct Provider: Identifiable, Codable, Hashable {
         try c.encode(apiKey, forKey: .apiKey)
         try c.encode(auth, forKey: .auth)
         try c.encode(services, forKey: .services)
+        try c.encode(adapterID, forKey: .adapterID)
     }
 
     var modelsEndpoint: URL? {
@@ -339,6 +352,10 @@ struct ModelConfig: Identifiable, Codable, Hashable {
     var params: [String: String]?
     /// LLM-only feature flags surfaced in model lists and chat selection.
     var llmCapabilities: LLMCapabilities
+    /// User override of the adapter catalog's price for this model. When nil the
+    /// effective price comes from the adapter's `ModelCard` (see
+    /// `Settings.effectivePricing`).
+    var pricingOverride: ModelPricing?
 
     /// Transient: the role read from a legacy config, used by `migrate` to pick
     /// a service. Never persisted.
@@ -351,7 +368,8 @@ struct ModelConfig: Identifiable, Codable, Hashable {
          model: String,
          language: String? = nil,
          params: [String: String]? = nil,
-         llmCapabilities: LLMCapabilities = .none) {
+         llmCapabilities: LLMCapabilities = .none,
+         pricingOverride: ModelPricing? = nil) {
         self.id = id
         self.providerID = providerID
         self.serviceID = serviceID
@@ -360,11 +378,13 @@ struct ModelConfig: Identifiable, Codable, Hashable {
         self.language = language
         self.params = params
         self.llmCapabilities = llmCapabilities
+        self.pricingOverride = pricingOverride
         self.legacyKind = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, providerID, serviceID, name, model, language, params, llmCapabilities
+        case pricingOverride
         case kind       // legacy role; decode-only.
         case transport  // legacy transport; ignored.
     }
@@ -379,6 +399,7 @@ struct ModelConfig: Identifiable, Codable, Hashable {
         language = try c.decodeIfPresent(String.self, forKey: .language)
         params = try c.decodeIfPresent([String: String].self, forKey: .params)
         llmCapabilities = (try? c.decode(LLMCapabilities.self, forKey: .llmCapabilities)) ?? .none
+        pricingOverride = try? c.decode(ModelPricing.self, forKey: .pricingOverride)
         legacyKind = try? c.decode(ModelKind.self, forKey: .kind)
         // Old `transport` (http / realtime_ws / volcano_ws) no longer exists.
     }
@@ -394,6 +415,7 @@ struct ModelConfig: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(language, forKey: .language)
         try c.encodeIfPresent(params, forKey: .params)
         try c.encode(llmCapabilities, forKey: .llmCapabilities)
+        try c.encodeIfPresent(pricingOverride, forKey: .pricingOverride)
     }
 }
 
@@ -533,6 +555,67 @@ struct Settings: Codable {
     // MARK: Lookups
 
     func provider(id: String) -> Provider? { providers.first { $0.id == id } }
+
+    // MARK: Channel adapters (metadata / pricing / display)
+
+    /// The channel adapter a provider is an instance of.
+    func adapter(for provider: Provider) -> ChannelAdapter? {
+        ChannelAdapter.byID(provider.adapterID)
+    }
+
+    func adapter(for model: ModelConfig) -> ChannelAdapter? {
+        provider(id: model.providerID).flatMap(adapter(for:))
+    }
+
+    /// The adapter catalog card for a model, matched by its raw model id.
+    func card(for model: ModelConfig) -> ModelCard? {
+        adapter(for: model)?.card(forModelID: model.model)
+    }
+
+    /// Effective price: the user's per-model override wins; otherwise the
+    /// adapter catalog's card price; otherwise nil (unknown / unpriced).
+    func effectivePricing(of model: ModelConfig) -> ModelPricing? {
+        if let o = model.pricingOverride, !o.isEmpty { return o }
+        return card(for: model)?.pricing
+    }
+
+    /// Effective LLM feature flags: an explicit user setting wins; otherwise the
+    /// catalog card's flags fill in for a known model.
+    func effectiveAbilities(of model: ModelConfig) -> LLMCapabilities {
+        if model.llmCapabilities != .none { return model.llmCapabilities }
+        return card(for: model)?.abilities ?? .none
+    }
+
+    /// `渠道商/模型ID` — the uniform label for selecting/disambiguating models.
+    /// The channel is the provider's name (which defaults to the adapter's
+    /// display name), so two providers of the same vendor stay distinguishable.
+    func displayLabel(for model: ModelConfig) -> String {
+        let channel = provider(id: model.providerID)?.name ?? "?"
+        return "\(channel)/\(model.model)"
+    }
+
+    /// Build a cost-stamped `UsageRecord` for a completed call. Cost is computed
+    /// now from the model's effective pricing so history stays stable later.
+    func usageRecord(for model: ModelConfig, source: String, date: Date,
+                     usage: TokenUsage? = nil, audioSeconds: Double? = nil) -> UsageRecord {
+        let pricing = effectivePricing(of: model)
+        let cost = pricing?.cost(inputTokens: usage?.input, outputTokens: usage?.output,
+                                 cachedInputTokens: usage?.cachedInput, audioSeconds: audioSeconds)
+        return UsageRecord(
+            date: date,
+            providerID: model.providerID,
+            adapterID: provider(id: model.providerID)?.adapterID ?? ChannelAdapter.customID,
+            modelID: model.model,
+            label: displayLabel(for: model),
+            capability: capability(of: model) ?? .chat,
+            inputTokens: usage?.input,
+            outputTokens: usage?.output,
+            cachedInputTokens: usage?.cachedInput,
+            audioSeconds: audioSeconds,
+            cost: cost,
+            currency: pricing?.currency,
+            source: source)
+    }
 
     var chatModels: [ModelConfig] {
         models.filter { capability(of: $0) == .chat }

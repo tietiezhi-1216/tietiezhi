@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: AppController!
     private var chatStore: ChatStore!
     private var historyStore: DictationHistoryStore!
+    private var usageStore: UsageStore!
 
     private var statusItem: NSStatusItem!
     private var chatWindow: NSWindow?
@@ -29,9 +30,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         store = SettingsStore()
         controller = AppController(store: store)
-        chatStore = ChatStore(settings: store)
+        usageStore = UsageStore()
+        chatStore = ChatStore(settings: store, usage: usageStore)
         historyStore = DictationHistoryStore()
-        dictationQueue = DictationQueue(store: store, history: historyStore)
+        dictationQueue = DictationQueue(store: store, history: historyStore, usage: usageStore)
         recordingState = RecordingState()
 
         installMainMenu()
@@ -228,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .environmentObject(store)
                 .environmentObject(controller)
                 .environmentObject(historyStore)
+                .environmentObject(usageStore)
             chatWindow = chromedWindow(title: "Orbit", size: NSSize(width: 960, height: 680), content: root)
         }
         NSApp.activate(ignoringOtherApps: true)

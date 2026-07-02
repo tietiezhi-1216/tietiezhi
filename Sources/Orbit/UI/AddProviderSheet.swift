@@ -1,339 +1,361 @@
 //  AddProviderSheet.swift
-//  A modal editor for creating or editing a provider. A provider is now just
-//  credentials (name, Base URL, API Key, auth scheme) PLUS a catalog of
-//  "services" — the interfaces it offers (chat / responses / image / asr / …).
-//  Each service is a capability + wire + optional path override. Models attach
-//  to a service in the 模型 screen, so one Base URL can host many models that
-//  speak different protocols. Vendor presets seed sensible defaults; the user
-//  can fetch the model list and test the connection before saving.
+//  Adapter-driven "add channel (渠道商)" editor. Pick a channel adapter (a select),
+//  fill the key (+ base URL for self-hosted), then 获取模型列表 → the channel's
+//  upstream models load into an editable list where each model can be included
+//  and priced. Pricing modes mirror an API relay (中转站): 按 Token (input/output
+//  per 1M), 按次 (flat per call), 按分钟 (audio, for ASR), or 不计费. Protocols are
+//  shown read-only, fixed by the adapter. Saved models + prices are synced to the
+//  channel — there is no separate 模型 page.
 
 import SwiftUI
 
+/// How a model is billed, driving the pricing fields shown per row.
+enum PricingMode: String, CaseIterable, Identifiable {
+    case none, token, perCall, perMinute
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .none:      return "不计费"
+        case .token:     return "按 Token"
+        case .perCall:   return "按次"
+        case .perMinute: return "按分钟"
+        }
+    }
+}
+
+/// One editable row in the channel's model list.
+struct ChannelModelDraft: Identifiable {
+    let id: String
+    var existingID: String?     // reuse the ModelConfig id so selections survive
+    var model: String
+    var name: String
+    var capability: Capability
+    var include: Bool
+    var mode: PricingMode
+    var inputStr: String
+    var outputStr: String
+    var perCallStr: String
+    var perMinuteStr: String
+    var currency: String
+
+    /// Build the persisted price from the entered fields (nil when unpriced).
+    func pricing() -> ModelPricing? {
+        let p: ModelPricing
+        switch mode {
+        case .none:      return nil
+        case .token:     p = ModelPricing(inputPer1M: Double(inputStr.trimmed), outputPer1M: Double(outputStr.trimmed), currency: currency)
+        case .perCall:   p = ModelPricing(perCall: Double(perCallStr.trimmed), currency: currency)
+        case .perMinute: p = ModelPricing(perAudioMinute: Double(perMinuteStr.trimmed), currency: currency)
+        }
+        return p.isEmpty ? nil : p
+    }
+}
+
 struct AddProviderSheet: View {
-    /// Pass an existing provider to edit it; nil to create a new one.
     var editing: Provider?
-    var onSave: (Provider) -> Void
+    var existingModels: [ModelConfig]
+    var onSave: (Provider, [ModelConfig]) -> Void
 
     @Environment(\.dismiss) private var dismiss
 
     @State private var draft: Provider
+    @State private var entries: [ChannelModelDraft]
     @State private var testStatus = ""
     @State private var testOK: Bool? = nil
     @State private var testing = false
-
     @State private var fetching = false
-    @State private var models: [String] = []
-    @State private var modelsError: String?
+    @State private var fetchError: String?
 
     private let labelWidth: CGFloat = 84
 
-    init(editing: Provider? = nil, onSave: @escaping (Provider) -> Void) {
+    init(editing: Provider? = nil,
+         existingModels: [ModelConfig] = [],
+         onSave: @escaping (Provider, [ModelConfig]) -> Void) {
         self.editing = editing
+        self.existingModels = existingModels
         self.onSave = onSave
-        // A new provider starts with one chat service so it's immediately usable;
-        // the user adds / edits / removes services freely.
-        _draft = State(initialValue: editing ?? Provider(
-            name: "", baseURL: "",
-            services: [Service(wire: .openAIChat)]
-        ))
+        let prov = editing ?? ChannelAdapter.openAI.makeProvider(name: "")
+        _draft = State(initialValue: prov)
+        let currency = Self.defaultCurrency(for: prov.adapterID)
+        _entries = State(initialValue: existingModels.map {
+            Self.draft(from: $0, provider: prov, fallbackCurrency: currency)
+        })
     }
 
     private var isEditing: Bool { editing != nil }
     private var canSave: Bool { !draft.name.trimmed.isEmpty }
-    private var showsResults: Bool { !models.isEmpty || modelsError != nil }
-
-    /// Live preview of the connection-test target (the list-models endpoint).
-    private var modelsPreview: String {
-        draft.modelsEndpoint?.absoluteString ?? "（Base URL 无效）"
-    }
+    private var adapter: ChannelAdapter { ChannelAdapter.byID(draft.adapterID) ?? .custom }
+    private var modelsPreview: String { draft.modelsEndpoint?.absoluteString ?? "（Base URL 无效）" }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(isEditing ? "编辑服务商" : "添加服务商").font(.headline)
+                Text(isEditing ? "编辑渠道商" : "添加渠道商").font(.headline)
                 Spacer()
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 14)
-
+            .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 14)
             Divider()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     fields
                     Divider()
-                    servicesEditor
-                    if showsResults {
-                        Divider()
-                        resultsPanel
-                    }
+                    modelsEditor
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 18)
+                .padding(.horizontal, 20).padding(.vertical, 18)
             }
 
             Divider()
             footer
         }
-        .frame(width: 580, height: 640)
+        .frame(width: 720, height: 680)
     }
 
-    // MARK: - Credential fields
+    // MARK: - Fields
 
     private var fields: some View {
         VStack(alignment: .leading, spacing: 14) {
-            labeledRow("名称") {
-                TextField("例如：OpenAI、Claude、硅基流动", text: $draft.name)
-                    .textFieldStyle(.roundedBorder)
+            labeledRow("渠道商") {
+                Picker("", selection: Binding(
+                    get: { draft.adapterID },
+                    set: { id in if let a = ChannelAdapter.byID(id) { applyAdapter(a) } }
+                )) {
+                    ForEach(ChannelAdapter.all) { a in Text(a.displayName).tag(a.id) }
+                }
+                .labelsHidden().pickerStyle(.menu).fixedSize()
             }
-
+            labeledRow("名称") {
+                TextField("例如：OpenAI、我的 New API", text: $draft.name).textFieldStyle(.roundedBorder)
+            }
             labeledRow("Base URL") {
                 VStack(alignment: .leading, spacing: 5) {
-                    TextField(Provider.openAIBase, text: $draft.baseURL)
-                        .textFieldStyle(.roundedBorder)
+                    if adapter.baseURLEditable {
+                        TextField(adapter.id == "newapi" ? "https://你的域名/v1" : Provider.openAIBase, text: $draft.baseURL)
+                            .textFieldStyle(.roundedBorder)
+                    } else {
+                        Text(draft.baseURL.isEmpty ? "—" : draft.baseURL)
+                            .font(.callout.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
                     HStack(spacing: 4) {
                         Image(systemName: "arrow.turn.down.right")
-                        Text("列表/测试：\(modelsPreview)")
-                            .textSelection(.enabled)
+                        Text("列表/测试：\(modelsPreview)").textSelection(.enabled)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    Text(draft.auth == .anthropic
-                         ? "Anthropic：Base URL 不含 /v1，应用会自动补全。"
-                         : "OpenAI 风格：版本段（/v1）写在 Base URL 里。")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }
-
-            labeledRow("鉴权") {
-                VStack(alignment: .leading, spacing: 5) {
+            if adapter.isCustom {
+                labeledRow("鉴权") {
                     Picker("", selection: $draft.auth) {
-                        ForEach(AuthScheme.allCases) { scheme in
-                            Text(scheme.displayName).tag(scheme)
-                        }
+                        ForEach(AuthScheme.allCases) { Text($0.displayName).tag($0) }
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .fixedSize()
+                    .pickerStyle(.menu).labelsHidden().fixedSize()
                 }
             }
-
             labeledRow("API Key") {
-                RevealableSecureField(title: draft.auth == .anthropic ? "sk-ant-…" : "sk-…",
-                                      text: $draft.apiKey)
+                RevealableSecureField(title: draft.auth == .anthropic ? "sk-ant-…" : "sk-…", text: $draft.apiKey)
             }
         }
     }
 
     @ViewBuilder
-    private func labeledRow<Field: View>(_ label: String,
-                                         @ViewBuilder _ field: () -> Field) -> some View {
+    private func labeledRow<Field: View>(_ label: String, @ViewBuilder _ field: () -> Field) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(label)
-                .frame(width: labelWidth, alignment: .leading)
-                .foregroundStyle(.secondary)
+            Text(label).frame(width: labelWidth, alignment: .leading).foregroundStyle(.secondary)
             field()
         }
     }
 
-    // MARK: - Services editor
+    private func applyAdapter(_ a: ChannelAdapter) {
+        let old = ChannelAdapter.byID(draft.adapterID)
+        if draft.name.trimmed.isEmpty || draft.name == old?.displayName { draft.name = a.displayName }
+        draft.adapterID = a.id
+        draft.auth = a.auth
+        draft.services = a.seededServices()
+        if !a.baseURLEditable { draft.baseURL = a.defaultBaseURL }
+        else if draft.baseURL == old?.defaultBaseURL { draft.baseURL = a.defaultBaseURL }
+        entries = []; fetchError = nil; testStatus = ""; testOK = nil
+    }
 
-    private var servicesEditor: some View {
+    // MARK: - Models + pricing editor
+
+    private var includedCount: Int { entries.filter(\.include).count }
+
+    private var modelsEditor: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("支持的协议").font(.subheadline.weight(.semibold))
+                Text("模型与费用").font(.subheadline.weight(.semibold))
+                if !entries.isEmpty {
+                    Text("已选 \(includedCount)/\(entries.count)").font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
-                addProtocolMenu
+                if !entries.isEmpty {
+                    Button(allIncluded ? "全不选" : "全选") { toggleAll() }
+                        .buttonStyle(.borderless).controlSize(.small)
+                }
+                Button { fetchModels() } label: {
+                    Label(fetching ? "获取中…" : "获取模型列表", systemImage: "arrow.down.circle")
+                }
+                .controlSize(.small).disabled(fetching)
             }
 
-            Text("这个服务商支持哪些协议（接口规范）。模型在「模型」页选择其中之一——端点由协议决定，无需手填。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let err = fetchError {
+                Label(err, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
 
-            if draft.services.isEmpty {
-                Text("还没有协议，点「添加协议」。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 10)
+            if entries.isEmpty {
+                Text("点「获取模型列表」加载该渠道的上游模型，勾选要用的并为其设置费用（按 Token / 按次 / 按分钟）。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
             } else {
-                ForEach(draft.services) { svc in
-                    protocolRow(svc)
-                }
-            }
-        }
-    }
-
-    private var addProtocolMenu: some View {
-        Menu {
-            ForEach(capabilitiesWithAvailable) { cap in
-                Section(cap.displayName) {
-                    ForEach(availableWires(for: cap)) { wire in
-                        Button(wire.displayName) {
-                            draft.services.append(Service(wire: wire))
-                        }
+                VStack(spacing: 0) {
+                    ForEach($entries) { $entry in
+                        modelRow($entry)
+                        Divider()
                     }
                 }
+                .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
             }
-        } label: {
-            Label("添加协议", systemImage: "plus")
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(capabilitiesWithAvailable.isEmpty)
-    }
-
-    private func protocolRow(_ svc: Service) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: svc.capability.symbol)
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(svc.wire.displayName).font(.callout)
-                Text("\(svc.capability.displayName) · \(svc.wire.summary)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button(role: .destructive) {
-                draft.services.removeAll { $0.id == svc.id }
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-        }
-        .padding(10)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    /// Protocols of `capability` not yet added to this provider.
-    private func availableWires(for capability: Capability) -> [Wire] {
-        Wire.all(for: capability).filter { wire in
-            !draft.services.contains { $0.wire == wire }
         }
     }
 
-    /// Capabilities (functions) that still have an unused protocol to offer.
-    private var capabilitiesWithAvailable: [Capability] {
-        Capability.allCases.filter { !availableWires(for: $0).isEmpty }
+    private func modelRow(_ entry: Binding<ChannelModelDraft>) -> some View {
+        let e = entry.wrappedValue
+        return HStack(spacing: 10) {
+            Toggle("", isOn: entry.include).labelsHidden().toggleStyle(.checkbox)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(e.model).font(.callout.monospaced()).lineLimit(1)
+                Text(e.capability.displayName).font(.caption2).foregroundStyle(.secondary)
+            }
+            .frame(width: 220, alignment: .leading)
+
+            Picker("", selection: entry.mode) {
+                ForEach(PricingMode.allCases) { Text($0.label).tag($0) }
+            }
+            .labelsHidden().fixedSize().disabled(!e.include)
+
+            pricingFields(entry).disabled(!e.include)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .opacity(e.include ? 1 : 0.5)
     }
 
-    // MARK: - Fetched models panel
-
-    private var resultsPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                if let err = modelsError {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Text(err).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                } else {
-                    Image(systemName: "cube.box").foregroundStyle(.secondary)
-                    Text("可用模型 · \(models.count)").font(.subheadline.weight(.medium))
-                    Spacer()
-                    Button {
-                        models = []; modelsError = nil
-                    } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.tertiary)
-                        .help("清除列表")
-                }
-            }
-            if !models.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(models, id: \.self) { id in
-                            Text(id)
-                                .font(.callout.monospaced())
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 4)
-                                .padding(.horizontal, 8)
-                            Divider()
-                        }
-                    }
-                }
-                .frame(height: 150)
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
-            }
+    @ViewBuilder
+    private func pricingFields(_ entry: Binding<ChannelModelDraft>) -> some View {
+        switch entry.wrappedValue.mode {
+        case .none:
+            EmptyView()
+        case .token:
+            numField("输入/M", entry.inputStr)
+            numField("输出/M", entry.outputStr)
+            currencyPicker(entry)
+        case .perCall:
+            numField("每次", entry.perCallStr)
+            currencyPicker(entry)
+        case .perMinute:
+            numField("每分钟", entry.perMinuteStr)
+            currencyPicker(entry)
         }
+    }
+
+    private func numField(_ placeholder: String, _ text: Binding<String>) -> some View {
+        TextField(placeholder, text: text)
+            .textFieldStyle(.roundedBorder).frame(width: 76).font(.caption.monospaced())
+    }
+
+    private func currencyPicker(_ entry: Binding<ChannelModelDraft>) -> some View {
+        Picker("", selection: entry.currency) {
+            Text("USD").tag("USD"); Text("CNY").tag("CNY")
+        }
+        .labelsHidden().fixedSize()
+    }
+
+    private var allIncluded: Bool { !entries.isEmpty && entries.allSatisfy(\.include) }
+    private func toggleAll() {
+        let target = !allIncluded
+        for i in entries.indices { entries[i].include = target }
     }
 
     // MARK: - Footer
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Button {
-                fetchModels()
-            } label: {
-                Label(fetching ? "获取中…" : "获取模型列表", systemImage: "arrow.down.circle")
-            }
-            .disabled(fetching)
-
             if !testStatus.isEmpty {
                 Image(systemName: testOK == true ? "checkmark.circle.fill"
                       : (testOK == false ? "xmark.circle.fill" : "circle.dashed"))
                     .foregroundStyle(testOK == true ? .green : (testOK == false ? .red : .secondary))
-                Text(testStatus)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                Text(testStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
-
             Spacer(minLength: 0)
-
-            Button("取消") { dismiss() }
-                .keyboardShortcut(.cancelAction)
-            Button(testing ? "测试中…" : "测试连接") { runTest() }
-                .disabled(testing)
-            Button("保存") { save() }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!canSave)
+            Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+            Button(testing ? "测试中…" : "测试连接") { runTest() }.disabled(testing)
+            Button("保存") { save() }.keyboardShortcut(.defaultAction).disabled(!canSave)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 20).padding(.vertical, 14)
     }
 
     // MARK: - Actions
 
     private func runTest() {
-        testing = true
-        testStatus = ""
-        testOK = nil
+        testing = true; testStatus = ""; testOK = nil
         let snapshot = draft
         Task { @MainActor in
             defer { testing = false }
-            do {
-                testStatus = try await ProviderAPI.test(snapshot)
-                testOK = true
-            } catch {
-                testStatus = (error as? ProviderAPIError)?.errorDescription
-                    ?? error.localizedDescription
+            do { testStatus = try await ProviderAPI.test(snapshot); testOK = true }
+            catch {
+                testStatus = (error as? ProviderAPIError)?.errorDescription ?? error.localizedDescription
                 testOK = false
             }
         }
     }
 
     private func fetchModels() {
+        fetchError = nil
+        if adapter.modelSource == .catalog {
+            applyFetched(adapter.catalog.map(\.id))
+            if entries.isEmpty { fetchError = "该渠道商没有内置模型目录。" }
+            return
+        }
         fetching = true
-        modelsError = nil
         let snapshot = draft
         Task { @MainActor in
             defer { fetching = false }
             do {
                 let ids = try await ProviderAPI.fetchModels(snapshot)
-                models = ids
-                if ids.isEmpty { modelsError = "该服务商没有返回任何模型。" }
+                applyFetched(ids)
+                if ids.isEmpty { fetchError = "该渠道商没有返回任何模型。" }
             } catch {
-                models = []
-                modelsError = (error as? ProviderAPIError)?.errorDescription
-                    ?? error.localizedDescription
+                fetchError = (error as? ProviderAPIError)?.errorDescription ?? error.localizedDescription
             }
+        }
+    }
+
+    /// Merge fetched ids into the editable list: keep existing rows (with their
+    /// pricing), add new ones, and only surface models the channel's protocols
+    /// can run (chat / ASR). Chat first, then ASR, alphabetically.
+    private func applyFetched(_ ids: [String]) {
+        let usable = Set(draft.services.map(\.capability))
+        let currency = Self.defaultCurrency(for: draft.adapterID)
+        var byModel = Dictionary(entries.map { ($0.model, $0) }, uniquingKeysWith: { a, _ in a })
+        var result: [ChannelModelDraft] = []
+        for id in ids {
+            let cap = adapter.card(forModelID: id)?.capability ?? ChannelAdapter.inferCapability(id)
+            guard usable.contains(cap) else { continue }
+            if let keep = byModel.removeValue(forKey: id) {
+                result.append(keep)
+            } else {
+                result.append(ChannelModelDraft(
+                    id: UUID().uuidString, existingID: nil, model: id,
+                    name: adapter.card(forModelID: id)?.displayName ?? id,
+                    capability: cap, include: true, mode: .none,
+                    inputStr: "", outputStr: "", perCallStr: "", perMinuteStr: "", currency: currency))
+            }
+        }
+        // Preserve any prior rows not present upstream (manually kept).
+        result.append(contentsOf: byModel.values)
+        entries = result.sorted {
+            ($0.capability == .asr ? 1 : 0, $0.model) < ($1.capability == .asr ? 1 : 0, $1.model)
         }
     }
 
@@ -341,8 +363,42 @@ struct AddProviderSheet: View {
         var provider = draft
         provider.name = provider.name.trimmed
         provider.baseURL = provider.baseURL.trimmed
-        onSave(provider)
+        let models: [ModelConfig] = entries.filter(\.include).compactMap { e in
+            guard let svc = provider.services.first(where: { $0.capability == e.capability }) else { return nil }
+            return ModelConfig(
+                id: e.existingID ?? UUID().uuidString,
+                providerID: provider.id,
+                serviceID: svc.id,
+                name: e.name.trimmed.isEmpty ? e.model : e.name,
+                model: e.model,
+                pricingOverride: e.pricing())
+        }
+        onSave(provider, models)
         dismiss()
     }
-}
 
+    // MARK: - Helpers
+
+    private static func defaultCurrency(for adapterID: String) -> String {
+        ["mimo", "deepseek", "moonshot", "zhipu"].contains(adapterID) ? "CNY" : "USD"
+    }
+
+    private static func draft(from m: ModelConfig, provider: Provider, fallbackCurrency: String) -> ChannelModelDraft {
+        let cap = provider.services.first { $0.id == m.serviceID }?.capability
+            ?? ChannelAdapter.inferCapability(m.model)
+        let p = m.pricingOverride
+        let mode: PricingMode = {
+            guard let p, !p.isEmpty else { return .none }
+            if p.perAudioMinute != nil { return .perMinute }
+            if p.perCall != nil { return .perCall }
+            return .token
+        }()
+        func s(_ v: Double?) -> String { v.map { $0 == $0.rounded() ? String(Int($0)) : String($0) } ?? "" }
+        return ChannelModelDraft(
+            id: m.id, existingID: m.id, model: m.model, name: m.name, capability: cap,
+            include: true, mode: mode,
+            inputStr: s(p?.inputPer1M), outputStr: s(p?.outputPer1M),
+            perCallStr: s(p?.perCall), perMinuteStr: s(p?.perAudioMinute),
+            currency: p?.currency ?? fallbackCurrency)
+    }
+}

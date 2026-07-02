@@ -135,6 +135,21 @@ final class SettingsStore: ObservableObject {
         settings.models.append(model)
     }
 
+    /// Replace a channel's model set with the models chosen (and priced) in the
+    /// channel editor. Existing model ids are reused by the editor for models
+    /// that stay, so active ASR/LLM selections survive; anything dropped clears a
+    /// dangling selection.
+    func syncModels(providerID: String, models: [ModelConfig]) {
+        settings.models.removeAll { $0.providerID == providerID }
+        settings.models.append(contentsOf: models)
+        if let asr = settings.asrModelID, !settings.models.contains(where: { $0.id == asr }) {
+            settings.asrModelID = nil
+        }
+        if let llm = settings.llmModelID, !settings.models.contains(where: { $0.id == llm }) {
+            settings.llmModelID = nil
+        }
+    }
+
     func removeModel(id: String) {
         settings.models.removeAll { $0.id == id }
         if settings.asrModelID == id { settings.asrModelID = nil }

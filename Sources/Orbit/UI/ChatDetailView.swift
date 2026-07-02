@@ -93,14 +93,14 @@ struct ChatDetailView: View {
             if chatModels.isEmpty {
                 Text("尚未配置大模型")
                     .font(.system(size: 22, weight: .semibold, design: .rounded))
-                Text("进入「设置 → 模型」添加一个大模型并选为当前大模型。")
+                Text("进入「设置 → 渠道商」添加一个渠道商，加载模型后选为当前大模型。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Button {
-                    app.openSettingsWorkspace(.models)
+                    app.openSettingsWorkspace(.providers)
                 } label: {
-                    Label("配置模型", systemImage: "cube.box")
+                    Label("配置渠道商", systemImage: "server.rack")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
@@ -182,20 +182,21 @@ struct ChatDetailView: View {
     private var modelSelector: some View {
         Menu {
             if chatModels.isEmpty {
-                Button("添加大模型…") { app.openSettingsWorkspace(.models) }
+                Button("添加渠道商…") { app.openSettingsWorkspace(.providers) }
             } else {
                 ForEach(chatModels) { model in
                     Button {
                         store.settings.llmModelID = model.id
                     } label: {
+                        // 渠道商/模型ID keeps same-named models across channels distinct.
                         Label(
-                            "\(model.name) · \(model.llmCapabilities.summary)",
+                            store.settings.displayLabel(for: model),
                             systemImage: model.id == store.settings.llmModelID ? "checkmark.circle.fill" : "circle"
                         )
                     }
                 }
                 Divider()
-                Button("管理模型…") { app.openSettingsWorkspace(.models) }
+                Button("管理渠道商…") { app.openSettingsWorkspace(.providers) }
             }
         } label: {
             HStack(spacing: 7) {
@@ -205,7 +206,7 @@ struct ChatDetailView: View {
                     Text(selectedLLM?.name ?? "选择大模型")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.primary)
-                    Text(selectedLLM?.model ?? "LLM")
+                    Text(selectedLLM.map { store.settings.displayLabel(for: $0) } ?? "LLM")
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

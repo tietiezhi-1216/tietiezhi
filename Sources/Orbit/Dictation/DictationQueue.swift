@@ -106,6 +106,7 @@ final class DictationQueue: ObservableObject {
 
     private let store: SettingsStore
     private let history: DictationHistoryStore
+    private let usage: UsageStore
 
     private var nextSeq = 0
     private var nextDeliverSeq = 0
@@ -118,9 +119,10 @@ final class DictationQueue: ObservableObject {
 
     private let maxConcurrent = 3
 
-    init(store: SettingsStore, history: DictationHistoryStore) {
+    init(store: SettingsStore, history: DictationHistoryStore, usage: UsageStore) {
         self.store = store
         self.history = history
+        self.usage = usage
     }
 
     // MARK: - Submit
@@ -182,6 +184,9 @@ final class DictationQueue: ObservableObject {
             }.trimmed
             job.transcript = transcript
             DictationAudioArchive.saveTranscript(transcript, paths: job.artifacts)
+            // Record ASR usage by audio duration (token-less; priced per minute).
+            let audioSeconds = job.rate > 0 ? Double(job.samples.count) / Double(job.rate) : nil
+            usage.add(store.settings.usageRecord(for: asr, source: "asr", date: Date(), audioSeconds: audioSeconds))
             guard !transcript.isEmpty else {
                 job.failure = withAudioRecovery("没有识别到内容", job.artifacts)
                 DictationAudioArchive.saveFailure(job.failure ?? "没有识别到内容", paths: job.artifacts)
@@ -201,11 +206,15 @@ final class DictationQueue: ObservableObject {
                     settings: store.settings, transcript: transcript, frontApp: job.frontApp)
                 do {
                     var streamed = ""
-                    let raw = try await LLM.polishStreamMessages(
+                    let (raw, polishUsage) = try await LLM.polishStreamMessages(
                         resolvedLLM, system: system, user: user
                     ) { piece in
                         streamed += piece
                         job.streamText = streamed
+                    }
+                    if !polishUsage.isEmpty {
+                        usage.add(store.settings.usageRecord(
+                            for: llm, source: "polish", date: Date(), usage: polishUsage))
                     }
                     let cleaned = store.settings.cleanOutput ? OutputCleaner.clean(raw) : raw
                     if !cleaned.isEmpty {

@@ -18,8 +18,16 @@ struct ProvidersView: View {
         return store.settings.providers.first { $0.id == id }
     }
 
+    private func modelCount(_ provider: Provider) -> Int {
+        store.settings.models.filter { $0.providerID == provider.id }.count
+    }
+
+    private func models(for provider: Provider) -> [ModelConfig] {
+        store.settings.models.filter { $0.providerID == provider.id }
+    }
+
     var body: some View {
-        PageScaffold(title: "服务商", maxWidth: .infinity) {
+        PageScaffold(title: "渠道商", maxWidth: .infinity) {
             HStack(spacing: 8) {
                 Button {
                     if let p = selectedProvider { editingProvider = p }
@@ -39,15 +47,15 @@ struct ProvidersView: View {
                 .disabled(selectedID == nil)
 
                 Button { showingAdd = true } label: {
-                    Label("添加服务商", systemImage: "plus")
+                    Label("添加渠道商", systemImage: "plus")
                 }
                 .buttonStyle(.borderedProminent)
             }
         } content: {
             Table(store.settings.providers, selection: $selectedID) {
                 TableColumn("名称", value: \.name)
-                TableColumn("服务") { provider in
-                    ServiceChips(services: provider.services)
+                TableColumn("模型") { provider in
+                    Text("\(modelCount(provider))").foregroundStyle(.secondary)
                 }
                 TableColumn("Base URL", value: \.baseURL)
                 TableColumn("API Key") { provider in
@@ -55,7 +63,7 @@ struct ProvidersView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .tableStyle(.bordered(alternatesRowBackgrounds: false))
+            .tableStyle(.inset)
             .contextMenu(forSelectionType: Provider.ID.self) { ids in
                 if let id = ids.first,
                    let provider = store.settings.providers.first(where: { $0.id == id }) {
@@ -73,61 +81,31 @@ struct ProvidersView: View {
             }
             .overlay {
                 if store.settings.providers.isEmpty {
-                    Text("还没有服务商,点右上角「添加服务商」开始。")
+                    Text("还没有渠道商,点右上角「添加渠道商」开始。")
                         .foregroundStyle(.secondary)
                 }
             }
             .padding(.bottom, 16)
         }
         .sheet(isPresented: $showingAdd) {
-            AddProviderSheet { newProvider in
+            AddProviderSheet { newProvider, models in
                 store.addProvider(newProvider)
+                store.syncModels(providerID: newProvider.id, models: models)
             }
         }
         .sheet(item: $editingProvider) { provider in
-            AddProviderSheet(editing: provider) { updated in
+            AddProviderSheet(editing: provider, existingModels: models(for: provider)) { updated, models in
                 store.updateProvider(id: provider.id) { existing in
                     existing.name = updated.name
                     existing.baseURL = updated.baseURL
                     existing.apiKey = updated.apiKey
                     existing.auth = updated.auth
                     existing.services = updated.services
+                    existing.adapterID = updated.adapterID
                 }
+                store.syncModels(providerID: provider.id, models: models)
             }
         }
     }
 }
 
-/// Compact capability chips for the providers table — at a glance, which
-/// interfaces a provider offers.
-private struct ServiceChips: View {
-    let services: [Service]
-
-    /// Distinct capabilities, in a stable display order.
-    private var capabilities: [Capability] {
-        var seen = Set<Capability>()
-        return services.compactMap { svc in
-            guard !seen.contains(svc.capability) else { return nil }
-            seen.insert(svc.capability)
-            return svc.capability
-        }
-    }
-
-    var body: some View {
-        if services.isEmpty {
-            Text("—").foregroundStyle(.secondary)
-        } else {
-            HStack(spacing: 5) {
-                ForEach(capabilities) { cap in
-                    Label(cap.displayName, systemImage: cap.symbol)
-                        .labelStyle(.titleAndIcon)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                }
-            }
-            .foregroundStyle(.secondary)
-        }
-    }
-}

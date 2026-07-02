@@ -36,15 +36,15 @@ struct DictationBasicView: View {
                 Section("模型") {
                     Picker("语音识别", selection: $store.settings.asrModelID) {
                         Text("— 无 —").tag(String?.none)
-                        ForEach(asrModels) { Text($0.name).tag(Optional($0.id)) }
+                        ForEach(asrModels) { Text(store.settings.displayLabel(for: $0)).tag(Optional($0.id)) }
                     }
                     if asrModels.isEmpty {
-                        hint("还没有语音识别模型。去「模型」添加一个（协议选「语音识别」类，如 OpenAI Transcription、MiMo 音频识别）。")
+                        hint("还没有语音识别模型。去「渠道商」添加一个支持语音识别的渠道商（如 OpenAI、小米 MiMo），保存后会自动加载模型。")
                     }
 
                     Picker("润色（大模型）", selection: $store.settings.llmModelID) {
                         Text("— 无 —").tag(String?.none)
-                        ForEach(chatModels) { Text($0.name).tag(Optional($0.id)) }
+                        ForEach(chatModels) { Text(store.settings.displayLabel(for: $0)).tag(Optional($0.id)) }
                     }
                     hint("单击模式识别后用它按「模板」里选的模式润色；长按只转写、不润色。没配大模型则自动退化为仅转写。")
                 }

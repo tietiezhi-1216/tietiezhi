@@ -15,10 +15,12 @@ final class ChatStore: ObservableObject {
     @Published var isStreaming = false
 
     private let settings: SettingsStore
+    private let usage: UsageStore
     private var streamTask: Task<Void, Never>?
 
-    init(settings: SettingsStore) {
+    init(settings: SettingsStore, usage: UsageStore) {
         self.settings = settings
+        self.usage = usage
     }
 
     var selected: Conversation? {
@@ -126,8 +128,13 @@ final class ChatStore: ObservableObject {
         streamTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await ChatClient.stream(model: model, messages: history) { piece in
+                let tokens = try await ChatClient.stream(model: model, messages: history) { piece in
                     self.appendDelta(piece, conversationID: cid, messageID: aid)
+                }
+                // Record token usage + cost for the chat turn.
+                if let cfg = self.settings.settings.llmModel, !tokens.isEmpty {
+                    self.usage.add(self.settings.settings.usageRecord(
+                        for: cfg, source: "chat", date: Date(), usage: tokens))
                 }
                 // Completed with no content at all → leave a visible note rather
                 // than a permanently empty bubble.

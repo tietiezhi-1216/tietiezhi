@@ -27,7 +27,7 @@ enum SettingsGroup: Int, CaseIterable, Identifiable {
 
 enum SettingsSection: String, CaseIterable, Identifiable {
     case providers
-    case models
+    case usage
     case dictationBasic
     case dictationModes
     case dictationVocab
@@ -41,7 +41,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     /// The parent group this section lives under.
     var group: SettingsGroup {
         switch self {
-        case .providers, .models:
+        case .providers, .usage:
             return .access
         case .dictationBasic, .dictationModes, .dictationVocab, .dictationHistory, .dictationStats:
             return .dictation
@@ -54,8 +54,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .providers:        return "服务商"
-        case .models:           return "模型"
+        case .providers:        return "渠道商"
+        case .usage:            return "用量"
         case .dictationBasic:   return "基础"
         case .dictationModes:   return "模板"
         case .dictationVocab:   return "词汇"
@@ -69,7 +69,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .providers:        return "server.rack"
-        case .models:           return "cube.box"
+        case .usage:            return "creditcard"
         case .dictationBasic:   return "mic"
         case .dictationModes:   return "slider.horizontal.3"
         case .dictationVocab:   return "character.book.closed"

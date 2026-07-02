@@ -62,6 +62,10 @@ enum ProviderAPI {
         var req = URLRequest(url: url)
         req.timeoutInterval = 15
         provider.auth.authorize(&req, apiKey: provider.apiKey)
+        // Anthropic's GET /v1/models also requires the API-version header.
+        if provider.auth == .anthropic {
+            req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        }
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
