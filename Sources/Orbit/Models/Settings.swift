@@ -75,6 +75,10 @@ enum Wire: String, Codable, Hashable, CaseIterable, Identifiable {
     // Image (prompt → image)
     case openAIImage         // POST {base}/images/generations (OpenAI 兼容)
     case siliconflowImage    // POST {base}/images/generations (SiliconFlow 变体：image_size/batch_size)
+    // Video (prompt → video; async submit + poll, multi-endpoint — VideoClient
+    // derives the poll/download paths from the base URL per wire)
+    case siliconflowVideo    // POST {base}/video/submit → POST {base}/video/status
+    case openAIVideo         // POST {base}/videos (Sora, multipart) → GET {base}/videos/{id} → …/content
 
     var id: String { rawValue }
 
@@ -84,6 +88,7 @@ enum Wire: String, Codable, Hashable, CaseIterable, Identifiable {
         case .openAIChat, .openAIResponses, .anthropicMessages: return .chat
         case .openAITranscription, .mimoAudioASR:               return .asr
         case .openAIImage, .siliconflowImage:                   return .image
+        case .siliconflowVideo, .openAIVideo:                   return .video
         }
     }
 
@@ -96,6 +101,8 @@ enum Wire: String, Codable, Hashable, CaseIterable, Identifiable {
         case .mimoAudioASR:        return "MiMo 音频识别（Chat）"
         case .openAIImage:         return "图像生成（OpenAI 兼容）"
         case .siliconflowImage:    return "图像生成（SiliconFlow）"
+        case .siliconflowVideo:    return "视频生成（SiliconFlow）"
+        case .openAIVideo:         return "视频生成（Sora）"
         }
     }
 
@@ -109,6 +116,8 @@ enum Wire: String, Codable, Hashable, CaseIterable, Identifiable {
         case .mimoAudioASR:        return "POST /chat/completions —— 音频内嵌 chat（input_audio）"
         case .openAIImage:         return "POST /images/generations —— OpenAI 兼容图像"
         case .siliconflowImage:    return "POST /images/generations —— SiliconFlow 图像变体"
+        case .siliconflowVideo:    return "POST /video/submit + /video/status —— 异步提交轮询"
+        case .openAIVideo:         return "POST /videos —— Sora 异步生成"
         }
     }
 
@@ -121,6 +130,8 @@ enum Wire: String, Codable, Hashable, CaseIterable, Identifiable {
         case .openAITranscription: return "/audio/transcriptions"
         case .mimoAudioASR:        return "/chat/completions"
         case .openAIImage, .siliconflowImage: return "/images/generations"
+        case .siliconflowVideo:               return "/video/submit"
+        case .openAIVideo:                    return "/videos"
         }
     }
 

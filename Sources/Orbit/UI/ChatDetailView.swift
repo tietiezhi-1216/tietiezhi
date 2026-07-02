@@ -4,6 +4,7 @@
 
 import SwiftUI
 import AppKit
+import AVKit
 
 struct ChatDetailView: View {
     @EnvironmentObject var chat: ChatStore
@@ -312,7 +313,11 @@ private struct ToolResultRow: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 ForEach(message.attachments ?? [], id: \.self) { path in
-                    if let img = NSImage(contentsOfFile: path) {
+                    if ["mp4", "mov", "webm", "m4v"].contains(URL(fileURLWithPath: path).pathExtension.lowercased()) {
+                        VideoPlayer(player: AVPlayer(url: URL(fileURLWithPath: path)))
+                            .frame(width: 360, height: 220)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else if let img = NSImage(contentsOfFile: path) {
                         Image(nsImage: img)
                             .resizable().aspectRatio(contentMode: .fit)
                             .frame(maxWidth: 360, maxHeight: 360)

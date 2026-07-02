@@ -77,3 +77,42 @@ struct GenerateImageTool: OrbitTool {
         return ToolOutput(content: json, attachments: paths)
     }
 }
+
+// MARK: - Built-in skill: generate_video
+
+/// Lets the chat model produce a short video with the user's configured video
+/// model. Generation is async upstream (tens of seconds to minutes); the tool
+/// awaits completion and returns a file reference.
+struct GenerateVideoTool: OrbitTool {
+    let settings: SettingsStore
+    let generation: GenerationStore
+
+    var spec: ToolSpec {
+        ToolSpec(
+            name: "generate_video",
+            description: "根据文字提示生成一段短视频。当用户要求生成视频、动画片段时调用。生成耗时较长（几十秒到几分钟），结果会直接展示给用户。",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "prompt": ["type": "string", "description": "视频内容的详细描述"],
+                    "size": ["type": "string", "description": "分辨率，如 1280x720、720x1280"],
+                ] as [String: Any],
+                "required": ["prompt"],
+            ])
+    }
+
+    @MainActor
+    func run(_ arguments: [String: Any]) async throws -> ToolOutput {
+        guard let prompt = arguments["prompt"] as? String, !prompt.isEmpty else {
+            throw OrbitError("generate_video 缺少 prompt 参数。")
+        }
+        guard let model = settings.settings.videoModel ?? settings.settings.videoModels.first else {
+            throw OrbitError("尚未配置视频模型：请在「渠道商」添加支持视频的渠道并加载模型。")
+        }
+        var params: [String: String] = [:]
+        if let size = arguments["size"] as? String { params["size"] = size }
+        let item = try await generation.generateVideoNow(model: model, prompt: prompt, params: params)
+        return ToolOutput(content: "{\"status\":\"ok\",\"note\":\"视频已生成并展示给用户\"}",
+                          attachments: [item.fileURL.path])
+    }
+}

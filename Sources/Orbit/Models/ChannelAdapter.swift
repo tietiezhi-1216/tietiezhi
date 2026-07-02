@@ -118,7 +118,7 @@ extension ChannelAdapter {
         id: "openai", displayName: "OpenAI", symbol: "sparkles",
         defaultBaseURL: "https://api.openai.com/v1", baseURLEditable: false,
         auth: .bearer,
-        wires: [.chat: .openAIChat, .asr: .openAITranscription, .image: .openAIImage],
+        wires: [.chat: .openAIChat, .asr: .openAITranscription, .image: .openAIImage, .video: .openAIVideo],
         modelSource: .remotePlusCatalog,
         catalog: [
             ModelCard("gpt-4o", name: "GPT-4o", abilities: multimodalTools, contextWindow: 128_000),
@@ -129,6 +129,8 @@ extension ChannelAdapter {
             ModelCard("whisper-1", name: "Whisper", capability: .asr),
             ModelCard("gpt-image-1", name: "GPT Image 1", capability: .image),
             ModelCard("dall-e-3", name: "DALL·E 3", capability: .image),
+            ModelCard("sora-2", name: "Sora 2", capability: .video),
+            ModelCard("sora-2-pro", name: "Sora 2 Pro", capability: .video),
         ],
         isCustom: false)
 
@@ -151,11 +153,13 @@ extension ChannelAdapter {
         id: "siliconflow", displayName: "SiliconFlow 硅基流动", symbol: "flowchart",
         defaultBaseURL: "https://api.siliconflow.cn/v1", baseURLEditable: false,
         auth: .bearer,
-        wires: [.chat: .openAIChat, .asr: .openAITranscription, .image: .siliconflowImage],
+        wires: [.chat: .openAIChat, .asr: .openAITranscription,
+                .image: .siliconflowImage, .video: .siliconflowVideo],
         modelSource: .remote,
         catalog: [
             ModelCard("Kwai-Kolors/Kolors", name: "Kolors", capability: .image),
             ModelCard("black-forest-labs/FLUX.1-schnell", name: "FLUX.1 schnell", capability: .image),
+            ModelCard("Wan-AI/Wan2.2-T2V-A14B", name: "Wan2.2 T2V", capability: .video),
         ],
         isCustom: false)
 
@@ -246,7 +250,8 @@ extension ChannelAdapter {
         if s.contains("tts") || s.contains("-speech") || s.hasSuffix("speech") { return .tts }
         if s.contains("embed") || s.contains("bge-") || s.contains("gte-") { return .embedding }
         if s.contains("rerank") { return .rerank }
-        if s.contains("video") || s.contains("sora") || s.contains("kling") || s.contains("cogvideo") || s.contains("wan-") { return .video }
+        if s.contains("video") || s.contains("sora") || s.contains("kling") || s.contains("cogvideo")
+            || s.contains("wan-") || s.contains("t2v") || s.contains("i2v") { return .video }
         if s.contains("image") || s.contains("dall-e") || s.contains("stable-diffusion") || s.contains("sdxl")
             || s.contains("sd3") || s.contains("flux") || s.contains("kolors") || s.contains("midjourney") { return .image }
         return .chat

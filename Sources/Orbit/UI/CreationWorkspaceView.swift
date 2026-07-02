@@ -5,6 +5,7 @@
 
 import SwiftUI
 import AppKit
+import AVKit
 
 struct CreationWorkspaceView: View {
     let openSettings: () -> Void
@@ -17,7 +18,7 @@ struct CreationWorkspaceView: View {
             Group {
                 switch app.creationTab {
                 case .image: ImageStudioView()
-                case .video: videoPlaceholder
+                case .video: VideoStudioView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -45,15 +46,6 @@ struct CreationWorkspaceView: View {
         }
     }
 
-    private var videoPlaceholder: some View {
-        PageScaffold(title: "创作 · 视频") {
-            VStack(spacing: 10) {
-                Image(systemName: "film").font(.system(size: 40)).foregroundStyle(.secondary)
-                Text("视频生成将在下一阶段接入。").foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
 }
 
 private struct RailButton: View {
@@ -197,6 +189,149 @@ private struct ImageStudioView: View {
                     }
                     .padding(.vertical, 4)
                 }
+            }
+        }
+    }
+}
+
+// MARK: - Video studio
+
+private struct VideoStudioView: View {
+    @EnvironmentObject var store: SettingsStore
+    @EnvironmentObject var generation: GenerationStore
+
+    @State private var prompt = ""
+    @State private var size = "1280x720"
+    @State private var seconds = "4"
+
+    private var models: [ModelConfig] { store.settings.videoModels }
+    private var selected: ModelConfig? { store.settings.videoModel ?? models.first }
+    private var isSora: Bool {
+        selected.flatMap { store.settings.service(for: $0)?.wire } == .openAIVideo
+    }
+    private var sizes: [String] { ["1280x720", "720x1280", "960x960", "1024x1792", "1792x1024"] }
+
+    var body: some View {
+        PageScaffold(title: "创作 · 视频", maxWidth: 900) {
+            if models.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "film").font(.system(size: 40)).foregroundStyle(.secondary)
+                    Text("还没有视频模型。去「渠道商」添加支持视频的渠道商（OpenAI Sora / SiliconFlow），加载模型后回来。")
+                        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        .frame(maxWidth: 420)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                VStack(alignment: .leading, spacing: 16) {
+                    controls
+                    if let err = generation.lastError {
+                        Label(err, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange).lineLimit(3)
+                    }
+                    gallery
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Picker("模型", selection: Binding(
+                    get: { store.settings.videoModelID ?? models.first?.id },
+                    set: { store.settings.videoModelID = $0 }
+                )) {
+                    ForEach(models) { Text(store.settings.displayLabel(for: $0)).tag(Optional($0.id)) }
+                }
+                .frame(maxWidth: 340)
+
+                Picker("尺寸", selection: $size) {
+                    ForEach(sizes, id: \.self) { Text($0).tag($0) }
+                }
+                .frame(width: 150)
+
+                if isSora {
+                    Picker("时长", selection: $seconds) {
+                        Text("4 秒").tag("4"); Text("8 秒").tag("8"); Text("12 秒").tag("12")
+                    }
+                    .frame(width: 120)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("提示词").font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $prompt)
+                    .font(.body).frame(height: 90)
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.quaternary))
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    guard let model = selected else { return }
+                    generation.generateVideo(model: model, prompt: prompt,
+                                             params: ["size": size, "seconds": seconds])
+                } label: {
+                    Label(generation.isGenerating ? "生成中…" : "生成视频", systemImage: "sparkles")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(generation.isGenerating
+                          || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || selected == nil)
+
+                if generation.isGenerating {
+                    if let p = generation.videoProgress {
+                        ProgressView(value: p).frame(width: 140)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(generation.videoStatus ?? "").font(.caption).foregroundStyle(.secondary)
+                    Button("取消") { generation.cancel() }.controlSize(.small)
+                }
+                Spacer()
+            }
+            Text("视频为异步生成，通常需要几十秒到几分钟；生成期间可切到其它页面。")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    private var gallery: some View {
+        let videos = generation.items(kind: "video")
+        return Group {
+            if videos.isEmpty {
+                Text("生成的视频会显示在这里，并自动保存。").font(.caption).foregroundStyle(.tertiary)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(videos) { item in
+                            VideoCard(item: item) { generation.remove(id: item.id) }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+}
+
+private struct VideoCard: View {
+    let item: GeneratedItem
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            VideoPlayer(player: AVPlayer(url: item.fileURL))
+                .frame(height: 280)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            HStack {
+                Text(item.prompt).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                Spacer()
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([item.fileURL])
+                } label: { Image(systemName: "folder") }
+                    .buttonStyle(.borderless).help("在访达中显示")
+                Button(role: .destructive, action: onDelete) { Image(systemName: "trash") }
+                    .buttonStyle(.borderless)
             }
         }
     }

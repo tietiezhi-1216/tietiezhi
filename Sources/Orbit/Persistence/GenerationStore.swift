@@ -26,6 +26,9 @@ final class GenerationStore: ObservableObject {
     @Published private(set) var items: [GeneratedItem] = []
     @Published var isGenerating = false
     @Published var lastError: String?
+    /// Live status for the long-running video job ("生成中…", progress 0-1).
+    @Published var videoStatus: String?
+    @Published var videoProgress: Double?
 
     private let settings: SettingsStore
     private let usage: UsageStore
@@ -96,10 +99,60 @@ final class GenerationStore: ObservableObject {
         }
     }
 
+    // MARK: - Video generation (async submit → poll → download)
+
+    /// Awaitable core, shared by the 创作 panel and the `generate_video` skill.
+    func generateVideoNow(model: ModelConfig, prompt: String, params: [String: String]) async throws -> GeneratedItem {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw OrbitError("提示词为空。") }
+        guard let resolved = settings.settings.resolve(model) else {
+            throw OrbitError("无法解析所选视频模型。")
+        }
+        let label = settings.settings.displayLabel(for: model)
+        let asset = try await VideoClient.generate(resolved, prompt: trimmed, params: params) { [weak self] status, progress in
+            self?.videoStatus = status
+            self?.videoProgress = progress
+        }
+        let id = UUID().uuidString
+        let name = "\(id).\(asset.ext)"
+        try? asset.data.write(to: Self.directory.appendingPathComponent(name), options: .atomic)
+        let item = GeneratedItem(id: id, date: Date(), kind: "video", prompt: trimmed,
+                                 modelLabel: label, fileName: name, revisedPrompt: nil)
+        items.insert(item, at: 0)
+        usage.add(settings.settings.usageRecord(for: model, source: "video", date: Date()))
+        save()
+        return item
+    }
+
+    /// Fire-and-forget wrapper driving the panel's @Published state.
+    func generateVideo(model: ModelConfig, prompt: String, params: [String: String]) {
+        guard !isGenerating else { return }
+        isGenerating = true
+        lastError = nil
+        videoStatus = "准备中…"
+        videoProgress = nil
+        task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.generateVideoNow(model: model, prompt: prompt, params: params)
+            } catch {
+                if !Task.isCancelled && !(error is CancellationError) {
+                    self.lastError = error.localizedDescription
+                }
+            }
+            self.isGenerating = false
+            self.videoStatus = nil
+            self.videoProgress = nil
+            self.task = nil
+        }
+    }
+
     func cancel() {
         task?.cancel()
         task = nil
         isGenerating = false
+        videoStatus = nil
+        videoProgress = nil
     }
 
     func remove(id: String) {

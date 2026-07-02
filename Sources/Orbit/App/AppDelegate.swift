@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         generationStore = GenerationStore(settings: store, usage: usageStore)
         toolRegistry = ToolRegistry()
         toolRegistry.register(GenerateImageTool(settings: store, generation: generationStore))
+        toolRegistry.register(GenerateVideoTool(settings: store, generation: generationStore))
         chatStore = ChatStore(settings: store, usage: usageStore, tools: toolRegistry)
         mcpManager = MCPManager(store: store, registry: toolRegistry)
         Task { @MainActor [mcpManager] in await mcpManager?.reconnectAll() }
