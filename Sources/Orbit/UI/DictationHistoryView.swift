@@ -9,6 +9,12 @@ import AppKit
 struct DictationHistoryView: View {
     @EnvironmentObject var history: DictationHistoryStore
 
+    /// How many rows to render at once. `Form` renders its rows eagerly (no
+    /// lazy loading), so with hundreds of retained entries showing them all at
+    /// once stutters. We window the list and reveal more on demand.
+    private static let pageSize = 25
+    @State private var visibleCount = DictationHistoryView.pageSize
+
     var body: some View {
         PageScaffold(title: "听写 · 历史") {
             Form {
@@ -17,12 +23,22 @@ struct DictationHistoryView: View {
                         Text("还没有听写记录。每次录音结束后会立即保存完整音频；识别和润色完成后会分别保存文本，保留 7 天。")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
-                        ForEach(history.entries) { entry in
+                        ForEach(Array(history.entries.prefix(visibleCount))) { entry in
                             HistoryRow(
                                 entry: entry,
                                 onCopy: copy,
                                 onDelete: { history.remove(id: entry.id) }
                             )
+                        }
+
+                        if history.entries.count > visibleCount {
+                            Button {
+                                visibleCount += Self.pageSize
+                            } label: {
+                                Label("加载更多（还有 \(history.entries.count - visibleCount) 条）",
+                                      systemImage: "chevron.down")
+                            }
+                            .buttonStyle(.borderless).controlSize(.small)
                         }
                     }
                 } header: {

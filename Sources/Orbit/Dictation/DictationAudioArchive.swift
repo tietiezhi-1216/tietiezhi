@@ -23,10 +23,20 @@ enum DictationAudioArchive {
     static let retentionDays = 7
     private static let manifestFileName = "manifest.json"
 
+    /// All disk I/O runs here, serially and off the main thread. Serial ordering
+    /// guarantees a session's directory exists before its transcript/polish writes
+    /// land, and keeps the dictation hot path (submit → record) free of blocking
+    /// file work — the old synchronous encode + full-directory prune stuttered the
+    /// UI on every utterance as history grew.
+    private static let ioQueue = DispatchQueue(label: "com.orbit.dictation.archive", qos: .utility)
+
     static var directory: URL {
         SettingsStore.configDirectory().appendingPathComponent("dictations", isDirectory: true)
     }
 
+    /// Returns the (deterministic) artifact paths immediately; the actual audio +
+    /// manifest write happens asynchronously on `ioQueue`. Paths are derived from
+    /// the session name, so callers can reference them before the bytes land.
     static func createSession(id: String,
                               date: Date,
                               samples: [Int16],
@@ -35,88 +45,97 @@ enum DictationAudioArchive {
                               frontApp: String?,
                               polish: Bool) -> DictationArtifactPaths? {
         guard !samples.isEmpty else { return nil }
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let session = "\(timestamp(date))-seq\(seq)-\(id)"
-            let dir = directory.appendingPathComponent(session, isDirectory: true)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
-            let paths = DictationArtifactPaths(
-                directoryPath: dir.path,
-                audioPath: dir.appendingPathComponent("audio.wav").path,
-                transcriptPath: dir.appendingPathComponent("transcript.txt").path,
-                polishedPath: dir.appendingPathComponent("polished.txt").path,
-                manifestPath: dir.appendingPathComponent(manifestFileName).path
-            )
-            try WAV.encode(samples, rate: rate).write(to: paths.audioURL, options: .atomic)
-            writeManifest(
-                paths: paths,
-                date: date,
-                seq: seq,
-                rate: rate,
-                sampleCount: samples.count,
-                frontApp: frontApp,
-                polishRequested: polish,
-                status: "recorded"
-            )
-            pruneExpired()
-            return paths
-        } catch {
-            NSLog("[dictation] failed to archive recording: \(error.localizedDescription)")
-            return nil
+        let session = "\(timestamp(date))-seq\(seq)-\(id)"
+        let dir = directory.appendingPathComponent(session, isDirectory: true)
+        let paths = DictationArtifactPaths(
+            directoryPath: dir.path,
+            audioPath: dir.appendingPathComponent("audio.wav").path,
+            transcriptPath: dir.appendingPathComponent("transcript.txt").path,
+            polishedPath: dir.appendingPathComponent("polished.txt").path,
+            manifestPath: dir.appendingPathComponent(manifestFileName).path
+        )
+        ioQueue.async {
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try WAV.encode(samples, rate: rate).write(to: paths.audioURL, options: .atomic)
+                writeManifest(
+                    paths: paths,
+                    date: date,
+                    seq: seq,
+                    rate: rate,
+                    sampleCount: samples.count,
+                    frontApp: frontApp,
+                    polishRequested: polish,
+                    status: "recorded"
+                )
+            } catch {
+                NSLog("[dictation] failed to archive recording: \(error.localizedDescription)")
+            }
         }
+        return paths
     }
 
     static func saveTranscript(_ transcript: String, paths: DictationArtifactPaths?) {
         guard let paths else { return }
-        do {
-            try transcript.write(to: paths.transcriptURL, atomically: true, encoding: .utf8)
-            patchManifest(paths: paths, status: "transcribed")
-        } catch {
-            NSLog("[dictation] failed to save transcript: \(error.localizedDescription)")
+        ioQueue.async {
+            do {
+                try transcript.write(to: paths.transcriptURL, atomically: true, encoding: .utf8)
+                patchManifest(paths: paths, status: "transcribed")
+            } catch {
+                NSLog("[dictation] failed to save transcript: \(error.localizedDescription)")
+            }
         }
     }
 
     static func savePolished(_ polished: String, paths: DictationArtifactPaths?) {
         guard let paths else { return }
-        do {
-            try polished.write(to: paths.polishedURL, atomically: true, encoding: .utf8)
-            patchManifest(paths: paths, status: "polished")
-        } catch {
-            NSLog("[dictation] failed to save polished text: \(error.localizedDescription)")
+        ioQueue.async {
+            do {
+                try polished.write(to: paths.polishedURL, atomically: true, encoding: .utf8)
+                patchManifest(paths: paths, status: "polished")
+            } catch {
+                NSLog("[dictation] failed to save polished text: \(error.localizedDescription)")
+            }
         }
     }
 
     static func saveFailure(_ failure: String, paths: DictationArtifactPaths?) {
         guard let paths else { return }
-        patchManifest(paths: paths, status: "failed", failure: failure)
+        ioQueue.async {
+            patchManifest(paths: paths, status: "failed", failure: failure)
+        }
     }
 
     static func delete(_ paths: DictationArtifactPaths?) {
         guard let paths else { return }
-        try? FileManager.default.removeItem(at: paths.directoryURL)
+        let dir = paths.directoryURL
+        ioQueue.async { try? FileManager.default.removeItem(at: dir) }
     }
 
     static func delete(directoryPath: String?) {
         guard let directoryPath, !directoryPath.isEmpty else { return }
-        try? FileManager.default.removeItem(at: URL(fileURLWithPath: directoryPath))
+        ioQueue.async { try? FileManager.default.removeItem(at: URL(fileURLWithPath: directoryPath)) }
     }
 
     static func clearAll() {
-        try? FileManager.default.removeItem(at: directory)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        ioQueue.async {
+            try? FileManager.default.removeItem(at: directory)
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
     }
 
     static func pruneExpired(now: Date = Date()) {
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
         let cutoff = now.addingTimeInterval(-Double(retentionDays) * 24 * 60 * 60)
-        for url in urls where isExpired(url, cutoff: cutoff) {
-            try? FileManager.default.removeItem(at: url)
+        ioQueue.async {
+            guard let urls = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { return }
+
+            for url in urls where isExpired(url, cutoff: cutoff) {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 
@@ -179,7 +198,14 @@ enum DictationAudioArchive {
         return modified < cutoff
     }
 
+    /// Derive the creation time from the session folder name (`yyyyMMdd-HHmmss-…`)
+    /// rather than opening each manifest — pruning must not read N files just to
+    /// decide what to delete. Falls back to the manifest's `createdAt` for any
+    /// legacy folder whose name doesn't parse.
     private static func createdAt(from directory: URL) -> Date? {
+        let stamp = String(directory.lastPathComponent.prefix(15))  // yyyyMMdd-HHmmss
+        if let date = sessionNameFormatter.date(from: stamp) { return date }
+
         let manifestURL = directory.appendingPathComponent(manifestFileName)
         guard let data = try? Data(contentsOf: manifestURL),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -188,10 +214,14 @@ enum DictationAudioArchive {
         return ISO8601DateFormatter().date(from: created)
     }
 
-    private static func timestamp(_ date: Date) -> String {
+    private static let sessionNameFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private static func timestamp(_ date: Date) -> String {
+        sessionNameFormatter.string(from: date)
     }
 }

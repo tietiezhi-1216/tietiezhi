@@ -84,10 +84,12 @@ final class DictationHistoryStore: ObservableObject {
         }
     }
 
-    /// Record a new result at the top of the list.
+    /// Record a new result at the top of the list. Kept cheap for the dictation
+    /// hot path: only the in-memory list is trimmed here — no filesystem scan.
+    /// Expired disk artifacts are swept by the launch/hourly `pruneExpired()`.
     func add(_ entry: DictationEntry) {
         entries.insert(entry, at: 0)
-        pruneExpired(saveAfter: false)
+        dropExpiredEntries()
         save()
     }
 
@@ -106,23 +108,23 @@ final class DictationHistoryStore: ObservableObject {
         save()
     }
 
+    /// Full sweep: drop expired entries, delete their retained artifacts, and let
+    /// the archive prune any orphaned session folders. Runs on launch, hourly, and
+    /// from the “清理过期” button — never on the per-utterance path.
     func pruneExpired() {
-        pruneExpired(saveAfter: true)
-    }
-
-    private func pruneExpired(saveAfter: Bool) {
         let cutoff = Date().addingTimeInterval(-Double(DictationAudioArchive.retentionDays) * 24 * 60 * 60)
-        let expired = entries.filter { $0.date < cutoff }
-        guard !expired.isEmpty else {
-            DictationAudioArchive.pruneExpired()
-            return
-        }
-        for entry in expired {
+        for entry in entries where entry.date < cutoff {
             DictationAudioArchive.delete(entry.artifacts)
         }
         entries.removeAll { $0.date < cutoff }
         DictationAudioArchive.pruneExpired()
-        if saveAfter { save() }
+        save()
+    }
+
+    /// In-memory only: trim entries past the retention window without touching disk.
+    private func dropExpiredEntries() {
+        let cutoff = Date().addingTimeInterval(-Double(DictationAudioArchive.retentionDays) * 24 * 60 * 60)
+        entries.removeAll { $0.date < cutoff }
     }
 
     // MARK: - Persistence
