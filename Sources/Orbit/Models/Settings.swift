@@ -428,6 +428,48 @@ struct ModelConfig: Identifiable, Codable, Hashable {
     }
 }
 
+// MARK: - MCP server
+
+/// A user-configured external MCP server. `stdio` servers are spawned as a
+/// subprocess from a shell command line (so `npx …` / `uvx …` work); `http`
+/// servers are reached at a URL (Streamable HTTP). Tools they expose join the
+/// same ToolRegistry as built-in skills.
+struct MCPServerConfig: Identifiable, Codable, Hashable {
+    var id: String
+    var name: String
+    /// "stdio" or "http".
+    var kind: String
+    /// Full command line for stdio servers, e.g. `npx -y @modelcontextprotocol/server-filesystem ~/Documents`.
+    var command: String
+    /// Endpoint URL for http servers.
+    var url: String
+    var enabled: Bool
+
+    init(id: String = UUID().uuidString,
+         name: String = "",
+         kind: String = "stdio",
+         command: String = "",
+         url: String = "",
+         enabled: Bool = true) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.command = command
+        self.url = url
+        self.enabled = enabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "MCP"
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "stdio"
+        command = try c.decodeIfPresent(String.self, forKey: .command) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+    }
+}
+
 // MARK: - Prompt template
 
 /// A reusable polish prompt. The placeholder (default `{{transcript}}`) marks
@@ -456,6 +498,8 @@ struct Settings: Codable {
     var llmModelID: String?
     var imageModelID: String? = nil
     var videoModelID: String? = nil
+    /// External MCP servers whose tools the chat model may call.
+    var mcpServers: [MCPServerConfig] = []
     var activeTemplateID: String?
     var llmPolishEnabled: Bool
     var autoInsert: Bool
@@ -550,6 +594,7 @@ struct Settings: Codable {
         llmModelID = try c.decodeIfPresent(String.self, forKey: .llmModelID)
         imageModelID = try c.decodeIfPresent(String.self, forKey: .imageModelID)
         videoModelID = try c.decodeIfPresent(String.self, forKey: .videoModelID)
+        mcpServers = (try? c.decode([MCPServerConfig].self, forKey: .mcpServers)) ?? []
         activeTemplateID = try c.decodeIfPresent(String.self, forKey: .activeTemplateID)
         llmPolishEnabled = try c.decodeIfPresent(Bool.self, forKey: .llmPolishEnabled) ?? d.llmPolishEnabled
         autoInsert = try c.decodeIfPresent(Bool.self, forKey: .autoInsert) ?? d.autoInsert

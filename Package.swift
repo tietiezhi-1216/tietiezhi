@@ -4,9 +4,15 @@ import PackageDescription
 let package = Package(
     name: "Orbit",
     platforms: [.macOS(.v14)],
+    dependencies: [
+        // Official MCP client SDK (stdio + HTTP transports). The dependency
+        // builds in its own (Swift 6) language mode; our target stays v5.
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
+    ],
     targets: [
         .executableTarget(
             name: "Orbit",
+            dependencies: [.product(name: "MCP", package: "swift-sdk")],
             path: "Sources/Orbit"
         )
     ],

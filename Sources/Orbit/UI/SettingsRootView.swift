@@ -23,6 +23,7 @@ struct SettingsRootView: View {
     private var content: some View {
         switch app.settingsSection {
         case .providers:        ProvidersView()
+        case .mcp:              MCPServersView()
         case .usage:            UsageStatsView()
         case .dictationBasic:   DictationBasicView()
         case .dictationModes:   DictationModesView()

@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var usageStore: UsageStore!
     private var generationStore: GenerationStore!
     private var toolRegistry: ToolRegistry!
+    private var mcpManager: MCPManager!
 
     private var statusItem: NSStatusItem!
     private var chatWindow: NSWindow?
@@ -37,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toolRegistry = ToolRegistry()
         toolRegistry.register(GenerateImageTool(settings: store, generation: generationStore))
         chatStore = ChatStore(settings: store, usage: usageStore, tools: toolRegistry)
+        mcpManager = MCPManager(store: store, registry: toolRegistry)
+        Task { @MainActor [mcpManager] in await mcpManager?.reconnectAll() }
         historyStore = DictationHistoryStore()
         dictationQueue = DictationQueue(store: store, history: historyStore, usage: usageStore)
         recordingState = RecordingState()
@@ -245,6 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .environmentObject(historyStore)
                 .environmentObject(usageStore)
                 .environmentObject(generationStore)
+                .environmentObject(mcpManager)
             chatWindow = chromedWindow(title: "Orbit", size: NSSize(width: 960, height: 680),
                                        autosaveName: "OrbitMainWindow", content: root)
         }

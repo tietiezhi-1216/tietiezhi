@@ -161,6 +161,21 @@ final class SettingsStore: ObservableObject {
         mutate(&settings.models[i])
     }
 
+    // MARK: MCP servers
+
+    func addMCPServer(_ server: MCPServerConfig) {
+        settings.mcpServers.append(server)
+    }
+
+    func removeMCPServer(id: String) {
+        settings.mcpServers.removeAll { $0.id == id }
+    }
+
+    func updateMCPServer(id: String, _ mutate: (inout MCPServerConfig) -> Void) {
+        guard let i = settings.mcpServers.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&settings.mcpServers[i])
+    }
+
     func addTemplate(_ template: PromptTemplate) {
         settings.templates.append(template)
     }
