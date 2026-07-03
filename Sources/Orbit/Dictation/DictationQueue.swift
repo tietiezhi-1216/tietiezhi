@@ -68,7 +68,10 @@ final class DictationJob: ObservableObject, Identifiable {
     enum Phase: Equatable { case transcribing, polishing, done, failed }
 
     @Published var phase: Phase = .transcribing
-    @Published var statusLabel: String = "识别中"
+    @Published var statusLabel: String = "识别中…"
+    /// The stage word the ticker builds `statusLabel` from ("识别中" /
+    /// "识别中 2/3" / "润色中"); the ticker appends elapsed time + slow hints.
+    var statusBase: String = "识别中"
     @Published var streamText: String = ""
     @Published var result: String = ""
     @Published var failure: String?
@@ -162,7 +165,35 @@ final class DictationQueue: ObservableObject {
 
     // MARK: - Process (ASR → polish)
 
+    /// Live waiting feedback: compose the status label from the stage word plus
+    /// elapsed seconds, escalating to "slow" hints so a long wait never looks
+    /// frozen. Resets its clock whenever the phase flips (ASR → polish).
+    private func startStatusTicker(_ job: DictationJob) -> Task<Void, Never> {
+        Task { @MainActor in
+            var phaseStart = Date()
+            var lastPhase = job.phase
+            while !Task.isCancelled {
+                guard job.phase == .transcribing || job.phase == .polishing else { return }
+                if job.phase != lastPhase {
+                    lastPhase = job.phase
+                    phaseStart = Date()
+                }
+                let s = Int(Date().timeIntervalSince(phaseStart))
+                let base = job.statusBase
+                switch s {
+                case ..<3:   job.statusLabel = "\(base)…"
+                case ..<10:  job.statusLabel = "\(base) · \(s) 秒"
+                case ..<25:  job.statusLabel = "\(base) · \(s) 秒 · 服务响应较慢"
+                default:     job.statusLabel = "\(base) · \(s) 秒 · 仍在等待，按 esc 可取消"
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+    }
+
     private func process(_ job: DictationJob) async {
+        let ticker = startStatusTicker(job)
+        defer { ticker.cancel() }
         guard let asr = store.settings.asrModel,
               let resolved = store.settings.resolve(asr) else {
             job.failure = withAudioRecovery("识别模型缺失", job.artifacts)
@@ -178,7 +209,7 @@ final class DictationQueue: ObservableObject {
             ) { index, total in
                 await MainActor.run {
                     if total > 1 {
-                        job.statusLabel = "识别中 \(index)/\(total)"
+                        job.statusBase = "识别中 \(index)/\(total)"
                     }
                 }
             }.trimmed
@@ -200,7 +231,8 @@ final class DictationQueue: ObservableObject {
                let llm = store.settings.llmModel,
                let resolvedLLM = store.settings.resolve(llm) {
                 job.phase = .polishing
-                job.statusLabel = "润色中"
+                job.statusBase = "润色中"
+                job.statusLabel = "润色中…"
                 job.streamText = ""
                 let (system, user) = PromptComposer.compose(
                     settings: store.settings, transcript: transcript, frontApp: job.frontApp)

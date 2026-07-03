@@ -87,11 +87,15 @@ enum Transcriber {
         body.append("--\(boundary)--\r\n")
         req.httpBody = body
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp): (Data, URLResponse)
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw OrbitError(APIErrorHint.network(context: "语音识别", error))
+        }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else {
-            let text = String(data: data, encoding: .utf8) ?? ""
-            throw OrbitError("语音识别请求失败（\(code)）：\(text.prefix(300))")
+            throw OrbitError(APIErrorHint.message(context: "语音识别", status: code, body: data))
         }
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         return (json?["text"] as? String) ?? ""
@@ -136,11 +140,15 @@ enum Transcriber {
         model.authorize(&req)
         req.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp): (Data, URLResponse)
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw OrbitError(APIErrorHint.network(context: "语音识别", error))
+        }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else {
-            let text = String(data: data, encoding: .utf8) ?? ""
-            throw OrbitError("语音识别请求失败（\(code)）：\(text.prefix(300))")
+            throw OrbitError(APIErrorHint.message(context: "语音识别", status: code, body: data))
         }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         return chatTranscript(json).trimmed

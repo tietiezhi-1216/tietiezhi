@@ -82,11 +82,15 @@ enum LLM {
         req.httpBody = try JSONSerialization.data(withJSONObject:
             ChatClient.payload(model: model, messages: messages, stream: false, temperature: 0.3))
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp): (Data, URLResponse)
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw OrbitError(APIErrorHint.network(context: "润色", error))
+        }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else {
-            let text = String(data: data, encoding: .utf8) ?? ""
-            throw OrbitError("大模型请求失败（\(code)）：\(text.prefix(300))")
+            throw OrbitError(APIErrorHint.message(context: "润色", status: code, body: data))
         }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         return extractText(json, wire: model.wire).trimmed

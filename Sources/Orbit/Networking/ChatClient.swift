@@ -31,7 +31,12 @@ enum ChatClient {
         }
         let req = try buildRequest(model: model, messages: messages, tools: tools, stream: true)
 
-        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        let (bytes, resp): (URLSession.AsyncBytes, URLResponse)
+        do {
+            (bytes, resp) = try await URLSession.shared.bytes(for: req)
+        } catch {
+            throw OrbitError(APIErrorHint.network(context: "大模型", error))
+        }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else {
             var body = ""
@@ -39,7 +44,7 @@ enum ChatClient {
                 body += line
                 if body.count > 600 { break }
             }
-            throw OrbitError("大模型请求失败（\(code)）：\(body.prefix(300))")
+            throw OrbitError(APIErrorHint.message(context: "大模型", status: code, body: Data(body.utf8)))
         }
 
         // Each SSE event is a `data: {json}` line. Blank / keep-alive / `event:`

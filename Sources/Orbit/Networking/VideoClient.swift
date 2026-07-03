@@ -159,10 +159,15 @@ enum VideoClient {
     }
 
     private static func send(_ req: URLRequest) async throws -> [String: Any] {
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp): (Data, URLResponse)
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw OrbitError(APIErrorHint.network(context: "视频生成", error))
+        }
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200...299).contains(code) else {
-            throw OrbitError("视频请求失败（\(code)）：\((String(data: data, encoding: .utf8) ?? "").prefix(300))")
+            throw OrbitError(APIErrorHint.message(context: "视频生成", status: code, body: data))
         }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
         if let err = json["error"] as? [String: Any] {
