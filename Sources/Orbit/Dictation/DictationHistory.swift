@@ -70,13 +70,20 @@ extension DictationEntry {
 final class DictationHistoryStore: ObservableObject {
     @Published private(set) var entries: [DictationEntry] = []
 
-    private let fileURL: URL
+    private let db: SQLiteDB
     private var pruneTimer: Timer?
 
-    init() {
-        let dir = SettingsStore.configDirectory()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        fileURL = dir.appendingPathComponent("history.json")
+    private static let encoder: JSONEncoder = {
+        let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e
+    }()
+    private static let decoder: JSONDecoder = {
+        let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d
+    }()
+
+    init(db: SQLiteDB) {
+        self.db = db
+        db.exec("CREATE TABLE IF NOT EXISTS dictation_history (id TEXT PRIMARY KEY, date REAL, data BLOB);")
+        migrateFromJSONIfNeeded()
         load()
         pruneExpired()
         pruneTimer = Timer.scheduledTimer(withTimeInterval: 60 * 60, repeats: true) { [weak self] _ in
@@ -85,18 +92,18 @@ final class DictationHistoryStore: ObservableObject {
     }
 
     /// Record a new result at the top of the list. Kept cheap for the dictation
-    /// hot path: only the in-memory list is trimmed here — no filesystem scan.
-    /// Expired disk artifacts are swept by the launch/hourly `pruneExpired()`.
+    /// hot path: a single row INSERT + in-memory trim (no filesystem scan).
+    /// Expired disk artifacts + rows are swept by the launch/hourly `pruneExpired()`.
     func add(_ entry: DictationEntry) {
         entries.insert(entry, at: 0)
+        upsert(entry)
         dropExpiredEntries()
-        save()
     }
 
     func remove(id: String) {
         entries.first(where: { $0.id == id }).map { DictationAudioArchive.delete($0.artifacts) }
         entries.removeAll { $0.id == id }
-        save()
+        db.run("DELETE FROM dictation_history WHERE id = ?;", [.text(id)])
     }
 
     func clear() {
@@ -105,7 +112,7 @@ final class DictationHistoryStore: ObservableObject {
         }
         DictationAudioArchive.clearAll()
         entries.removeAll()
-        save()
+        db.run("DELETE FROM dictation_history;")
     }
 
     /// Full sweep: drop expired entries, delete their retained artifacts, and let
@@ -118,7 +125,7 @@ final class DictationHistoryStore: ObservableObject {
         }
         entries.removeAll { $0.date < cutoff }
         DictationAudioArchive.pruneExpired()
-        save()
+        db.run("DELETE FROM dictation_history WHERE date < ?;", [.double(cutoff.timeIntervalSince1970)])
     }
 
     /// In-memory only: trim entries past the retention window without touching disk.
@@ -127,26 +134,32 @@ final class DictationHistoryStore: ObservableObject {
         entries.removeAll { $0.date < cutoff }
     }
 
-    // MARK: - Persistence
+    // MARK: - Persistence (SQLite)
 
-    private func load() {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? decoder.decode([DictationEntry].self, from: data)
-        else { return }
-        entries = decoded
+    private func upsert(_ entry: DictationEntry) {
+        guard let data = try? Self.encoder.encode(entry) else { return }
+        db.run("""
+            INSERT INTO dictation_history (id, date, data) VALUES (?,?,?)
+            ON CONFLICT(id) DO UPDATE SET date=excluded.date, data=excluded.data;
+            """,
+            [.text(entry.id), .double(entry.date.timeIntervalSince1970), .blob(data)])
     }
 
-    private func save() {
-        let snapshot = entries
-        let url = fileURL
-        DispatchQueue.global(qos: .utility).async {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted]
-            guard let data = try? encoder.encode(snapshot) else { return }
-            try? data.write(to: url, options: .atomic)
+    private func load() {
+        var out: [DictationEntry] = []
+        db.query("SELECT data FROM dictation_history ORDER BY date DESC;") { row in
+            if let e = try? Self.decoder.decode(DictationEntry.self, from: row.blob(0)) { out.append(e) }
         }
+        entries = out
+    }
+
+    /// One-time import of the previous history.json into the fresh table.
+    private func migrateFromJSONIfNeeded() {
+        guard db.scalarInt("SELECT COUNT(*) FROM dictation_history;") == 0 else { return }
+        let url = SettingsStore.configDirectory().appendingPathComponent("history.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? Self.decoder.decode([DictationEntry].self, from: data) else { return }
+        db.transaction { for e in decoded { upsert(e) } }
+        try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("migrated"))
     }
 }

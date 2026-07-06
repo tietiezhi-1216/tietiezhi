@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var usageStore: UsageStore!
     private var generationStore: GenerationStore!
     private var toolRegistry: ToolRegistry!
+    private var skillStore: SkillStore!
+    private var db: SQLiteDB!
     private var mcpManager: MCPManager!
 
     private var statusItem: NSStatusItem!
@@ -27,23 +29,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var recordingState: RecordingState!
     private var resultStack: DictationStackController?
 
+    private var screenshotHistory: ScreenshotHistoryStore!
+    private var captureEngine: CaptureEngine!
+
     private var hotkeyStarted = false
     private var didCompleteOnboarding = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Consolidate storage into ~/.orbit (from the old Application Support
+        // location) before any store reads its files.
+        SettingsStore.migrateStorageLocationIfNeeded()
         store = SettingsStore()
+        // Shared SQLite for the growing datasets (conversations / usage / history).
+        db = SQLiteDB(path: SettingsStore.configDirectory().appendingPathComponent("orbit.db").path)
         controller = AppController(store: store)
-        usageStore = UsageStore()
+        usageStore = UsageStore(db: db)
         generationStore = GenerationStore(settings: store, usage: usageStore)
         toolRegistry = ToolRegistry()
         toolRegistry.register(GenerateImageTool(settings: store, generation: generationStore))
         toolRegistry.register(GenerateVideoTool(settings: store, generation: generationStore))
-        chatStore = ChatStore(settings: store, usage: usageStore, tools: toolRegistry)
+        // OpenCode-style local tools (file + command), gated by a directory
+        // whitelist + per-call confirmation (see AgentTools / ToolGuard).
+        let toolGuard = ToolGuard(settings: store)
+        toolRegistry.register(ReadFileTool(policy: toolGuard))
+        toolRegistry.register(ListDirTool(policy: toolGuard))
+        toolRegistry.register(FindFilesTool(policy: toolGuard))
+        toolRegistry.register(SearchFilesTool(policy: toolGuard))
+        toolRegistry.register(WriteFileTool(policy: toolGuard))
+        toolRegistry.register(EditFileTool(policy: toolGuard))
+        toolRegistry.register(RunCommandTool(policy: toolGuard))
+        skillStore = SkillStore()
+        chatStore = ChatStore(settings: store, usage: usageStore, tools: toolRegistry, skills: skillStore, db: db)
         mcpManager = MCPManager(store: store, registry: toolRegistry)
         Task { @MainActor [mcpManager] in await mcpManager?.reconnectAll() }
-        historyStore = DictationHistoryStore()
+        historyStore = DictationHistoryStore(db: db)
         dictationQueue = DictationQueue(store: store, history: historyStore, usage: usageStore)
         recordingState = RecordingState()
+
+        // Screenshot satellite: capture + annotate + pin (see Capture/).
+        screenshotHistory = ScreenshotHistoryStore(db: db)
+        captureEngine = CaptureEngine(store: store, history: screenshotHistory, usage: usageStore)
+        controller.onStartCapture = { [weak self] in self?.captureEngine.startRegionCapture() }
+        controller.onPinClipboard = { [weak self] in self?.captureEngine.pinClipboard() }
+        controller.onPinImage = { [weak self] image in self?.captureEngine.pin(image: image) }
 
         installMainMenu()
         setupStatusItem()
@@ -71,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         store.flush()
+        chatStore?.flush()
         hotkey?.stop()
     }
 
@@ -93,9 +122,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.onToggleDictation = { [weak engine] in engine?.toggleFromMenu() }
         controller.onBeginHotkeyCapture = { [weak monitor] in monitor?.beginCapture() }
         controller.onCancelHotkeyCapture = { [weak monitor] in monitor?.cancelCapture() }
+        controller.onSuspendShortcuts = { [weak monitor] in monitor?.suspendShortcutMatching() }
+        controller.onResumeShortcuts = { [weak monitor] in monitor?.resumeShortcutMatching() }
 
         monitor.onCaptured = { [weak controller] code in
             controller?.finishHotkeyCapture(keycode: code)
+        }
+        // A matched shortcut chord runs its bound action, regardless of focus.
+        // The monitor dispatches this back on the main thread.
+        monitor.onShortcut = { shortcut in ShortcutRunner.run(shortcut) }
+        // Built-in feature chords: 区域截图 / 剪贴板贴图.
+        monitor.onFeatureChord = { [weak self] feature in
+            switch feature {
+            case "capture": self?.captureEngine.startRegionCapture()
+            case "pin":     self?.captureEngine.pinClipboard()
+            default:        break
+            }
         }
         // The gesture (hold vs double-tap) is resolved in the engine from raw
         // down/up transitions.
@@ -198,6 +240,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "开始 / 停止听写",
                      action: #selector(toggleDictation(_:)), keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "区域截图（\(store.settings.capture.captureChord.display)）",
+                     action: #selector(startCapture(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "贴图：剪贴板（\(store.settings.capture.pinChord.display)）",
+                     action: #selector(pinClipboard(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "关闭所有贴图", action: #selector(closeAllPins(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.addItem(withTitle: "退出 Orbit", action: #selector(quit(_:)), keyEquivalent: "q")
         for item in menu.items { item.target = self }
         statusItem.menu = menu
@@ -208,6 +256,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showChat()
     }
     @objc private func toggleDictation(_ sender: Any?) { controller.toggleDictation() }
+    /// Small delay so the status-bar menu has faded before the screen freezes.
+    @objc private func startCapture(_ sender: Any?) { controller.startCapture() }
+    @objc private func pinClipboard(_ sender: Any?) { captureEngine.pinClipboard() }
+    @objc private func closeAllPins(_ sender: Any?) { captureEngine.closeAllPins() }
     @objc private func quit(_ sender: Any?) { NSApp.terminate(nil) }
     @objc private func checkForUpdates(_ sender: Any?) {
         showChat()
@@ -251,6 +303,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .environmentObject(usageStore)
                 .environmentObject(generationStore)
                 .environmentObject(mcpManager)
+                .environmentObject(toolRegistry)
+                .environmentObject(skillStore)
+                .environmentObject(screenshotHistory)
             chatWindow = chromedWindow(title: "Orbit", size: NSSize(width: 960, height: 680),
                                        autosaveName: "OrbitMainWindow", content: root)
         }

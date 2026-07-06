@@ -20,6 +20,13 @@ final class HotkeyMonitor {
     var onHotkeyUp: (() -> Void)?
     /// Fires when Esc is pressed, used to dismiss/cancel the dictation overlay.
     var onEscape: (() -> Void)?
+    /// Fires (on the main thread) when a bound shortcut chord matches. The matched
+    /// event is swallowed so the focused app never sees it.
+    var onShortcut: ((ActionShortcut) -> Void)?
+    /// Fires (on the main thread) with the feature id when a BUILT-IN feature
+    /// chord matches (screenshot / pin — see `setFeatureChords`). Swallowed
+    /// like user shortcuts.
+    var onFeatureChord: ((String) -> Void)?
     /// Reports (on the main thread) whether the global event tap actually
     /// installed. `false` means Input Monitoring isn't effective yet — typically
     /// the grant only takes hold after a relaunch.
@@ -29,20 +36,86 @@ final class HotkeyMonitor {
     private var hotkey: String
     private var pressed = Set<Int64>()
 
+    /// Shortcut state shared with the tap thread — guarded by `shortcutsLock`
+    /// since it's written from the main thread (Combine) and read on the tap.
+    private let shortcutsLock = NSLock()
+    private var shortcuts: [ActionShortcut] = []
+    private var featureChords: [(id: String, keyCode: Int, modifiers: KeyModifiers)] = []
+    private var shortcutsSuspended = false
+
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var thread: Thread?
     private var cancellable: AnyCancellable?
+    private var shortcutsCancellable: AnyCancellable?
+    private var captureCancellable: AnyCancellable?
 
     init(store: SettingsStore) {
         hotkey = store.settings.hotkey
+        setShortcuts(store.settings.shortcuts)
+        setCaptureChords(store.settings.capture)
         cancellable = store.hotkeyDidChange.sink { [weak self] code in
             self?.hotkey = code
         }
+        // Re-read the shortcut list whenever it changes (deduped so unrelated
+        // settings edits don't churn the tap thread's snapshot).
+        shortcutsCancellable = store.$settings
+            .map(\.shortcuts)
+            .removeDuplicates()
+            .sink { [weak self] list in self?.setShortcuts(list) }
+        captureCancellable = store.$settings
+            .map(\.capture)
+            .removeDuplicates()
+            .sink { [weak self] capture in self?.setCaptureChords(capture) }
     }
 
     func beginCapture() { capturing = true }
     func cancelCapture() { capturing = false }
+
+    /// Replace the matched-shortcut snapshot (only valid, enabled bindings).
+    func setShortcuts(_ list: [ActionShortcut]) {
+        shortcutsLock.lock()
+        shortcuts = list.filter { $0.enabled && $0.isValid }
+        shortcutsLock.unlock()
+    }
+
+    /// Replace the built-in feature chords (screenshot / pin) from settings.
+    func setCaptureChords(_ capture: CaptureSettings) {
+        shortcutsLock.lock()
+        featureChords = [
+            ("capture", capture.captureChord.keyCode, capture.captureChord.modifiers),
+            ("pin", capture.pinChord.keyCode, capture.pinChord.modifiers),
+        ].filter { !$0.2.isEmpty }
+        shortcutsLock.unlock()
+    }
+
+    /// Pause / resume chord matching — used while the settings recorder is
+    /// listening, so re-pressing an already-bound chord reaches the recorder
+    /// (and doesn't fire its action) instead of being swallowed here.
+    func suspendShortcutMatching() {
+        shortcutsLock.lock(); shortcutsSuspended = true; shortcutsLock.unlock()
+    }
+    func resumeShortcutMatching() {
+        shortcutsLock.lock(); shortcutsSuspended = false; shortcutsLock.unlock()
+    }
+
+    /// The bound shortcut matching this key event, if any (thread-safe).
+    private func matchedShortcut(code: Int64, flags: CGEventFlags) -> ActionShortcut? {
+        let mods = KeyModifiers(cgFlags: flags)
+        guard !mods.isEmpty else { return nil }
+        shortcutsLock.lock(); defer { shortcutsLock.unlock() }
+        guard !shortcutsSuspended else { return nil }
+        return shortcuts.first { $0.keyCode == Int(code) && $0.modifiers == mods }
+    }
+
+    /// The built-in feature chord matching this key event, if any (thread-safe).
+    private func matchedFeature(code: Int64, flags: CGEventFlags) -> String? {
+        let mods = KeyModifiers(cgFlags: flags)
+        guard !mods.isEmpty else { return nil }
+        shortcutsLock.lock(); defer { shortcutsLock.unlock() }
+        guard !shortcutsSuspended else { return nil }
+        return featureChords.first { $0.keyCode == Int(code) && $0.modifiers == mods }?.id
+    }
 
     func start() {
         guard thread == nil else { return }   // idempotent — never stack taps
@@ -94,17 +167,34 @@ final class HotkeyMonitor {
 
     // MARK: - Event handling (called on the tap thread)
 
-    fileprivate func handle(type: CGEventType, event: CGEvent) {
+    /// Returns `true` when the event should be swallowed (a matched shortcut).
+    fileprivate func handle(type: CGEventType, event: CGEvent) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            return
+            return false
         }
         let code = event.getIntegerValueField(.keyboardEventKeycode)
         switch type {
         case .keyDown:
-            // `insert` is false on auto-repeat (already held) — so a held key
-            // fires `down` exactly once, matching how modifiers behave.
-            if pressed.insert(code).inserted { down(code) }
+            // `insert` is false on auto-repeat (already held).
+            let firstPress = pressed.insert(code).inserted
+            // A bound chord wins over dictation: fire once, swallow press+repeats
+            // so the focused app never receives the keystroke.
+            if !capturing, let shortcut = matchedShortcut(code: code, flags: event.flags) {
+                if firstPress {
+                    DispatchQueue.main.async { [weak self] in self?.onShortcut?(shortcut) }
+                }
+                return true
+            }
+            // Built-in feature chords (screenshot / pin) behave the same way.
+            if !capturing, let feature = matchedFeature(code: code, flags: event.flags) {
+                if firstPress {
+                    DispatchQueue.main.async { [weak self] in self?.onFeatureChord?(feature) }
+                }
+                return true
+            }
+            // `down` fires exactly once, matching how modifiers behave.
+            if firstPress { down(code) }
         case .keyUp:
             if pressed.remove(code) != nil { up(code) }
         case .flagsChanged:
@@ -120,6 +210,7 @@ final class HotkeyMonitor {
         default:
             break
         }
+        return false
     }
 
     private func down(_ code: Int64) {
@@ -151,7 +242,9 @@ private func orbitHotkeyCallback(
 ) -> Unmanaged<CGEvent>? {
     if let refcon {
         let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(refcon).takeUnretainedValue()
-        monitor.handle(type: type, event: event)
+        if monitor.handle(type: type, event: event) {
+            return nil   // swallow a matched shortcut chord
+        }
     }
     return Unmanaged.passUnretained(event)
 }

@@ -1,7 +1,7 @@
 //  UsageStore.swift
-//  Persisted, accumulating usage log for cost accounting. Kept in its own
-//  `usage.json` under Application Support (like DictationHistoryStore) so it
-//  never bloats config.json. Records are append-only; cost is frozen per record.
+//  Persisted, accumulating usage log for cost accounting. Append-only records in
+//  the shared SQLite database (a row per event) so adding one is a single INSERT
+//  instead of rewriting the whole log. The in-memory list drives the stats view.
 
 import Foundation
 import Combine
@@ -10,25 +10,34 @@ import Combine
 final class UsageStore: ObservableObject {
     @Published private(set) var records: [UsageRecord] = []
 
-    private let fileURL: URL
-    private var saveWorkItem: DispatchWorkItem?
+    private let db: SQLiteDB
 
-    init() {
-        let dir = SettingsStore.configDirectory()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        fileURL = dir.appendingPathComponent("usage.json")
+    private static let encoder: JSONEncoder = {
+        let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601; return e
+    }()
+    private static let decoder: JSONDecoder = {
+        let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d
+    }()
+
+    init(db: SQLiteDB) {
+        self.db = db
+        db.exec("CREATE TABLE IF NOT EXISTS usage_records (rowid INTEGER PRIMARY KEY AUTOINCREMENT, date REAL, data BLOB);")
+        migrateFromJSONIfNeeded()
         load()
     }
 
-    /// Append a completed usage event (newest first) and persist.
+    /// Append a completed usage event (newest first) and persist (one INSERT).
     func add(_ record: UsageRecord) {
         records.insert(record, at: 0)
-        scheduleSave()
+        if let data = try? Self.encoder.encode(record) {
+            db.run("INSERT INTO usage_records (date, data) VALUES (?,?);",
+                   [.double(record.date.timeIntervalSince1970), .blob(data)])
+        }
     }
 
     func clear() {
         records.removeAll()
-        scheduleSave()
+        db.run("DELETE FROM usage_records;")
     }
 
     // MARK: - Aggregations (for the stats view)
@@ -69,29 +78,30 @@ final class UsageStore: ObservableObject {
             .sorted { $0.count > $1.count }
     }
 
-    // MARK: - Persistence
+    // MARK: - Persistence (SQLite)
 
     private func load() {
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? decoder.decode([UsageRecord].self, from: data)
-        else { return }
-        records = decoded
+        var out: [UsageRecord] = []
+        db.query("SELECT data FROM usage_records ORDER BY date DESC;") { row in
+            if let r = try? Self.decoder.decode(UsageRecord.self, from: row.blob(0)) { out.append(r) }
+        }
+        records = out
     }
 
-    private func scheduleSave() {
-        saveWorkItem?.cancel()
-        let snapshot = records
-        let url = fileURL
-        let item = DispatchWorkItem {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted]
-            guard let data = try? encoder.encode(snapshot) else { return }
-            try? data.write(to: url, options: .atomic)
+    /// One-time import of the previous usage.json into the fresh table.
+    private func migrateFromJSONIfNeeded() {
+        guard db.scalarInt("SELECT COUNT(*) FROM usage_records;") == 0 else { return }
+        let url = SettingsStore.configDirectory().appendingPathComponent("usage.json")
+        guard let data = try? Data(contentsOf: url),
+              let decoded = try? Self.decoder.decode([UsageRecord].self, from: data) else { return }
+        db.transaction {
+            for r in decoded {
+                if let d = try? Self.encoder.encode(r) {
+                    db.run("INSERT INTO usage_records (date, data) VALUES (?,?);",
+                           [.double(r.date.timeIntervalSince1970), .blob(d)])
+                }
+            }
         }
-        saveWorkItem = item
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.5, execute: item)
+        try? FileManager.default.moveItem(at: url, to: url.appendingPathExtension("migrated"))
     }
 }

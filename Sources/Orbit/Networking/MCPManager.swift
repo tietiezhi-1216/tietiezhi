@@ -139,6 +139,9 @@ struct MCPProxyTool: OrbitTool {
     let schema: [String: Any]
     let client: Client
 
+    var displayName: String { toolName }
+    var category: ToolCategory { .mcp }
+
     var spec: ToolSpec {
         ToolSpec(name: registryName, description: description, parameters: schema)
     }

@@ -64,7 +64,29 @@ enum Permissions {
         IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
     }
 
+    // MARK: Screen Recording (screenshot / capture)
+
+    /// Screenshots and (later) screen recording both sit behind the same
+    /// "屏幕录制" TCC grant. `CGPreflightScreenCaptureAccess` answers without
+    /// prompting; macOS offers no "denied vs. not asked" distinction here, so
+    /// anything but granted reads as `notDetermined`.
+    static var screenRecording: PermissionState {
+        CGPreflightScreenCaptureAccess() ? .granted : .notDetermined
+    }
+
+    /// Shows the system screen-recording prompt (first time) — afterwards macOS
+    /// only registers the app in System Settings, so pair this with the deep
+    /// link below when the user needs to flip the switch by hand.
+    @discardableResult
+    static func requestScreenRecording() -> Bool {
+        CGRequestScreenCaptureAccess()
+    }
+
     // MARK: Deep links into System Settings
+
+    static func openScreenRecordingSettings() {
+        open("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+    }
 
     static func openMicrophoneSettings() {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")

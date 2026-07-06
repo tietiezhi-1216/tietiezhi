@@ -66,11 +66,34 @@ final class SettingsStore: ObservableObject {
 
     // MARK: Paths
 
-    /// `~/Library/Application Support/com.orbit.app/`
+    /// `~/.orbit/` — one inspectable home for all Orbit data (config, database,
+    /// skills, generated media), alongside the skills folder.
     static func configDirectory() -> URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("com.orbit.app", isDirectory: true)
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".orbit", isDirectory: true)
+    }
+
+    /// The pre-consolidation location, kept only for the one-time migration.
+    private static var legacyDirectory: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("com.orbit.app", isDirectory: true)
+    }
+
+    /// Move Orbit's data from `~/Library/Application Support/com.orbit.app/` to
+    /// `~/.orbit/` once. Copies (never deletes) each item that isn't already in
+    /// the new home, so the old files remain as a safety net. Idempotent — call
+    /// at startup before any store loads.
+    static func migrateStorageLocationIfNeeded() {
+        let fm = FileManager.default
+        let new = configDirectory()
+        guard let old = legacyDirectory, fm.fileExists(atPath: old.path) else { return }
+        try? fm.createDirectory(at: new, withIntermediateDirectories: true)
+        guard let items = try? fm.contentsOfDirectory(at: old, includingPropertiesForKeys: nil) else { return }
+        for item in items {
+            let dest = new.appendingPathComponent(item.lastPathComponent)
+            if !fm.fileExists(atPath: dest.path) {
+                try? fm.copyItem(at: item, to: dest)
+            }
+        }
     }
 
     // MARK: Persistence
@@ -159,6 +182,54 @@ final class SettingsStore: ObservableObject {
     func updateModel(id: String, _ mutate: (inout ModelConfig) -> Void) {
         guard let i = settings.models.firstIndex(where: { $0.id == id }) else { return }
         mutate(&settings.models[i])
+    }
+
+    // MARK: Shortcuts
+
+    func addShortcut(_ shortcut: ActionShortcut) {
+        settings.shortcuts.append(shortcut)
+    }
+
+    func removeShortcut(id: String) {
+        settings.shortcuts.removeAll { $0.id == id }
+    }
+
+    func updateShortcut(id: String, _ mutate: (inout ActionShortcut) -> Void) {
+        guard let i = settings.shortcuts.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&settings.shortcuts[i])
+    }
+
+    // MARK: Agents
+
+    func addAgent(_ agent: Agent) {
+        settings.agents.append(agent)
+        if settings.activeAgentID == nil { settings.activeAgentID = agent.id }
+    }
+
+    func removeAgent(id: String) {
+        settings.agents.removeAll { $0.id == id }
+        if settings.activeAgentID == id { settings.activeAgentID = settings.agents.first?.id }
+    }
+
+    func updateAgent(id: String, _ mutate: (inout Agent) -> Void) {
+        guard let i = settings.agents.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&settings.agents[i])
+    }
+
+    func setActiveAgent(id: String) {
+        settings.activeAgentID = id
+    }
+
+    // MARK: Tool root directories (file / command tool whitelist)
+
+    func addToolRootDirectory(_ path: String) {
+        let p = path.trimmed
+        guard !p.isEmpty, !settings.toolRootDirectories.contains(p) else { return }
+        settings.toolRootDirectories.append(p)
+    }
+
+    func removeToolRootDirectory(_ path: String) {
+        settings.toolRootDirectories.removeAll { $0 == path }
     }
 
     // MARK: MCP servers

@@ -23,13 +23,19 @@ struct SettingsRootView: View {
     private var content: some View {
         switch app.settingsSection {
         case .providers:        ProvidersView()
+        case .agents:           AgentsView()
+        case .tools:            ToolsView()
         case .mcp:              MCPServersView()
+        case .skills:           SkillsView()
         case .usage:            UsageStatsView()
         case .dictationBasic:   DictationBasicView()
         case .dictationModes:   DictationModesView()
         case .dictationVocab:   DictationVocabView()
         case .dictationHistory: DictationHistoryView()
         case .dictationStats:   DictationStatsView()
+        case .captureBasic:     CaptureBasicView()
+        case .captureHistory:   CaptureHistoryView()
+        case .shortcuts:        ShortcutsView()
         case .feedbackSounds:   FeedbackSoundsView()
         case .about:            PermissionsView()
         }

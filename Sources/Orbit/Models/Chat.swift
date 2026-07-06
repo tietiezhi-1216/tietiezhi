@@ -8,6 +8,53 @@ enum ChatRole: String, Codable, Hashable {
     case system, user, assistant, tool
 }
 
+/// Reasoning / "thinking" effort is just the string a model accepts for
+/// `reasoning_effort` (OpenAI Chat) / `reasoning.effort` (Responses) — an empty
+/// string means off. Vendors use different sets (`minimal/low/medium/high`,
+/// plus non-standard extras like `xhigh`, `max`, `ultra`, `ultracode`), and the
+/// set is per-model, so levels are free-form strings, discovered by probing or
+/// added by hand. `ReasoningLevels` centralizes the naming / ordering / budget.
+enum ReasoningLevels {
+    /// The empty string used to mean "no reasoning".
+    static let off = ""
+
+    /// The candidate strings a probe tries when discovering a model's levels —
+    /// the OpenAI standard set plus the common non-standard highs.
+    static let candidates = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]
+
+    /// Levels shown until a model is probed or hand-configured.
+    static let defaults = ["low", "medium", "high"]
+
+    /// Canonical display order; unknowns sort last, alphabetically.
+    private static let order = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra", "ultracode"]
+
+    static func sorted(_ levels: [String]) -> [String] {
+        levels.sorted { a, b in
+            let ia = order.firstIndex(of: a.lowercased()) ?? Int.max
+            let ib = order.firstIndex(of: b.lowercased()) ?? Int.max
+            return ia == ib ? a < b : ia < ib
+        }
+    }
+
+    static func displayName(_ level: String) -> String {
+        let l = level.lowercased()
+        if l.isEmpty { return "Off" }
+        if l == "xhigh" { return "Extra High" }
+        return level.prefix(1).uppercased() + level.dropFirst()
+    }
+
+    /// Anthropic `thinking.budget_tokens` for a named level (best-effort mapping).
+    static func anthropicBudget(_ level: String) -> Int {
+        switch level.lowercased() {
+        case "minimal": return 1_024
+        case "low":     return 2_048
+        case "medium":  return 4_096
+        case "high":    return 8_192
+        default:        return 16_384   // xhigh / max / ultra / custom highs
+        }
+    }
+}
+
 /// A tool invocation the assistant asked for. `argumentsJSON` is kept as the raw
 /// JSON string the model produced (OpenAI streams it in fragments; Anthropic
 /// gives an object we re-serialize) so it round-trips verbatim in follow-ups.
@@ -53,6 +100,8 @@ struct Conversation: Identifiable, Codable, Hashable {
     var title: String
     var messages: [ChatMessage]
     var createdAt: Date
+    /// True once the user renamed it by hand — the AI title generator won't overwrite.
+    var titleLocked: Bool = false
 
     init(id: UUID = UUID(),
          title: String = "新对话",

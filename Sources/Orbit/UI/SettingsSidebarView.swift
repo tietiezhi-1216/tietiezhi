@@ -106,16 +106,20 @@ private struct SettingsSidebarRow: View {
 
     var body: some View {
         Button(action: action) {
-            Label {
-                Text(section.title)
-                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-            } icon: {
+            // Explicit HStack (not Label): the icon sits in a fixed 20×20 slot so
+            // its position never depends on the title's font metrics, and the row
+            // has a fixed height — together they stop the selection-driven reflow
+            // that made every icon jitter when switching pages.
+            HStack(spacing: 9) {
                 Image(systemName: section.symbol)
                     .font(.system(size: 13))
-                    .frame(width: 17)
+                    .frame(width: 20, height: 20)
+                Text(section.title)
+                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .frame(height: 32)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .foregroundStyle(isSelected ? Color.primary : Color.secondary)

@@ -22,20 +22,112 @@ struct ToolOutput {
     var attachments: [String] = []
 }
 
+/// UI grouping for a tool (drives the agent editor / tools page sections).
+enum ToolCategory: String, Codable, CaseIterable, Hashable {
+    case skill      // built-in generative skills (image / video)
+    case file       // read / list / find / search / write / edit
+    case command    // run a shell command
+    case mcp        // provided by an external MCP server
+    case other
+
+    var displayName: String {
+        switch self {
+        case .skill:   return "内置技能"
+        case .file:    return "文件"
+        case .command: return "命令"
+        case .mcp:     return "MCP 工具"
+        case .other:   return "其它"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .skill:   return "wand.and.stars"
+        case .file:    return "folder"
+        case .command: return "terminal"
+        case .mcp:     return "puzzlepiece.extension"
+        case .other:   return "wrench.and.screwdriver"
+        }
+    }
+}
+
 protocol OrbitTool {
     var spec: ToolSpec { get }
+    // Declared as requirements (not extension-only) so overrides dynamic-dispatch
+    // through the `OrbitTool` existential — otherwise the UI would always see the
+    // extension defaults (everything `.other`, labelled by raw name).
+    var displayName: String { get }
+    var category: ToolCategory { get }
+    var isDangerous: Bool { get }
     @MainActor func run(_ arguments: [String: Any]) async throws -> ToolOutput
+}
+
+/// UI-facing metadata with sensible defaults so most tools don't restate them.
+extension OrbitTool {
+    /// Friendly label (defaults to the raw tool name).
+    var displayName: String { spec.name }
+    var category: ToolCategory { .other }
+    /// Mutating / executing tools that warrant a confirmation and a warning badge.
+    var isDangerous: Bool { false }
+}
+
+/// Top-level bucket for the agent editor / tools page. 工具 = built-in local
+/// file & command tools; 技能 = generative skills (image / video); MCP = tools
+/// from external servers. Derived from a tool's finer `ToolCategory`.
+enum CapabilityKind: String, CaseIterable, Identifiable, Hashable {
+    // Order matters — drives the agent-editor tab order (工具 与 MCP 相邻，技能单列).
+    case tools, mcp, skills
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .tools:  return "工具"
+        case .skills: return "技能"
+        case .mcp:    return "MCP"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .tools:  return "hammer"
+        case .skills: return "wand.and.stars"
+        case .mcp:    return "puzzlepiece.extension"
+        }
+    }
+
+    // Built-in generative tools (image/video) are function tools too, so they
+    // live in the 工具 bucket alongside file/command/MCP. The 技能 tab is fed by
+    // disk skills (SkillStore), not the tool registry.
+    static func of(_ category: ToolCategory) -> CapabilityKind {
+        switch category {
+        case .file, .command, .skill, .other: return .tools
+        case .mcp:                            return .mcp
+        }
+    }
 }
 
 @MainActor
 final class ToolRegistry: ObservableObject {
-    private(set) var tools: [String: OrbitTool] = [:]
+    /// Published so the settings UI (agent editor / tools page) reflects tools
+    /// appearing or disappearing as MCP servers connect.
+    @Published private(set) var tools: [String: OrbitTool] = [:]
 
     func register(_ tool: OrbitTool) { tools[tool.spec.name] = tool }
     func unregister(name: String) { tools.removeValue(forKey: name) }
     var specs: [ToolSpec] { tools.values.map(\.spec).sorted { $0.name < $1.name } }
+    /// All registered tools, sorted by category then name — for the UI.
+    var all: [OrbitTool] {
+        tools.values.sorted {
+            $0.category.rawValue == $1.category.rawValue
+                ? $0.spec.name < $1.spec.name
+                : $0.category.rawValue < $1.category.rawValue
+        }
+    }
     var isEmpty: Bool { tools.isEmpty }
     func tool(named name: String) -> OrbitTool? { tools[name] }
+    /// Registry names that are currently available (for pruning agent selections).
+    var names: Set<String> { Set(tools.keys) }
 }
 
 // MARK: - Built-in skill: generate_image
@@ -46,6 +138,9 @@ final class ToolRegistry: ObservableObject {
 struct GenerateImageTool: OrbitTool {
     let settings: SettingsStore
     let generation: GenerationStore
+
+    var displayName: String { "生成图片" }
+    var category: ToolCategory { .skill }
 
     var spec: ToolSpec {
         ToolSpec(
@@ -86,6 +181,9 @@ struct GenerateImageTool: OrbitTool {
 struct GenerateVideoTool: OrbitTool {
     let settings: SettingsStore
     let generation: GenerationStore
+
+    var displayName: String { "生成视频" }
+    var category: ToolCategory { .skill }
 
     var spec: ToolSpec {
         ToolSpec(

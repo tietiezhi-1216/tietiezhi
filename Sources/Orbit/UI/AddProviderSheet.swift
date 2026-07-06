@@ -37,6 +37,17 @@ struct ChannelModelDraft: Identifiable {
     var perCallStr: String
     var perMinuteStr: String
     var currency: String
+    // Chat feature flags — user-editable, seeded from upstream / catalog. Ignored
+    // for non-chat rows (ASR/image/video), which persist `.none`.
+    var multimodal: Bool
+    var thinking: Bool
+    var toolCalling: Bool
+    /// Hand-added (not from /models): its id + capability are editable inline.
+    var manual: Bool = false
+
+    var abilities: LLMCapabilities {
+        LLMCapabilities(multimodal: multimodal, thinking: thinking, toolCalling: toolCalling)
+    }
 
     /// Build the persisted price from the entered fields (nil when unpriced).
     func pricing() -> ModelPricing? {
@@ -108,7 +119,7 @@ struct AddProviderSheet: View {
             Divider()
             footer
         }
-        .frame(width: 720, height: 680)
+        .frame(width: 760, height: 680)
     }
 
     // MARK: - Fields
@@ -143,14 +154,9 @@ struct AddProviderSheet: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }
-            if adapter.isCustom {
-                labeledRow("鉴权") {
-                    Picker("", selection: $draft.auth) {
-                        ForEach(AuthScheme.allCases) { Text($0.displayName).tag($0) }
-                    }
-                    .pickerStyle(.menu).labelsHidden().fixedSize()
-                }
-            }
+            // No manual 鉴权 control: the auth scheme is decided entirely by the
+            // 渠道商 type (applyAdapter stamps the adapter's `auth`). Different
+            // channels auto-adapt once you enter the key.
             labeledRow("API Key") {
                 RevealableSecureField(title: draft.auth == .anthropic ? "sk-ant-…" : "sk-…", text: $draft.apiKey)
             }
@@ -192,6 +198,10 @@ struct AddProviderSheet: View {
                     Button(allIncluded ? "全不选" : "全选") { toggleAll() }
                         .buttonStyle(.borderless).controlSize(.small)
                 }
+                Button { addManualModel() } label: {
+                    Label("手动添加", systemImage: "plus")
+                }
+                .controlSize(.small)
                 Button { fetchModels() } label: {
                     Label(fetching ? "获取中…" : "获取模型列表", systemImage: "arrow.down.circle")
                 }
@@ -204,7 +214,7 @@ struct AddProviderSheet: View {
             }
 
             if entries.isEmpty {
-                Text("点「获取模型列表」加载该渠道的上游模型，勾选要用的并为其设置费用（按 Token / 按次 / 按分钟）。")
+                Text("点「获取模型列表」加载该渠道的上游模型；若 /models 没列出你要的模型（如某些图片模型），用「手动添加」填模型 id 并选能力。勾选要用的、设费用、标能力即可。")
                     .font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
             } else {
@@ -221,24 +231,73 @@ struct AddProviderSheet: View {
 
     private func modelRow(_ entry: Binding<ChannelModelDraft>) -> some View {
         let e = entry.wrappedValue
-        return HStack(spacing: 10) {
+        // One tidy left-to-right row: checkbox · name (flexes to fill) · feature
+        // flags · pricing mode · pricing fields. Fixed-width columns keep the
+        // flags / pricing aligned across every row; the name column absorbs the
+        // slack so there's no empty gutter on the right.
+        return HStack(spacing: 12) {
             Toggle("", isOn: entry.include).labelsHidden().toggleStyle(.checkbox)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(e.model).font(.callout.monospaced()).lineLimit(1)
-                Text(e.capability.displayName).font(.caption2).foregroundStyle(.secondary)
+
+            if e.manual {
+                // Hand-added: id + capability are editable inline.
+                HStack(spacing: 8) {
+                    TextField("模型 id，如 gpt-image-2", text: entry.model)
+                        .textFieldStyle(.roundedBorder).font(.callout.monospaced())
+                    Picker("", selection: entry.capability) {
+                        ForEach(manualCapabilities, id: \.self) { Text($0.displayName).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(e.model).font(.callout.monospaced()).lineLimit(1).truncationMode(.middle)
+                    Text(e.capability.displayName).font(.caption2).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(width: 220, alignment: .leading)
+
+            // Feature flags occupy a fixed slot (empty for non-chat) so the
+            // pricing columns line up whatever the row's capability.
+            HStack(spacing: 5) {
+                if e.capability == .chat {
+                    abilityChip("多模态", systemImage: "photo", isOn: entry.multimodal)
+                    abilityChip("思考", systemImage: "brain", isOn: entry.thinking)
+                    abilityChip("工具", systemImage: "wrench.and.screwdriver", isOn: entry.toolCalling)
+                }
+            }
+            .frame(width: 190, alignment: .leading)
+            .disabled(!e.include)
 
             Picker("", selection: entry.mode) {
                 ForEach(PricingMode.allCases) { Text($0.label).tag($0) }
             }
-            .labelsHidden().fixedSize().disabled(!e.include)
+            .labelsHidden().frame(width: 84).disabled(!e.include)
 
             pricingFields(entry).disabled(!e.include)
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
+        .padding(.horizontal, 12).padding(.vertical, 8)
         .opacity(e.include ? 1 : 0.5)
+    }
+
+    /// A tappable capability chip; accent-filled when the flag is on.
+    private func abilityChip(_ title: String, systemImage: String, isOn: Binding<Bool>) -> some View {
+        let on = isOn.wrappedValue
+        return Button { isOn.wrappedValue.toggle() } label: {
+            HStack(spacing: 3) {
+                Image(systemName: systemImage).imageScale(.small)
+                Text(title)
+            }
+            .font(.caption2)
+            .padding(.horizontal, 7).padding(.vertical, 3)
+            .foregroundStyle(on ? Color.accentColor : Color.secondary)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(on ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.10))
+            )
+        }
+        .buttonStyle(.plain)
+        .help("\(title)：点按切换支持 / 不支持")
     }
 
     @ViewBuilder
@@ -313,7 +372,9 @@ struct AddProviderSheet: View {
     private func fetchModels() {
         fetchError = nil
         if adapter.modelSource == .catalog {
-            applyFetched(adapter.catalog.map(\.id))
+            applyFetched(adapter.catalog.map {
+                ProviderAPI.FetchedModel(id: $0.id, displayName: $0.displayName, abilities: $0.abilities)
+            })
             if entries.isEmpty { fetchError = "该渠道商没有内置模型目录。" }
             return
         }
@@ -322,9 +383,9 @@ struct AddProviderSheet: View {
         Task { @MainActor in
             defer { fetching = false }
             do {
-                let ids = try await ProviderAPI.fetchModels(snapshot)
-                applyFetched(ids)
-                if ids.isEmpty { fetchError = "该渠道商没有返回任何模型。" }
+                let models = try await ProviderAPI.fetchModels(snapshot)
+                applyFetched(models)
+                if models.isEmpty { fetchError = "该渠道商没有返回任何模型。" }
             } catch {
                 fetchError = (error as? ProviderAPIError)?.errorDescription ?? error.localizedDescription
             }
@@ -334,22 +395,40 @@ struct AddProviderSheet: View {
     /// Merge fetched ids into the editable list: keep existing rows (with their
     /// pricing), add new ones, and only surface models the channel's protocols
     /// can run (chat / ASR). Chat first, then ASR, alphabetically.
-    private func applyFetched(_ ids: [String]) {
+    private func applyFetched(_ fetched: [ProviderAPI.FetchedModel]) {
+        // One base URL often serves more than chat — image / video / ASR models
+        // too. Auto-provision a service for each capability found among the fetched
+        // models (using the adapter's wire for it) so those models aren't silently
+        // dropped by the capability filter below (e.g. an image model on an
+        // OpenAI-compatible aggregator that was seeded with only a chat service).
+        let foundCaps = Set(fetched.map {
+            adapter.card(forModelID: $0.id)?.capability ?? ChannelAdapter.inferCapability($0.id)
+        })
+        for cap in foundCaps where !draft.services.contains(where: { $0.capability == cap }) {
+            if let wire = adapter.wire(for: cap) {
+                draft.services.append(Service(wire: wire))
+            }
+        }
         let usable = Set(draft.services.map(\.capability))
         let currency = Self.defaultCurrency(for: draft.adapterID)
         var byModel = Dictionary(entries.map { ($0.model, $0) }, uniquingKeysWith: { a, _ in a })
         var result: [ChannelModelDraft] = []
-        for id in ids {
-            let cap = adapter.card(forModelID: id)?.capability ?? ChannelAdapter.inferCapability(id)
+        for f in fetched {
+            let card = adapter.card(forModelID: f.id)
+            let cap = card?.capability ?? ChannelAdapter.inferCapability(f.id)
             guard usable.contains(cap) else { continue }
-            if let keep = byModel.removeValue(forKey: id) {
-                result.append(keep)
+            if let keep = byModel.removeValue(forKey: f.id) {
+                result.append(keep)   // keep the user's row (flags + pricing intact)
             } else {
+                // Feature flags: upstream-declared wins; else the shipped catalog
+                // card (curated, not a name guess); else all-off for the user to set.
+                let ab = f.abilities ?? card?.abilities ?? .none
                 result.append(ChannelModelDraft(
-                    id: UUID().uuidString, existingID: nil, model: id,
-                    name: adapter.card(forModelID: id)?.displayName ?? id,
+                    id: UUID().uuidString, existingID: nil, model: f.id,
+                    name: card?.displayName ?? f.displayName ?? f.id,
                     capability: cap, include: true, mode: .none,
-                    inputStr: "", outputStr: "", perCallStr: "", perMinuteStr: "", currency: currency))
+                    inputStr: "", outputStr: "", perCallStr: "", perMinuteStr: "", currency: currency,
+                    multimodal: ab.multimodal, thinking: ab.thinking, toolCalling: ab.toolCalling))
             }
         }
         // Preserve any prior rows not present upstream (manually kept).
@@ -359,18 +438,44 @@ struct AddProviderSheet: View {
         }
     }
 
+    /// Capabilities this adapter can actually run (has a wire for) — the choices
+    /// offered when hand-adding a model. Chat always first.
+    private var manualCapabilities: [Capability] {
+        let caps = Set(adapter.wires.keys).union([.chat])
+        return caps.sorted { ($0 == .chat ? 0 : 1, $0.displayName) < ($1 == .chat ? 0 : 1, $1.displayName) }
+    }
+
+    /// Append a blank, editable row for a model `/models` didn't list.
+    private func addManualModel() {
+        fetchError = nil
+        entries.insert(ChannelModelDraft(
+            id: UUID().uuidString, existingID: nil, model: "", name: "",
+            capability: .chat, include: true, mode: .none,
+            inputStr: "", outputStr: "", perCallStr: "", perMinuteStr: "",
+            currency: Self.defaultCurrency(for: draft.adapterID),
+            multimodal: false, thinking: false, toolCalling: false, manual: true),
+            at: 0)
+    }
+
     private func save() {
         var provider = draft
         provider.name = provider.name.trimmed
         provider.baseURL = provider.baseURL.trimmed
-        let models: [ModelConfig] = entries.filter(\.include).compactMap { e in
+        // Ensure a service exists for every included (non-empty) model's capability
+        // — covers hand-added models whose capability the seeded catalog lacked.
+        let includedCaps = Set(entries.filter { $0.include && !$0.model.trimmed.isEmpty }.map(\.capability))
+        for cap in includedCaps where !provider.services.contains(where: { $0.capability == cap }) {
+            if let wire = adapter.wire(for: cap) { provider.services.append(Service(wire: wire)) }
+        }
+        let models: [ModelConfig] = entries.filter { $0.include && !$0.model.trimmed.isEmpty }.compactMap { e in
             guard let svc = provider.services.first(where: { $0.capability == e.capability }) else { return nil }
             return ModelConfig(
                 id: e.existingID ?? UUID().uuidString,
                 providerID: provider.id,
                 serviceID: svc.id,
-                name: e.name.trimmed.isEmpty ? e.model : e.name,
-                model: e.model,
+                name: e.name.trimmed.isEmpty ? e.model.trimmed : e.name,
+                model: e.model.trimmed,
+                llmCapabilities: e.capability == .chat ? e.abilities : .none,
                 pricingOverride: e.pricing())
         }
         onSave(provider, models)
@@ -394,11 +499,18 @@ struct AddProviderSheet: View {
             return .token
         }()
         func s(_ v: Double?) -> String { v.map { $0 == $0.rounded() ? String(Int($0)) : String($0) } ?? "" }
+        // Explicit stored flags win; for models saved before flags were editable
+        // (all `.none`), fall back to the catalog card so known models pre-fill.
+        let stored = m.llmCapabilities
+        let ab = stored != .none
+            ? stored
+            : (ChannelAdapter.byID(provider.adapterID)?.card(forModelID: m.model)?.abilities ?? .none)
         return ChannelModelDraft(
             id: m.id, existingID: m.id, model: m.model, name: m.name, capability: cap,
             include: true, mode: mode,
             inputStr: s(p?.inputPer1M), outputStr: s(p?.outputPer1M),
             perCallStr: s(p?.perCall), perMinuteStr: s(p?.perAudioMinute),
-            currency: p?.currency ?? fallbackCurrency)
+            currency: p?.currency ?? fallbackCurrency,
+            multimodal: ab.multimodal, thinking: ab.thinking, toolCalling: ab.toolCalling)
     }
 }

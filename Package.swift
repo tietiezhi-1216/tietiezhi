@@ -8,11 +8,19 @@ let package = Package(
         // Official MCP client SDK (stdio + HTTP transports). The dependency
         // builds in its own (Swift 6) language mode; our target stays v5.
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.10.0"),
+        // Mainstream SwiftUI Markdown renderer + multi-language code highlighting
+        // (highlight.js) for the chat transcript.
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui.git", from: "2.4.1"),
+        .package(url: "https://github.com/raspu/Highlightr.git", from: "2.3.0"),
     ],
     targets: [
         .executableTarget(
             name: "Orbit",
-            dependencies: [.product(name: "MCP", package: "swift-sdk")],
+            dependencies: [
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
+                .product(name: "Highlightr", package: "Highlightr"),
+            ],
             path: "Sources/Orbit"
         )
     ],

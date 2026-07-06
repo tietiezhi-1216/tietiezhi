@@ -67,6 +67,11 @@ assemble() {
     cp "$bin/$APP_NAME" "$app/Contents/MacOS/$APP_NAME"
     cp "Info.plist" "$app/Contents/Info.plist"
     cp "Assets/Brand/Orbit.icns" "$app/Contents/Resources/Orbit.icns"
+    # SwiftPM resource bundles (e.g. Highlightr's highlight.js) must live in the
+    # app's Resources so Bundle.module resource lookup works at runtime.
+    for b in "$bin"/*.bundle; do
+        [ -e "$b" ] && cp -R "$b" "$app/Contents/Resources/"
+    done
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $bundle_id" "$app/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleName $display_name" "$app/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $display_name" "$app/Contents/Info.plist"

@@ -376,6 +376,19 @@ struct ModelConfig: Identifiable, Codable, Hashable {
     /// effective price comes from the adapter's `ModelCard` (see
     /// `Settings.effectivePricing`).
     var pricingOverride: ModelPricing?
+    /// Persisted per-model reasoning effort (thinking-capable models only), as the
+    /// raw `reasoning_effort` string ("" = off). Written by the composer's 思考
+    /// menu so the choice survives restarts and each model remembers its own level.
+    var reasoningEffort: String
+    /// The effort levels this model actually offers. Empty = use the standard
+    /// default set; populated by probing (`ProviderAPI.probeReasoning`) or edited
+    /// by hand. Persisted. Free-form strings (some models add max / ultra / …).
+    var reasoningLevels: [String]
+
+    /// Levels the picker shows: the configured set, or the standard default.
+    var availableEfforts: [String] {
+        reasoningLevels.isEmpty ? ReasoningLevels.defaults : reasoningLevels
+    }
 
     /// Transient: the role read from a legacy config, used by `migrate` to pick
     /// a service. Never persisted.
@@ -389,7 +402,9 @@ struct ModelConfig: Identifiable, Codable, Hashable {
          language: String? = nil,
          params: [String: String]? = nil,
          llmCapabilities: LLMCapabilities = .none,
-         pricingOverride: ModelPricing? = nil) {
+         pricingOverride: ModelPricing? = nil,
+         reasoningEffort: String = "",
+         reasoningLevels: [String] = []) {
         self.id = id
         self.providerID = providerID
         self.serviceID = serviceID
@@ -399,12 +414,14 @@ struct ModelConfig: Identifiable, Codable, Hashable {
         self.params = params
         self.llmCapabilities = llmCapabilities
         self.pricingOverride = pricingOverride
+        self.reasoningEffort = reasoningEffort
+        self.reasoningLevels = reasoningLevels
         self.legacyKind = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, providerID, serviceID, name, model, language, params, llmCapabilities
-        case pricingOverride
+        case pricingOverride, reasoningEffort, reasoningLevels
         case kind       // legacy role; decode-only.
         case transport  // legacy transport; ignored.
     }
@@ -420,6 +437,8 @@ struct ModelConfig: Identifiable, Codable, Hashable {
         params = try c.decodeIfPresent([String: String].self, forKey: .params)
         llmCapabilities = (try? c.decode(LLMCapabilities.self, forKey: .llmCapabilities)) ?? .none
         pricingOverride = try? c.decode(ModelPricing.self, forKey: .pricingOverride)
+        reasoningEffort = (try? c.decode(String.self, forKey: .reasoningEffort)) ?? ""
+        reasoningLevels = (try? c.decode([String].self, forKey: .reasoningLevels)) ?? []
         legacyKind = try? c.decode(ModelKind.self, forKey: .kind)
         // Old `transport` (http / realtime_ws / volcano_ws) no longer exists.
     }
@@ -436,6 +455,8 @@ struct ModelConfig: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(params, forKey: .params)
         try c.encode(llmCapabilities, forKey: .llmCapabilities)
         try c.encodeIfPresent(pricingOverride, forKey: .pricingOverride)
+        try c.encode(reasoningEffort, forKey: .reasoningEffort)
+        try c.encode(reasoningLevels, forKey: .reasoningLevels)
     }
 }
 
@@ -505,12 +526,21 @@ struct Settings: Codable {
     var templates: [PromptTemplate]
     /// macOS virtual keycode (as a string) that toggles dictation. `54` = right ⌘.
     var hotkey: String
+    /// User-defined global shortcut chords (modifier+key → action). Independent of
+    /// the dictation `hotkey`; see `ActionShortcut` / HotkeyMonitor.
+    var shortcuts: [ActionShortcut] = []
     var asrModelID: String?
     var llmModelID: String?
     var imageModelID: String? = nil
     var videoModelID: String? = nil
     /// External MCP servers whose tools the chat model may call.
     var mcpServers: [MCPServerConfig] = []
+    /// Chat agents (persona = system prompt + tool set) and the active one. See Agent.
+    var agents: [Agent] = []
+    var activeAgentID: String? = nil
+    /// Directories the file / command tools may touch (whitelist). Empty means
+    /// those tools refuse until the user grants a root — a safety floor.
+    var toolRootDirectories: [String] = []
     var activeTemplateID: String?
     var llmPolishEnabled: Bool
     var autoInsert: Bool
@@ -539,6 +569,10 @@ struct Settings: Codable {
     /// sound library. Bindings map each `FeedbackEvent` to a cue.
     var feedbackSounds: FeedbackSoundSettings
 
+    /// 截图卫星配置（热键 / 完成行为）。Defaulted so the memberwise init and old
+    /// configs both pick it up without churn.
+    var capture: CaptureSettings = .defaults
+
     static let defaultTemplateID = "default-polish"
 
     static var defaults: Settings {
@@ -558,7 +592,9 @@ struct Settings: Codable {
             activeTemplateID: defaultTemplateID,
             llmPolishEnabled: false,
             autoInsert: true,
-            insertPosition: "transcript"
+            insertPosition: "transcript",
+            agents: Agent.seeded,
+            activeAgentID: Agent.seeded.first?.id
         )
     }
 
@@ -566,6 +602,10 @@ struct Settings: Codable {
          hotkey: String, asrModelID: String?, llmModelID: String?,
          activeTemplateID: String?, llmPolishEnabled: Bool, autoInsert: Bool,
          insertPosition: String,
+         shortcuts: [ActionShortcut] = [],
+         agents: [Agent] = [],
+         activeAgentID: String? = nil,
+         toolRootDirectories: [String] = [],
          hotwords: [String] = [],
          workingLanguages: [String] = [],
          outputLanguage: OutputLanguage = .auto,
@@ -577,6 +617,10 @@ struct Settings: Codable {
         self.models = models
         self.templates = templates
         self.hotkey = hotkey
+        self.shortcuts = shortcuts
+        self.agents = agents
+        self.activeAgentID = activeAgentID
+        self.toolRootDirectories = toolRootDirectories
         self.asrModelID = asrModelID
         self.llmModelID = llmModelID
         self.activeTemplateID = activeTemplateID
@@ -601,11 +645,18 @@ struct Settings: Codable {
         models = (try? c.decode([ModelConfig].self, forKey: .models)) ?? d.models
         templates = (try? c.decode([PromptTemplate].self, forKey: .templates)) ?? d.templates
         hotkey = try c.decodeIfPresent(String.self, forKey: .hotkey) ?? d.hotkey
+        // Decode independently so a malformed shortcut array can't wipe the doc.
+        shortcuts = (try? c.decode([ActionShortcut].self, forKey: .shortcuts)) ?? []
         asrModelID = try c.decodeIfPresent(String.self, forKey: .asrModelID)
         llmModelID = try c.decodeIfPresent(String.self, forKey: .llmModelID)
         imageModelID = try c.decodeIfPresent(String.self, forKey: .imageModelID)
         videoModelID = try c.decodeIfPresent(String.self, forKey: .videoModelID)
         mcpServers = (try? c.decode([MCPServerConfig].self, forKey: .mcpServers)) ?? []
+        // Absent in older configs → seed the starter agents so the feature isn't
+        // empty on first upgrade. An explicit `[]` (user deleted them all) stays.
+        agents = (try? c.decode([Agent].self, forKey: .agents)) ?? Agent.seeded
+        activeAgentID = try c.decodeIfPresent(String.self, forKey: .activeAgentID) ?? agents.first?.id
+        toolRootDirectories = (try? c.decode([String].self, forKey: .toolRootDirectories)) ?? []
         activeTemplateID = try c.decodeIfPresent(String.self, forKey: .activeTemplateID)
         llmPolishEnabled = try c.decodeIfPresent(Bool.self, forKey: .llmPolishEnabled) ?? d.llmPolishEnabled
         autoInsert = try c.decodeIfPresent(Bool.self, forKey: .autoInsert) ?? d.autoInsert
@@ -617,6 +668,7 @@ struct Settings: Codable {
         injectionDefense = try c.decodeIfPresent(Bool.self, forKey: .injectionDefense) ?? d.injectionDefense
         cleanOutput = try c.decodeIfPresent(Bool.self, forKey: .cleanOutput) ?? d.cleanOutput
         feedbackSounds = (try? c.decode(FeedbackSoundSettings.self, forKey: .feedbackSounds)) ?? d.feedbackSounds
+        capture = (try? c.decode(CaptureSettings.self, forKey: .capture)) ?? .defaults
         // A hotkey must be a numeric keycode; migrate anything else to right ⌘.
         if Int(hotkey) == nil { hotkey = d.hotkey }
     }
@@ -646,13 +698,6 @@ struct Settings: Codable {
     func effectivePricing(of model: ModelConfig) -> ModelPricing? {
         if let o = model.pricingOverride, !o.isEmpty { return o }
         return card(for: model)?.pricing
-    }
-
-    /// Effective LLM feature flags: an explicit user setting wins; otherwise the
-    /// catalog card's flags fill in for a known model.
-    func effectiveAbilities(of model: ModelConfig) -> LLMCapabilities {
-        if model.llmCapabilities != .none { return model.llmCapabilities }
-        return card(for: model)?.abilities ?? .none
     }
 
     /// `渠道商/模型ID` — the uniform label for selecting/disambiguating models.
@@ -733,6 +778,13 @@ struct Settings: Codable {
     var activeTemplate: PromptTemplate? {
         guard let id = activeTemplateID else { return nil }
         return templates.first { $0.id == id }
+    }
+
+    /// The active chat agent (falls back to the first one so chat always has a
+    /// persona once any agent exists).
+    var activeAgent: Agent? {
+        if let id = activeAgentID, let a = agents.first(where: { $0.id == id }) { return a }
+        return agents.first
     }
 
     /// The service a model speaks through, if it can be resolved. Falls back to

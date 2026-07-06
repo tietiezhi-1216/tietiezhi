@@ -34,6 +34,7 @@ final class AppController: ObservableObject {
     @Published var micPermission: PermissionState = .notDetermined
     @Published var axPermission: PermissionState = .notDetermined
     @Published var inputMonitoringPermission: PermissionState = .notDetermined
+    @Published var screenRecordingPermission: PermissionState = .notDetermined
     @Published var audioInputs: [String] = []
     @Published var updateStatus: UpdateStatus = .idle
 
@@ -52,11 +53,22 @@ final class AppController: ObservableObject {
     var onPermissionsSatisfied: (() -> Void)?
     private var pollTask: Task<Void, Never>?
 
+    /// True while a settings shortcut recorder is listening — pauses global chord
+    /// matching so an already-bound chord reaches the recorder.
+    @Published var isRecordingShortcut = false
+
     /// Set by the dictation layer once it's constructed (avoids a hard
     /// compile-time dependency from the UI on the engine).
     var onBeginHotkeyCapture: (() -> Void)?
     var onCancelHotkeyCapture: (() -> Void)?
     var onToggleDictation: (() -> Void)?
+    /// Wired to the capture engine (screenshot satellite).
+    var onStartCapture: (() -> Void)?
+    var onPinClipboard: (() -> Void)?
+    var onPinImage: ((NSImage) -> Void)?
+    /// Wired to the hotkey monitor to gate chord matching while recording.
+    var onSuspendShortcuts: (() -> Void)?
+    var onResumeShortcuts: (() -> Void)?
 
     private var updateTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
@@ -70,6 +82,7 @@ final class AppController: ObservableObject {
         micPermission = Permissions.microphone
         axPermission = Permissions.accessibility
         inputMonitoringPermission = Permissions.inputMonitoring
+        screenRecordingPermission = Permissions.screenRecording
         audioInputs = AudioDevices.inputNames()
     }
 
@@ -156,6 +169,47 @@ final class AppController: ObservableObject {
 
     func toggleDictation() {
         onToggleDictation?()
+    }
+
+    // MARK: Screenshot satellite
+
+    /// 区域截图 (from settings / menus). A short delay lets the invoking UI
+    /// (menu, settings window) dismiss before the screen freezes.
+    func startCapture(afterDelay seconds: TimeInterval = 0.25) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            self?.onStartCapture?()
+        }
+    }
+
+    func pinClipboard() {
+        onPinClipboard?()
+    }
+
+    func pinImage(_ image: NSImage) {
+        onPinImage?(image)
+    }
+
+    func requestScreenRecording() {
+        Permissions.requestScreenRecording()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.refreshStatus()
+        }
+    }
+
+    // MARK: Shortcut recording
+
+    /// The settings recorder is now listening — mute global chord matching.
+    func beginShortcutRecording() {
+        guard !isRecordingShortcut else { return }
+        isRecordingShortcut = true
+        onSuspendShortcuts?()
+    }
+
+    /// Recording finished (captured or cancelled) — restore chord matching.
+    func endShortcutRecording() {
+        guard isRecordingShortcut else { return }
+        isRecordingShortcut = false
+        onResumeShortcuts?()
     }
 
     // MARK: Software updates

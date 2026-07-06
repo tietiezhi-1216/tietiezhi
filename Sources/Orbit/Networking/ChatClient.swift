@@ -24,12 +24,14 @@ enum ChatClient {
         model: ResolvedModel,
         messages: [ChatMessage],
         tools: [ToolSpec] = [],
+        reasoning: String = "",
         onDelta: @MainActor @escaping (String) -> Void
     ) async throws -> StreamOutcome {
         guard !model.apiKey.trimmed.isEmpty else {
             throw OrbitError("所选大模型服务商缺少 API Key。")
         }
-        let req = try buildRequest(model: model, messages: messages, tools: tools, stream: true)
+        let req = try buildRequest(model: model, messages: messages, tools: tools,
+                                   reasoning: reasoning, stream: true)
 
         let (bytes, resp): (URLSession.AsyncBytes, URLResponse)
         do {
@@ -100,7 +102,8 @@ enum ChatClient {
     // MARK: - Request building
 
     static func buildRequest(model: ResolvedModel, messages: [ChatMessage],
-                             tools: [ToolSpec] = [], stream: Bool) throws -> URLRequest {
+                             tools: [ToolSpec] = [], reasoning: String = "",
+                             stream: Bool) throws -> URLRequest {
         guard let url = model.url else {
             throw OrbitError("大模型 Base URL 无效。")
         }
@@ -111,14 +114,14 @@ enum ChatClient {
         model.authorize(&req)
         req.httpBody = try JSONSerialization.data(
             withJSONObject: payload(model: model, messages: messages, tools: tools,
-                                    stream: stream, temperature: 0.7)
+                                    reasoning: reasoning, stream: stream, temperature: 0.7)
         )
         return req
     }
 
     /// Build the wire-specific request body.
     static func payload(model: ResolvedModel, messages: [ChatMessage],
-                        tools: [ToolSpec] = [],
+                        tools: [ToolSpec] = [], reasoning: String = "",
                         stream: Bool, temperature: Double) -> [String: Any] {
         switch model.wire {
         case .anthropicMessages:
@@ -130,9 +133,14 @@ enum ChatClient {
             var p: [String: Any] = [
                 "model": model.model,
                 "messages": anthropicTurns(messages),
-                "max_tokens": 4096,
-                "temperature": temperature,
+                // max_tokens must exceed the thinking budget.
+                "max_tokens": reasoning.isEmpty ? 4096 : ReasoningLevels.anthropicBudget(reasoning) + 4096,
+                // Anthropic requires temperature = 1 while extended thinking is on.
+                "temperature": reasoning.isEmpty ? temperature : 1.0,
             ]
+            if !reasoning.isEmpty {
+                p["thinking"] = ["type": "enabled", "budget_tokens": ReasoningLevels.anthropicBudget(reasoning)]
+            }
             if stream { p["stream"] = true }
             if !system.isEmpty { p["system"] = system }
             if !tools.isEmpty {
@@ -151,6 +159,7 @@ enum ChatClient {
                     .map { ["role": $0.role.rawValue, "content": $0.content] },
                 "temperature": temperature,
             ]
+            if !reasoning.isEmpty { p["reasoning"] = ["effort": reasoning] }
             if stream { p["stream"] = true }
             return p
 
@@ -164,6 +173,7 @@ enum ChatClient {
             ]
             // Ask OpenAI-compatible servers to emit a final usage chunk.
             if stream { p["stream_options"] = ["include_usage": true] }
+            if !reasoning.isEmpty { p["reasoning_effort"] = reasoning }
             if !tools.isEmpty {
                 p["tools"] = tools.map {
                     ["type": "function",
@@ -178,12 +188,24 @@ enum ChatClient {
     // MARK: - Message encoding (tool round-trips)
 
     /// One message in OpenAI Chat Completions shape, including assistant
-    /// tool_calls and `role:"tool"` results.
+    /// tool_calls, `role:"tool"` results, and user image attachments (encoded as
+    /// `image_url` data-URI parts for vision models).
     private static func openAIMessage(_ m: ChatMessage) -> [String: Any] {
         if m.role == .tool, let r = m.toolResult {
             return ["role": "tool", "tool_call_id": r.toolCallID, "content": r.content]
         }
-        var msg: [String: Any] = ["role": m.role.rawValue, "content": m.content]
+        var msg: [String: Any] = ["role": m.role.rawValue]
+        let images = userImageData(m)
+        if images.isEmpty {
+            msg["content"] = m.content
+        } else {
+            var parts: [[String: Any]] = []
+            if !m.content.isEmpty { parts.append(["type": "text", "text": m.content]) }
+            for (mime, b64) in images {
+                parts.append(["type": "image_url", "image_url": ["url": "data:\(mime);base64,\(b64)"]])
+            }
+            msg["content"] = parts
+        }
         if m.role == .assistant, let calls = m.toolCalls, !calls.isEmpty {
             msg["tool_calls"] = calls.map {
                 ["id": $0.id, "type": "function",
@@ -191,6 +213,32 @@ enum ChatClient {
             }
         }
         return msg
+    }
+
+    /// Base64-encoded (mime, data) for a user message's image attachments. Only
+    /// user-provided images are sent as input; assistant/tool attachments are
+    /// display-only. Non-image / unreadable files are skipped.
+    private static func userImageData(_ m: ChatMessage) -> [(String, String)] {
+        guard m.role == .user, let paths = m.attachments else { return [] }
+        var out: [(String, String)] = []
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            let mime = imageMime(url.pathExtension)
+            guard mime != nil, let data = try? Data(contentsOf: url) else { continue }
+            out.append((mime!, data.base64EncodedString()))
+        }
+        return out
+    }
+
+    private static func imageMime(_ ext: String) -> String? {
+        switch ext.lowercased() {
+        case "png":          return "image/png"
+        case "jpg", "jpeg":  return "image/jpeg"
+        case "gif":          return "image/gif"
+        case "webp":         return "image/webp"
+        case "heic":         return "image/heic"
+        default:             return nil
+        }
     }
 
     /// Anthropic turns: assistant tool calls become `tool_use` content blocks;
@@ -226,7 +274,18 @@ enum ChatClient {
                 }
                 turns.append(["role": "assistant", "content": blocks])
             } else {
-                turns.append(["role": m.role.rawValue, "content": m.content])
+                let images = userImageData(m)
+                if images.isEmpty {
+                    turns.append(["role": m.role.rawValue, "content": m.content])
+                } else {
+                    var blocks: [[String: Any]] = []
+                    if !m.content.isEmpty { blocks.append(["type": "text", "text": m.content]) }
+                    for (mime, b64) in images {
+                        blocks.append(["type": "image",
+                                       "source": ["type": "base64", "media_type": mime, "data": b64]])
+                    }
+                    turns.append(["role": "user", "content": blocks])
+                }
             }
         }
         flushResults()

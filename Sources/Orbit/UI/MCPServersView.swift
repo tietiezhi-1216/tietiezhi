@@ -14,7 +14,7 @@ struct MCPServersView: View {
     @State private var reconnecting = false
 
     var body: some View {
-        PageScaffold(title: "模型服务 · MCP") {
+        PageScaffold(title: "功能 · MCP") {
             HStack(spacing: 8) {
                 Button { reconnect() } label: {
                     Label(reconnecting ? "连接中…" : "重新连接", systemImage: "arrow.clockwise")
