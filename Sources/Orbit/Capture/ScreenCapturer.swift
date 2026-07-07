@@ -16,6 +16,25 @@ struct SnapWindow {
     let title: String
 }
 
+/// Race an async operation against a timeout. If the operation wedges (a real
+/// ScreenCaptureKit failure mode on a half-applied TCC grant), the timeout wins,
+/// the caller's `starting`/reentrancy state unwinds, and an error surfaces
+/// instead of the capture silently dying. The leaked hung task is acceptable.
+func withCaptureTimeout<T>(seconds: Double, _ operation: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw OrbitError("截图超时——屏幕录制权限可能未完全生效，请在系统设置里关闭再重新打开 Orbit 的屏幕录制授权，然后重启 Orbit。")
+        }
+        guard let first = try await group.next() else {
+            throw OrbitError("截图失败。")
+        }
+        group.cancelAll()
+        return first
+    }
+}
+
 enum ScreenCapturer {
 
     /// Capture one display at native (Retina) resolution, without the cursor.

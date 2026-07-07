@@ -35,18 +35,30 @@ final class CaptureEngine {
     /// our self-signed dev identity (same macOS quirk as Input Monitoring, see
     /// AppController), so gating on it up front can lock out a granted app.
     func startRegionCapture() {
-        guard overlay == nil, !starting else { return }
+        NSLog("[capture] startRegionCapture 被调用 (overlay=\(overlay != nil) starting=\(starting))")
+        guard overlay == nil, !starting else {
+            NSLog("[capture] 提前返回：已有 overlay 或正在启动")
+            return
+        }
 
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
-        guard let screen else { return }
+        guard let screen else { NSLog("[capture] 找不到目标屏幕"); return }
 
         starting = true
         Task { @MainActor in
             defer { starting = false }
             do {
-                let frozen = try await ScreenCapturer.freeze(screen: screen)
+                NSLog("[capture] 开始冻结屏幕…")
+                // Hard timeout: SCScreenshotManager can wedge when the screen-
+                // recording grant is half-applied. Without this, `starting` (reset
+                // only by the defer below) would stay true forever and every later
+                // press would silently early-return — the hotkey looks dead.
+                let frozen = try await withCaptureTimeout(seconds: 6) {
+                    try await ScreenCapturer.freeze(screen: screen)
+                }
+                NSLog("[capture] 冻结成功 (\(frozen.width)x\(frozen.height))，展示遮罩")
                 presentOverlay(frozen: frozen, screen: screen)
             } catch {
                 NSLog("[capture] freeze failed: \(error.localizedDescription) (preflight=\(Permissions.screenRecording == .granted))")

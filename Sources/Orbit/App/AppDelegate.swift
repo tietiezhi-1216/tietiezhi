@@ -83,10 +83,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         controller.refreshStatus()
-        if controller.requiredPermissionsGranted {
-            // Mic + accessibility in place → start the hotkey and go straight to
-            // chat. If the tap can't install we surface Input Monitoring then.
+        // The global hotkey tap (screenshot / pin / dictation chords) only needs
+        // Accessibility — NOT the microphone. Start it as soon as Accessibility is
+        // granted, independent of the mic/onboarding flow, so a user who only
+        // wants screenshots (and declines the mic) still gets working ⌃⇧A / ⌃⇧P.
+        if controller.axPermission == .granted {
             startHotkeyMonitor()
+        }
+        if controller.requiredPermissionsGranted {
+            // Mic + accessibility in place → go straight to chat.
             showChat()
         } else {
             // Something's missing → don't fail silently in other apps. Gate on a
@@ -133,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.onShortcut = { shortcut in ShortcutRunner.run(shortcut) }
         // Built-in feature chords: 区域截图 / 剪贴板贴图.
         monitor.onFeatureChord = { [weak self] feature in
+            NSLog("[capture] 功能热键触发: \(feature)")
             switch feature {
             case "capture": self?.captureEngine.startRegionCapture()
             case "pin":     self?.captureEngine.pinClipboard()
@@ -203,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func promptRelaunchForHotkey() {
         let alert = NSAlert()
         alert.messageText = "全局热键未能启用"
-        alert.informativeText = "唤起听写的全局热键需要「输入监控」权限。请在「系统设置 → 隐私与安全性 → 输入监控」中开启 Orbit，然后重启 Orbit 使其生效。\n\n（其余功能不受影响：你仍可从菜单栏开始听写。）"
+        alert.informativeText = "听写、截图（⌃⇧A）、贴图（⌃⇧P）的全局热键都依赖同一个事件监听，需要「辅助功能」权限。请在「系统设置 → 隐私与安全性 → 辅助功能」中确认已开启 Orbit（若列表里有多个同名 Orbit 请都开启），然后重启 Orbit 使其生效。\n\n（在此之前，你仍可从菜单栏图标点「区域截图」直接截图——菜单栏入口不依赖全局热键。）"
         alert.addButton(withTitle: "打开输入监控设置")
         alert.addButton(withTitle: "重启 Orbit")
         alert.addButton(withTitle: "稍后")

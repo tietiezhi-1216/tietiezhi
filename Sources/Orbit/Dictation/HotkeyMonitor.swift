@@ -87,6 +87,7 @@ final class HotkeyMonitor {
             ("pin", capture.pinChord.keyCode, capture.pinChord.modifiers),
         ].filter { !$0.2.isEmpty }
         shortcutsLock.unlock()
+        NSLog("[capture] 已加载功能热键: 截图=\(capture.captureChord.display) 贴图=\(capture.pinChord.display)")
     }
 
     /// Pause / resume chord matching — used while the settings recorder is

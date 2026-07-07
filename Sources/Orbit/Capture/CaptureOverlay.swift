@@ -151,7 +151,16 @@ final class CaptureOverlayController {
         panel.contentView = hosting
         panel.setFrame(screen.frame, display: true)
         self.panel = panel
+        // The capture chord usually fires while Orbit is in the BACKGROUND (the
+        // user is in another app). A plain makeKeyAndOrderFront from a background,
+        // non-activating app does not reliably bring a borderless panel to the
+        // front or make it key — so activate the app AND force the panel front
+        // (the dictation pill relies on orderFrontRegardless for the same reason).
+        NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
+        panel.makeKey()
+        NSLog("[capture] overlay shown on screen \(screen.frame) — panel visible=\(panel.isVisible) key=\(panel.isKeyWindow)")
         NSCursor.crosshair.push()
         installKeyMonitor()
     }
