@@ -47,7 +47,11 @@ final class CaptureEngine {
                 }
                 CaptureLog.log("✅ SCShareableContent 成功：\(content.displays.count) 个显示器、\(content.windows.count) 个窗口——屏幕录制对本 App 有效")
             } catch {
-                CaptureLog.log("❌ SCShareableContent 失败：\(error.localizedDescription)——屏幕录制对本 App【无效】。请确认在系统设置里授权的是这个 App（\(id)）本身，且授权后已完全退出并重开。")
+                CaptureLog.log("❌ SCShareableContent 失败：\(error.localizedDescription)——屏幕录制对本 App【无效】，主动发起系统授权请求。")
+                // Proactively trigger the system screen-recording prompt on launch
+                // (rather than only on the first capture attempt), so a fresh
+                // install registers in the list and the user can grant it right away.
+                Permissions.requestScreenRecording()
             }
         }
     }
