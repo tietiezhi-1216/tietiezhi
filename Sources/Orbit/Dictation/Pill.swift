@@ -24,7 +24,7 @@ enum DictPhase: Equatable {
 final class PillState: ObservableObject {
     @Published var phase: DictPhase = .recording
     @Published var level: Float = 0
-    /// Short status word shown while thinking ("识别中" / "润色中").
+    /// Short status word shown while thinking ("Translate" / "Thinking").
     @Published var status: String = ""
     /// Latest streamed / final text, rendered in the middle while thinking.
     @Published var text: String = ""
@@ -313,7 +313,7 @@ struct PillView: View {
                 .frame(width: 38)
         case .thinking:
             if state.text.isEmpty {
-                ThinkingLabel(text: state.status.isEmpty ? "转换中" : state.status)
+                ThinkingLabel(text: state.status.isEmpty ? "Translate" : state.status)
                     .frame(maxWidth: .infinity)
             } else {
                 StreamingText(target: state.text)
@@ -381,7 +381,7 @@ private struct LevelBars: View {
 
 // MARK: - Thinking visuals
 
-/// The placeholder shown before any text streams in ("转换中") — a label with a
+/// The placeholder shown before any text streams in ("Translate") — a label with a
 /// light sweeping across it. The capsule's edge wave does the rest of the work.
 private struct ThinkingLabel: View {
     let text: String

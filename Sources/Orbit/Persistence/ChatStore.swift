@@ -194,7 +194,47 @@ final class ChatStore: ObservableObject {
     // MARK: - Streaming
 
     @Published private(set) var streamingConversationID: UUID?
+    /// When the active turn started — drives the live-ticking elapsed timer in the
+    /// transcript footer. Nil whenever nothing is streaming.
+    @Published private(set) var streamStartedAt: Date?
     private var streamingMessageID: UUID?
+
+    /// Live output-token count for the active turn. Ticks up from a character
+    /// heuristic as deltas stream in, then snaps to the provider-reported
+    /// figure whenever a round's usage lands — so the footer counts in real
+    /// time without waiting for the trailing usage chunk.
+    @Published private(set) var liveOutputTokens: Int = 0
+    private var liveTokenAccum: Double = 0
+
+    /// Last known context occupancy per conversation (prompt + reply tokens of
+    /// the most recent turn, provider-reported). Drives the composer's ring.
+    @Published private(set) var contextUsed: [UUID: Int] = [:]
+
+    /// Rough token estimate for arbitrary text: CJK ≈ 1 token/char, everything
+    /// else ≈ 4 chars/token. Only used for live display; real usage overrides.
+    static func estimateTokens(_ text: String) -> Double {
+        var cjk = 0, other = 0
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x2E80...0x9FFF, 0x3000...0x303F, 0xF900...0xFAFF, 0xFF00...0xFFEF:
+                cjk += 1
+            default:
+                other += 1
+            }
+        }
+        return Double(cjk) + Double(other) / 4.0
+    }
+
+    /// Context occupancy to display for a conversation: the provider-reported
+    /// figure when we have one, otherwise a character estimate of the whole
+    /// transcript; the in-flight turn's live tokens ride on top.
+    func contextTokens(for conversationID: UUID) -> Int {
+        var base = contextUsed[conversationID] ?? conversations
+            .first { $0.id == conversationID }
+            .map { convo in Int(convo.messages.reduce(0) { $0 + Self.estimateTokens($1.content) }) } ?? 0
+        if streamingConversationID == conversationID { base += liveOutputTokens }
+        return base
+    }
 
     func cancel() {
         streamTask?.cancel()
@@ -210,6 +250,7 @@ final class ChatStore: ObservableObject {
         }
         streamingConversationID = nil
         streamingMessageID = nil
+        streamStartedAt = nil
         isStreaming = false
         if let cid { touch(cid) }   // persist the post-cancel state
     }
@@ -267,11 +308,18 @@ final class ChatStore: ObservableObject {
         }
         conversations[ci].messages.append(assistant)
 
+        let turnStart = Date()
         isStreaming = true
         streamingConversationID = cid
         streamingMessageID = aid
+        streamStartedAt = turnStart
+        liveOutputTokens = 0
+        liveTokenAccum = 0
         streamTask = Task { [weak self] in
             guard let self else { return }
+            // Output tokens accumulated across every round of this turn (the tool
+            // loop can stream several times); frozen onto the final bubble below.
+            var turnOutput = 0
             // The active agent decides both the persona (system prompt) and which
             // tools are on the table. Offer tools only when the model is flagged
             // tool-capable, on a wire the tool loop supports, and the agent has
@@ -320,11 +368,22 @@ final class ChatStore: ObservableObject {
                         model: model, messages: turn, tools: toolSpecs, reasoning: effort
                     ) { piece in
                         self.appendDelta(piece, conversationID: cid, messageID: currentAID)
+                        self.liveTokenAccum += ChatStore.estimateTokens(piece)
+                        self.liveOutputTokens = Int(self.liveTokenAccum)
                     }
                     if let cfg = self.settings.settings.llmModel, !outcome.usage.isEmpty {
                         self.usage.add(self.settings.settings.usageRecord(
                             for: cfg, source: "chat", date: Date(), usage: outcome.usage))
                     }
+                    turnOutput += outcome.usage.output ?? 0
+                    // Snap the live counter to the provider's real figure, and
+                    // record the turn's total context occupancy for the ring.
+                    if outcome.usage.output != nil {
+                        self.liveTokenAccum = Double(turnOutput)
+                        self.liveOutputTokens = turnOutput
+                    }
+                    let ctx = (outcome.usage.input ?? 0) + (outcome.usage.output ?? 0)
+                    if ctx > 0 { self.contextUsed[cid] = ctx }
                     guard !outcome.toolCalls.isEmpty, rounds < self.maxToolRounds else {
                         // Completed with no content at all → leave a visible note
                         // rather than a permanently empty bubble.
@@ -359,9 +418,19 @@ final class ChatStore: ObservableObject {
                                      conversationID: cid, messageID: currentAID)
                 }
             }
+            // Freeze the turn's elapsed time + output tokens onto the final
+            // assistant bubble so the footer persists after the stream ends.
+            if let ci = self.conversations.firstIndex(where: { $0.id == cid }),
+               let mi = self.conversations[ci].messages.firstIndex(where: { $0.id == currentAID }),
+               self.conversations[ci].messages[mi].role == .assistant {
+                self.conversations[ci].messages[mi].elapsed = Date().timeIntervalSince(turnStart)
+                let finalTokens = turnOutput > 0 ? turnOutput : self.liveOutputTokens
+                if finalTokens > 0 { self.conversations[ci].messages[mi].tokens = finalTokens }
+            }
             self.isStreaming = false
             self.streamingConversationID = nil
             self.streamingMessageID = nil
+            self.streamStartedAt = nil
             self.streamTask = nil
             self.touch(cid)   // persist the completed reply
         }

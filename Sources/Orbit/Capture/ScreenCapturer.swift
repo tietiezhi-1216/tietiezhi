@@ -6,7 +6,12 @@
 //  CGWindowListCreateImage / CGDisplayCreateImage APIs.
 
 import AppKit
+import CoreImage
 import ScreenCaptureKit
+
+/// Shared CoreImage context for the image-adjust (亮度/对比度/饱和度) slider — one
+/// GPU context reused across the interactive slider drags.
+private let sharedCIContext = CIContext(options: [.useSoftwareRenderer: false])
 
 /// One on-screen window, for hover-highlight / click-to-select. `frame` is in
 /// the OVERLAY VIEW's coordinate space (top-left origin of the target screen,
@@ -14,6 +19,8 @@ import ScreenCaptureKit
 struct SnapWindow {
     let frame: CGRect
     let title: String
+    /// Owning app's pid — used to query its Accessibility node tree for element snap.
+    let pid: pid_t
 }
 
 /// Race an async operation against a timeout. If the operation wedges (a real
@@ -73,8 +80,11 @@ enum ScreenCapturer {
 
         var out: [SnapWindow] = []
         for info in list {
+            // CGWindowList stores pid as a CFNumber — `as? pid_t` (Int32) never
+            // bridges, so read via NSNumber.int32Value.
+            let pid = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
             guard (info[kCGWindowLayer as String] as? Int) == 0,
-                  (info[kCGWindowOwnerPID as String] as? pid_t) != ourPID,
+                  pid != 0, pid != ourPID,
                   (info[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
                   let b = info[kCGWindowBounds as String] as? [String: CGFloat],
                   let x = b["X"], let y = b["Y"], let w = b["Width"], let h = b["Height"],
@@ -89,7 +99,8 @@ enum ScreenCapturer {
                               y: screen.frame.maxY - global.maxY,
                               width: w, height: h)
             out.append(SnapWindow(frame: view,
-                                  title: info[kCGWindowOwnerName as String] as? String ?? ""))
+                                  title: info[kCGWindowOwnerName as String] as? String ?? "",
+                                  pid: pid))
         }
         return out
     }
@@ -166,6 +177,33 @@ extension CGImage {
         ctx.interpolationQuality = .high
         ctx.draw(self, in: CGRect(x: 0, y: 0, width: w, height: h))
         return ctx.makeImage() ?? self
+    }
+
+    /// A 90°-clockwise rotated copy (width/height swap). `.oriented(.right)` is
+    /// verified to rotate CW — the source's left edge becomes the top edge.
+    func rotated90CW() -> CGImage? {
+        let rotated = CIImage(cgImage: self).oriented(.right)
+        return sharedCIContext.createCGImage(rotated, from: rotated.extent)
+    }
+
+    /// A mirrored copy — horizontal (`.upMirrored`, left↔right) or vertical
+    /// (`.downMirrored`, top↔bottom). Both verified against a 2×2 probe.
+    func flipped(horizontal: Bool) -> CGImage? {
+        let f = CIImage(cgImage: self).oriented(horizontal ? .upMirrored : .downMirrored)
+        return sharedCIContext.createCGImage(f, from: f.extent)
+    }
+
+    /// Brightness / contrast / saturation adjusted copy (CIColorControls). The
+    /// three defaults (0 / 1 / 1) return an image identical to the original.
+    func adjusted(brightness: Double, contrast: Double, saturation: Double) -> CGImage? {
+        let input = CIImage(cgImage: self)
+        guard let filter = CIFilter(name: "CIColorControls") else { return nil }
+        filter.setValue(input, forKey: kCIInputImageKey)
+        filter.setValue(brightness, forKey: kCIInputBrightnessKey)
+        filter.setValue(contrast, forKey: kCIInputContrastKey)
+        filter.setValue(saturation, forKey: kCIInputSaturationKey)
+        guard let output = filter.outputImage else { return nil }
+        return sharedCIContext.createCGImage(output, from: input.extent)
     }
 
     /// PNG-encode to a file URL.

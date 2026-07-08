@@ -533,6 +533,8 @@ struct Settings: Codable {
     var llmModelID: String?
     var imageModelID: String? = nil
     var videoModelID: String? = nil
+    /// Chat model the 截图 AI 标注 uses. nil = follow `llmModelID` (chat/听写共用).
+    var captureModelID: String? = nil
     /// External MCP servers whose tools the chat model may call.
     var mcpServers: [MCPServerConfig] = []
     /// Chat agents (persona = system prompt + tool set) and the active one. See Agent.
@@ -651,6 +653,7 @@ struct Settings: Codable {
         llmModelID = try c.decodeIfPresent(String.self, forKey: .llmModelID)
         imageModelID = try c.decodeIfPresent(String.self, forKey: .imageModelID)
         videoModelID = try c.decodeIfPresent(String.self, forKey: .videoModelID)
+        captureModelID = try c.decodeIfPresent(String.self, forKey: .captureModelID)
         mcpServers = (try? c.decode([MCPServerConfig].self, forKey: .mcpServers)) ?? []
         // Absent in older configs → seed the starter agents so the feature isn't
         // empty on first upgrade. An explicit `[]` (user deleted them all) stays.
@@ -773,6 +776,17 @@ struct Settings: Codable {
               let model = models.first(where: { $0.id == id }),
               capability(of: model) == .chat else { return nil }
         return model
+    }
+
+    /// The chat model the 截图 AI 标注 uses: an explicit `captureModelID` (must be
+    /// a valid chat model) if set, otherwise the shared `llmModel`.
+    var captureAnnotationModel: ModelConfig? {
+        if let id = captureModelID,
+           let model = models.first(where: { $0.id == id }),
+           capability(of: model) == .chat {
+            return model
+        }
+        return llmModel
     }
 
     var activeTemplate: PromptTemplate? {

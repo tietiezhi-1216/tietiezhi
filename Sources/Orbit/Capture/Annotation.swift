@@ -17,6 +17,7 @@ enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
     case text       // `text` anchored at `start`
     case highlight  // translucent marker block
     case mosaic     // pixelate the region underneath
+    case spotlight  // dim everything EXCEPT this region (reverse highlight)
     case badge      // numbered circle at `start`
 
     var id: String { rawValue }
@@ -31,6 +32,7 @@ enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
         case .text:      return "文字"
         case .highlight: return "高亮"
         case .mosaic:    return "马赛克"
+        case .spotlight: return "聚光灯"
         case .badge:     return "序号"
         }
     }
@@ -45,8 +47,59 @@ enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
         case .text:      return "character.cursor.ibeam"
         case .highlight: return "highlighter"
         case .mosaic:    return "mosaic"
+        case .spotlight: return "scope"
         case .badge:     return "1.circle"
         }
+    }
+}
+
+/// Stroke dash style for outlined shapes (the 实线 / 虚线 / 点线 property control).
+enum LineDashStyle: String, Codable, CaseIterable, Identifiable {
+    case solid, dashed, dotted
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .solid:  return "实线"
+        case .dashed: return "虚线"
+        case .dotted: return "点线"
+        }
+    }
+
+    /// Dash pattern scaled to the line width; nil = continuous (solid).
+    /// Dotted relies on a round line-cap to render the near-zero dash as dots.
+    func pattern(for lineWidth: CGFloat) -> [CGFloat]? {
+        switch self {
+        case .solid:  return nil
+        case .dashed: return [max(lineWidth * 2.6, 6), max(lineWidth * 2.0, 5)]
+        case .dotted: return [0.01, max(lineWidth * 2.0, 4)]
+        }
+    }
+}
+
+/// Arrow rendering style (the 箭头类型 control).
+enum ArrowType: String, Codable, CaseIterable, Identifiable {
+    case filled   // tapered solid shaft → crisp head (default)
+    case line     // constant-width line + a triangular head
+
+    var id: String { rawValue }
+    var displayName: String { self == .filled ? "实心" : "线条" }
+    var symbol: String { self == .filled ? "arrowshape.right.fill" : "arrow.right" }
+}
+
+/// What a click on the canvas does: pick/move an object, erase one, or draw a
+/// specific kind. Replaces the old `AnnotationKind?` tool (nil = select) so the
+/// eraser — which isn't a drawable kind — is a first-class mode.
+enum CanvasTool: Equatable {
+    case select
+    case erase
+    case draw(AnnotationKind)
+
+    /// The kind this tool draws, or nil for select / erase.
+    var drawKind: AnnotationKind? {
+        if case .draw(let k) = self { return k }
+        return nil
     }
 }
 
@@ -82,27 +135,103 @@ struct Annotation: Identifiable, Codable, Hashable {
     var end: CGPoint
     /// Freehand stroke path.
     var points: [CGPoint]?
+    /// Bézier control point for a CURVED arrow (nil = straight). Absolute image
+    /// points, so it moves with the annotation like `start`/`end`.
+    var control: CGPoint?
     var text: String?
     /// Badge number (序号).
     var number: Int?
     var color: AnnotationColor
+    /// Optional custom colour (`#RRGGBB`). When set it wins over `color`; the
+    /// enum still carries a sensible fallback (and is all the AI ever names).
+    var colorHex: String?
     var lineWidth: CGFloat
     var fontSize: CGFloat
+    /// Fill the interior with the colour (rect / ellipse); outline-only when false.
+    var filled: Bool
+    /// Stroke dash style for the outlined shapes.
+    var dash: LineDashStyle
+    /// Corner radius for rect / spotlight (0 = sharp corners).
+    var cornerRadius: CGFloat
+    /// Arrow rendering style.
+    var arrowType: ArrowType
+    /// Arrow head size multiplier (箭头粗细) — 1 = default proportion.
+    var arrowHeadScale: CGFloat
 
     init(id: UUID = UUID(), kind: AnnotationKind,
          start: CGPoint, end: CGPoint,
-         points: [CGPoint]? = nil, text: String? = nil, number: Int? = nil,
-         color: AnnotationColor = .red, lineWidth: CGFloat = 3, fontSize: CGFloat = 18) {
+         points: [CGPoint]? = nil, control: CGPoint? = nil,
+         text: String? = nil, number: Int? = nil,
+         color: AnnotationColor = .red, colorHex: String? = nil,
+         lineWidth: CGFloat = 3, fontSize: CGFloat = 18,
+         filled: Bool = false, dash: LineDashStyle = .solid, cornerRadius: CGFloat = 0,
+         arrowType: ArrowType = .filled, arrowHeadScale: CGFloat = 1) {
         self.id = id
         self.kind = kind
         self.start = start
         self.end = end
         self.points = points
+        self.control = control
         self.text = text
         self.number = number
         self.color = color
+        self.colorHex = colorHex
         self.lineWidth = lineWidth
         self.fontSize = fontSize
+        self.filled = filled
+        self.dash = dash
+        self.cornerRadius = cornerRadius
+        self.arrowType = arrowType
+        self.arrowHeadScale = arrowHeadScale
+    }
+
+    // Tolerant decode: annotations persist inside screenshot history, and the
+    // schema grows — new fields decode with defaults so old entries (and AI
+    // JSON that omits them) never fail to load. Same principle as Settings.
+    enum CodingKeys: String, CodingKey {
+        case id, kind, start, end, points, control, text, number
+        case color, colorHex, lineWidth, fontSize
+        case filled, dash, cornerRadius, arrowType, arrowHeadScale
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        kind = try c.decode(AnnotationKind.self, forKey: .kind)
+        start = try c.decode(CGPoint.self, forKey: .start)
+        end = try c.decode(CGPoint.self, forKey: .end)
+        points = try c.decodeIfPresent([CGPoint].self, forKey: .points)
+        control = try c.decodeIfPresent(CGPoint.self, forKey: .control)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+        number = try c.decodeIfPresent(Int.self, forKey: .number)
+        color = try c.decodeIfPresent(AnnotationColor.self, forKey: .color) ?? .red
+        colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex)
+        lineWidth = try c.decodeIfPresent(CGFloat.self, forKey: .lineWidth) ?? 3
+        fontSize = try c.decodeIfPresent(CGFloat.self, forKey: .fontSize) ?? 18
+        filled = try c.decodeIfPresent(Bool.self, forKey: .filled) ?? false
+        dash = try c.decodeIfPresent(LineDashStyle.self, forKey: .dash) ?? .solid
+        cornerRadius = try c.decodeIfPresent(CGFloat.self, forKey: .cornerRadius) ?? 0
+        arrowType = try c.decodeIfPresent(ArrowType.self, forKey: .arrowType) ?? .filled
+        arrowHeadScale = try c.decodeIfPresent(CGFloat.self, forKey: .arrowHeadScale) ?? 1
+    }
+
+    /// Effective drawing colour: custom hex wins, else the palette colour.
+    var displayColor: Color {
+        colorHex.flatMap(Color.init(hex:)) ?? color.color
+    }
+
+    /// Is the effective colour light enough that labels/shadows over it need a
+    /// dark counterpart? Presets are known; custom colours use luminance.
+    var isLightColor: Bool {
+        if let rgb = colorHex.flatMap(RGBComponents.init(hex:)) {
+            return (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) > 0.62
+        }
+        return color == .white || color == .yellow
+    }
+
+    /// The curve's control point (defaults to the straight midpoint).
+    var arrowControl: CGPoint {
+        control ?? CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
     }
 
     /// Normalized rect spanned by start/end.
@@ -113,18 +242,35 @@ struct Annotation: Identifiable, Codable, Hashable {
 
     var badgeRadius: CGFloat { max(11, fontSize * 0.68) }
 
+    /// A short, human label for the layers panel row.
+    var layerTitle: String {
+        switch kind {
+        case .text:  return (text?.trimmed.isEmpty == false ? text!.trimmed : "文字")
+        case .badge: return "序号 \(number ?? 1)"
+        default:     return kind.displayName
+        }
+    }
+
     /// Generous hit area for selection (the canvas hit-tests back-to-front).
     func hitTest(_ p: CGPoint) -> Bool {
         let slop: CGFloat = 8
         switch kind {
-        case .rect, .ellipse, .highlight, .mosaic:
+        case .rect, .ellipse, .highlight, .mosaic, .spotlight:
             // Filled-ish regions accept clicks near the border OR inside for the
             // translucent kinds (which read as solid objects).
             let outer = rect.insetBy(dx: -slop, dy: -slop)
-            if kind == .highlight || kind == .mosaic { return outer.contains(p) }
+            if kind == .highlight || kind == .mosaic || kind == .spotlight { return outer.contains(p) }
             let inner = rect.insetBy(dx: slop, dy: slop)
             return outer.contains(p) && !(inner.width > 0 && inner.height > 0 && inner.contains(p))
-        case .arrow, .line:
+        case .arrow:
+            if control == nil { return p.distanceToSegment(start, end) < slop + lineWidth }
+            // Curved: test against the sampled polyline.
+            let pts = QuadCurve.sample(start, arrowControl, end, steps: 24)
+            for i in 1..<pts.count where p.distanceToSegment(pts[i - 1], pts[i]) < slop + lineWidth {
+                return true
+            }
+            return false
+        case .line:
             return p.distanceToSegment(start, end) < slop + lineWidth
         case .freehand:
             guard let pts = points, pts.count > 1 else { return false }
@@ -154,9 +300,21 @@ struct Annotation: Identifiable, Codable, Hashable {
     mutating func translate(by delta: CGSize) {
         start.x += delta.width; start.y += delta.height
         end.x += delta.width; end.y += delta.height
+        if let c = control {
+            control = CGPoint(x: c.x + delta.width, y: c.y + delta.height)
+        }
         if let pts = points {
             points = pts.map { CGPoint(x: $0.x + delta.width, y: $0.y + delta.height) }
         }
+    }
+
+    /// Map every stored coordinate through `f` (used to rotate the canvas). The
+    /// rect kinds keep their two opposite corners — `rect` re-normalizes order.
+    mutating func transformPoints(_ f: (CGPoint) -> CGPoint) {
+        start = f(start)
+        end = f(end)
+        if let c = control { control = f(c) }
+        if let pts = points { points = pts.map(f) }
     }
 }
 
@@ -168,13 +326,97 @@ struct Annotation: Identifiable, Codable, Hashable {
 final class AnnotationEditorState: ObservableObject {
     @Published var annotations: [Annotation] = []
     @Published var selectedID: UUID?
-    /// Active drawing tool; nil = select / move mode.
-    @Published var tool: AnnotationKind? = .arrow
+    /// Active canvas tool. Starts in select mode so a fresh selection can be
+    /// adjusted (drag handles / move) before drawing — picking a tool from the
+    /// toolbar is a deliberate second step.
+    @Published var tool: CanvasTool = .select
     @Published var color: AnnotationColor = .red
+    /// Custom colour override for new annotations (`#RRGGBB`); nil = use `color`.
+    @Published var colorHex: String?
     @Published var lineWidth: CGFloat = 3
     @Published var fontSize: CGFloat = 18
+    /// Fill new rect / ellipse instead of outlining them.
+    @Published var filled: Bool = false
+    /// Dash style new outlined shapes get.
+    @Published var dash: LineDashStyle = .solid
+    /// Corner radius new rect / spotlight get.
+    @Published var cornerRadius: CGFloat = 0
+    /// Arrow style new arrows get.
+    @Published var arrowType: ArrowType = .filled
+    /// Arrow head size multiplier new arrows get.
+    @Published var arrowHeadScale: CGFloat = 1
     /// Text annotation currently being edited in-place (shows a TextField).
     @Published var editingTextID: UUID?
+    /// Whether the layers panel is open.
+    @Published var layersOpen = false
+
+    /// The kind whose properties the property bar edits: the current selection
+    /// wins, else the active draw tool (nil in select / erase with nothing selected).
+    var activeKind: AnnotationKind? { selected?.kind ?? tool.drawKind }
+
+    /// The colour new annotations get (custom hex wins over the preset).
+    var drawColor: Color {
+        colorHex.flatMap(Color.init(hex:)) ?? color.color
+    }
+
+    /// Apply a preset colour to the pen (and any current selection).
+    func applyPreset(_ c: AnnotationColor) {
+        color = c
+        colorHex = nil
+        if let id = selectedID { update(id: id) { $0.color = c; $0.colorHex = nil } }
+    }
+
+    /// Apply a custom colour to the pen (and any current selection).
+    func applyCustom(hex: String) {
+        colorHex = hex
+        if let id = selectedID { update(id: id) { $0.colorHex = hex } }
+    }
+
+    // Style setters: each updates the pen default AND the current selection, so
+    // tweaking a control retargets whatever is selected (like `applyPreset`).
+    func setLineWidth(_ w: CGFloat) {
+        lineWidth = w
+        if let id = selectedID { update(id: id) { $0.lineWidth = w } }
+    }
+
+    func setFontSize(_ s: CGFloat) {
+        fontSize = s
+        if let id = selectedID { update(id: id) { $0.fontSize = s } }
+    }
+
+    func setFilled(_ f: Bool) {
+        filled = f
+        if let id = selectedID { update(id: id) { $0.filled = f } }
+    }
+
+    func setDash(_ d: LineDashStyle) {
+        dash = d
+        if let id = selectedID { update(id: id) { $0.dash = d } }
+    }
+
+    func setCornerRadius(_ r: CGFloat) {
+        cornerRadius = r
+        if let id = selectedID { update(id: id) { $0.cornerRadius = r } }
+    }
+
+    func setArrowType(_ t: ArrowType) {
+        arrowType = t
+        if let id = selectedID { update(id: id) { $0.arrowType = t } }
+    }
+
+    func setArrowHeadScale(_ s: CGFloat) {
+        arrowHeadScale = s
+        if let id = selectedID { update(id: id) { $0.arrowHeadScale = s } }
+    }
+
+    /// Erase the topmost annotation under a point (one undo per gesture — the
+    /// caller snapshots at gesture start).
+    func eraseAt(_ p: CGPoint) {
+        guard let hit = hitTest(p) else { return }
+        annotations.removeAll { $0.id == hit.id }
+        if selectedID == hit.id { selectedID = nil }
+        if editingTextID == hit.id { editingTextID = nil }
+    }
 
     private var undoStack: [[Annotation]] = []
     private var redoStack: [[Annotation]] = []
@@ -233,6 +475,20 @@ final class AnnotationEditorState: ObservableObject {
         if let id = selectedID { remove(id: id) }
     }
 
+    /// Z-order = array order (later = drawn on top). The layers panel lists them
+    /// front-first, so "上移" moves toward the end of the array.
+    func bringForward(id: UUID) {
+        guard let i = annotations.firstIndex(where: { $0.id == id }), i < annotations.count - 1 else { return }
+        snapshot()
+        annotations.swapAt(i, i + 1)
+    }
+
+    func sendBackward(id: UUID) {
+        guard let i = annotations.firstIndex(where: { $0.id == id }), i > 0 else { return }
+        snapshot()
+        annotations.swapAt(i, i - 1)
+    }
+
     func clearAll() {
         guard !annotations.isEmpty else { return }
         snapshot()
@@ -245,9 +501,66 @@ final class AnnotationEditorState: ObservableObject {
     func hitTest(_ p: CGPoint) -> Annotation? {
         annotations.reversed().first { $0.hitTest(p) }
     }
+
+    /// Map every annotation's coordinates (live list AND the undo/redo history) by
+    /// `f`, so a canvas rotation stays consistent through undo. No new snapshot —
+    /// rotation is reversed by rotating back, not by ⌘Z.
+    func transformAll(_ f: (CGPoint) -> CGPoint) {
+        for i in annotations.indices { annotations[i].transformPoints(f) }
+        let map: ([Annotation]) -> [Annotation] = { snap in
+            snap.map { var a = $0; a.transformPoints(f); return a }
+        }
+        undoStack = undoStack.map(map)
+        redoStack = redoStack.map(map)
+    }
 }
 
 // MARK: - Geometry helpers
+
+/// Parsed sRGB components (0–1) of a `#RGB` / `#RRGGBB` string.
+struct RGBComponents {
+    let r, g, b: CGFloat
+
+    init?(hex: String) {
+        var s = hex.trimmed
+        if s.hasPrefix("#") { s.removeFirst() }
+        if s.count == 3 { s = s.map { "\($0)\($0)" }.joined() }   // #abc → #aabbcc
+        guard s.count == 6, let v = UInt32(s, radix: 16) else { return nil }
+        r = CGFloat((v >> 16) & 0xFF) / 255
+        g = CGFloat((v >> 8) & 0xFF) / 255
+        b = CGFloat(v & 0xFF) / 255
+    }
+}
+
+extension Color {
+    init?(hex: String) {
+        guard let c = RGBComponents(hex: hex) else { return nil }
+        self = Color(.sRGB, red: c.r, green: c.g, blue: c.b)
+    }
+
+    /// `#RRGGBB` for persistence (via NSColor so any SwiftUI Color resolves).
+    var hexString: String? {
+        guard let ns = NSColor(self).usingColorSpace(.sRGB) else { return nil }
+        return String(format: "#%02X%02X%02X",
+                      Int(round(ns.redComponent * 255)),
+                      Int(round(ns.greenComponent * 255)),
+                      Int(round(ns.blueComponent * 255)))
+    }
+}
+
+/// Quadratic Bézier helpers shared by the arrow renderer and hit-testing.
+enum QuadCurve {
+    static func point(_ p0: CGPoint, _ c: CGPoint, _ p1: CGPoint, _ t: CGFloat) -> CGPoint {
+        let u = 1 - t
+        let a = u * u, b = 2 * u * t, d = t * t
+        return CGPoint(x: a * p0.x + b * c.x + d * p1.x,
+                       y: a * p0.y + b * c.y + d * p1.y)
+    }
+
+    static func sample(_ p0: CGPoint, _ c: CGPoint, _ p1: CGPoint, steps: Int) -> [CGPoint] {
+        (0...steps).map { point(p0, c, p1, CGFloat($0) / CGFloat(steps)) }
+    }
+}
 
 extension CGPoint {
     func distance(to other: CGPoint) -> CGFloat {

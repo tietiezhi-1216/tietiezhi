@@ -82,16 +82,25 @@ struct ChatMessage: Identifiable, Codable, Hashable {
     /// Local file paths of assets a tool produced (images/videos) so the
     /// transcript can render them inline.
     var attachments: [String]?
+    /// Wall-clock seconds the assistant turn took, frozen when the stream ends —
+    /// drives the "· 8s" in the transcript footer. Nil for non-streamed messages.
+    var elapsed: TimeInterval?
+    /// Output tokens the provider reported for the turn (nil if not reported) —
+    /// drives the "· 2.4k tokens" in the footer.
+    var tokens: Int?
 
     init(id: UUID = UUID(), role: ChatRole, content: String,
          toolCalls: [ToolCall]? = nil, toolResult: ToolResult? = nil,
-         attachments: [String]? = nil) {
+         attachments: [String]? = nil,
+         elapsed: TimeInterval? = nil, tokens: Int? = nil) {
         self.id = id
         self.role = role
         self.content = content
         self.toolCalls = toolCalls
         self.toolResult = toolResult
         self.attachments = attachments
+        self.elapsed = elapsed
+        self.tokens = tokens
     }
 }
 

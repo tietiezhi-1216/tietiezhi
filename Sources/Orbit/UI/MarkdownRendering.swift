@@ -3,32 +3,40 @@
 //  blocks, tables, lists, GFM). Code blocks get a header (language + copy) and a
 //  bordered, scrollable body.
 //
-//  NOTE: syntax coloring (Highlightr / highlight.js) is intentionally NOT wired
-//  here. Highlightr loads its highlight.js via SwiftPM's generated `Bundle.module`
-//  accessor, which resolves resources at `Bundle.main.bundleURL/<pkg>.bundle`
-//  (the .app ROOT) or a hardcoded build-machine path — neither of which exists in
-//  a signed/notarized .app assembled by build.sh (code signing forbids anything
-//  but `Contents/` at the bundle root). Instantiating `Highlightr()` therefore
-//  hits an uncatchable `fatalError` at runtime on any machine other than the build
-//  host (it crashed 0.0.6 on launch the first time chat rendered a code block).
-//  Code renders as clean monospaced text until highlighting is restored through a
-//  resource path that survives signing.
+//  Syntax coloring is done by our own `SyntaxHighlighter` (pure Swift, no resource
+//  bundle) — NOT Highlightr. Highlightr loads highlight.js via SwiftPM's generated
+//  `Bundle.module` accessor, which resolves resources at the .app ROOT or a
+//  hardcoded build path — neither exists in a signed/notarized .app assembled by
+//  build.sh, so `Highlightr()` fatal-errored at runtime (crashed 0.0.6 on the
+//  first chat code block). The local tokenizer can't crash on a missing resource.
 
 import SwiftUI
 import AppKit
 import MarkdownUI
 
-/// A chat Markdown block with bordered, copyable code blocks.
+/// A chat Markdown block with bordered, copyable, syntax-coloured code blocks.
 struct ChatMarkdown: View {
     let content: String
 
     var body: some View {
         Markdown(content)
+            .markdownCodeSyntaxHighlighter(.orbit)
             .markdownBlockStyle(\.codeBlock) { configuration in
                 CodeBlock(configuration: configuration)
             }
             .textSelection(.enabled)
     }
+}
+
+/// Bridges our `SyntaxHighlighter` to MarkdownUI's code-block rendering.
+struct OrbitCodeHighlighter: CodeSyntaxHighlighter {
+    func highlightCode(_ code: String, language: String?) -> Text {
+        Text(SyntaxHighlighter.highlight(code, language: language))
+    }
+}
+
+extension CodeSyntaxHighlighter where Self == OrbitCodeHighlighter {
+    static var orbit: OrbitCodeHighlighter { OrbitCodeHighlighter() }
 }
 
 /// A code block with a header (language + copy button) and a bordered, scrollable

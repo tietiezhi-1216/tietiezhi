@@ -18,6 +18,10 @@ final class CaptureEngine {
 
     private var overlay: CaptureOverlayController?
     private var starting = false
+    private var axPrompted = false
+    /// The app that was frontmost when capture began — restored on finish so we
+    /// don't leave Orbit (which had to activate to show the overlay) in front.
+    private var previousApp: NSRunningApplication?
 
     init(store: SettingsStore, history: ScreenshotHistoryStore, usage: UsageStore?) {
         self.store = store
@@ -74,6 +78,10 @@ final class CaptureEngine {
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
         guard let screen else { CaptureLog.log("找不到目标屏幕"); return }
+
+        // Remember who's in front (usually another app) BEFORE we activate to show
+        // the overlay, so finishing can hand focus back instead of leaving Orbit up.
+        previousApp = NSWorkspace.shared.frontmostApplication
 
         starting = true
         Task { @MainActor in
@@ -166,15 +174,41 @@ final class CaptureEngine {
             frozen: frozen,
             scale: screen.backingScaleFactor,
             canvasSize: screen.frame.size,
+            screenFrame: screen.frame,
             windows: ScreenCapturer.snapWindows(on: screen),
             settings: store,
             usage: usage
         )
+        // AX self-check: element snapping / AI node anchors need Accessibility. The
+        // dev build (com.orbit.app.dev) is a SEPARATE TCC identity from release, so
+        // it may be ungranted even if release is — log it and prompt once.
+        if AXScanner.isAvailable {
+            CaptureLog.log("✅ 辅助功能已授权（AX 可用）——元素吸附/AI节点应生效")
+            // Wake every candidate app's AX tree NOW — Electron/Chromium build
+            // theirs asynchronously; by the time the user hovers, it's ready.
+            var pids: [pid_t] = []
+            for w in session.windows where !pids.contains(w.pid) { pids.append(w.pid) }
+            AXScanner.prewarm(pids: pids)
+            // …then scan whole trees into the snap cache (hover = local geometry).
+            session.prescanElements()
+        } else {
+            CaptureLog.log("⚠️ 辅助功能未授权 AXIsProcessTrusted=false——元素吸附/AI节点不可用。bundle=\(Bundle.main.bundleIdentifier ?? "?")")
+            if !axPrompted { axPrompted = true; AXScanner.requestPermission() }
+        }
+
         let controller = CaptureOverlayController(session: session, screen: screen)
-        session.onCancel = { [weak self] in self?.dismissOverlay() }
+        session.onCancel = { [weak self] in
+            // Hand focus back, then close the overlay a beat later — avoids Orbit
+            // flashing to the front on cancel.
+            self?.handOffAndDismiss()
+        }
         session.onFinish = { [weak self, weak controller, weak session] action in
             guard let self, let controller, let session else { return }
             self.finish(action: action, session: session, controller: controller)
+        }
+        session.onCopyStay = { [weak session] in
+            guard let session else { return }
+            CaptureEngine.copyToClipboard(session: session)
         }
         overlay = controller
         controller.show()
@@ -186,7 +220,94 @@ final class CaptureEngine {
         overlay = nil
     }
 
+    /// Hand focus back to whatever app was frontmost before capture — the overlay
+    /// had to activate Orbit, but the user expects to land back where they were.
+    private func restorePreviousApp() {
+        guard let app = previousApp,
+              app.bundleIdentifier != Bundle.main.bundleIdentifier,
+              !app.isTerminated else { return }
+        app.activate()
+    }
+
+    private var handOffObserver: NSObjectProtocol?
+
+    /// Activate the origin app, and only remove the (opaque, top-most) overlay once
+    /// macOS confirms a non-Orbit app is frontmost. A fixed delay proved unreliable
+    /// (cross-process activation lands whenever it likes, and orderOut of the key
+    /// panel while Orbit is still active re-keys + raises the MAIN window — the
+    /// flash). Event-driven: NSWorkspace.didActivateApplication is the ground truth,
+    /// with a 500ms fallback so the overlay can never get stuck. `then` runs after.
+    private func handOffAndDismiss(then: (() -> Void)? = nil) {
+        let ourBundle = Bundle.main.bundleIdentifier
+
+        // No app to restore (capture was triggered from Orbit itself, or the origin
+        // app died): nothing can flash "over" us meaningfully — dismiss directly.
+        guard let target = previousApp, target.bundleIdentifier != ourBundle,
+              !target.isTerminated else {
+            CaptureLog.log("交还焦点：无外部来源 App（来源即 Orbit），直接撤除遮罩")
+            dismissOverlay()
+            then?()
+            return
+        }
+
+        var finished = false
+        let finish: (String) -> Void = { [weak self] reason in
+            guard let self, !finished else { return }
+            finished = true
+            if let obs = self.handOffObserver {
+                NSWorkspace.shared.notificationCenter.removeObserver(obs)
+                self.handOffObserver = nil
+            }
+            CaptureLog.log("撤除遮罩（\(reason)，前台=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")）")
+            self.dismissOverlay()
+            // The activation at overlay-show raised Orbit's main window; the user
+            // captured from another app and doesn't want it surfacing. orderBack
+            // wasn't enough — it still shows through the gaps around the restored
+            // app. Hide it outright (pill/pins panels stay). It's reopenable from
+            // the Dock / menu bar (applicationShouldHandleReopen → showChat).
+            for w in NSApp.windows where w.isVisible && !(w is NSPanel) {
+                w.orderOut(nil)
+            }
+            then?()
+        }
+
+        CaptureLog.log("交还焦点 → \(target.localizedName ?? target.bundleIdentifier ?? "?")")
+        handOffObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard app?.bundleIdentifier != ourBundle else { return }
+            Task { @MainActor in finish("前台已切换") }
+        }
+        target.activate()
+        NSApp.deactivate()
+        // Fallback: if the notification never lands (target refused activation),
+        // reveal anyway after 500ms rather than wedging the screen.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            finish("超时兜底")
+        }
+    }
+
     // MARK: - Finish
+
+    /// Render the current annotated crop and copy it to the clipboard WITHOUT
+    /// closing the editor — the 复制 button, so the user can paste elsewhere and
+    /// keep annotating / pinning / saving the same shot.
+    static func copyToClipboard(session: CaptureSessionModel) {
+        guard let crop = session.crop, let selection = session.selection else { return }
+        guard let final = AnnotationExporter.render(
+            crop: crop, annotations: session.editor.annotations,
+            pointSize: selection.size, pixelated: session.pixelated, scale: session.scale,
+            beautify: session.beautifyParams
+        ) else {
+            session.showToast("图像合成失败")
+            return
+        }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.writeObjects([final])
+        session.showToast("已复制到剪贴板")
+    }
 
     private func finish(action: CaptureFinishAction, session: CaptureSessionModel,
                         controller: CaptureOverlayController) {
@@ -207,14 +328,12 @@ final class CaptureEngine {
 
         guard let final = AnnotationExporter.render(
             crop: crop, annotations: result.annotations,
-            pointSize: result.pointSize, pixelated: result.pixelated, scale: result.scale
+            pointSize: result.pointSize, pixelated: result.pixelated, scale: result.scale,
+            beautify: session.beautifyParams
         ) else {
             session.showToast("图像合成失败")
             return
         }
-
-        // The save dialog needs the overlay gone first (it floats above all).
-        dismissOverlay()
 
         switch action {
         case .copy:
@@ -222,8 +341,9 @@ final class CaptureEngine {
             pb.clearContents()
             pb.writeObjects([final])
             let entry = persist(result: result, final: final)
-            if store.settings.capture.showQuickPreview, let entry {
-                preview.show(image: final, fileURL: entry.imageURL)
+            handOffAndDismiss { [weak self] in
+                guard let self, self.store.settings.capture.showQuickPreview, let entry else { return }
+                self.preview.show(image: final, fileURL: entry.imageURL)
             }
 
         case .pin:
@@ -234,20 +354,25 @@ final class CaptureEngine {
                 pb.writeObjects([final])
             }
             _ = persist(result: result, final: final)
+            handOffAndDismiss()
 
         case .save:
             let entry = persist(result: result, final: final)
+            dismissOverlay()   // the save dialog needs the overlay gone first
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.png]
             panel.nameFieldStringValue = "Orbit 截图 \(PinPanel.timestamp()).png"
             NSApp.activate(ignoringOtherApps: true)
-            panel.begin { response in
-                guard response == .OK, let url = panel.url else { return }
-                if let entry {
-                    try? FileManager.default.copyItem(at: entry.imageURL, to: url)
-                } else if let cg = final.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-                    try? cg.writePNG(to: url)
+            panel.begin { [weak self] response in
+                if response == .OK, let url = panel.url {
+                    if let entry {
+                        try? FileManager.default.copyItem(at: entry.imageURL, to: url)
+                    } else if let cg = final.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                        try? cg.writePNG(to: url)
+                    }
                 }
+                // The save panel is done — hand focus back to the origin app.
+                Task { @MainActor in self?.restorePreviousApp() }
             }
         }
     }

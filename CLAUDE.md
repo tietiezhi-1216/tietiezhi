@@ -14,20 +14,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 本项目是 **Swift Package（无 Xcode 工程）**，只装了 Command Line Tools 即可构建。所有命令在仓库根目录执行：
 
 ```bash
-./build.sh run        # 编译 → 组装 Orbit.app → ad-hoc 签名 → 重启并启动（最常用）
-./build.sh build      # 仅编译并组装 debug 版 .app
+./build.sh run        # 编译 → 组装 → Apple Development 签名 → 装到 /Applications/Orbit Dev.app → 启动（最常用）
+./build.sh build      # 仅编译并组装 debug 版 .app（留在 .build/，不安装）
 ./build.sh release    # release 配置组装
 ./build.sh clean      # 删除 .build
 ```
 
 > ⚠️ 没有 Makefile（旧记忆里的 `make run` 已过时）。也**没有单元测试**——验证靠 `./build.sh run` 实际运行。
-> `swift build` 只产出裸可执行文件；`build.sh` 额外把它组装成带 `Info.plist` 的 `.app` 并 ad-hoc 签名，这样 macOS 才会给它稳定的 TCC 身份（麦克风 / 辅助功能授权依赖此身份）。
+> `swift build` 只产出裸可执行文件；`build.sh` 额外把它组装成带 `Info.plist` 的 `.app`、用**受信任证书**签名、**安装到 `/Applications`** 再启动——这三步都是 TCC 权限能生效的前提（见下方「签名 / 权限规则」）。
 
 直接编译检查（不组装 app）：`swift build`。
 
-### 权限
+### 签名 / 权限规则（TCC）—— 改动前必读
 
-听写需要两项授权（系统设置 → 隐私与安全性）：**麦克风**（录音）与**辅助功能**（全局热键 + 模拟 ⌘V 粘贴）。改了 bundle 或重新签名后授权可能失效，需要在系统设置里重新勾选。
+macOS 把每项隐私授权（TCC）绑定到 app 的**代码签名 + bundle id**。Orbit 有**两个独立身份**，权限互不相通（签名不同，无法合并）：
+
+| | 正式版 | 开发版（本地 `./build.sh run`） |
+|---|---|---|
+| bundle id | `com.orbit.app` | `com.orbit.app.dev` |
+| 可执行名 | `Orbit` | `OrbitDev`（**故意不同**，见下） |
+| 签名 | Developer ID（Team `LQ97GA8LY8`）+ 公证，CI 出 | **Apple Development**（`嘉伟 薛`/`FMUHLV5VG6`），本地 `build.sh` 签 |
+| 位置 | `/Applications/Orbit.app` | `/Applications/Orbit Dev.app`（**必须装这儿**） |
+
+**三条铁律（都是血泪换来的，破坏任一条截图就废）：**
+
+1. **屏幕录制必须从 `/Applications` 运行。** macOS 屏幕录制（`kTCCServiceScreenCapture`）**拒绝给「从 `.build/` 非标准目录运行的 app」注册/授权**，哪怕签名受信任。所以 `build.sh run` 会把开发版**装到 `/Applications/Orbit Dev.app`** 再启动。辅助功能 / 麦克风不挑位置，从 `.build/` 跑也行——只有屏幕录制有此限制。
+2. **屏幕录制需要「受信任」签名。** 自签名证书（`Orbit Self-Signed`，`CSSMERR_TP_NOT_TRUSTED`）能保住辅助功能，但**保不住屏幕录制**。必须用 Apple 签发的证书（Apple Development 或 Developer ID）。`build.sh` 的 `sign()` 优先级：Apple Development ＞ Orbit Self-Signed ＞ ad-hoc。
+   - Apple Development 证书要能签名，**login 钥匙串里必须有完整证书链**（缺 `WWDR G3` 中间证书会报 `unable to build chain to self-signed root`）。可从系统钥匙串导出或联网下 `AppleWWDRCAG3.cer` 导入。
+3. **屏幕录制列表按「可执行名」显示条目，不是 bundle id。** 若开发版和正式版可执行名都叫 `Orbit`，会**塌成同一行**，用户开的永远是正式版那个、开发版拿不到。所以开发版可执行名改成 `OrbitDev`，在列表里单独成行。（辅助功能按 bundle id 区分，无此问题。）
+
+**权限行为速查：** 辅助功能/麦克风 = 按 bundle id、不挑位置、自签名即可；屏幕录制 = 按可执行名、必须 /Applications、必须受信任证书。**新增权限时**先判断它属于哪一类：像前者就直接能用；像屏幕录制这类敏感权限，就得满足「/Applications + 独立可执行名 + 受信任签名」。
+
+**授权持久性：** 只要签名证书稳定（Apple Development 稳定）且 bundle id/可执行名不变，`./build.sh run` 反复重建重装**都保留授权**，无需重授——本地免发版调试成立。**只有换证书/换签名那一次**，三项权限会全部失效、需各重授一次。
+
+**诊断利器：** 启动自检写入 `~/.orbit/capture-debug.log`（可 `tail`），打印运行的 bundle id、`CGPreflightScreenCaptureAccess`、实测 `SCShareableContent` 成败。排障第一步永远先 `pgrep -x OrbitDev` / `pgrep -x Orbit` 确认在跑哪个。详细来龙去脉见记忆 `orbit-dev-codesigning-tcc`。
 
 ## 架构总览
 

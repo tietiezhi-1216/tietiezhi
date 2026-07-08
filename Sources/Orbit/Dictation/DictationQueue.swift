@@ -68,10 +68,10 @@ final class DictationJob: ObservableObject, Identifiable {
     enum Phase: Equatable { case transcribing, polishing, done, failed }
 
     @Published var phase: Phase = .transcribing
-    @Published var statusLabel: String = "识别中…"
-    /// The stage word the ticker builds `statusLabel` from ("识别中" /
-    /// "识别中 2/3" / "润色中"); the ticker appends elapsed time + slow hints.
-    var statusBase: String = "识别中"
+    @Published var statusLabel: String = "Translate…"
+    /// The stage word the ticker builds `statusLabel` from ("Translate" /
+    /// "Translate 2/3" / "Thinking"); the ticker appends a slow hint only.
+    var statusBase: String = "Translate"
     @Published var streamText: String = ""
     @Published var result: String = ""
     @Published var failure: String?
@@ -181,10 +181,9 @@ final class DictationQueue: ObservableObject {
                 let s = Int(Date().timeIntervalSince(phaseStart))
                 let base = job.statusBase
                 switch s {
-                case ..<3:   job.statusLabel = "\(base)…"
-                case ..<10:  job.statusLabel = "\(base) · \(s) 秒"
-                case ..<25:  job.statusLabel = "\(base) · \(s) 秒 · 服务响应较慢"
-                default:     job.statusLabel = "\(base) · \(s) 秒 · 仍在等待，按 esc 可取消"
+                case ..<10:  job.statusLabel = "\(base)…"
+                case ..<25:  job.statusLabel = "\(base) · 响应较慢"
+                default:     job.statusLabel = "\(base) · 仍在等待，按 esc 可取消"
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
@@ -209,7 +208,7 @@ final class DictationQueue: ObservableObject {
             ) { index, total in
                 await MainActor.run {
                     if total > 1 {
-                        job.statusBase = "识别中 \(index)/\(total)"
+                        job.statusBase = "Translate \(index)/\(total)"
                     }
                 }
             }.trimmed
@@ -231,8 +230,8 @@ final class DictationQueue: ObservableObject {
                let llm = store.settings.llmModel,
                let resolvedLLM = store.settings.resolve(llm) {
                 job.phase = .polishing
-                job.statusBase = "润色中"
-                job.statusLabel = "润色中…"
+                job.statusBase = "Thinking"
+                job.statusLabel = "Thinking…"
                 job.streamText = ""
                 let (system, user) = PromptComposer.compose(
                     settings: store.settings, transcript: transcript, frontApp: job.frontApp)

@@ -38,8 +38,14 @@ struct CaptureBasicView: View {
                 }
 
                 Section("AI 标注") {
-                    LabeledContent("使用模型") {
-                        Text(aiModelLabel).foregroundStyle(.secondary)
+                    Picker("使用模型", selection: $store.settings.captureModelID) {
+                        Text(followLabel).tag(String?.none)
+                        ForEach(chatModels) {
+                            Text(store.settings.displayLabel(for: $0)).tag(Optional($0.id))
+                        }
+                    }
+                    if chatModels.isEmpty {
+                        hint("还没有大模型。去「渠道商」添加一个支持视觉（多模态）的聊天模型，保存后会自动加载。")
                     }
                     hint(aiModelHint)
                 }
@@ -69,19 +75,29 @@ struct CaptureBasicView: View {
         }
     }
 
-    private var aiModelLabel: String {
-        guard let model = store.settings.llmModel else { return "未选择" }
-        return store.settings.displayLabel(for: model)
+    private var chatModels: [ModelConfig] {
+        store.settings.chatModels
+    }
+
+    /// Label for the "follow the shared model" option, naming what it resolves to.
+    private var followLabel: String {
+        if let m = store.settings.llmModel {
+            return "跟随聊天 / 听写模型（\(store.settings.displayLabel(for: m))）"
+        }
+        return "跟随聊天 / 听写模型"
     }
 
     private var aiModelHint: String {
-        guard let model = store.settings.llmModel else {
-            return "AI 标注复用「听写 › 基础」里选中的大模型。当前未选择——去「渠道商」配置并选中一个支持视觉（多模态）的模型。"
+        guard let model = store.settings.captureAnnotationModel else {
+            return "AI 标注需要一个支持视觉（多模态）的聊天模型。当前没有可用模型——去「渠道商」配置并选中一个。"
         }
         if !model.llmCapabilities.multimodal {
-            return "当前模型未开启「多模态」能力，AI 无法看到截图。请在渠道商的模型编辑里开启多模态，或换用视觉模型（如 GPT-4o / Claude / Qwen-VL）。"
+            return "当前模型「\(store.settings.displayLabel(for: model))」未开启多模态，AI 看不到截图。请在渠道商的模型编辑里开启多模态，或换用视觉模型（如 GPT-4o / Claude / Qwen-VL）。"
         }
-        return "与聊天 / 听写润色共用同一个模型，无需单独配置。工具调用与视觉输入都会走该模型。"
+        if store.settings.captureModelID == nil {
+            return "默认与聊天 / 听写润色共用同一个模型；也可在上面单独指定一个视觉模型。工具调用与视觉输入都走它。"
+        }
+        return "已单独指定标注模型：\(store.settings.displayLabel(for: model))。"
     }
 
     private func chordRow(title: String, keyCode: Binding<Int>,
