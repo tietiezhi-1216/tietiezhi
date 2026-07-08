@@ -36,9 +36,15 @@ sign() {
     local target="$1"
     local identifier="$2"
     # Prefer a VALID (trusted, chain-complete) Apple Development identity.
+    # NOTE: the trailing `|| true` is load-bearing under `set -euo pipefail`.
+    # When no such identity exists (e.g. the CI runner, where the Developer ID
+    # cert is imported in a later step), `grep` exits 1, `pipefail` propagates
+    # it, and the bare assignment would abort the whole script right after
+    # `swift build` — before the bundle is ever assembled. Swallowing it lets us
+    # fall through to the self-signed / ad-hoc paths below.
     local appledev
     appledev="$(security find-identity -v -p codesigning 2>/dev/null \
-        | grep -o '"Apple Development:[^"]*"' | head -1 | tr -d '"')"
+        | grep -o '"Apple Development:[^"]*"' | head -1 | tr -d '"' || true)"
     if [ -n "$appledev" ]; then
         codesign --force --sign "$appledev" --identifier "$identifier" "$target" >/dev/null 2>&1 \
             && { echo "🔏 signed with trusted identity: $appledev"; return 0; }
