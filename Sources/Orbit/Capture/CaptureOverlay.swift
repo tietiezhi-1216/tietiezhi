@@ -132,6 +132,13 @@ final class CaptureSessionModel: ObservableObject {
     /// lets it be moved anywhere, e.g. when the selection hugs the screen bottom.
     @Published var clusterDragOffset: CGSize = .zero
 
+    /// When we drop back to the selecting phase but KEEP the annotations (right-
+    /// click in select mode / 重新框选), this holds the origin their coordinates are
+    /// relative to. The kept marks stay painted on screen at their absolute position
+    /// during selecting, and the next region re-anchors them into its crop-local
+    /// space. nil = a fresh selection with no carried-over marks.
+    @Published var keptAnnotationOrigin: CGPoint?
+
     /// Beautify (导出美化): a padded, rounded, shadowed frame around the finished shot.
     @Published var beautifyOn = false
     @Published var beautifyBackground: BeautifyBackground = .light
@@ -277,6 +284,16 @@ final class CaptureSessionModel: ObservableObject {
         let clamped = rect.intersection(CGRect(origin: .zero, size: canvasSize)).integral
         guard clamped.width >= 8, clamped.height >= 8 else { return }
         guard let cropped = frozen.cropping(toPointRect: clamped, scale: scale) else { return }
+        // Re-anchor any marks kept from a previous region: shift their coordinates
+        // from the old origin into this crop's local space so they hold their
+        // absolute screen position.
+        if let oldOrigin = keptAnnotationOrigin {
+            let dx = oldOrigin.x - clamped.minX, dy = oldOrigin.y - clamped.minY
+            if dx != 0 || dy != 0 {
+                editor.transformAll { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+            }
+            keptAnnotationOrigin = nil
+        }
         self.source = source
         selection = clamped
         baseCrop = cropped
@@ -368,14 +385,20 @@ final class CaptureSessionModel: ObservableObject {
         applyImageAdjust()
     }
 
-    /// Back to the selecting phase to reframe. The crop, marks and AI thread all
-    /// belonged to the old region, so they're discarded.
+    /// Back to the selecting phase to reframe. Unlike a full cancel (完全退出), the
+    /// marks are KEPT: they stay painted on screen at their absolute position and
+    /// the next region re-anchors them. Only rotated/flipped marks can't be
+    /// re-anchored cleanly, so those are dropped.
     func restartSelection() {
-        editor.annotations.removeAll()
+        if let sel = selection, !transformed, !editor.annotations.isEmpty {
+            keptAnnotationOrigin = sel.origin
+        } else {
+            keptAnnotationOrigin = nil
+            editor.annotations.removeAll()
+        }
         editor.selectedID = nil
         editor.editingTextID = nil
         editor.tool = .select
-        ai.reset()
         selection = nil
         crop = nil
         pixelated = nil
@@ -459,17 +482,31 @@ final class CaptureOverlayController {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.contentView = hosting
         panel.setFrame(screen.frame, display: true)
-        // Layered right-click (PixPin-style): editing → back to re-select the
-        // region; selecting → cancel the capture entirely.
+        // Layered right-click:
+        //  · editing + a draw/erase tool active → drop that tool back to select
+        //    (stays in the region — does NOT return to re-framing);
+        //  · editing + select tool → back to re-select the region (marks kept);
+        //  · selecting → grab the element/window under the cursor (Esc cancels).
         panel.onRightMouseDown = { [weak self] in
             guard let self else { return false }
-            switch self.session.phase {
+            let s = self.session
+            switch s.phase {
             case .editing:
-                CaptureLog.log("右键 → 返回重新框选")
-                self.session.restartSelection()
+                if s.editor.tool != .select {
+                    CaptureLog.log("右键 → 退出当前工具，回到选择模式")
+                    s.editor.tool = .select
+                    s.editor.selectedID = nil
+                } else {
+                    CaptureLog.log("右键 → 返回重新框选（保留标注）")
+                    s.restartSelection()
+                }
             case .selecting:
-                CaptureLog.log("右键 → 取消截图")
-                self.session.onCancel?()
+                if let target = s.hoverElement ?? s.hoverWindow {
+                    CaptureLog.log("右键 → 框选光标处节点")
+                    s.beginEditing(target, source: s.hoverElement != nil ? "element" : "window")
+                } else {
+                    CaptureLog.log("右键 → 光标处无可选节点，忽略")
+                }
             }
             return true
         }
@@ -527,6 +564,10 @@ final class CaptureOverlayController {
                 s.editor.editingTextID = nil
                 return nil
             }
+            if s.editor.isDrawingPolyline {         // discard the in-progress polyline
+                s.editor.cancelPolyline()
+                return nil
+            }
             if s.editor.selectedID != nil {
                 s.editor.selectedID = nil
                 return nil
@@ -535,6 +576,13 @@ final class CaptureOverlayController {
             return nil
         }
         if editingText { return event }
+
+        // Return / Enter finishes an in-progress polyline before it would finish
+        // the whole capture.
+        if (event.keyCode == 36 || event.keyCode == 76), s.editor.isDrawingPolyline {
+            s.editor.commitPolyline()
+            return nil
+        }
 
         let cmd = event.modifierFlags.contains(.command)
         let shift = event.modifierFlags.contains(.shift)
@@ -617,6 +665,13 @@ private struct SelectingLayer: View {
         ZStack(alignment: .topLeading) {
             DimLayer(canvas: session.canvasSize, cutout: active)
 
+            // Marks carried over from a previous region float here at their absolute
+            // position (above the dim) until the next region re-anchors them.
+            if let origin = session.keptAnnotationOrigin, !session.editor.annotations.isEmpty {
+                KeptMarksOverlay(annotations: session.editor.annotations,
+                                 origin: origin, canvas: session.canvasSize)
+            }
+
             if let rect = active {
                 SelectionBorder(rect: rect, dragging: session.dragRect != nil)
                 SizeLabel(rect: rect, canvas: session.canvasSize)
@@ -684,6 +739,27 @@ private struct SelectingLayer: View {
                 }
                 session.dragRect = nil
             }
+    }
+}
+
+/// Annotations carried over from a previous region, painted at their absolute
+/// screen position while the user picks a new region (non-interactive). Reuses the
+/// shared renderer so they look identical to the editing canvas. Mosaic marks need
+/// the crop's pixel source (gone here), so they simply don't paint until re-anchored.
+private struct KeptMarksOverlay: View {
+    let annotations: [Annotation]
+    let origin: CGPoint
+    let canvas: CGSize
+
+    var body: some View {
+        Canvas { ctx, _ in
+            ctx.translateBy(x: origin.x, y: origin.y)
+            for a in annotations {
+                AnnotationRenderer.draw(a, in: &ctx, canvasSize: canvas, pixelated: nil)
+            }
+        }
+        .frame(width: canvas.width, height: canvas.height)
+        .allowsHitTesting(false)
     }
 }
 
@@ -961,6 +1037,7 @@ private struct EditingLayer: View {
                 AnnotationCanvasView(editor: session.editor,
                                      size: sel.size,
                                      pixelated: session.pixelated,
+                                     source: session.crop,
                                      displayScale: session.scale,
                                      onSelectionMove: { handleSelectionMove($0, from: sel) })
                     .offset(x: sel.minX, y: sel.minY)
@@ -979,17 +1056,19 @@ private struct EditingLayer: View {
 
     /// The toolbar hugs its own content; the AI bar gets a comfortable width.
     ///
-    /// Right-alignment is DETERMINISTIC: the cluster sits `.topTrailing` inside a
-    /// container whose trailing edge IS the selection's right edge (the same line
-    /// the right rail hangs off) — no dependence on measuring the cluster's own
-    /// width (the measure-then-offset approach positioned with a stale/fallback
-    /// width, leaving the toolbar overhanging the selection). Height is still
-    /// measured, but only for the fits-below/above flip.
+    /// The cluster is `.fixedSize()` (exactly its content's size) and its RIGHT
+    /// edge is aligned to the selection's right edge — but the offset is then
+    /// clamped so the whole cluster stays fully on-screen. This matters because the
+    /// toolbar's natural width can exceed the space between the screen's left edge
+    /// and the selection's right edge (a small selection hugging the left/right
+    /// edge): a pure right-align would push the wide toolbar off the left/right of
+    /// the screen. The right edge tracks `selection.maxX` regardless of the measured
+    /// width (`x + W == selection.maxX` when unclamped), so there's no right-edge
+    /// flicker from a stale/fallback width — width only affects the left extent and
+    /// the on-screen clamp.
     @ViewBuilder
     private func controlCluster(selection: CGRect) -> some View {
         let aiWidth = min(max(selection.width, 380), session.canvasSize.width - 24, 560)
-        let right = min(max(selection.maxX, 396), session.canvasSize.width - 8)
-        let containerW = right - 8
         VStack(alignment: .trailing, spacing: 8) {
             CaptureToolbar(session: session)
             // Contextual properties only when something can use them (a draw tool
@@ -1016,24 +1095,31 @@ private struct EditingLayer: View {
             }
         )
         .onPreferenceChange(ClusterSizeKey.self) { clusterSize = $0 }
-        .frame(width: containerW, alignment: .topTrailing)
-        .offset(clusterOffset(selection: selection, containerW: containerW))
+        .offset(clusterOffset(selection: selection, aiWidth: aiWidth))
     }
 
-    private func clusterOffset(selection: CGRect, containerW: CGFloat) -> CGSize {
+    private func clusterOffset(selection: CGRect, aiWidth: CGFloat) -> CGSize {
+        let canvas = session.canvasSize
+        let w = clusterSize.width > 0 ? clusterSize.width : aiWidth
         let h = clusterSize.height > 0 ? clusterSize.height : 120
+
+        // Vertical: below the selection; flip above if no room; else pin to bottom.
         var y = selection.maxY + 10
-        if y + h > session.canvasSize.height - 10 {
-            y = selection.minY - h - 10                              // no room below → above
-            if y < 10 { y = session.canvasSize.height - h - 10 }     // nor above → pin to screen bottom
+        if y + h > canvas.height - 10 {
+            y = selection.minY - h - 10                     // no room below → above
+            if y < 10 { y = canvas.height - h - 10 }        // nor above → pin to screen bottom
         }
         y = max(10, y)
-        let fy = min(max(8, y + session.clusterDragOffset.height), session.canvasSize.height - h - 8)
-        // Horizontal: the container's leading edge starts at 8; the grip drag moves
-        // it, clamped so a usable chunk of the cluster stays on-screen.
-        let rawX = 8 + session.clusterDragOffset.width
-        let fx = min(max(140 - containerW, rawX), session.canvasSize.width - containerW - 8)
-        return CGSize(width: fx, height: fy)
+        let fy = min(max(8, y + session.clusterDragOffset.height), max(8, canvas.height - h - 8))
+
+        // Horizontal: right-align the cluster's right edge to the selection's right
+        // edge, then clamp so it never leaves the screen on either side. When the
+        // cluster is wider than the screen it pins to the left (right overflow is
+        // then unavoidable). The grip drag shifts it before the clamp.
+        var x = selection.maxX - w + session.clusterDragOffset.width
+        x = min(x, canvas.width - w - 8)
+        x = max(8, x)
+        return CGSize(width: x, height: fy)
     }
 }
 
@@ -1044,6 +1130,111 @@ private struct ClusterSizeKey: PreferenceKey {
 
 // MARK: - Toolbar
 
+/// A named set of related drawing tools. Multi-member groups collapse into a
+/// dropdown split-button; single-member groups render as a plain button.
+struct ToolGroup: Identifiable {
+    let id: String
+    let members: [AnnotationKind]
+}
+
+/// The shared 28×28 toolbar icon cell (active = white pill, disabled = dim), with
+/// the in-panel hover tooltip. Both the flat buttons and the group flyout use it.
+private struct ToolbarIconButton: View {
+    let icon: String
+    let help: String
+    var active = false
+    var disabled = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(disabled ? .white.opacity(0.25)
+                                 : active ? Color.black.opacity(0.85) : .white.opacity(0.9))
+                .frame(width: 28, height: 28)
+                .background(RoundedRectangle(cornerRadius: 6)
+                    .fill(active ? Color.white.opacity(0.92) : .clear))
+                .contentShape(Rectangle())   // whole cell is clickable, not just the glyph
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .help(help)
+        .captureTooltip(help)
+    }
+}
+
+/// A dropdown split-button for a multi-tool group: the cell uses the group's
+/// current/last member; a small chevron opens an in-panel flyout (self-drawn — the
+/// system popover/menu is unreliable over the screenSaver-level capture panel) to
+/// pick another. The flyout is a zero-layout `.overlay` so opening it never reflows
+/// the toolbar (which would jump the whole cluster's right-aligned position).
+private struct ToolGroupButton: View {
+    @ObservedObject var editor: AnnotationEditorState
+    let group: ToolGroup
+    @Binding var openGroup: String?
+    let select: (AnnotationKind) -> Void
+    @State private var lastMember: AnnotationKind
+
+    init(editor: AnnotationEditorState, group: ToolGroup,
+         openGroup: Binding<String?>, select: @escaping (AnnotationKind) -> Void) {
+        self.editor = editor
+        self.group = group
+        self._openGroup = openGroup
+        self.select = select
+        self._lastMember = State(initialValue: group.members.first ?? .rect)
+    }
+
+    private var isActive: Bool {
+        if let k = editor.tool.drawKind { return group.members.contains(k) }
+        return false
+    }
+    private var expanded: Bool { openGroup == group.id }
+    /// Show the active member when the tool is in this group, else the last pick.
+    private var current: AnnotationKind {
+        if let k = editor.tool.drawKind, group.members.contains(k) { return k }
+        return lastMember
+    }
+    private var flyoutHeight: CGFloat {
+        CGFloat(group.members.count) * 28 + CGFloat(max(0, group.members.count - 1)) * 4 + 12
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            ToolbarIconButton(icon: current.symbol, help: current.displayName, active: isActive) {
+                select(current)
+                openGroup = nil
+            }
+            Image(systemName: "chevron.down")
+                .font(.system(size: 7, weight: .bold))
+                .foregroundStyle(.white.opacity(0.6))
+                .padding(1.5)
+                .background(Circle().fill(Color.black.opacity(0.4)))
+                .padding([.trailing, .bottom], 1)
+                .contentShape(Rectangle())
+                .onTapGesture { openGroup = expanded ? nil : group.id }
+        }
+        .overlay(alignment: .top) {
+            if expanded {
+                VStack(spacing: 4) {
+                    ForEach(group.members) { m in
+                        ToolbarIconButton(icon: m.symbol, help: m.displayName,
+                                          active: editor.tool == .draw(m)) {
+                            lastMember = m
+                            select(m)
+                            openGroup = nil
+                        }
+                    }
+                }
+                .padding(6)
+                .overlayBarChrome()
+                .fixedSize()
+                .offset(y: -(flyoutHeight + 8))
+            }
+        }
+    }
+}
+
 private struct CaptureToolbar: View {
     @ObservedObject var session: CaptureSessionModel
     @ObservedObject private var editor: AnnotationEditorState
@@ -1053,9 +1244,29 @@ private struct CaptureToolbar: View {
         self.editor = session.editor
     }
 
-    private static let tools: [AnnotationKind] = [
-        .arrow, .line, .rect, .ellipse, .freehand, .text, .badge, .highlight, .mosaic, .spotlight,
+    /// Drawing tools grouped PixPin-style: multi-member groups collapse into a
+    /// dropdown (a split-button: tap the cell to use the last member, the chevron
+    /// to pick another); single-member groups render as a plain button. Order here
+    /// is the on-screen order.
+    static let toolGroups: [ToolGroup] = [
+        ToolGroup(id: "shape",     members: [.rect, .ellipse]),
+        ToolGroup(id: "line",      members: [.arrow, .line, .polyline]),
+        ToolGroup(id: "pen",       members: [.freehand, .highlight]),
+        ToolGroup(id: "effect",    members: [.spotlight, .magnifier]),
+        ToolGroup(id: "text",      members: [.text]),
+        ToolGroup(id: "badge",     members: [.badge]),
+        ToolGroup(id: "mosaic",    members: [.mosaic]),
+        ToolGroup(id: "watermark", members: [.watermark]),
     ]
+
+    /// Which group's dropdown flyout is open (only one at a time).
+    @State private var openGroup: String?
+
+    /// Choose a drawing tool; the watermark tool also stamps/selects its one object.
+    private func selectTool(_ kind: AnnotationKind) {
+        editor.tool = .draw(kind)
+        if kind == .watermark { editor.ensureWatermark() }
+    }
 
     /// Cluster offset at the start of a grip drag (global-space gesture, so the
     /// cluster moving under the cursor can't feed back into the translation).
@@ -1086,10 +1297,13 @@ private struct CaptureToolbar: View {
             toolButton(icon: "cursorarrow", help: "选择 / 移动", active: editor.tool == .select) {
                 editor.tool = .select
             }
-            ForEach(Self.tools) { kind in
-                toolButton(icon: kind.symbol, help: kind.displayName,
-                           active: editor.tool == .draw(kind)) {
-                    editor.tool = .draw(kind)
+            ForEach(Self.toolGroups) { group in
+                if group.members.count == 1, let kind = group.members.first {
+                    toolButton(icon: kind.symbol, help: kind.displayName,
+                               active: editor.tool == .draw(kind)) { selectTool(kind) }
+                } else {
+                    ToolGroupButton(editor: editor, group: group,
+                                    openGroup: $openGroup, select: selectTool)
                 }
             }
             toolButton(icon: "eraser", help: "橡皮擦（点/拖以擦除标注）",
@@ -1126,6 +1340,7 @@ private struct CaptureToolbar: View {
             }
             .buttonStyle(.plain)
             .help("复制到剪贴板 ⏎")
+            .captureTooltip("复制到剪贴板 ⏎")
         }
         .padding(.horizontal, 8)
         .frame(height: 40)
@@ -1138,21 +1353,7 @@ private struct CaptureToolbar: View {
 
     private func toolButton(icon: String, help: String, active: Bool = false,
                             disabled: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(disabled ? .white.opacity(0.25)
-                                 : active ? Color.black.opacity(0.85) : .white.opacity(0.9))
-                .frame(width: 28, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(active ? Color.white.opacity(0.92) : .clear)
-                )
-                .contentShape(Rectangle())   // whole cell is clickable, not just the glyph
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .help(help)
+        ToolbarIconButton(icon: icon, help: help, active: active, disabled: disabled, action: action)
     }
 
     private var chrome: some View {
@@ -1266,14 +1467,17 @@ private struct PropertyBar: View {
     /// The kind whose controls we show: the selection wins, else the draw tool.
     private var kind: AnnotationKind? { editor.activeKind }
     private var showsFill: Bool { kind == .rect || kind == .ellipse }
-    private var showsDash: Bool { kind == .rect || kind == .ellipse || kind == .line }
+    private var showsDash: Bool { kind == .rect || kind == .ellipse || kind == .line || kind == .polyline }
     private var showsCorner: Bool { kind == .rect || kind == .spotlight }
     private var showsArrow: Bool { kind == .arrow }
+    private var showsMagnifier: Bool { kind == .magnifier }
     private var showsWidth: Bool {
         guard let kind else { return true }   // select mode, nothing picked → generic
-        return [.arrow, .line, .rect, .ellipse, .freehand].contains(kind)
+        return [.arrow, .line, .polyline, .rect, .ellipse, .freehand, .magnifier].contains(kind)
     }
     private var showsFont: Bool { kind == .text || kind == .badge }
+    /// Font family only for plain text (badge uses a fixed rounded face).
+    private var showsFontFamily: Bool { kind == .text }
 
     var body: some View {
         Group {
@@ -1282,14 +1486,19 @@ private struct PropertyBar: View {
                     .font(.system(size: 11.5))
                     .foregroundStyle(.white.opacity(0.5))
                     .frame(maxWidth: .infinity)
+            } else if kind == .watermark {
+                watermarkRow
             } else {
                 HStack(spacing: 9) {
                     if showsFill { fillSection; divider }
                     if showsDash { dashSection; divider }
                     if showsCorner { cornerSection; divider }
+                    if showsMagnifier { magnifierSection; divider }
                     if showsWidth { widthSection; divider }
                     if showsArrow { arrowSection; divider }
-                    if showsFont { fontSection; divider }
+                    if showsFont { fontSection }
+                    if showsFontFamily { FontFamilyPicker(editor: editor) }
+                    if showsFont || showsFontFamily { divider }
                     colorSection
                 }
             }
@@ -1356,6 +1565,44 @@ private struct PropertyBar: View {
 
     private var fontSection: some View {
         scrub("字号", get: { editor.fontSize }, set: { editor.setFontSize($0) }, range: 10...48)
+    }
+
+    /// Magnifier: lens shape (圆/方) + zoom factor (倍率).
+    private var magnifierSection: some View {
+        HStack(spacing: 7) {
+            HStack(spacing: 3) {
+                iconToggle("circle", on: editor.lensRound, help: "圆形") { editor.setLensRound(true) }
+                iconToggle("square", on: !editor.lensRound, help: "方形") { editor.setLensRound(false) }
+            }
+            scrub("倍率", get: { editor.magnification }, set: { editor.setMagnification($0) },
+                  range: 1.5...5, step: 0.5, format: { String(format: "%.1f×", $0) })
+        }
+    }
+
+    /// Watermark: text + font family + opacity / angle / spacing + colour, all
+    /// targeting the single selected watermark object.
+    private var watermarkRow: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "signature").font(.system(size: 12)).foregroundStyle(.white.opacity(0.6))
+            TextField("水印文字", text: Binding(
+                get: { editor.selected?.text ?? "" },
+                set: { editor.setSelectedText($0) }))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundStyle(.white)
+                .frame(width: 96)
+            divider
+            FontFamilyPicker(editor: editor)
+            divider
+            scrub("透明", get: { editor.watermarkOpacity }, set: { editor.setWatermarkOpacity($0) },
+                  range: 0.05...0.6, step: 0.01, format: { String(format: "%.0f%%", $0 * 100) })
+            scrub("角度", get: { editor.watermarkAngle }, set: { editor.setWatermarkAngle($0) },
+                  range: -90...90, step: 5, format: { "\(Int($0))°" })
+            scrub("间距", get: { editor.watermarkSpacing }, set: { editor.setWatermarkSpacing($0) },
+                  range: 40...260, step: 10)
+            divider
+            colorSection
+        }
     }
 
     private var colorSection: some View {
@@ -1427,6 +1674,88 @@ private struct PropertyBar: View {
     }
 }
 
+/// A compact, self-drawn font-family dropdown for the text / watermark tools (a
+/// curated list of common CJK + Latin faces; the system font is the default).
+/// Self-drawn flyout — the system menu is unreliable over the capture panel — and
+/// popped as a zero-layout overlay so it doesn't reflow the property bar.
+private struct FontFamilyPicker: View {
+    @ObservedObject var editor: AnnotationEditorState
+    @State private var open = false
+
+    /// (显示名, 字体族)；nil = 系统字体。
+    static let families: [(label: String, family: String?)] = [
+        ("系统", nil),
+        ("苹方", "PingFang SC"),
+        ("黑体", "Heiti SC"),
+        ("宋体", "Songti SC"),
+        ("楷体", "Kaiti SC"),
+        ("圆体", "Yuanti SC"),
+        ("Helvetica", "Helvetica Neue"),
+        ("Avenir", "Avenir Next"),
+        ("Georgia", "Georgia"),
+        ("Times", "Times New Roman"),
+        ("Menlo", "Menlo"),
+        ("手写", "Snell Roundhand"),
+    ]
+
+    private var currentLabel: String {
+        Self.families.first { $0.family == editor.fontFamily }?.label ?? (editor.fontFamily ?? "系统")
+    }
+    private var flyoutHeight: CGFloat { min(CGFloat(Self.families.count) * 25 + 8, 220) }
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            HStack(spacing: 4) {
+                Text(currentLabel)
+                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.9)).lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 7, weight: .bold)).foregroundStyle(.white.opacity(0.5))
+            }
+            .padding(.horizontal, 7)
+            .frame(height: 24)
+            .frame(minWidth: 62, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 5).fill(.white.opacity(0.10)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("字体")
+        .overlay(alignment: .top) {
+            if open {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(Self.families, id: \.label) { item in
+                            Button {
+                                editor.setFontFamily(item.family)
+                                open = false
+                            } label: {
+                                HStack {
+                                    Text(item.label)
+                                        .font(item.family.map { .custom($0, size: 12) } ?? .system(size: 12))
+                                        .foregroundStyle(.white.opacity(0.92)).lineLimit(1)
+                                    Spacer(minLength: 6)
+                                    if editor.fontFamily == item.family {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 9, weight: .bold)).foregroundStyle(.white)
+                                    }
+                                }
+                                .padding(.horizontal, 8)
+                                .frame(width: 150, height: 24, alignment: .leading)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(4)
+                }
+                .frame(width: 158, height: flyoutHeight)
+                .overlayBarChrome()
+                .fixedSize()
+                .offset(y: -(flyoutHeight + 8))
+            }
+        }
+    }
+}
+
 /// A short horizontal line — the dash-style previews stroke it with each pattern.
 private struct DashLine: Shape {
     func path(in rect: CGRect) -> Path {
@@ -1490,6 +1819,7 @@ private struct RightToolbar: View {
         }
         .buttonStyle(.plain)
         .help(help)
+        .captureTooltip(help, side: .leading)
     }
 }
 
@@ -1664,6 +1994,50 @@ private struct LayersPanel: View {
         x = min(max(8, x), session.canvasSize.width - w - 8)
         let y = min(max(8, selection.minY), session.canvasSize.height - h - 8)
         return CGSize(width: x, height: y)
+    }
+}
+
+/// A hover tooltip that actually shows over the screen-cover panel — AppKit's
+/// native `.help` tooltips don't reliably appear on a borderless, screenSaver-level
+/// panel, which is why the toolbar looked like it had no hints. Renders a small
+/// dark label just above (or beside) the control while the pointer is over it.
+private struct CaptureTooltip: ViewModifier {
+    let text: String
+    var side: Edge = .top
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering = $0 }
+            .overlay(alignment: side == .top ? .top : .leading) {
+                if hovering, !text.isEmpty {
+                    Text(text)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.white)
+                        .fixedSize()
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.black.opacity(0.92),
+                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(.white.opacity(0.14)))
+                        .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+                        .offset(side == .top ? CGSize(width: 0, height: -34)
+                                             : CGSize(width: -10, height: 0))
+                        .fixedSize()
+                        .allowsHitTesting(false)
+                        .zIndex(100)
+                        .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+private extension View {
+    /// Show `text` as a hover tooltip drawn in-panel (see `CaptureTooltip`).
+    func captureTooltip(_ text: String, side: Edge = .top) -> some View {
+        modifier(CaptureTooltip(text: text, side: side))
     }
 }
 

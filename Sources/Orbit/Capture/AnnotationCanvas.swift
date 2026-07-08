@@ -17,10 +17,20 @@ enum AnnotationRenderer {
                     dash: a.dash.pattern(for: a.lineWidth) ?? [])
     }
 
+    /// SwiftUI font for a text-bearing annotation: the chosen family (custom fonts
+    /// carry their own weight) or the semibold system font.
+    static func font(for a: Annotation) -> Font {
+        if let family = a.fontFamily, !family.isEmpty {
+            return .custom(family, size: a.fontSize)
+        }
+        return .system(size: a.fontSize, weight: .semibold)
+    }
+
     /// Paint one annotation. `pixelated` is the pre-blocked copy of the crop
-    /// (mosaic clips into it); `canvasSize` is the crop size in points.
+    /// (mosaic clips into it); `source` is the CLEAN crop (magnifier samples it);
+    /// `canvasSize` is the crop size in points.
     static func draw(_ a: Annotation, in ctx: inout GraphicsContext,
-                     canvasSize: CGSize, pixelated: Image?) {
+                     canvasSize: CGSize, pixelated: Image?, source: Image? = nil) {
         let color = a.displayColor
         switch a.kind {
         case .arrow:
@@ -46,6 +56,15 @@ enum AnnotationRenderer {
             var path = Path()
             path.move(to: a.start)
             path.addLine(to: a.end)
+            var layer = ctx
+            layer.addFilter(.shadow(color: .black.opacity(0.3), radius: 1.2))
+            layer.stroke(path, with: .color(color), style: strokeStyle(a))
+
+        case .polyline:
+            guard let pts = a.points, pts.count > 1 else { return }
+            var path = Path()
+            path.move(to: pts[0])
+            for p in pts.dropFirst() { path.addLine(to: p) }
             var layer = ctx
             layer.addFilter(.shadow(color: .black.opacity(0.3), radius: 1.2))
             layer.stroke(path, with: .color(color), style: strokeStyle(a))
@@ -90,7 +109,7 @@ enum AnnotationRenderer {
             layer.addFilter(.shadow(color: .black.opacity(a.isLightColor ? 0.75 : 0.28),
                                     radius: 1.6, y: 1))
             let text = Text(string)
-                .font(.system(size: a.fontSize, weight: .semibold))
+                .font(font(for: a))
                 .foregroundColor(color)
             layer.draw(layer.resolve(text), in: CGRect(origin: a.start, size: a.textBounds()))
 
@@ -123,6 +142,58 @@ enum AnnotationRenderer {
             let size = resolved.measure(in: CGSize(width: 100, height: 100))
             ctx.draw(resolved, at: a.start, anchor: .center)
             _ = size
+
+        case .magnifier:
+            let rect = a.rect
+            guard rect.width > 4, rect.height > 4 else { return }
+            let lensPath = a.lensRound
+                ? Path(ellipseIn: rect)
+                : Path(roundedRect: rect, cornerRadius: min(rect.width, rect.height) * 0.18)
+            if let source {
+                // Scale the clean crop by `magnification` about the lens centre, so
+                // the content beneath the lens reads enlarged (a loupe).
+                let c = CGPoint(x: rect.midX, y: rect.midY)
+                let m = max(1, a.magnification)
+                ctx.drawLayer { layer in
+                    layer.clip(to: lensPath)
+                    layer.translateBy(x: c.x, y: c.y)
+                    layer.scaleBy(x: m, y: m)
+                    layer.translateBy(x: -c.x, y: -c.y)
+                    layer.draw(source, in: CGRect(origin: .zero, size: canvasSize))
+                }
+            } else {
+                ctx.fill(lensPath, with: .color(.black.opacity(0.12)))
+            }
+            var ring = ctx
+            ring.addFilter(.shadow(color: .black.opacity(0.35), radius: 3, y: 1))
+            ring.stroke(lensPath, with: .color(.white.opacity(0.95)), lineWidth: max(2, a.lineWidth))
+            ctx.stroke(lensPath, with: .color(color.opacity(0.9)), lineWidth: 1)
+
+        case .watermark:
+            let str = (a.text?.trimmed.isEmpty == false) ? a.text! : "机密"
+            ctx.drawLayer { layer in
+                layer.clip(to: Path(CGRect(origin: .zero, size: canvasSize)))
+                let c = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+                layer.translateBy(x: c.x, y: c.y)
+                layer.rotate(by: .degrees(Double(a.watermarkAngle)))
+                layer.translateBy(x: -c.x, y: -c.y)
+                let tile = Text(str).font(font(for: a))
+                    .foregroundColor(color.opacity(Double(max(0.02, min(1, a.watermarkOpacity)))))
+                let resolved = layer.resolve(tile)
+                let ts = resolved.measure(in: CGSize(width: 2000, height: 2000))
+                let stepX = max(30, ts.width + a.watermarkSpacing)
+                let stepY = max(24, ts.height + a.watermarkSpacing)
+                let diag = hypot(canvasSize.width, canvasSize.height)
+                var y = c.y - diag
+                while y <= c.y + diag {
+                    var x = c.x - diag
+                    while x <= c.x + diag {
+                        layer.draw(resolved, at: CGPoint(x: x, y: y), anchor: .center)
+                        x += stepX
+                    }
+                    y += stepY
+                }
+            }
         }
     }
 
@@ -236,6 +307,8 @@ struct AnnotationCanvasView: View {
     let size: CGSize
     /// Pre-pixelated copy of the crop (for mosaic), same point size as `size`.
     let pixelated: CGImage?
+    /// The CLEAN crop (magnifier samples it), same point size as `size`.
+    var source: CGImage? = nil
     let displayScale: CGFloat
     /// Drag empty space in select mode → move the whole selection (nil disables it).
     var onSelectionMove: ((SelectionMovePhase) -> Void)? = nil
@@ -244,6 +317,9 @@ struct AnnotationCanvasView: View {
     @State private var dragMode: DragMode = .none
     @State private var dragStartPoint: CGPoint = .zero
     @State private var lastClick: (date: Date, id: UUID?) = (.distantPast, nil)
+    /// Double-click detection for finishing a polyline (its draft has no id, so the
+    /// text-annotation double-tap path can't be reused).
+    @State private var lastPolyTap: (date: Date, point: CGPoint) = (.distantPast, .zero)
     @State private var hoverInterior = false
     /// Absolute mouse position (screen coords) at the start of a selection move —
     /// the delta comes from here, NOT the gesture translation, which feeds back
@@ -266,14 +342,24 @@ struct AnnotationCanvasView: View {
         pixelated.map { Image(decorative: $0, scale: displayScale) }
     }
 
+    private var sourceImage: Image? {
+        source.map { Image(decorative: $0, scale: displayScale) }
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             Canvas { ctx, _ in
                 for a in editor.annotations where a.id != editor.editingTextID {
-                    AnnotationRenderer.draw(a, in: &ctx, canvasSize: size, pixelated: pixelatedImage)
+                    AnnotationRenderer.draw(a, in: &ctx, canvasSize: size,
+                                            pixelated: pixelatedImage, source: sourceImage)
                 }
                 if let draft {
-                    AnnotationRenderer.draw(draft, in: &ctx, canvasSize: size, pixelated: pixelatedImage)
+                    AnnotationRenderer.draw(draft, in: &ctx, canvasSize: size,
+                                            pixelated: pixelatedImage, source: sourceImage)
+                }
+                if let dp = editor.draftPolyline {
+                    AnnotationRenderer.draw(dp, in: &ctx, canvasSize: size,
+                                            pixelated: pixelatedImage, source: sourceImage)
                 }
                 if let sel = editor.selected {
                     drawSelectionChrome(sel, in: &ctx)
@@ -291,21 +377,34 @@ struct AnnotationCanvasView: View {
         .clipped()
     }
 
-    /// In select mode, empty interior reads as "grab to move" (open hand); over an
-    /// annotation it's the pointer. Drawing tools keep the crosshair pushed by the
-    /// overlay. Only meaningful when interior-move is wired up.
+    /// Keep the cursor in sync with the active tool. A drawing / erase tool shows a
+    /// crosshair — reasserted on every move because AppKit resets the cursor as the
+    /// pointer travels over the panel (a one-shot `push` would get overridden, which
+    /// is why draw tools looked like a plain arrow). In select mode empty interior
+    /// reads as "grab to move" (open hand) and a mark reads as the pointer.
     private func updateCursor(_ phase: HoverPhase) {
-        guard onSelectionMove != nil, case .select = editor.tool else {
-            if case .ended = phase, hoverInterior { hoverInterior = false }
-            return
-        }
         switch phase {
         case .active(let p):
-            let overAnnotation = editor.hitTest(p) != nil
-            if overAnnotation { NSCursor.arrow.set() } else { NSCursor.openHand.set() }
-            hoverInterior = true
+            // While laying down a polyline, the trailing point tracks the cursor.
+            if editor.draftPolyline != nil {
+                editor.updatePolylinePreview(to: clamp(p))
+            }
+            switch editor.tool {
+            case .select:
+                if onSelectionMove != nil {
+                    if editor.hitTest(p) != nil { NSCursor.arrow.set() }
+                    else { NSCursor.openHand.set() }
+                    hoverInterior = true
+                } else {
+                    NSCursor.arrow.set()
+                }
+            case .draw, .erase:
+                NSCursor.crosshair.set()
+                hoverInterior = false
+            }
         case .ended:
-            if hoverInterior { NSCursor.crosshair.set(); hoverInterior = false }
+            hoverInterior = false
+            NSCursor.crosshair.set()
         }
     }
 
@@ -318,7 +417,7 @@ struct AnnotationCanvasView: View {
         case .arrow, .line:
             for p in [a.start, a.end] { drawHandle(at: p, in: &ctx, accent: accent) }
             if a.kind == .arrow { drawControlHandle(at: a.arrowControl, in: &ctx, accent: accent) }
-        case .rect, .ellipse, .highlight, .mosaic, .spotlight:
+        case .rect, .ellipse, .highlight, .mosaic, .spotlight, .magnifier:
             ctx.stroke(Path(a.rect.insetBy(dx: -3, dy: -3)), with: .color(accent), style: dash)
             for p in cornerPoints(a.rect) { drawHandle(at: p, in: &ctx, accent: accent) }
         case .text:
@@ -329,10 +428,12 @@ struct AnnotationCanvasView: View {
             ctx.stroke(Path(ellipseIn: CGRect(x: a.start.x - r, y: a.start.y - r,
                                               width: r * 2, height: r * 2)),
                        with: .color(accent), style: dash)
-        case .freehand:
+        case .freehand, .polyline:
             if let pts = a.points, let box = boundingBox(pts) {
                 ctx.stroke(Path(box.insetBy(dx: -4, dy: -4)), with: .color(accent), style: dash)
             }
+        case .watermark:
+            break   // tiled across the whole shot — no per-object chrome
         }
     }
 
@@ -419,8 +520,8 @@ struct AnnotationCanvasView: View {
             editor.snapshot()          // one undo covers the whole erase drag
             editor.eraseAt(p)
             dragMode = .erasing
-        case .draw(.text), .draw(.badge):
-            dragMode = .creating       // resolved on end (tap-to-place)
+        case .draw(.text), .draw(.badge), .draw(.polyline), .draw(.watermark):
+            dragMode = .creating       // resolved on end (tap-to-place / multi-click)
             draft = nil
         case .draw(let kind):
             var a = Annotation(kind: kind, start: p, end: p,
@@ -428,7 +529,9 @@ struct AnnotationCanvasView: View {
                                lineWidth: editor.lineWidth, fontSize: editor.fontSize,
                                filled: editor.filled, dash: editor.dash,
                                cornerRadius: editor.cornerRadius,
-                               arrowType: editor.arrowType, arrowHeadScale: editor.arrowHeadScale)
+                               arrowType: editor.arrowType, arrowHeadScale: editor.arrowHeadScale,
+                               fontFamily: editor.fontFamily,
+                               magnification: editor.magnification, lensRound: editor.lensRound)
             if kind == .freehand { a.points = [p] }
             draft = a
             dragMode = .creating
@@ -501,13 +604,35 @@ struct AnnotationCanvasView: View {
 
         switch dragMode {
         case .creating:
+            // Polyline: every click drops a vertex; a double-click finishes.
+            if case .draw(.polyline) = editor.tool {
+                let now = Date()
+                if editor.draftPolyline == nil {
+                    editor.beginPolyline(at: p)
+                } else if now.timeIntervalSince(lastPolyTap.date) < 0.35,
+                          p.distance(to: lastPolyTap.point) < 12 {
+                    editor.commitPolyline()             // double-click ends the run
+                    lastPolyTap = (.distantPast, .zero)
+                    return
+                } else {
+                    editor.appendPolylinePoint(at: p)
+                }
+                lastPolyTap = (now, p)
+                return
+            }
+            // Watermark: a single tiled object — ensure it exists and select it.
+            if case .draw(.watermark) = editor.tool {
+                editor.ensureWatermark()
+                return
+            }
             if case .draw(let kind) = editor.tool, !moved {
                 // Tap-to-place tools.
                 if kind == .text {
                     editor.snapshot()
                     let a = Annotation(kind: .text, start: p, end: p, text: "",
                                        color: editor.color, colorHex: editor.colorHex,
-                                       lineWidth: editor.lineWidth, fontSize: editor.fontSize)
+                                       lineWidth: editor.lineWidth, fontSize: editor.fontSize,
+                                       fontFamily: editor.fontFamily)
                     editor.add(a)
                     editor.selectedID = a.id
                     editor.editingTextID = a.id
@@ -569,7 +694,7 @@ struct AnnotationCanvasView: View {
             if p.distance(to: a.start) < r { return .start }
             if p.distance(to: a.end) < r { return .end }
             if a.kind == .arrow, p.distance(to: a.arrowControl) < r { return .control }
-        case .rect, .ellipse, .highlight, .mosaic, .spotlight:
+        case .rect, .ellipse, .highlight, .mosaic, .spotlight, .magnifier:
             for (i, c) in cornerPoints(a.rect).enumerated() where p.distance(to: c) < r {
                 return .corner(i)
             }
@@ -589,7 +714,7 @@ struct AnnotationCanvasView: View {
                 set: { newValue in editor.update(id: id) { $0.text = newValue } }
             ), axis: .vertical)
             .textFieldStyle(.plain)
-            .font(.system(size: a.fontSize, weight: .semibold))
+            .font(AnnotationRenderer.font(for: a))
             .foregroundStyle(a.displayColor)
             .padding(2)
             .frame(minWidth: 60, maxWidth: 320, alignment: .leading)
@@ -636,8 +761,10 @@ struct AnnotatedImageView: View {
                 .frame(width: size.width, height: size.height)
             Canvas { ctx, _ in
                 let pixelatedImage = pixelated.map { Image(decorative: $0, scale: displayScale) }
+                let sourceImage = Image(decorative: crop, scale: displayScale)
                 for a in annotations {
-                    AnnotationRenderer.draw(a, in: &ctx, canvasSize: size, pixelated: pixelatedImage)
+                    AnnotationRenderer.draw(a, in: &ctx, canvasSize: size,
+                                            pixelated: pixelatedImage, source: sourceImage)
                 }
             }
             .frame(width: size.width, height: size.height)

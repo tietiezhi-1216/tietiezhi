@@ -11,6 +11,7 @@ import SwiftUI
 enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
     case arrow      // start → end, filled head at `end`
     case line
+    case polyline   // multi-segment path through `points` (click to add vertices)
     case rect
     case ellipse
     case freehand   // `points`
@@ -18,7 +19,9 @@ enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
     case highlight  // translucent marker block
     case mosaic     // pixelate the region underneath
     case spotlight  // dim everything EXCEPT this region (reverse highlight)
+    case magnifier  // a lens magnifying the clean crop under `rect`
     case badge      // numbered circle at `start`
+    case watermark  // tiled text stamped across the whole shot
 
     var id: String { rawValue }
 
@@ -26,6 +29,7 @@ enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .arrow:     return "箭头"
         case .line:      return "直线"
+        case .polyline:  return "折线"
         case .rect:      return "矩形"
         case .ellipse:   return "椭圆"
         case .freehand:  return "画笔"
@@ -33,7 +37,9 @@ enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
         case .highlight: return "高亮"
         case .mosaic:    return "马赛克"
         case .spotlight: return "聚光灯"
+        case .magnifier: return "放大镜"
         case .badge:     return "序号"
+        case .watermark: return "水印"
         }
     }
 
@@ -41,6 +47,7 @@ enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .arrow:     return "arrow.up.right"
         case .line:      return "line.diagonal"
+        case .polyline:  return "scribble.variable"
         case .rect:      return "rectangle"
         case .ellipse:   return "circle"
         case .freehand:  return "pencil.and.scribble"
@@ -48,7 +55,9 @@ enum AnnotationKind: String, Codable, CaseIterable, Identifiable {
         case .highlight: return "highlighter"
         case .mosaic:    return "mosaic"
         case .spotlight: return "scope"
+        case .magnifier: return "plus.magnifyingglass"
         case .badge:     return "1.circle"
+        case .watermark: return "signature"
         }
     }
 }
@@ -157,6 +166,19 @@ struct Annotation: Identifiable, Codable, Hashable {
     var arrowType: ArrowType
     /// Arrow head size multiplier (箭头粗细) — 1 = default proportion.
     var arrowHeadScale: CGFloat
+    /// Font family for text / watermark (nil = system font). Empty string is
+    /// normalized to nil so "system" round-trips cleanly.
+    var fontFamily: String?
+    /// Magnifier lens zoom factor (放大倍率) — how much the crop under `rect` is enlarged.
+    var magnification: CGFloat
+    /// Magnifier lens shape: round (circle) when true, else the raw rect.
+    var lensRound: Bool
+    /// Watermark tile opacity (0…1).
+    var watermarkOpacity: CGFloat
+    /// Watermark tile rotation in degrees.
+    var watermarkAngle: CGFloat
+    /// Watermark tile spacing (point gap between repeats).
+    var watermarkSpacing: CGFloat
 
     init(id: UUID = UUID(), kind: AnnotationKind,
          start: CGPoint, end: CGPoint,
@@ -165,7 +187,10 @@ struct Annotation: Identifiable, Codable, Hashable {
          color: AnnotationColor = .red, colorHex: String? = nil,
          lineWidth: CGFloat = 3, fontSize: CGFloat = 18,
          filled: Bool = false, dash: LineDashStyle = .solid, cornerRadius: CGFloat = 0,
-         arrowType: ArrowType = .filled, arrowHeadScale: CGFloat = 1) {
+         arrowType: ArrowType = .filled, arrowHeadScale: CGFloat = 1,
+         fontFamily: String? = nil, magnification: CGFloat = 2, lensRound: Bool = true,
+         watermarkOpacity: CGFloat = 0.18, watermarkAngle: CGFloat = -30,
+         watermarkSpacing: CGFloat = 120) {
         self.id = id
         self.kind = kind
         self.start = start
@@ -183,6 +208,12 @@ struct Annotation: Identifiable, Codable, Hashable {
         self.cornerRadius = cornerRadius
         self.arrowType = arrowType
         self.arrowHeadScale = arrowHeadScale
+        self.fontFamily = fontFamily
+        self.magnification = magnification
+        self.lensRound = lensRound
+        self.watermarkOpacity = watermarkOpacity
+        self.watermarkAngle = watermarkAngle
+        self.watermarkSpacing = watermarkSpacing
     }
 
     // Tolerant decode: annotations persist inside screenshot history, and the
@@ -192,6 +223,8 @@ struct Annotation: Identifiable, Codable, Hashable {
         case id, kind, start, end, points, control, text, number
         case color, colorHex, lineWidth, fontSize
         case filled, dash, cornerRadius, arrowType, arrowHeadScale
+        case fontFamily, magnification, lensRound
+        case watermarkOpacity, watermarkAngle, watermarkSpacing
     }
 
     init(from decoder: Decoder) throws {
@@ -213,6 +246,12 @@ struct Annotation: Identifiable, Codable, Hashable {
         cornerRadius = try c.decodeIfPresent(CGFloat.self, forKey: .cornerRadius) ?? 0
         arrowType = try c.decodeIfPresent(ArrowType.self, forKey: .arrowType) ?? .filled
         arrowHeadScale = try c.decodeIfPresent(CGFloat.self, forKey: .arrowHeadScale) ?? 1
+        fontFamily = try c.decodeIfPresent(String.self, forKey: .fontFamily)
+        magnification = try c.decodeIfPresent(CGFloat.self, forKey: .magnification) ?? 2
+        lensRound = try c.decodeIfPresent(Bool.self, forKey: .lensRound) ?? true
+        watermarkOpacity = try c.decodeIfPresent(CGFloat.self, forKey: .watermarkOpacity) ?? 0.18
+        watermarkAngle = try c.decodeIfPresent(CGFloat.self, forKey: .watermarkAngle) ?? -30
+        watermarkSpacing = try c.decodeIfPresent(CGFloat.self, forKey: .watermarkSpacing) ?? 120
     }
 
     /// Effective drawing colour: custom hex wins, else the palette colour.
@@ -255,11 +294,13 @@ struct Annotation: Identifiable, Codable, Hashable {
     func hitTest(_ p: CGPoint) -> Bool {
         let slop: CGFloat = 8
         switch kind {
-        case .rect, .ellipse, .highlight, .mosaic, .spotlight:
+        case .rect, .ellipse, .highlight, .mosaic, .spotlight, .magnifier:
             // Filled-ish regions accept clicks near the border OR inside for the
-            // translucent kinds (which read as solid objects).
+            // translucent / opaque kinds (which read as solid objects).
             let outer = rect.insetBy(dx: -slop, dy: -slop)
-            if kind == .highlight || kind == .mosaic || kind == .spotlight { return outer.contains(p) }
+            if kind == .highlight || kind == .mosaic || kind == .spotlight || kind == .magnifier {
+                return outer.contains(p)
+            }
             let inner = rect.insetBy(dx: slop, dy: slop)
             return outer.contains(p) && !(inner.width > 0 && inner.height > 0 && inner.contains(p))
         case .arrow:
@@ -272,7 +313,7 @@ struct Annotation: Identifiable, Codable, Hashable {
             return false
         case .line:
             return p.distanceToSegment(start, end) < slop + lineWidth
-        case .freehand:
+        case .freehand, .polyline:
             guard let pts = points, pts.count > 1 else { return false }
             for i in 1..<pts.count where p.distanceToSegment(pts[i - 1], pts[i]) < slop + lineWidth {
                 return true
@@ -283,13 +324,27 @@ struct Annotation: Identifiable, Codable, Hashable {
             return CGRect(origin: start, size: size).insetBy(dx: -slop, dy: -slop).contains(p)
         case .badge:
             return p.distance(to: start) < badgeRadius + slop
+        case .watermark:
+            // Tiled across the whole shot — not selectable via the canvas (it would
+            // swallow every click); manage it from the layers panel / property bar.
+            return false
         }
+    }
+
+    /// Resolved AppKit font for text / watermark: the chosen family at `fontSize`,
+    /// falling back to the semibold system font when none / unavailable.
+    func resolvedNSFont() -> NSFont {
+        if let family = fontFamily, !family.isEmpty,
+           let f = NSFont(name: family, size: fontSize) {
+            return f
+        }
+        return NSFont.systemFont(ofSize: fontSize, weight: .semibold)
     }
 
     /// Approximate text extent (for hit-testing / selection box).
     func textBounds() -> CGSize {
         let str = (text?.isEmpty == false ? text! : "文字")
-        let font = NSFont.systemFont(ofSize: fontSize, weight: .semibold)
+        let font = resolvedNSFont()
         let bounds = (str as NSString).boundingRect(
             with: CGSize(width: 600, height: CGFloat.greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin],
@@ -345,6 +400,20 @@ final class AnnotationEditorState: ObservableObject {
     @Published var arrowType: ArrowType = .filled
     /// Arrow head size multiplier new arrows get.
     @Published var arrowHeadScale: CGFloat = 1
+    /// Font family new text / watermark get (nil = system font).
+    @Published var fontFamily: String?
+    /// Magnifier zoom new lenses get.
+    @Published var magnification: CGFloat = 2
+    /// Magnifier lens shape new lenses get (round when true).
+    @Published var lensRound: Bool = true
+    /// Watermark tile style new watermarks get.
+    @Published var watermarkOpacity: CGFloat = 0.18
+    @Published var watermarkAngle: CGFloat = -30
+    @Published var watermarkSpacing: CGFloat = 120
+    /// The in-progress polyline (multi-click). Lives here (not in the canvas view)
+    /// so the draw loop and the keyboard bus both see it; its last point trails the
+    /// cursor as a preview until committed.
+    @Published var draftPolyline: Annotation?
     /// Text annotation currently being edited in-place (shows a TextField).
     @Published var editingTextID: UUID?
     /// Whether the layers panel is open.
@@ -407,6 +476,108 @@ final class AnnotationEditorState: ObservableObject {
     func setArrowHeadScale(_ s: CGFloat) {
         arrowHeadScale = s
         if let id = selectedID { update(id: id) { $0.arrowHeadScale = s } }
+    }
+
+    func setFontFamily(_ family: String?) {
+        let normalized = (family?.isEmpty == true) ? nil : family
+        fontFamily = normalized
+        if let id = selectedID { update(id: id) { $0.fontFamily = normalized } }
+    }
+
+    func setMagnification(_ m: CGFloat) {
+        magnification = m
+        if let id = selectedID { update(id: id) { $0.magnification = m } }
+    }
+
+    func setLensRound(_ round: Bool) {
+        lensRound = round
+        if let id = selectedID { update(id: id) { $0.lensRound = round } }
+    }
+
+    func setWatermarkOpacity(_ o: CGFloat) {
+        watermarkOpacity = o
+        if let id = selectedID { update(id: id) { $0.watermarkOpacity = o } }
+    }
+
+    func setWatermarkAngle(_ a: CGFloat) {
+        watermarkAngle = a
+        if let id = selectedID { update(id: id) { $0.watermarkAngle = a } }
+    }
+
+    func setWatermarkSpacing(_ s: CGFloat) {
+        watermarkSpacing = s
+        if let id = selectedID { update(id: id) { $0.watermarkSpacing = s } }
+    }
+
+    /// Update the text of the current selection (used by the watermark property
+    /// bar, whose object isn't editable in-place on the canvas).
+    func setSelectedText(_ text: String) {
+        if let id = selectedID { update(id: id) { $0.text = text } }
+    }
+
+    // MARK: Polyline (multi-click) — the draft trails the cursor between clicks.
+
+    var isDrawingPolyline: Bool { draftPolyline != nil }
+
+    /// First click: seed a two-point draft (anchor + a preview point at the cursor).
+    func beginPolyline(at p: CGPoint) {
+        draftPolyline = Annotation(kind: .polyline, start: p, end: p, points: [p, p],
+                                   color: color, colorHex: colorHex,
+                                   lineWidth: lineWidth, dash: dash)
+    }
+
+    /// Freeze the trailing preview point at `p`, then append a fresh preview point.
+    func appendPolylinePoint(at p: CGPoint) {
+        guard var d = draftPolyline, var pts = d.points, !pts.isEmpty else { return }
+        pts[pts.count - 1] = p
+        pts.append(p)
+        d.points = pts
+        d.end = p
+        draftPolyline = d
+    }
+
+    /// Move the trailing preview point to follow the cursor.
+    func updatePolylinePreview(to p: CGPoint) {
+        guard var d = draftPolyline, var pts = d.points, !pts.isEmpty else { return }
+        pts[pts.count - 1] = p
+        d.points = pts
+        d.end = p
+        draftPolyline = d
+    }
+
+    /// Drop the trailing preview and commit — needs ≥2 real vertices, else discard.
+    func commitPolyline() {
+        guard var d = draftPolyline, var pts = d.points else { draftPolyline = nil; return }
+        if !pts.isEmpty { pts.removeLast() }          // the trailing preview point
+        guard pts.count >= 2 else { draftPolyline = nil; return }
+        d.points = pts
+        d.start = pts.first ?? d.start
+        d.end = pts.last ?? d.end
+        snapshot()
+        add(d)
+        selectedID = d.id
+        draftPolyline = nil
+    }
+
+    func cancelPolyline() {
+        draftPolyline = nil
+    }
+
+    /// Ensure a single watermark exists and is selected (the watermark tool stamps
+    /// one tiled object; re-activating the tool re-selects it for editing).
+    func ensureWatermark() {
+        if let existing = annotations.last(where: { $0.kind == .watermark }) {
+            selectedID = existing.id
+            return
+        }
+        snapshot()
+        let w = Annotation(kind: .watermark, start: .zero, end: .zero,
+                           text: "机密", color: color, colorHex: colorHex,
+                           fontSize: max(fontSize, 22), fontFamily: fontFamily,
+                           watermarkOpacity: watermarkOpacity, watermarkAngle: watermarkAngle,
+                           watermarkSpacing: watermarkSpacing)
+        add(w)
+        selectedID = w.id
     }
 
     /// Erase the topmost annotation under a point (one undo per gesture — the

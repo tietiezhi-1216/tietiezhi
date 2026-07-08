@@ -186,7 +186,11 @@ final class PillController {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .statusBar
+        // Above the screen-capture overlay (`.screenSaver`): dictation is global, so
+        // the pill must stay visible even while the capture surface covers the whole
+        // screen (e.g. dictating into the截图 AI 输入框). At `.statusBar` it hid behind
+        // that overlay and looked broken.
+        panel.level = Self.overlayLevel
         panel.backgroundColor = .clear
         panel.isOpaque = false
         // The shadow is drawn by SwiftUI (it follows the capsule shape). The
@@ -223,7 +227,7 @@ final class PillController {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .statusBar
+        panel.level = Self.overlayLevel   // above the capture overlay (see `build`)
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
@@ -232,6 +236,10 @@ final class PillController {
         panel.contentView = hosting
         noticePanel = panel
     }
+
+    /// One notch above the capture overlay's `.screenSaver` level, so the pill and
+    /// its notices win against the full-screen capture surface.
+    private static let overlayLevel = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue + 1)
 
     private func positionNotice() {
         guard let noticePanel, let screen = NSScreen.main else { return }
