@@ -48,9 +48,9 @@ jobs:
         with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable, cache: true }
       - run: flutter pub get
       - run: flutter build windows --release
-      - run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath "$env:GITHUB_WORKSPACE/Orbit-Windows-$env:VER-x64.zip" -Force
+      - run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath "$env:GITHUB_WORKSPACE/Tietiezhi-Windows-$env:VER-x64.zip" -Force
       - uses: actions/upload-artifact@v4
-        with: { name: windows, path: Orbit-Windows-*-x64.zip, if-no-files-found: error }
+        with: { name: windows, path: Tietiezhi-Windows-*-x64.zip, if-no-files-found: error }
 
   macos:
     needs: version
@@ -79,10 +79,10 @@ jobs:
           MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
         run: |
           set -euo pipefail
-          APP="build/macos/Build/Products/Release/orbit.app"
+          APP="build/macos/Build/Products/Release/Tietiezhi.app"
 
-          KEYCHAIN="$RUNNER_TEMP/orbit-signing.keychain-db"
-          KP="orbit-ci-$RANDOM"
+          KEYCHAIN="$RUNNER_TEMP/tietiezhi-signing.keychain-db"
+          KP="tietiezhi-ci-$RANDOM"
           security create-keychain -p "$KP" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KP" "$KEYCHAIN"
@@ -103,11 +103,11 @@ jobs:
             --sign "$IDENTITY" "$APP"
           codesign --verify --strict --verbose=2 "$APP"
 
-          DMG="$GITHUB_WORKSPACE/Orbit-$VER-macOS-universal.dmg"
-          STAGE="$(mktemp -d)/Orbit"; mkdir -p "$STAGE"
+          DMG="$GITHUB_WORKSPACE/Tietiezhi-$VER-macOS-universal.dmg"
+          STAGE="$(mktemp -d)/Tietiezhi"; mkdir -p "$STAGE"
           cp -R "$APP" "$STAGE/"
           ln -s /Applications "$STAGE/Applications"
-          hdiutil create -volname "Orbit $VER" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          hdiutil create -volname "Tietiezhi $VER" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 
           if [ "${{ env.NOTARIZE_AVAILABLE }}" = "true" ]; then
             xcrun notarytool submit "$DMG" \
@@ -121,14 +121,14 @@ jobs:
 
       - name: Unsigned zip (fallback when no cert)
         if: env.SIGNING_AVAILABLE != 'true'
-        run: ditto -c -k --keepParent build/macos/Build/Products/Release/orbit.app "$GITHUB_WORKSPACE/Orbit-macOS-$VER.zip"
+        run: ditto -c -k --keepParent build/macos/Build/Products/Release/Tietiezhi.app "$GITHUB_WORKSPACE/Tietiezhi-macOS-$VER.zip"
 
       - uses: actions/upload-artifact@v4
         with:
           name: macos
           path: |
-            Orbit-*-macOS-universal.dmg
-            Orbit-macOS-*.zip
+            Tietiezhi-*-macOS-universal.dmg
+            Tietiezhi-macOS-*.zip
           if-no-files-found: error
 
   linux:
@@ -145,9 +145,9 @@ jobs:
         with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable, cache: true }
       - run: flutter pub get
       - run: flutter build linux --release
-      - run: tar czf "$GITHUB_WORKSPACE/Orbit-Linux-$VER-x64.tar.gz" -C build/linux/x64/release/bundle .
+      - run: tar czf "$GITHUB_WORKSPACE/Tietiezhi-Linux-$VER-x64.tar.gz" -C build/linux/x64/release/bundle .
       - uses: actions/upload-artifact@v4
-        with: { name: linux, path: Orbit-Linux-*-x64.tar.gz, if-no-files-found: error }
+        with: { name: linux, path: Tietiezhi-Linux-*-x64.tar.gz, if-no-files-found: error }
 
   android:
     needs: version
@@ -162,9 +162,9 @@ jobs:
         with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable, cache: true }
       - run: flutter pub get
       - run: flutter build apk --release
-      - run: cp build/app/outputs/flutter-apk/app-release.apk "$GITHUB_WORKSPACE/Orbit-Android-$VER.apk"
+      - run: cp build/app/outputs/flutter-apk/app-release.apk "$GITHUB_WORKSPACE/Tietiezhi-Android-$VER.apk"
       - uses: actions/upload-artifact@v4
-        with: { name: android, path: Orbit-Android-*.apk, if-no-files-found: error }
+        with: { name: android, path: Tietiezhi-Android-*.apk, if-no-files-found: error }
 
   web:
     needs: version
@@ -177,9 +177,9 @@ jobs:
         with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable, cache: true }
       - run: flutter pub get
       - run: flutter build web --release
-      - run: (cd build/web && zip -qr "$GITHUB_WORKSPACE/Orbit-Web-$VER.zip" .)
+      - run: (cd build/web && zip -qr "$GITHUB_WORKSPACE/Tietiezhi-Web-$VER.zip" .)
       - uses: actions/upload-artifact@v4
-        with: { name: web, path: Orbit-Web-*.zip, if-no-files-found: error }
+        with: { name: web, path: Tietiezhi-Web-*.zip, if-no-files-found: error }
 
   ios:
     needs: version
@@ -192,12 +192,61 @@ jobs:
         with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable, cache: true }
       - run: flutter pub get
       - run: flutter build ios --release --no-codesign
-      - run: ditto -c -k --keepParent build/ios/iphoneos/Runner.app "$GITHUB_WORKSPACE/Orbit-iOS-$VER-unsigned.zip"
+      - run: ditto -c -k --keepParent build/ios/iphoneos/Runner.app "$GITHUB_WORKSPACE/Tietiezhi-iOS-$VER-unsigned.zip"
       - uses: actions/upload-artifact@v4
-        with: { name: ios, path: Orbit-iOS-*-unsigned.zip, if-no-files-found: error }
+        with: { name: ios, path: Tietiezhi-iOS-*-unsigned.zip, if-no-files-found: error }
+
+  server:
+    needs: version
+    runs-on: ubuntu-latest
+    env: { VER: "${{ needs.version.outputs.version }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm, cache-dependency-path: server/web/pnpm-lock.yaml }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26', cache-dependency-path: server/go.sum }
+      # 构建 Web 控制台并同步到 go:embed 目录（失败则用仓库占位符继续）
+      - name: Build web console
+        working-directory: server/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+          rm -rf ../internal/webui/dist
+          mkdir -p ../internal/webui/dist
+          cp -R build/. ../internal/webui/dist/
+      # 跨平台交叉编译服务端单二进制（内嵌控制台）
+      - name: Cross-compile server binaries
+        working-directory: server
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          build() {
+            local os=$1 arch=$2 ext=${3:-}
+            echo "→ $os/$arch"
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" \
+              -o "$GITHUB_WORKSPACE/out/tietiezhi-server-$os-$arch$ext" ./cmd/server
+          }
+          build linux amd64
+          build linux arm64
+          build darwin amd64
+          build darwin arm64
+          build windows amd64 .exe
+      - name: Package server binaries
+        run: |
+          cd out
+          for f in tietiezhi-server-*; do
+            [ -e "$f" ] || continue
+            tar czf "$GITHUB_WORKSPACE/${f%.exe}-$VER.tar.gz" "$f"
+          done
+          ls -la "$GITHUB_WORKSPACE"/tietiezhi-server-*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with: { name: server, path: tietiezhi-server-*.tar.gz, if-no-files-found: error }
 
   publish:
-    needs: [version, windows, macos, linux, android, web, ios]
+    needs: [version, windows, macos, linux, android, web, ios, server]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -207,14 +256,21 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.tag }}
-          name: Orbit ${{ needs.version.outputs.version }}
+          name: Tietiezhi ${{ needs.version.outputs.version }}
           prerelease: true
           body: |
-            Orbit 全端预览（Flutter 重构中）——当前含 **聊天 + 模型/渠道配置**；语音胶囊 / 截图卫星 陆续补齐。
-            - **Windows**：解压跑 `orbit.exe`（未签名，SmartScreen 点「仍要运行」）
-            - **macOS**：解压后右键「打开」（未签名/未公证；或 `xattr -cr orbit.app`）
-            - **Linux**：解压 tar，运行 `orbit`（需 GTK3）
+            🐙 **Tietiezhi（铁铁汁）** 全端预览 —— 万物互联的多模态 AI 平台。客户端（聊天 + 模型/渠道配置 + 互联）+ 可部署到服务器的 Go 后端 hub。
+
+            **客户端（Flutter）**
+            - **Windows**：解压跑 `tietiezhi.exe`（未签名，SmartScreen 点「仍要运行」）
+            - **macOS**：解压后右键「打开」（未签名/未公证；或 `xattr -cr Tietiezhi.app`）
+            - **Linux**：解压 tar，运行 `tietiezhi`（需 GTK3）
             - **Android**：安装 APK（调试签名，仅供测试）
             - **Web**：解压后静态托管（如 `python3 -m http.server`）
             - **iOS**：未签名，需自行签名后安装（仅证明可编译）
+
+            **服务端 hub（Go 单二进制，内嵌 Web 控制台）** —— `tietiezhi-server-<os>-<arch>-*.tar.gz`
+            - 解压后 `./tietiezhi-server -c ~/.tietiezhi/config.yaml` 即可运行，控制台默认 `:18178`。
+            - 提供 OpenAI 兼容 API、Agent 运行时、飞书渠道，以及**万物互联** WebSocket 接入（`/v1/connect`、`/v1/devices`）。
+            - 客户端「互联」页填入服务端地址即可让设备互相发现、互发消息。
           files: dist/*

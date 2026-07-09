@@ -1,0 +1,36 @@
+name: CI (App · Flutter)
+
+# Flutter 客户端（app/）的持续集成：analyze + test。只在触及 app/ 时触发。
+on:
+  push:
+    branches: [main]
+    paths: ['app/**', '.github/workflows/app-ci.yml']
+  pull_request:
+    branches: [main]
+    paths: ['app/**', '.github/workflows/app-ci.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: app-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: 3.44.5
+
+jobs:
+  analyze-test:
+    name: Analyze & Test (Flutter)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "${{ env.FLUTTER_VERSION }}"
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze lib test
+      - run: flutter test

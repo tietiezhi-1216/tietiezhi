@@ -81,10 +81,10 @@ jobs:
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
         run: |
           set -euo pipefail
-          APP="$(swift build -c release --show-bin-path)/Orbit.app"
+          APP="$(swift build -c release --show-bin-path)/Tietiezhi.app"
 
-          KEYCHAIN="$RUNNER_TEMP/orbit-signing.keychain-db"
-          KP="orbit-ci-$RANDOM"
+          KEYCHAIN="$RUNNER_TEMP/tietiezhi-signing.keychain-db"
+          KP="tietiezhi-ci-$RANDOM"
           security create-keychain -p "$KP" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KP" "$KEYCHAIN"
@@ -104,8 +104,8 @@ jobs:
           echo "Signing with: $IDENTITY"
 
           codesign --force --options runtime --timestamp \
-            --entitlements Orbit.entitlements \
-            --sign "$IDENTITY" --identifier com.orbit.app "$APP"
+            --entitlements Tietiezhi.entitlements \
+            --sign "$IDENTITY" --identifier com.Tietiezhi.app "$APP"
           codesign --verify --strict --verbose=2 "$APP"
           codesign -dvv "$APP" 2>&1 | head -n 8
 
@@ -115,15 +115,15 @@ jobs:
         id: pkg
         run: |
           BIN="$(swift build -c release --show-bin-path)"
-          APP="$BIN/Orbit.app"
+          APP="$BIN/Tietiezhi.app"
           ARCH="$(uname -m)"
           VER="${{ steps.ver.outputs.version }}"
-          DMG="Orbit-${VER}-macos-${ARCH}.dmg"
-          STAGE="$(mktemp -d)/Orbit"
+          DMG="Tietiezhi-${VER}-macos-${ARCH}.dmg"
+          STAGE="$(mktemp -d)/Tietiezhi"
           mkdir -p "$STAGE"
           cp -R "$APP" "$STAGE/"
           ln -s /Applications "$STAGE/Applications"          # drag-to-install target
-          hdiutil create -volname "Orbit ${VER}" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+          hdiutil create -volname "Tietiezhi ${VER}" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
           echo "dmg=$DMG" >> "$GITHUB_OUTPUT"
 
       # Submit the DMG to Apple, wait for the ticket, then staple it so Gatekeeper
@@ -154,7 +154,7 @@ jobs:
           DMG="${{ steps.pkg.outputs.dmg }}"
           shasum -a 256 "$DMG" | tee "$DMG.sha256"
           SHA="$(cut -d ' ' -f 1 "$DMG.sha256")"
-          MANIFEST="Orbit-${VER}-update.json"
+          MANIFEST="Tietiezhi-${VER}-update.json"
           cat > "$MANIFEST" <<EOF
           {
             "version": "$VER",
@@ -173,7 +173,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          name: Orbit ${{ steps.ver.outputs.version }}
+          name: Tietiezhi ${{ steps.ver.outputs.version }}
           body_path: .github/RELEASE_NOTES.md
           prerelease: true
           # Artifacts are produced under apple/ (job working-directory); action-gh-release
