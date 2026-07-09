@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "orbit-web",
+      "name": "tietiezhi-web",
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "8099", "--directory", "/Users/tietiezhi/Project/Orbit/app/build/web"],
       "port": 8099
