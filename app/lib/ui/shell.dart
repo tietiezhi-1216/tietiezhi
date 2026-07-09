@@ -1,12 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../dictation/dictation_controller.dart';
+import '../dictation/dictation_hotkey.dart';
 import 'chat_view.dart';
+import 'dictation_pill.dart';
 import 'interconnect_view.dart';
 import 'settings/settings_page.dart';
 import 'theme.dart';
 
-/// The single-window shell: a slim left rail (chat / settings) beside the content,
-/// mirroring the macOS app's single-window dual-workspace.
+/// The single-window shell: a slim left rail (chat / 互联 / settings) beside the
+/// content, plus a mic action that toggles dictation, and the floating pill
+/// overlay. Mirrors the macOS app's single-window multi-workspace.
 class TietiezhiShell extends StatefulWidget {
   const TietiezhiShell({super.key});
 
@@ -18,17 +23,38 @@ class _TietiezhiShellState extends State<TietiezhiShell> {
   int _index = 0; // 0 = chat, 1 = interconnect, 2 = settings
 
   @override
+  void initState() {
+    super.initState();
+    // Register the global dictation hotkey (desktop only) once the tree is up.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final dictation = context.read<DictationController>();
+      DictationHotkey.register(dictation.toggle);
+    });
+  }
+
+  @override
+  void dispose() {
+    DictationHotkey.unregister();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Row(
+      body: Stack(
         children: [
-          _Rail(index: _index, onSelect: (i) => setState(() => _index = i)),
-          Expanded(
-            child: IndexedStack(
-              index: _index,
-              children: const [ChatView(), InterconnectView(), SettingsPage()],
-            ),
+          Row(
+            children: [
+              _Rail(index: _index, onSelect: (i) => setState(() => _index = i)),
+              Expanded(
+                child: IndexedStack(
+                  index: _index,
+                  children: const [ChatView(), InterconnectView(), SettingsPage()],
+                ),
+              ),
+            ],
           ),
+          const DictationPill(),
         ],
       ),
     );
@@ -82,7 +108,54 @@ class _Rail extends StatelessWidget {
             active: index == 2,
             onTap: () => onSelect(2),
           ),
+          const Spacer(),
+          const _MicButton(),
+          const SizedBox(height: 12),
         ],
+      ),
+    );
+  }
+}
+
+/// Toggles dictation; turns red while recording. Works on every platform
+/// (the global hotkey is a desktop-only extra).
+class _MicButton extends StatelessWidget {
+  const _MicButton();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.watch<DictationController>();
+    final recording = c.isRecording;
+    final busy = c.phase == DictationPhase.transcribing ||
+        c.phase == DictationPhase.polishing;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+      child: Material(
+        color: recording ? const Color(0x33EF4444) : Colors.transparent,
+        borderRadius: BorderRadius.circular(9),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(9),
+          onTap: busy ? null : () => c.toggle(),
+          child: SizedBox(
+            width: 44,
+            height: 46,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  recording ? Icons.stop_circle : Icons.mic_none,
+                  size: 20,
+                  color: recording ? const Color(0xFFEF4444) : TietiezhiColors.textDim,
+                ),
+                const SizedBox(height: 2),
+                Text('听写',
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: recording ? const Color(0xFFEF4444) : TietiezhiColors.textDim)),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
