@@ -32,9 +32,16 @@ extension WireX on Wire {
         Wire.whisper => '/audio/transcriptions',
       };
 
+  Capability get capability => switch (this) {
+        Wire.whisper => Capability.asr,
+        _ => Capability.chat,
+      };
+
   static Wire fromId(String? s) =>
       Wire.values.firstWhere((w) => w.id == s, orElse: () => Wire.openaiChat);
 }
+
+enum Capability { chat, asr, embedding, image, video, tts, rerank }
 
 enum AuthScheme { bearer, anthropic, apiKey }
 
@@ -121,6 +128,90 @@ class ModelConfig {
         'displayName': displayName,
         'wire': wire.id,
       };
+
+  Capability get capability => wire.capability;
+}
+
+/// 听写（语音胶囊）设置——引擎（音频采集/ASR/润色/插入）是原生分期，这里先是配置。
+class DictationSettings {
+  String? asrModelId; // 语音识别模型（wire=whisper）
+  String? llmModelId; // 润色模型（chat）
+  String hotkey; // 全局热键（跨端注册为原生能力，先存标签）
+  String workingLanguages; // 逗号分隔
+  String outputLanguage; // auto / zh / en …
+  bool frontAppAware;
+  bool injectionDefense;
+  bool cleanOutput;
+  bool autoInsert;
+
+  DictationSettings({
+    this.asrModelId,
+    this.llmModelId,
+    this.hotkey = '右 Command',
+    this.workingLanguages = '中文, English',
+    this.outputLanguage = 'auto',
+    this.frontAppAware = true,
+    this.injectionDefense = true,
+    this.cleanOutput = true,
+    this.autoInsert = true,
+  });
+
+  factory DictationSettings.fromJson(Map<String, dynamic> j) => DictationSettings(
+        asrModelId: j['asrModelId'] as String?,
+        llmModelId: j['llmModelId'] as String?,
+        hotkey: j['hotkey'] as String? ?? '右 Command',
+        workingLanguages: j['workingLanguages'] as String? ?? '中文, English',
+        outputLanguage: j['outputLanguage'] as String? ?? 'auto',
+        frontAppAware: j['frontAppAware'] as bool? ?? true,
+        injectionDefense: j['injectionDefense'] as bool? ?? true,
+        cleanOutput: j['cleanOutput'] as bool? ?? true,
+        autoInsert: j['autoInsert'] as bool? ?? true,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'asrModelId': asrModelId,
+        'llmModelId': llmModelId,
+        'hotkey': hotkey,
+        'workingLanguages': workingLanguages,
+        'outputLanguage': outputLanguage,
+        'frontAppAware': frontAppAware,
+        'injectionDefense': injectionDefense,
+        'cleanOutput': cleanOutput,
+        'autoInsert': autoInsert,
+      };
+}
+
+/// 截图设置——同样引擎（屏幕捕获/标注/元素框选）是原生分期。
+class CaptureSettings {
+  String captureHotkey;
+  String pinHotkey;
+  bool copyAfterCapture;
+  bool showQuickPreview;
+  String? annotationModelId; // AI 标注用的多模态模型
+
+  CaptureSettings({
+    this.captureHotkey = 'Ctrl+Shift+A',
+    this.pinHotkey = 'Ctrl+Shift+P',
+    this.copyAfterCapture = true,
+    this.showQuickPreview = true,
+    this.annotationModelId,
+  });
+
+  factory CaptureSettings.fromJson(Map<String, dynamic> j) => CaptureSettings(
+        captureHotkey: j['captureHotkey'] as String? ?? 'Ctrl+Shift+A',
+        pinHotkey: j['pinHotkey'] as String? ?? 'Ctrl+Shift+P',
+        copyAfterCapture: j['copyAfterCapture'] as bool? ?? true,
+        showQuickPreview: j['showQuickPreview'] as bool? ?? true,
+        annotationModelId: j['annotationModelId'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'captureHotkey': captureHotkey,
+        'pinHotkey': pinHotkey,
+        'copyAfterCapture': copyAfterCapture,
+        'showQuickPreview': showQuickPreview,
+        'annotationModelId': annotationModelId,
+      };
 }
 
 /// The whole persisted config document.
@@ -128,13 +219,19 @@ class Settings {
   List<ApiProvider> providers;
   List<ModelConfig> models;
   String? activeChatModelId;
+  DictationSettings dictation;
+  CaptureSettings capture;
 
   Settings({
     List<ApiProvider>? providers,
     List<ModelConfig>? models,
     this.activeChatModelId,
+    DictationSettings? dictation,
+    CaptureSettings? capture,
   })  : providers = providers ?? [],
-        models = models ?? [];
+        models = models ?? [],
+        dictation = dictation ?? DictationSettings(),
+        capture = capture ?? CaptureSettings();
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
         providers: (j['providers'] as List? ?? [])
@@ -144,13 +241,26 @@ class Settings {
             .map((e) => ModelConfig.fromJson(e as Map<String, dynamic>))
             .toList(),
         activeChatModelId: j['activeChatModelId'] as String?,
+        dictation: j['dictation'] is Map
+            ? DictationSettings.fromJson(j['dictation'] as Map<String, dynamic>)
+            : null,
+        capture: j['capture'] is Map
+            ? CaptureSettings.fromJson(j['capture'] as Map<String, dynamic>)
+            : null,
       );
 
   Map<String, dynamic> toJson() => {
         'providers': providers.map((p) => p.toJson()).toList(),
         'models': models.map((m) => m.toJson()).toList(),
         'activeChatModelId': activeChatModelId,
+        'dictation': dictation.toJson(),
+        'capture': capture.toJson(),
       };
+
+  List<ModelConfig> get chatModels =>
+      models.where((m) => m.capability == Capability.chat).toList();
+  List<ModelConfig> get asrModels =>
+      models.where((m) => m.capability == Capability.asr).toList();
 
   ModelConfig? get activeChatModel {
     for (final m in models) {

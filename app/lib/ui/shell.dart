@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'chat_view.dart';
-import 'settings_view.dart';
+import 'settings/settings_page.dart';
 import 'theme.dart';
 
 /// The single-window shell: a slim left rail (chat / settings) beside the content,
@@ -25,7 +25,7 @@ class _OrbitShellState extends State<OrbitShell> {
           Expanded(
             child: IndexedStack(
               index: _index,
-              children: const [ChatView(), SettingsView()],
+              children: const [ChatView(), SettingsPage()],
             ),
           ),
         ],
