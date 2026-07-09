@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="./assets/brand/tietiezhi-logo.svg" alt="Tietiezhi" width="620">
+<img src="./assets/brand/tietiezhi-mark.png" alt="Tietiezhi" width="160">
+
+# Tietiezhi · 铁铁汁
 
 **Tietiezhi（铁铁汁）—— 万物互联的开放多模态 AI 平台。一个核心，八条触手，连接你所有的设备与模型。**
 

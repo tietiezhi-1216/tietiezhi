@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **`app/`** —— Flutter 多模态客户端（Win/macOS/Linux/Android/iOS/Web）：聊天、听写、截图、图像/视频生成。包名 `tietiezhi`，bundle id `com.tietiezhi.tietiezhi`。互联客户端在 `app/lib/core/interconnect.dart`。
 - **`apple/`** —— 原生 macOS Swift/SwiftUI **参考实现**（历史，已被 Flutter 客户端取代，不进 CI 主线；下面「签名/权限/架构」等 Swift 细节都是讲它）。
 - **`shared/`** —— 跨端对齐的规格（模型配置 schema、协议 Wire 定义等，单一事实源）。
-- **`assets/brand/`** —— 章鱼 logo、字标、全端图标源文件（`tietiezhi-mark.svg` / `tietiezhi-logo.svg`）。
+- **`assets/brand/`** —— 章鱼 logo、字标、全端图标源文件（`tietiezhi-mark.png`（章鱼头像，取自 tietiezhi-apk 应用图标））。
 - 根目录留 `docs/`、`.github/`、`README`、`LICENSE`、本文件。
 
 > ⚠️ 品牌已从 Orbit 全面改名为 Tietiezhi：显示名 `Tietiezhi`、包名/bundle id `com.tietiezhi.tietiezhi`、Go module `tietiezhi`。GitHub 远端目前仍是 `tietiezhi-1216/Orbit`（仓库改名是后续事）。

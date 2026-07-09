@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="../Assets/Brand/tietiezhi-readme-logo.svg" alt="Tietiezhi" width="620">
+<img src="../assets/brand/tietiezhi-mark.png" alt="Tietiezhi" width="620">
 
 **一个开放的 macOS 多模态 AI 平台 —— 让每个模型都成为一颗卫星。**
 
