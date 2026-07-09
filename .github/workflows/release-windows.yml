@@ -1,0 +1,84 @@
+name: Release (Windows · Flutter)
+
+# 在 windows runner 上用 Flutter 构建 Windows 桌面版，打成 zip 发到 GitHub Release。
+# 与 macOS(Swift) 的 release.yml 解耦：这里用 `win-v*` 标签触发，互不影响。
+# 无代码签名证书 → 产物未签名，首次运行 Windows 会弹 SmartScreen（预览版可接受）。
+on:
+  push:
+    tags: ['win-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 0.3.0-preview）'
+        required: true
+        default: '0.3.0-preview'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build & publish (Windows x64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.5
+          channel: stable
+          cache: true
+
+      - name: Toolchain
+        run: flutter --version
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') {
+            $v = "${{ github.event.inputs.version }}"
+          } else {
+            $v = "$env:GITHUB_REF_NAME" -replace '^win-v',''
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=win-v$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build Windows (release)
+        run: flutter build windows --release
+
+      - name: Package zip
+        id: pkg
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $src = "build/windows/x64/runner/Release"
+          if (-not (Test-Path $src)) { $src = "build/windows/runner/Release" }  # older layout fallback
+          $zip = "Orbit-Windows-$ver-x64.zip"
+          Compress-Archive -Path "$src/*" -DestinationPath $zip -Force
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Checksum
+        run: |
+          $zip = "${{ steps.pkg.outputs.zip }}"
+          (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() + "  " + $zip |
+            Out-File -FilePath "$zip.sha256" -Encoding ascii
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Orbit Windows ${{ steps.ver.outputs.version }}
+          prerelease: true
+          body: |
+            Orbit Windows 预览版（Flutter 重构中）。
+            解压后运行 `orbit.exe`。未签名，首次运行 Windows 可能弹 SmartScreen（点「更多信息 → 仍要运行」）。
+            当前包含：聊天 + 模型/渠道配置。听写胶囊 / 截图卫星 陆续补齐。
+          files: |
+            app/${{ steps.pkg.outputs.zip }}
+            app/${{ steps.pkg.outputs.zip }}.sha256
