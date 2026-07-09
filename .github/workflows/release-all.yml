@@ -55,17 +55,81 @@ jobs:
   macos:
     needs: version
     runs-on: macos-latest
-    env: { VER: "${{ needs.version.outputs.version }}" }
+    env:
+      VER: "${{ needs.version.outputs.version }}"
+      # 复用 Swift 版那套 Developer ID + 公证 secrets（缺失则回退未签名 zip）。
+      SIGNING_AVAILABLE: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+      NOTARIZE_AVAILABLE: ${{ secrets.MACOS_NOTARY_PASSWORD != '' }}
     defaults: { run: { working-directory: app } }
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with: { flutter-version: "${{ env.FLUTTER_VERSION }}", channel: stable, cache: true }
       - run: flutter pub get
+      # 通用二进制（arm64 + x86_64），一份 DMG 同时支持 Apple Silicon 与 Intel。
       - run: flutter build macos --release
-      - run: ditto -c -k --keepParent build/macos/Build/Products/Release/orbit.app "$GITHUB_WORKSPACE/Orbit-macOS-$VER.zip"
+
+      - name: Sign (Developer ID) + DMG + notarize
+        if: env.SIGNING_AVAILABLE == 'true'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP="build/macos/Build/Products/Release/orbit.app"
+
+          KEYCHAIN="$RUNNER_TEMP/orbit-signing.keychain-db"
+          KP="orbit-ci-$RANDOM"
+          security create-keychain -p "$KP" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KP" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" "$(security default-keychain | tr -d ' \"')"
+
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KP" "$KEYCHAIN" >/dev/null
+
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | grep 'Developer ID Application' | head -1 | awk -F'"' '{print $2}')"
+          if [ -z "$IDENTITY" ]; then echo "::error::no Developer ID Application identity"; exit 1; fi
+          echo "Signing with: $IDENTITY"
+
+          # 硬化运行时 + 去沙盒 entitlements；--deep 连内嵌 framework 一起签。
+          codesign --force --deep --options runtime --timestamp \
+            --entitlements macos/Runner/Release.entitlements \
+            --sign "$IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+          DMG="$GITHUB_WORKSPACE/Orbit-$VER-macOS-universal.dmg"
+          STAGE="$(mktemp -d)/Orbit"; mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "Orbit $VER" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+
+          if [ "${{ env.NOTARIZE_AVAILABLE }}" = "true" ]; then
+            xcrun notarytool submit "$DMG" \
+              --apple-id "$MACOS_NOTARY_APPLE_ID" \
+              --password "$MACOS_NOTARY_PASSWORD" \
+              --team-id "$MACOS_NOTARY_TEAM_ID" --wait
+            xcrun stapler staple "$DMG"
+            xcrun stapler validate "$DMG"
+          fi
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Unsigned zip (fallback when no cert)
+        if: env.SIGNING_AVAILABLE != 'true'
+        run: ditto -c -k --keepParent build/macos/Build/Products/Release/orbit.app "$GITHUB_WORKSPACE/Orbit-macOS-$VER.zip"
+
       - uses: actions/upload-artifact@v4
-        with: { name: macos, path: Orbit-macOS-*.zip, if-no-files-found: error }
+        with:
+          name: macos
+          path: |
+            Orbit-*-macOS-universal.dmg
+            Orbit-macOS-*.zip
+          if-no-files-found: error
 
   linux:
     needs: version

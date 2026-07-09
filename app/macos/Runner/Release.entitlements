@@ -2,7 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
+	<!-- Developer ID (非商店) 分发：不启用沙盒，这样聊天联网 + 以后截图/全局热键/麦克风等
+	     能力不受沙盒限制；公证只要求硬化运行时（codesign --options runtime）。 -->
+	<key>com.apple.security.network.client</key>
 	<true/>
 </dict>
 </plist>
