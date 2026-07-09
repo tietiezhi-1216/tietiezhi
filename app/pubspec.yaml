@@ -38,7 +38,7 @@ dependencies:
   http: ^1.6.0
   shared_preferences: ^2.5.5
   web_socket_channel: ^3.0.1
-  record: ^5.1.2
+  record: ^6.1.0
   hotkey_manager: ^0.2.3
   screen_capturer: ^0.2.3
 
