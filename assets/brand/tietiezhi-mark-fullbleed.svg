@@ -17,7 +17,7 @@
   </defs>
 
   <!-- rounded app-icon field -->
-  <rect width="512" height="512" rx="116" fill="url(#tz-bg)"/>
+  <rect width="512" height="512"  fill="url(#tz-bg)"/>
   <circle cx="256" cy="236" r="180" fill="url(#tz-glow)"/>
 
   <!-- connection nodes at tentacle tips (万物互联) -->
