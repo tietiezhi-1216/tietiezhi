@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'chat/chat_controller.dart';
+import 'core/interconnect.dart';
 import 'core/settings_store.dart';
 import 'ui/shell.dart';
 import 'ui/theme.dart';
@@ -23,6 +24,7 @@ class TietiezhiApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider.value(value: store),
         ChangeNotifierProvider(create: (_) => ChatController(store)),
+        ChangeNotifierProvider(create: (_) => InterconnectClient()),
       ],
       child: MaterialApp(
         title: 'Tietiezhi',

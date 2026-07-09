@@ -214,6 +214,32 @@ class CaptureSettings {
       };
 }
 
+/// 万物互联设置——连接到 tietiezhi 服务端 hub，与其它设备互发消息。
+class InterconnectSettings {
+  String serverBaseUrl; // 例如 http://127.0.0.1:18178 或 https://your-server
+  String deviceName; // 在设备列表里显示的名字
+  bool autoConnect; // 启动即自动连接
+
+  InterconnectSettings({
+    this.serverBaseUrl = '',
+    this.deviceName = '',
+    this.autoConnect = false,
+  });
+
+  factory InterconnectSettings.fromJson(Map<String, dynamic> j) =>
+      InterconnectSettings(
+        serverBaseUrl: j['serverBaseUrl'] as String? ?? '',
+        deviceName: j['deviceName'] as String? ?? '',
+        autoConnect: j['autoConnect'] as bool? ?? false,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'serverBaseUrl': serverBaseUrl,
+        'deviceName': deviceName,
+        'autoConnect': autoConnect,
+      };
+}
+
 /// The whole persisted config document.
 class Settings {
   List<ApiProvider> providers;
@@ -221,6 +247,7 @@ class Settings {
   String? activeChatModelId;
   DictationSettings dictation;
   CaptureSettings capture;
+  InterconnectSettings interconnect;
 
   Settings({
     List<ApiProvider>? providers,
@@ -228,10 +255,12 @@ class Settings {
     this.activeChatModelId,
     DictationSettings? dictation,
     CaptureSettings? capture,
+    InterconnectSettings? interconnect,
   })  : providers = providers ?? [],
         models = models ?? [],
         dictation = dictation ?? DictationSettings(),
-        capture = capture ?? CaptureSettings();
+        capture = capture ?? CaptureSettings(),
+        interconnect = interconnect ?? InterconnectSettings();
 
   factory Settings.fromJson(Map<String, dynamic> j) => Settings(
         providers: (j['providers'] as List? ?? [])
@@ -247,6 +276,9 @@ class Settings {
         capture: j['capture'] is Map
             ? CaptureSettings.fromJson(j['capture'] as Map<String, dynamic>)
             : null,
+        interconnect: j['interconnect'] is Map
+            ? InterconnectSettings.fromJson(j['interconnect'] as Map<String, dynamic>)
+            : null,
       );
 
   Map<String, dynamic> toJson() => {
@@ -255,6 +287,7 @@ class Settings {
         'activeChatModelId': activeChatModelId,
         'dictation': dictation.toJson(),
         'capture': capture.toJson(),
+        'interconnect': interconnect.toJson(),
       };
 
   List<ModelConfig> get chatModels =>

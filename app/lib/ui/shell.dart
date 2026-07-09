@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'chat_view.dart';
+import 'interconnect_view.dart';
 import 'settings/settings_page.dart';
 import 'theme.dart';
 
@@ -14,7 +15,7 @@ class TietiezhiShell extends StatefulWidget {
 }
 
 class _TietiezhiShellState extends State<TietiezhiShell> {
-  int _index = 0; // 0 = chat, 1 = settings
+  int _index = 0; // 0 = chat, 1 = interconnect, 2 = settings
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +26,7 @@ class _TietiezhiShellState extends State<TietiezhiShell> {
           Expanded(
             child: IndexedStack(
               index: _index,
-              children: const [ChatView(), SettingsPage()],
+              children: const [ChatView(), InterconnectView(), SettingsPage()],
             ),
           ),
         ],
@@ -70,10 +71,16 @@ class _Rail extends StatelessWidget {
             onTap: () => onSelect(0),
           ),
           _RailButton(
-            icon: Icons.settings_outlined,
-            label: '设置',
+            icon: Icons.hub_outlined,
+            label: '互联',
             active: index == 1,
             onTap: () => onSelect(1),
+          ),
+          _RailButton(
+            icon: Icons.settings_outlined,
+            label: '设置',
+            active: index == 2,
+            onTap: () => onSelect(2),
           ),
         ],
       ),
