@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **`assets/brand/`** —— 章鱼 logo、字标、全端图标源文件（`tietiezhi-mark.png`（章鱼头像，取自 tietiezhi-apk 应用图标））。
 - 根目录留 `docs/`、`.github/`、`README`、`LICENSE`、本文件。
 
-> ⚠️ 品牌已从 Orbit 全面改名为 Tietiezhi：显示名 `Tietiezhi`、包名/bundle id `com.tietiezhi.tietiezhi`、Go module `tietiezhi`。GitHub 远端目前仍是 `tietiezhi-1216/Orbit`（仓库改名是后续事）。
+> ⚠️ 品牌已从 Orbit 全面改名为 Tietiezhi：显示名 `Tietiezhi`、包名/bundle id `com.tietiezhi.tietiezhi`、Go module `tietiezhi`。GitHub 仓库已改名为 `tietiezhi-1216/tietiezhi`（origin fetch=https、push=ssh://git@ssh.github.com:443/tietiezhi-1216/tietiezhi.git）。原独立的 `tietiezhi`(Go 源) 与 `tietiezhi-apk`(安卓客户端，只取了图标) 两个仓库已在合并后删除。
 
 ## 万物互联（Interconnect）—— server/internal/interconnect
 
