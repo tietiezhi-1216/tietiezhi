@@ -9,6 +9,7 @@ import (
 
 	"tietiezhi/internal/agent"
 	"tietiezhi/internal/config"
+	"tietiezhi/internal/interconnect"
 	"tietiezhi/internal/llm"
 )
 
@@ -17,6 +18,7 @@ type Server struct {
 	cfg   *config.Config
 	agent *agent.BaseAgent
 	mgmt  *ManagementAPI
+	hub   *interconnect.Hub
 	mux   *http.ServeMux
 	srv   *http.Server
 }
@@ -26,11 +28,15 @@ func New(cfg *config.Config, ag *agent.BaseAgent) *Server {
 	s := &Server{
 		cfg:   cfg,
 		agent: ag,
+		hub:   interconnect.NewHub(),
 		mux:   http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
 }
+
+// Hub 暴露万物互联 hub，供渠道/子系统向设备推送消息。
+func (s *Server) Hub() *interconnect.Hub { return s.hub }
 
 // SetManagementAPI 设置管理 API
 func (s *Server) SetManagementAPI(mgmt *ManagementAPI) {
@@ -45,6 +51,9 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("/v1/models", s.handleModels)
+	// 万物互联：设备 WebSocket 接入 + 在线设备列表
+	s.mux.HandleFunc("/v1/connect", s.hub.HandleConnect)
+	s.mux.HandleFunc("/v1/devices", s.hub.HandleDevices)
 	s.registerWebUIRoutes()
 }
 
