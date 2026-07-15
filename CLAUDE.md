@@ -63,7 +63,7 @@ pnpm tauri icon ../assets/brand/tietiezhi-mark.png   # 重新生成全套图标
 
 ## CI
 
-- `.github/workflows/desktop.yml` —— Windows + macOS 双平台：typecheck + cargo check/test + `tauri build`（暂未签名/公证，后续再加）。
+- `.github/workflows/desktop.yml` —— Windows + macOS 双平台：typecheck + cargo check/test + `tauri build`。macOS 签名+公证已接入：配齐 `APPLE_*` secrets（证书 p12、签名身份、Apple ID、app 专用密码、Team ID）后 `tauri build` 自动签名/公证/装订；未配置则回退 ad-hoc。
 - `.github/workflows/server-ci.yml` —— Go 服务端（保持原样）。
 
 ## 文档状态

@@ -1,7 +1,8 @@
 name: CI (Desktop · Tauri)
 
 # 桌面客户端（desktop/）的持续集成：Windows + macOS 双平台
-# typecheck + Rust 测试 + tauri build（暂不签名/公证，产物仅供构建验证）。
+# typecheck + Rust 测试 + tauri build。
+# macOS 签名 + 公证：配齐 APPLE_* secrets 后 tauri build 自动签名 → 公证 → 装订；未配置则回退 ad-hoc。
 on:
   push:
     branches: [main]
@@ -62,6 +63,15 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Tauri build
+        env:
+          # macOS 签名 + 公证：配齐下列 secrets 后 tauri build 自动签名 → 公证 → 装订；
+          # 未配置（值为空）时回退 ad-hoc（当前行为）。Windows 构建忽略这些变量。
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: pnpm tauri build --bundles ${{ matrix.bundles }}
 
       - name: Upload bundles
