@@ -68,7 +68,7 @@ export function SettingsPage() {
             <div className="flex min-w-0 flex-col gap-1">
               <span className="font-semibold">铁铁汁 Tietiezhi</span>
               <span className="text-muted-foreground text-sm">
-                AI 中转站官方桌面客户端 · v{versionQuery.data ?? "—"}
+                连接各家模型的智能体终端 · v{versionQuery.data ?? "—"}
               </span>
               <Separator className="my-1" />
               <span className="text-muted-foreground text-xs">

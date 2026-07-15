@@ -36,7 +36,7 @@ export function AppSidebar() {
           <div className="flex flex-col">
             <span className="text-sm leading-tight font-semibold">铁铁汁</span>
             <span className="text-muted-foreground text-xs leading-tight">
-              AI 中转站客户端
+              智能体终端 · 模型枢纽
             </span>
           </div>
         </div>
