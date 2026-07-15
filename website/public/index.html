@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>铁铁汁 Tietiezhi — AI 模型中转客户端</title>
+  <meta name="description"
+    content="铁铁汁（Tietiezhi）是 AI 模型中转站的官方桌面客户端：配置 baseURL 与 API Key 即刻使用聊天等能力，密钥由系统钥匙串安全保管，支持 Windows 与 macOS。" />
+  <link rel="icon" href="dist/assets/tietiezhi-mark.png" />
+  <link rel="stylesheet" href="dist/styles.css" />
+  <script src="app.js" defer></script>
+</head>
+
+<body>
+  <!-- Navigation -->
+  <nav class="fixed flex justify-between py-6 w-full lg:px-48 md:px-12 px-4 content-center bg-secondary z-10">
+    <a href="#top" class="flex items-center">
+      <img src='dist/assets/tietiezhi-mark.png' alt="铁铁汁" class="h-8 w-8 mr-2" />
+      <span class="font-pt-serif font-bold text-xl">铁铁汁</span>
+    </a>
+    <ul class="font-montserrat items-center hidden md:flex">
+      <li class="mx-3">
+        <a class="growing-underline" href="#howitworks" data-i18n="nav.howitworks">工作原理</a>
+      </li>
+      <li class="mx-3">
+        <a class="growing-underline" href="#features" data-i18n="nav.features">功能特性</a>
+      </li>
+      <li class="mx-3">
+        <a class="growing-underline" href="#download" data-i18n="nav.download">下载</a>
+      </li>
+      <li class="mx-3">
+        <a class="growing-underline" href="#faq" data-i18n="nav.faq">常见问题</a>
+      </li>
+    </ul>
+    <div class="font-montserrat hidden md:flex items-center">
+      <select
+        class="langSelect mr-4 bg-secondary border border-black rounded-lg py-2 px-3 cursor-pointer focus:outline-none"
+        aria-label="Language">
+        <option value="zh-CN">简体中文</option>
+        <option value="en">English</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+      </select>
+      <a href="#download" class="py-2 px-4 text-white bg-black rounded-3xl" data-i18n="nav.cta">下载客户端</a>
+    </div>
+    <div id="showMenu" class="md:hidden flex items-center cursor-pointer">
+      <img src='dist/assets/logos/Menu.svg' alt="菜单" />
+    </div>
+  </nav>
+  <div id='mobileNav' class="hidden px-4 py-6 fixed top-0 left-0 h-full w-full bg-secondary z-20 animate-fade-in-down">
+    <div id="hideMenu" class="flex justify-end cursor-pointer">
+      <img src='dist/assets/logos/Cross.svg' alt="关闭" class="h-16 w-16" />
+    </div>
+    <ul class="font-montserrat flex flex-col mx-8 my-16 items-center text-3xl">
+      <li class="my-5"><a href="#howitworks" data-i18n="nav.howitworks">工作原理</a></li>
+      <li class="my-5"><a href="#features" data-i18n="nav.features">功能特性</a></li>
+      <li class="my-5"><a href="#download" data-i18n="nav.download">下载</a></li>
+      <li class="my-5"><a href="#faq" data-i18n="nav.faq">常见问题</a></li>
+      <li class="my-5">
+        <select class="langSelect bg-secondary border border-black rounded-lg py-2 px-3 text-lg cursor-pointer"
+          aria-label="Language">
+          <option value="zh-CN">简体中文</option>
+          <option value="en">English</option>
+          <option value="ja">日本語</option>
+          <option value="ko">한국어</option>
+        </select>
+      </li>
+    </ul>
+  </div>
+
+  <!-- Hero -->
+  <section id="top"
+    class="pt-24 md:mt-0 md:h-screen flex flex-col justify-center text-center md:text-left md:flex-row md:justify-between md:items-center lg:px-48 md:px-12 px-4 bg-secondary">
+    <div class="md:flex-1 md:mr-10">
+      <h1 class="font-pt-serif text-5xl font-bold mb-7 leading-tight" data-i18n-html="hero.title">
+        连接万物的
+        <span class="bg-underline1 bg-left-bottom bg-no-repeat pb-2 bg-100%">AI 中转客户端</span>
+      </h1>
+      <p class="font-pt-serif font-normal mb-7" data-i18n="hero.desc">
+        配置中转站 baseURL 与 API Key，即刻使用聊天等能力。密钥由系统钥匙串安全保管，绝不明文落盘。支持 Windows 与 macOS。
+      </p>
+      <div class="font-montserrat">
+        <a href="#download"
+          class="inline-block bg-black px-6 py-4 rounded-lg border-2 border-black border-solid text-white mr-2 mb-2"
+          data-i18n="hero.cta1">立即下载</a>
+        <a href="#features" class="inline-block px-6 py-4 border-2 border-black border-solid rounded-lg"
+          data-i18n="hero.cta2">了解功能</a>
+      </div>
+    </div>
+    <div class="flex justify-around md:block mt-8 md:mt-0 md:flex-1">
+      <div class="relative">
+        <img src='dist/assets/Highlight1.svg' alt="" class="absolute -top-16 -left-10" />
+      </div>
+      <img src='dist/assets/MacBook Pro.png' alt="铁铁汁桌面客户端" />
+      <div class="relative">
+        <img src='dist/assets/Highlight2.svg' alt="" class="absolute -bottom-10 -right-6" />
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="howitworks" class="bg-black text-white sectionSize">
+    <div>
+      <h2 class="secondaryTitle bg-underline2 bg-100%" data-i18n="steps.title">三步开始使用</h2>
+    </div>
+    <div class="flex flex-col md:flex-row">
+      <div class="flex-1 mx-8 flex flex-col items-center my-4">
+        <div class="border-2 rounded-full bg-secondary text-black h-12 w-12 flex justify-center items-center mb-3">1</div>
+        <h3 class="font-montserrat font-medium text-xl mb-2" data-i18n="steps.1.t">填写接入配置</h3>
+        <p class="text-center font-montserrat" data-i18n="steps.1.d">
+          在「接入配置」填入中转站 baseURL 与 API Key，一键测试连通。
+        </p>
+      </div>
+      <div class="flex-1 mx-8 flex flex-col items-center my-4">
+        <div class="border-2 rounded-full bg-secondary text-black h-12 w-12 flex justify-center items-center mb-3">2</div>
+        <h3 class="font-montserrat font-medium text-xl mb-2" data-i18n="steps.2.t">选择模型</h3>
+        <p class="text-center font-montserrat" data-i18n="steps.2.d">
+          从中转站支持的模型中选择，随时按需切换。
+        </p>
+      </div>
+      <div class="flex-1 mx-8 flex flex-col items-center my-4">
+        <div class="border-2 rounded-full bg-secondary text-black h-12 w-12 flex justify-center items-center mb-3">3</div>
+        <h3 class="font-montserrat font-medium text-xl mb-2" data-i18n="steps.3.t">开始对话</h3>
+        <p class="text-center font-montserrat" data-i18n="steps.3.d">
+          发送消息，实时流式返回，畅快交流。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="sectionSize bg-secondary">
+    <div>
+      <h2 class="secondaryTitle bg-underline3 bg-100%" data-i18n="features.title">功能特性</h2>
+    </div>
+    <div class="md:grid md:grid-cols-2 md:grid-rows-2">
+      <div class="flex items-start font-montserrat my-6 mr-10">
+        <img src='dist/assets/logos/Lightning.svg' alt='' class="h-7 mr-4" />
+        <div>
+          <h3 class="font-semibold text-2xl" data-i18n="features.1.t">OpenAI 兼容接入</h3>
+          <p data-i18n-html="features.1.d">
+            兼容 <code>/v1/chat/completions</code> 标准接口，填好 baseURL 与 API Key 即可对接主流中转站，无需额外适配。
+          </p>
+        </div>
+      </div>
+      <div class="flex items-start font-montserrat my-6 mr-10">
+        <img src='dist/assets/logos/CheckedBox.svg' alt='' class="h-7 mr-4" />
+        <div>
+          <h3 class="font-semibold text-2xl" data-i18n="features.2.t">密钥安全存储</h3>
+          <p data-i18n="features.2.d">
+            API Key 存入系统钥匙串（macOS Keychain / Windows 凭据管理器），不明文落盘、不回传、不在界面展示。
+          </p>
+        </div>
+      </div>
+      <div class="flex items-start font-montserrat my-6 mr-10">
+        <img src='dist/assets/logos/Star.svg' alt='' class="h-7 mr-4" />
+        <div>
+          <h3 class="font-semibold text-2xl" data-i18n="features.3.t">实时流式对话</h3>
+          <p data-i18n="features.3.d">
+            基于 SSE 的流式响应，逐字呈现，解析在原生层完成，等待更少、体验更顺。
+          </p>
+        </div>
+      </div>
+      <div class="flex items-start font-montserrat my-6 mr-10">
+        <img src='dist/assets/logos/Heart.svg' alt='' class="h-7 mr-4" />
+        <div>
+          <h3 class="font-semibold text-2xl" data-i18n="features.4.t">跨平台桌面端</h3>
+          <p data-i18n="features.4.d">
+            同一体验覆盖 Windows 与 macOS，原生窗口、深浅色主题跟随系统。更多能力（万物互联、Agent、多模态）持续演进中。
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Download -->
+  <section id="download" class="sectionSize bg-secondary pt-8">
+    <div>
+      <h2 class="secondaryTitle bg-underline4 mb-2 bg-100%" data-i18n="download.title">下载客户端</h2>
+    </div>
+    <p class="font-montserrat text-center mb-4 max-w-2xl" data-i18n="download.desc">
+      选择你的平台，下载并安装铁铁汁。当前为测试版本，欢迎反馈。
+    </p>
+    <div class="font-montserrat text-sm mb-10 flex items-center">
+      <span data-i18n="download.current">当前版本</span>
+      <span id="dlVersion" class="font-bold mx-2">—</span>
+      <span id="dlDate" class="opacity-70"></span>
+    </div>
+
+    <div class="flex w-full flex-col md:flex-row">
+      <div class='flex-1 flex flex-col mx-6 shadow-2xl bg-secondary rounded-2xl py-6 px-8 my-4'>
+        <h3 class="font-pt-serif font-normal text-2xl mb-1">macOS</h3>
+        <div class="font-montserrat font-bold text-lg mb-1" data-i18n="download.mac_arm.name">Apple 芯片</div>
+        <p class="font-montserrat text-sm opacity-70 mb-6" data-i18n="download.mac_arm.req">
+          适用于 M 系列芯片 · 需 macOS 13.3 及以上
+        </p>
+        <a id="dlMacArm" href="#"
+          class="dlBtn mt-auto text-center border-2 border-solid border-black rounded-xl text-lg py-3"
+          data-i18n="download.btn">下载</a>
+      </div>
+
+      <div class='flex-1 flex flex-col mx-6 shadow-2xl bg-secondary rounded-2xl py-6 px-8 my-4'>
+        <h3 class="font-pt-serif font-normal text-2xl mb-1">macOS</h3>
+        <div class="font-montserrat font-bold text-lg mb-1" data-i18n="download.mac_x64.name">Intel 芯片</div>
+        <p class="font-montserrat text-sm opacity-70 mb-6" data-i18n="download.mac_x64.req">
+          适用于 Intel 芯片 · 需 macOS 13.3 及以上
+        </p>
+        <a id="dlMacX64" href="#"
+          class="dlBtn mt-auto text-center border-2 border-solid border-black rounded-xl text-lg py-3"
+          data-i18n="download.btn">下载</a>
+      </div>
+
+      <div class='flex-1 flex flex-col mx-6 shadow-2xl bg-secondary rounded-2xl py-6 px-8 my-4'>
+        <h3 class="font-pt-serif font-normal text-2xl mb-1">Windows</h3>
+        <div class="font-montserrat font-bold text-lg mb-1" data-i18n="download.win.name">64 位</div>
+        <p class="font-montserrat text-sm opacity-70 mb-6" data-i18n="download.win.req">
+          适用于 Windows 10 / 11 (x64)
+        </p>
+        <a id="dlWin" href="#"
+          class="dlBtn mt-auto text-center border-2 border-solid border-black rounded-xl text-lg py-3"
+          data-i18n="download.btn">下载</a>
+      </div>
+    </div>
+
+    <p id="dlHint" class="font-montserrat text-sm opacity-70 mt-8 text-center"></p>
+    <a id="dlMore" href="https://tietiezhi.xyz/releases/" class="growing-underline font-montserrat text-sm mt-2"
+      data-i18n="download.more">查看历史版本</a>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" class="sectionSize items-start pt-8 md:pt-24 bg-black text-white">
+    <div>
+      <h2 class="secondaryTitle bg-highlight3 p-10 mb-0 bg-center bg-100%" data-i18n="faq.title">常见问题</h2>
+    </div>
+
+    <div toggleElement class="w-full py-4 cursor-pointer">
+      <div class="flex justify-between items-center">
+        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.1.q">铁铁汁是什么？</div>
+        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
+      </div>
+      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.1.a">
+        铁铁汁是 AI 模型中转站的官方桌面客户端，帮助你便捷地接入并使用中转站提供的 AI 能力。
+      </div>
+    </div>
+    <hr class="w-full bg-white" />
+
+    <div toggleElement class="w-full py-4 cursor-pointer">
+      <div class="flex justify-between items-center">
+        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.2.q">支持哪些操作系统？</div>
+        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
+      </div>
+      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.2.a">
+        目前支持 Windows 10 / 11 与 macOS 13.3 及以上（含 Apple 芯片与 Intel 芯片）。
+      </div>
+    </div>
+    <hr class="w-full bg-white" />
+
+    <div toggleElement class="w-full py-4 cursor-pointer">
+      <div class="flex justify-between items-center">
+        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.3.q">如何开始使用？</div>
+        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
+      </div>
+      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.3.a">
+        下载安装后，在「接入配置」中填入中转站的 baseURL 与 API Key，测试连通后即可在聊天页使用。
+      </div>
+    </div>
+    <hr class="w-full bg-white" />
+
+    <div toggleElement class="w-full py-4 cursor-pointer">
+      <div class="flex justify-between items-center">
+        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.4.q">我的 API Key 安全吗？</div>
+        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
+      </div>
+      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.4.a">
+        安全。API Key 仅保存在系统钥匙串中，不会明文写入磁盘，也不会回传或在界面展示。
+      </div>
+    </div>
+    <hr class="w-full bg-white" />
+
+    <div toggleElement class="w-full py-4 cursor-pointer">
+      <div class="flex justify-between items-center">
+        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.5.q">这是开源软件吗？</div>
+        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
+      </div>
+      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.5.a">
+        不是。铁铁汁为闭源专有软件，遵循专有许可协议。
+      </div>
+    </div>
+    <hr class="w-full bg-white" />
+  </section>
+
+  <!-- Footer -->
+  <section class="bg-black sectionSize items-center">
+    <div class="mb-3 flex items-center">
+      <img src='dist/assets/tietiezhi-mark.png' alt="铁铁汁" class="h-8 w-8 mr-2" />
+      <span class="font-pt-serif font-bold text-xl text-white">铁铁汁</span>
+    </div>
+    <p class="text-white font-montserrat text-sm opacity-70 mb-6 text-center" data-i18n="footer.tagline">
+      以万物互联为核心的 AI 生态客户端
+    </p>
+    <div class="flex font-montserrat text-white text-sm mb-6">
+      <a href="#features" class="growing-underline mx-3" data-i18n="nav.features">功能特性</a>
+      <a href="#download" class="growing-underline mx-3" data-i18n="nav.download">下载</a>
+      <a href="#faq" class="growing-underline mx-3" data-i18n="nav.faq">常见问题</a>
+    </div>
+    <div class="text-white font-montserrat text-sm opacity-70" data-i18n="footer.rights">
+      © 2026 铁铁汁 Tietiezhi. 保留所有权利。
+    </div>
+  </section>
+</body>
+
+</html>
