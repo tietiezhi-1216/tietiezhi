@@ -78,7 +78,7 @@
         <span class="bg-underline1 bg-left-bottom bg-no-repeat pb-2 bg-100%">智能体终端</span>
       </h1>
       <p class="font-pt-serif font-normal mb-7" data-i18n="hero.desc">
-        铁铁汁把各家厂商的模型汇聚到一处——配置接入即可对话，一个终端连接所有模型。密钥由系统钥匙串守护，绝不明文落盘。支持 Windows 与 macOS。
+        铁铁汁把各家厂商的模型汇聚到一处——一个终端连接所有模型。智能体可以读写文件、执行命令、调用 MCP 工具，危险操作先征求你的批准。密钥由系统钥匙串守护，支持 Windows 与 macOS。
       </p>
       <div class="font-montserrat">
         <a href="#download"
@@ -92,7 +92,66 @@
       <div class="relative">
         <img src='dist/assets/Highlight1.svg' alt="" class="absolute -top-16 -left-10" />
       </div>
-      <img src='dist/assets/MacBook Pro.png' alt="铁铁汁桌面客户端" />
+      <!-- CSS 笔记本外框 + 屏幕内的 app 界面摹本（深色主题，随宽度缩放） -->
+      <div class="laptop" role="img" aria-label="铁铁汁桌面客户端界面">
+        <div class="laptop-screen">
+          <div class="appshot">
+            <div class="appshot-side">
+              <div class="appshot-brand">
+                <img src='dist/assets/tietiezhi-mark.png' alt="" />
+                <span>铁铁汁<small data-i18n="shot.tagline">智能体终端 · 模型枢纽</small></span>
+              </div>
+              <div class="appshot-item" data-i18n="shot.new">✎ 新对话</div>
+              <div class="appshot-label" data-i18n="shot.history">对话记录</div>
+              <div class="appshot-item active" data-i18n="shot.conv1">重构登录模块</div>
+              <div class="appshot-item" data-i18n="shot.conv2">整理产品需求文档</div>
+              <div class="appshot-item" data-i18n="shot.conv3">周报速写</div>
+              <div class="spacer"></div>
+              <div class="appshot-item" data-i18n="shot.settings">⚙ 设置</div>
+            </div>
+            <div class="appshot-main">
+              <div class="appshot-header">
+                <span data-i18n="shot.conv1">重构登录模块</span>
+                <div class="pill">
+                  <span data-i18n="shot.agent">🤖 编码助手</span>
+                  <span data-i18n="shot.workspace">📁 my-project</span>
+                </div>
+              </div>
+              <div class="appshot-chat">
+                <div class="appshot-user" data-i18n="shot.user">帮我把登录逻辑拆成独立模块并跑一下测试</div>
+                <div class="appshot-tool">
+                  <span class="dot"></span>
+                  <span>read_file&nbsp; src/auth/login.ts</span>
+                  <span class="tag" data-i18n="shot.done">完成</span>
+                </div>
+                <div class="appshot-tool">
+                  <span class="dot"></span>
+                  <span>edit_file&nbsp; src/auth/session.ts</span>
+                  <span class="tag" data-i18n="shot.done">完成</span>
+                </div>
+                <div class="appshot-perm">
+                  <div data-i18n="shot.perm">🛡 需要你的许可 — 执行命令：pnpm test</div>
+                  <div class="btns">
+                    <span data-i18n="shot.allow">允许一次</span>
+                    <span data-i18n="shot.always">本会话始终允许</span>
+                    <span data-i18n="shot.deny">拒绝</span>
+                  </div>
+                </div>
+                <div class="appshot-tool">
+                  <span class="dot run"></span>
+                  <span>bash&nbsp; pnpm test</span>
+                  <span class="tag" data-i18n="shot.running">运行中</span>
+                </div>
+              </div>
+              <div class="appshot-composer">
+                <span data-i18n="shot.input">输入消息…</span>
+                <span class="send">↑</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="laptop-base"></div>
+      </div>
       <div class="relative">
         <img src='dist/assets/Highlight2.svg' alt="" class="absolute -bottom-10 -right-6" />
       </div>
@@ -156,18 +215,18 @@
       <div class="flex items-start font-montserrat my-6 mr-10">
         <img src='dist/assets/logos/Star.svg' alt='' class="h-7 mr-4" />
         <div>
-          <h3 class="font-semibold text-2xl" data-i18n="features.3.t">实时流式对话</h3>
+          <h3 class="font-semibold text-2xl" data-i18n="features.3.t">智能体与内置工具</h3>
           <p data-i18n="features.3.d">
-            基于 SSE 的流式响应，逐字呈现，解析在原生层完成，等待更少、体验更顺。
+            智能体可以读写文件、检索代码、执行命令、抓取网页，危险操作先征求你的批准；可创建多个智能体，各自带独立提示词、工具与权限模式。
           </p>
         </div>
       </div>
       <div class="flex items-start font-montserrat my-6 mr-10">
         <img src='dist/assets/logos/Heart.svg' alt='' class="h-7 mr-4" />
         <div>
-          <h3 class="font-semibold text-2xl" data-i18n="features.4.t">跨平台桌面端</h3>
+          <h3 class="font-semibold text-2xl" data-i18n="features.4.t">Skills 与 MCP 扩展</h3>
           <p data-i18n="features.4.d">
-            同一体验覆盖 Windows 与 macOS，原生窗口、深浅色主题跟随系统。更多能力（万物互联、Agent、多模态）持续演进中。
+            按 Anthropic Skills 规范管理技能文档，模型按需加载；支持接入 MCP 服务器（本地命令或远程 HTTP），为智能体添加外部工具。
           </p>
         </div>
       </div>
