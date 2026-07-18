@@ -1,31 +1,27 @@
-# Design QA — Tietiezhi Desktop Starfield Download Homepage
+# Design QA — Tietiezhi Download Glass Cards and Text Sweep
 
-- source visual truth desktop: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/final-desktop-title-shine.png`
-- source visual truth mobile: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/final-mobile-title-shine.png`
-- generated starfield source: `/Users/tietiezhi/.codex/generated_images/019f74a2-91b9-79b2-8054-98d9b589d2b7/exec-b0c526cf-8ac9-4d28-9ef3-7c0f0230102b.png`
-- generated sweep source: `/Users/tietiezhi/.codex/generated_images/019f74a2-91b9-79b2-8054-98d9b589d2b7/exec-5c3df0a2-5937-40fa-9da8-b39370f72545.png`
-- implementation desktop: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/final-stars-desktop.png`
-- implementation mobile: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/final-stars-mobile.png`
-- desktop comparison: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/compare-stars-desktop.png`
-- mobile comparison: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/compare-stars-mobile.png`
+- source visual truth: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/before-download-glass-shine.png`
+- implementation desktop: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/final-download-glass-desktop.png`
+- implementation mobile: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/final-download-glass-mobile.png`
+- full-view comparison: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/focus-home/compare-download-glass-shine.png`
 - viewports: 1280 × 720 desktop; 390 × 844 mobile
-- state: live GitHub Release data loaded, title shine/page sweep/star drift active
+- state: GitHub `v0.0.1` data loaded; dark text sweep, page sweep, and star drift active
 
 ## Full-view comparison evidence
 
-The side-by-side comparisons show the selected composition, title scale, mascot crop, and download dock remain unchanged. The implementation adds visible but restrained depth: sparse blue-violet stars around the perimeter and a faint moving light column without reducing headline or CTA contrast.
+The side-by-side comparison preserves the selected single-screen hero, title scale, mascot crop, and minimal copy. The shared two-segment dock is replaced by two clearly isolated glass cards with equal visual weight, a 16 px desktop gap, and platform-specific icon tiles.
 
 ## Focused region comparison evidence
 
-No extra crop is necessary. Both comparisons clearly show the 80 px / 33.6 px white headline, internal highlight, star density, beam intensity, transparent logo, mascot edge clarity, and 56 px download controls.
+No extra crop is needed because the 1280 × 720 comparison clearly shows the complete title and download region. Motion sampling captured the title clip path at three distinct positions: approximately -14%, 43%, and 108%, visibly moving the dark-blue diagonal highlight across the solid-white title.
 
 ## Required fidelity surfaces
 
-- Fonts and typography: the base `Tietiezhi Desktop` text remains solid white. A separate aria-hidden clipped highlight moves over the glyphs, so the wordmark never becomes transparent or low contrast.
-- Spacing and layout rhythm: the single-screen centered hierarchy is preserved with no added content blocks or shifted controls.
-- Colors and visual tokens: cyan/violet stars and sweep match the hero artwork; black remains dominant and the beam stays below 0.2 opacity.
-- Image quality and asset fidelity: both new effects use generated raster assets on uniform black and screen blending. No placeholder dots, emoji, handcrafted SVG, or CSS-drawn starfield is used.
-- Copy and content: the page remains a minimal download surface with product name, version, availability, GitHub, and two platform downloads.
+- Fonts and typography: the base `Tietiezhi Desktop` heading remains solid white and unchanged in size, weight, tracking, and wrapping. A separate aria-hidden dark-blue sweep crosses the glyphs without changing the accessible heading.
+- Spacing and layout rhythm: the two download cards are independent, equal-width 328 px controls on desktop and stacked 350 × 80 px controls on mobile. Both layouts retain balanced bottom margins and no horizontal overflow.
+- Colors and visual tokens: the new cards use 8% white glass, 20% white borders, 40 px backdrop blur, and restrained internal highlights consistent with the dark blue-violet hero.
+- Image quality and asset fidelity: Apple and Windows 11 marks are local Simple Icons assets, rendered sharply at 20 px. Existing generated mascot, starfield, and page sweep assets retain their native crop and clarity.
+- Copy and content: the minimal homepage copy is unchanged. Each download now adds only a compact format label (`Universal DMG` / `Windows x64`) and platform name.
 
 ## Findings
 
@@ -34,30 +30,30 @@ No extra crop is necessary. Both comparisons clearly show the 80 px / 33.6 px wh
 
 ## Primary interactions and runtime checks
 
-- macOS and Windows buttons resolve to real GitHub Release assets.
-- Computed title color is `rgb(255, 255, 255)`.
-- Title highlight background-position changes during sampling.
-- Both star layers change transforms during sampling.
-- Page sweep animation is registered and visible during its active phase.
-- Reduced-motion mode hides the moving highlight, second star layer, and page sweep while retaining a static low-opacity starfield.
-- Desktop and mobile have no horizontal or vertical overflow.
+- macOS and Windows cards resolve to real `v0.0.1` GitHub Release assets.
+- Apple and Windows icon assets both load at 150 × 150 intrinsic resolution.
+- Both cards compute to `backdrop-filter: blur(40px)`.
+- Title sweep clip path changes continuously across sampled frames.
+- Desktop and 390 × 844 mobile layouts have no horizontal overflow.
 - Browser console contains no warnings or errors.
 
 ## Comparison history
 
-- Earlier issue: the white title had a sweep implementation that was too subtle, while the rest of the page felt empty and static.
-- Fix: retained a solid-white base title, added a stronger clipped cyan-white-violet highlight layer, added two slow raster starfield layers, and added a low-opacity raster page sweep.
-- Post-fix evidence: desktop and mobile comparison images show increased atmosphere without obscuring the mascot, availability line, or download controls.
+- Earlier finding [P1]: the white-on-white title gradient technically animated but was not visibly legible as a sweep.
+- Fix: replaced it with a narrow, diagonal dark-blue text layer with a cyan edge glow, clipped and animated across the unchanged white heading.
+- Post-fix evidence: three captured frames show the band at distinct positions while the clean final frame shows the heading returning fully white.
+- Earlier finding [P2]: both downloads shared one combined dock and lacked platform identity.
+- Fix: separated them into two independent frosted-glass cards and added local Apple and Windows 11 icons.
+- Post-fix evidence: desktop comparison and mobile capture show clear separation, equal sizing, correct icons, and intact responsive spacing.
 
 ## Implementation checklist
 
 - [x] Solid-white title preserved
-- [x] Visible text-only highlight added
-- [x] Subtle page sweep added
-- [x] Raster starfield and particles added
-- [x] Reduced-motion fallback provided
+- [x] Clearly visible dark text sweep added
+- [x] Download controls separated into two glass cards
+- [x] Apple and Windows platform icons added
 - [x] Desktop and mobile verified
-- [x] Download controls verified
+- [x] Release links verified
 - [x] Console checked
 
 final result: passed

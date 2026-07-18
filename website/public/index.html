@@ -29,13 +29,29 @@
       <p class="text-[11px] font-semibold uppercase tracking-[.3em] text-white/45 sm:text-xs">Latest / <span id="dlVersion">Version</span></p>
       <div class="relative mt-5">
         <h1 class="text-[2.1rem] font-bold leading-none tracking-[-.055em] text-white drop-shadow-[0_10px_36px_rgba(0,0,0,.7)] sm:text-5xl md:text-[5rem]">Tietiezhi Desktop</h1>
-        <span aria-hidden="true" class="pointer-events-none absolute inset-0 bg-[linear-gradient(105deg,transparent_0%,transparent_38%,#8bdfff_47%,#ffffff_52%,#d9c7ff_57%,transparent_66%,transparent_100%)] bg-[length:250%_100%] bg-clip-text text-[2.1rem] font-bold leading-none tracking-[-.055em] text-transparent motion-safe:animate-title-shine motion-reduce:hidden sm:text-5xl md:text-[5rem]">Tietiezhi Desktop</span>
+        <span aria-hidden="true" class="pointer-events-none absolute inset-0 text-[2.1rem] font-bold leading-none tracking-[-.055em] text-[#17243a] drop-shadow-[10px_0_12px_rgba(125,229,255,.55)] motion-safe:animate-title-shine motion-reduce:hidden sm:text-5xl md:text-[5rem]">Tietiezhi Desktop</span>
       </div>
       <p class="mt-5 text-xs font-medium tracking-[.08em] text-white/45 sm:text-sm">Available on macOS and Windows</p>
 
-      <div id="download" class="absolute bottom-12 left-1/2 flex w-[calc(100%-2.5rem)] max-w-xl -translate-x-1/2 flex-col gap-2 rounded-[2rem] border border-white/15 bg-black/35 p-2 shadow-[0_28px_80px_rgba(0,0,0,.45)] backdrop-blur-2xl sm:flex-row">
-        <a id="dlMacArm" href="#" class="flex-1 rounded-[1.5rem] bg-white px-6 py-4 font-semibold text-black transition hover:bg-[#e8faff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8bdfff]">下载 macOS</a>
-        <a id="dlWin" href="#" class="flex-1 rounded-[1.5rem] px-6 py-4 font-semibold transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60">下载 Windows</a>
+      <div id="download" class="absolute bottom-8 left-1/2 flex w-[calc(100%-2.5rem)] max-w-2xl -translate-x-1/2 flex-col gap-3 sm:bottom-12 sm:flex-row sm:gap-4">
+        <a id="dlMacArm" href="#" class="group flex min-h-20 flex-1 items-center gap-4 rounded-[1.75rem] border border-white/20 bg-white/[.08] px-5 py-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_22px_60px_rgba(0,0,0,.4)] backdrop-blur-2xl transition duration-300 hover:-translate-y-1 hover:border-white/35 hover:bg-white/[.14] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8bdfff]">
+          <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-white/15 bg-black/30 shadow-[inset_0_1px_0_rgba(255,255,255,.1)]">
+            <img src="dist/assets/logos/Apple.svg" alt="" aria-hidden="true" class="h-5 w-5 object-contain opacity-90 invert transition group-hover:opacity-100" />
+          </span>
+          <span class="min-w-0">
+            <span class="block text-[10px] font-semibold uppercase tracking-[.22em] text-white/45">Universal DMG</span>
+            <span class="mt-1 block text-base font-semibold text-white">下载 macOS</span>
+          </span>
+        </a>
+        <a id="dlWin" href="#" class="group flex min-h-20 flex-1 items-center gap-4 rounded-[1.75rem] border border-white/20 bg-white/[.08] px-5 py-4 text-left shadow-[inset_0_1px_0_rgba(255,255,255,.18),0_22px_60px_rgba(0,0,0,.4)] backdrop-blur-2xl transition duration-300 hover:-translate-y-1 hover:border-white/35 hover:bg-white/[.14] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8bdfff]">
+          <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-white/15 bg-black/30 shadow-[inset_0_1px_0_rgba(255,255,255,.1)]">
+            <img src="dist/assets/logos/Windows11.svg" alt="" aria-hidden="true" class="h-5 w-5 object-contain opacity-90 invert transition group-hover:opacity-100" />
+          </span>
+          <span class="min-w-0">
+            <span class="block text-[10px] font-semibold uppercase tracking-[.22em] text-white/45">Windows x64</span>
+            <span class="mt-1 block text-base font-semibold text-white">下载 Windows</span>
+          </span>
+        </a>
       </div>
 
       <a id="dlMacX64" href="#" class="sr-only">下载 Intel Mac</a>
