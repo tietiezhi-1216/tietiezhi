@@ -709,8 +709,8 @@ video {
 .bg-white\/\[\.08\]{
   background-color: rgb(255 255 255 / .08);
 }
-.bg-\[linear-gradient\(90deg\2c transparent_0\%\2c transparent_42\%\2c rgba\(0\2c 0\2c 0\2c \.10\)_44\%\2c rgba\(0\2c 0\2c 0\2c \.40\)_46\%\2c rgba\(0\2c 0\2c 0\2c \.70\)_48\%\2c rgba\(0\2c 0\2c 0\2c \.82\)_50\%\2c rgba\(0\2c 0\2c 0\2c \.70\)_52\%\2c rgba\(0\2c 0\2c 0\2c \.40\)_54\%\2c rgba\(0\2c 0\2c 0\2c \.10\)_56\%\2c transparent_58\%\2c transparent_100\%\)\]{
-  background-image: linear-gradient(90deg,transparent 0%,transparent 42%,rgba(0,0,0,.10) 44%,rgba(0,0,0,.40) 46%,rgba(0,0,0,.70) 48%,rgba(0,0,0,.82) 50%,rgba(0,0,0,.70) 52%,rgba(0,0,0,.40) 54%,rgba(0,0,0,.10) 56%,transparent 58%,transparent 100%);
+.bg-\[linear-gradient\(90deg\2c transparent_0\%\2c transparent_42\%\2c rgba\(12\2c 14\2c 18\2c \.07\)_44\%\2c rgba\(12\2c 14\2c 18\2c \.27\)_46\%\2c rgba\(12\2c 14\2c 18\2c \.46\)_48\%\2c rgba\(12\2c 14\2c 18\2c \.54\)_50\%\2c rgba\(12\2c 14\2c 18\2c \.46\)_52\%\2c rgba\(12\2c 14\2c 18\2c \.27\)_54\%\2c rgba\(12\2c 14\2c 18\2c \.07\)_56\%\2c transparent_58\%\2c transparent_100\%\)\]{
+  background-image: linear-gradient(90deg,transparent 0%,transparent 42%,rgba(12,14,18,.07) 44%,rgba(12,14,18,.27) 46%,rgba(12,14,18,.46) 48%,rgba(12,14,18,.54) 50%,rgba(12,14,18,.46) 52%,rgba(12,14,18,.27) 54%,rgba(12,14,18,.07) 56%,transparent 58%,transparent 100%);
 }
 .bg-gradient-to-b{
   background-image: linear-gradient(to bottom, var(--tw-gradient-stops));

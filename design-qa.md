@@ -1,24 +1,19 @@
-# Design QA — Codex 式余弦阴影扫光
+# Design QA — 余弦扫光明度优化
 
-- source visual truth: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-slower-shadow/slower-shadow-timeline.png`
-- implementation desktop: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-codex-cosine/codex-cosine-desktop.png`
-- implementation mobile: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-codex-cosine/codex-cosine-mobile.png`
-- focused timeline: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-codex-cosine/codex-cosine-timeline.png`
-- comparison: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-codex-cosine/compare-linear-vs-cosine.png`
+- source visual truth: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-codex-cosine/codex-cosine-timeline.png`
+- implementation desktop: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-lighter-cosine/lighter-cosine-desktop.png`
+- implementation mobile: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-lighter-cosine/lighter-cosine-mobile.png`
+- focused comparison: `/Users/tietiezhi/.codex/visualizations/2026/07/18/019f74a2-91b9-79b2-8054-98d9b589d2b7/release-lighter-cosine/compare-dark-vs-lighter.png`
 - viewport: 1280 × 720 desktop; 390 × 844 mobile
-- state: `v0.0.1`, 8.8-second cycle sampled before, during, and after the sweep
-
-## Source implementation grounding
-
-Codex TUI computes a cosine intensity curve across characters: the band is darkest at its center and falls smoothly to zero at both edges. The website implementation approximates the same curve with symmetric CSS gradient stops while retaining the homepage-appropriate long pause between passes.
+- state: `v0.0.1`, sweep captured around 34% background position
 
 ## Full-view comparison evidence
 
-Only the title overlay gradient changed. Typography, layout, starfield, mascot, page sweep, and download cards remain unchanged. Desktop and mobile captures show no horizontal overflow.
+Only the shadow opacity and neutral tone changed. Typography, layout, timing, starfield, mascot, and download controls remain identical.
 
 ## Focused region comparison evidence
 
-The side-by-side timeline places the earlier asymmetric angled shadow on the left and the new symmetric vertical cosine approximation on the right. The new band has matching falloff on both sides and no colored or blurred edge.
+The comparison shows the previous 82% black center above and the new 54% cool-charcoal center below. The lower version preserves a visible sweep while keeping glyph interiors readable instead of appearing erased.
 
 ## Findings
 
@@ -26,16 +21,14 @@ The side-by-side timeline places the earlier asymmetric angled shadow on the lef
 
 ## Comparison history
 
-- Earlier finding [P2]: the shadow used an asymmetric 105-degree linear gradient, so its entry and exit did not match Codex's per-character cosine falloff.
-- Fix: changed the angle to 90 degrees and introduced symmetric opacity samples at 10%, 40%, 70%, 82%, 70%, 40%, and 10% around the center.
-- Post-fix evidence: timeline captures show a centered dark band with even feathering before returning to intact white text; desktop and mobile layouts remain stable.
+- Earlier finding [P2]: the 82% black center was visually too dense and made the active characters look partially removed.
+- Fix: changed the curve from 10/40/70/82/70/40/10% black to 7/27/46/54/46/27/7% cool charcoal (`rgb(12,14,18)`).
+- Post-fix evidence: focused comparison shows clearly lighter character interiors with the same symmetric cosine falloff.
 
 ## Runtime checks
 
 - Animation remains `title-shine 8.8s ease-in-out infinite`.
-- Overlay text computes to transparent outside the gradient.
-- Desktop title: 656.14 × 80 px.
-- Mobile title: 275.48 × 33.59 px.
+- Desktop and mobile have no horizontal overflow.
 - Browser warnings/errors: none.
 - Reduced-motion fallback remains enabled.
 
