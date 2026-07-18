@@ -8,13 +8,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. **禁止手写 style**——不允许内联 `style={}`、不允许新建 `.css` / `.scss` 文件（全局 `desktop/src/index.css` 中的 Tailwind 指令和 shadcn 主题变量除外）。所有样式必须通过 Tailwind 类名表达；确需动态样式时用 `cva` / `cn()` 组合类名。未经明确允许不得违反本条。
 3. **组件一律用 shadcn/ui 现有组件组合实现**——shadcn 没有的先用其原语（Radix）组合，不引入其它 UI 库。添加组件：`pnpm dlx shadcn@latest add <name>`（本工程为 radix 基座 + nova 预设，见 `components.json`）。
 4. **TypeScript 严格模式，禁止 `any`**——确实无法避免时用 `unknown` + 类型收窄。
-5. **重逻辑下沉到 Rust command**——网络请求（含签名）、文件、密钥存储等在 `desktop/src-tauri/src/` 实现，前端只做展示与交互。**API Key 用系统安全存储（keyring），不得明文落盘**（dev 构建例外，见下）。用户自己保存的 Key 在设置里默认掩码显示、可用眼睛切换成明文，但**编译进二进制的内置默认 Key 永不回传前端**。
+5. **重逻辑下沉到 Rust command**——网络请求（含签名）、文件、密钥存储等在 `desktop/src-tauri/src/` 实现，前端只做展示与交互。**API Key 用系统安全存储（keyring），不得明文落盘**（dev 构建例外，见下）。用户自己保存的 Key 在设置里默认掩码显示、可用眼睛切换成明文；应用不得内置真实 API Key。
 6. **兼容性按 Safari（WKWebView）基线开发**——使用新 CSS/JS 特性前先确认 WKWebView 支持。browserslist（`desktop/package.json`）= `Chrome >= 111 / Safari >= 16.4`，经 `browserslist-to-esbuild` 接到 Vite 的 `build.target`。macOS 最低 **13.3**（= Safari 16.4，Tailwind v4 的硬底线）；Windows 用 evergreen WebView2（打包配置了 `downloadBootstrapper` 引导安装）。
 7. **优先用主流方案**——状态管理 zustand（轻量优先）、数据请求 TanStack Query、构建 Vite、包管理统一 **pnpm**。能用现有抽象就不要自造轮子。
 
 ## 项目定位
 
-**Tietiezhi（铁铁汁）**是一个以 **AI 模型中转 / 接入**为核心的桌面工具软件——中转站的官方桌面客户端：配置 baseURL + API Key 即可使用聊天等能力。**闭源项目**（LICENSE 为专有协议）。本期只做 **Windows 和 macOS**，其它端暂不考虑但架构上不排斥。logo 为章鱼图标（`assets/brand/tietiezhi-mark.png`）。
+**Tietiezhi（铁铁汁）**是一个以 **AI 模型中转 / 接入**为核心的桌面工具软件——中转站的官方桌面客户端：配置 baseURL + API Key 即可使用聊天等能力。项目采用 **Apache License 2.0** 开源。本期只做 **Windows 和 macOS**，其它端暂不考虑但架构上不排斥。logo 为章鱼图标（`assets/brand/tietiezhi-mark.png`）。
 
 **长期愿景**：从「中转站客户端」演进为以**万物互联**为核心、结合 Agent、整合多模态（向量/文本/语音/音乐/视频/图片）模型的完整生态——多平台聊天集成（Codex / Claude Code / opencode / QwQ、聊天胶囊）、节点式工作流编排与自动化（AI 截图、短剧/电商场景）、把 `server/` 中转站内置进桌面并向 Claude Code / Codex 暴露本地 API。详见 `docs/ROADMAP.md`「长期愿景」。这些能力多数已在 `server/internal/` 有骨架；推进时「桌面端不动 server / 前端只做展示」等现行规范需重新划边界，落地某块前先与用户确认架构（`server` 作 sidecar 内置 vs 连远程）。
 
@@ -64,7 +64,7 @@ pnpm tauri icon ../assets/brand/tietiezhi-mark.png   # 重新生成全套图标
 - `src/main.rs` 只是入口；逻辑在 `src/lib.rs`（`run()`）。
 - commands 按域拆分在 `src/commands/`；密钥存取封装在 `src/secrets.rs`（keyring，service = `com.tietiezhi.tietiezhi`）。
 - **Agent 体系**（2026-07-16）：`src/agent/`（工具调用环路 `loop_.rs`、事件 `events.rs`、默认系统提示词 `prompt.rs`）、`src/tools/`（内置工具 read_file/write_file/edit_file/list_dir/glob/grep/bash/fetch/skill，路径 jail 限制在任务工作区内）、`src/permission/`（三模式 ask/auto/full，PermissionBroker oneshot 阻塞等前端 `permission_respond`）、`src/skills/`（`app_data_dir()/skills/{name}/SKILL.md`，Anthropic 规范）、`src/mcp/`（基于官方 rmcp SDK 的 stdio + streamable HTTP 客户端，配置存 settings，工具名 `mcp__{server}__{tool}`）。智能体档案存 `app_config_dir()/agents.json`（提示词/模型覆盖/skills/MCP/工具/权限模式）；任务工作区统一为 `app_data_dir()/tasks/{task_id}/workspace`，绑定项目时该目录是项目 Git worktree，未绑定时为空白托管目录。注意 rmcp 依赖 reqwest 0.13，与主工程 0.12 并存（Cargo.toml 里别名 `reqwest13`）。
-- **内置默认配置**在 `src/defaults.rs`：`DEFAULT_BASE_URL` / `DEFAULT_API_KEY` 编译进二进制（**发布前需填入官方中转站真实值**，默认 key 永不回传前端）；生效优先级=用户设置（settings.json / keyring）> 内置默认。请求类命令（聊天/模型列表）在 Rust 侧解析生效配置，前端不回传连接信息。
+- 首次启动不预置供应商、baseURL 或 API Key；所有模型服务均由用户在设置中添加。请求类命令（聊天/模型列表）在 Rust 侧从 settings/keyring 解析连接信息，前端不回传连接信息。
 - 设置（baseURL、默认模型等非敏感项）以 JSON 存 `app_config_dir()/settings.json`；**API Key 只进钥匙串**。
 - **任务记录**在 `src/commands/conversations.rs`：每个任务存于 `app_data_dir()/tasks/{uuid}/task.json`，工作目录为同级 `workspace/`；id 由前端 `crypto.randomUUID()` 生成并由 Rust 严格校验，`updated_at` 由 Rust 落盘时生成。归档只设置 `archived_at` 并保留完整目录，可在设置中恢复；`pinned_at` 控制侧边栏独立置顶分组；永久删除才清理任务目录。旧 `conversations/{uuid}.json` 与 `workspaces/{uuid}` 启动时自动迁移。
 - **项目列表**在 `src/commands/projects.rs`：持久化到 `app_data_dir()/projects.json`，支持重命名和打开真实目录；任务可不绑定项目。绑定 Git 项目后，任务工作目录由 `src/commands/workspace.rs` 创建为隔离 worktree。项目真实目录永不随任务删除。
@@ -80,4 +80,4 @@ pnpm tauri icon ../assets/brand/tietiezhi-mark.png   # 重新生成全套图标
 
 ## 文档状态
 
-`README.md`（中文、闭源说明）与 `docs/ROADMAP.md` 改了对外行为记得同步；以源码为准。
+`README.md`（中文、开源许可说明）与 `docs/ROADMAP.md` 改了对外行为记得同步；以源码为准。

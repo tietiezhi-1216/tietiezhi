@@ -7,7 +7,7 @@
 //! Never reaches a release build: the entry points import it behind
 //! `import.meta.env.DEV`, so the dynamic import is dead code in production.
 
-import type { ModelInfo } from "@/lib/api";
+import type { ModelInfo, Provider } from "@/lib/api";
 
 const TERLN_MODELS: ModelInfo[] = [
   { id: "agnes-1.5-flash", kind: "chat" },
@@ -65,30 +65,16 @@ export function installTauriMock(): void {
 
   const state = {
     settings: {
-      providers: [
-        {
-          id: "p-terln",
-          name: "terln gateway",
-          type: "openai",
-          baseUrl: "https://api.terln.com",
-          models: TERLN_MODELS,
-        },
-        {
-          id: "p-mimo",
-          name: "mimo",
-          type: "mimo",
-          baseUrl: "https://api.xiaomimimo.com/v1",
-          models: MIMO_MODELS,
-        },
-      ],
-      chatProviderId: "p-terln",
-      chatModel: "gpt-5.5",
+      settingsVersion: 1,
+      providers: [] as Provider[],
+      chatProviderId: "",
+      chatModel: "",
       titleProviderId: "",
       titleModel: "",
-      asrProviderId: "p-mimo",
-      asrModel: "mimo-v2.5-asr",
-      polishProviderId: "p-terln",
-      polishModel: "gemini-2.5-flash",
+      asrProviderId: "",
+      asrModel: "",
+      polishProviderId: "",
+      polishModel: "",
       polishEnabled: true,
       outputLanguage: "auto",
       dictationHotkey: "Alt+Space",
@@ -129,8 +115,7 @@ export function installTauriMock(): void {
         { description: "处理 PDF：拆分、合并、抽取文本", body: "# PDF 技能\n\n使用……", enabled: true },
       ],
     ]),
-    keys: { "p-terln": "sk-REDACTED", "p-mimo": "sk-REDACTED" } as
-      Record<string, string>,
+    keys: {} as Record<string, string>,
     projects: [
       {
         id: "project-orbit",
@@ -378,10 +363,10 @@ export function installTauriMock(): void {
       })),
     provider_key: (a) => state.keys[a.id as string] ?? null,
     upsert_provider: (a) => {
-      const provider = structuredClone(a.provider as { id: string });
+      const provider = structuredClone(a.provider as Provider);
       const i = state.settings.providers.findIndex((p) => p.id === provider.id);
-      if (i >= 0) state.settings.providers[i] = provider as never;
-      else state.settings.providers.push(provider as never);
+      if (i >= 0) state.settings.providers[i] = provider;
+      else state.settings.providers.push(provider);
       if (a.apiKey) state.keys[provider.id] = a.apiKey as string;
     },
     delete_provider: (a) => {

@@ -11,13 +11,13 @@
 
 </div>
 
-> ⚠️ **本项目为闭源专有软件**。代码仅供内部开发使用，未经书面许可不得复制、分发或用于其它用途，详见 [LICENSE](./LICENSE)。
+> 本项目采用 [Apache License 2.0](./LICENSE) 开源。欢迎提交 Issue 与 Pull Request。
 
 ## 定位
 
 Tietiezhi（铁铁汁）是一个以 **AI 模型中转 / 接入**为核心的桌面工具，是中转站的官方桌面客户端：
 
-- **简单**：内置官方中转站默认配置，安装即聊，无需手动配置；也可在设置中接入其它兼容站点；
+- **自主**：首次启动不预置任何供应商，由用户在设置中添加自己的 baseURL 与 API Key；
 - **安全**：API Key 存入系统安全存储（macOS Keychain / Windows 凭据管理器），不明文落盘；
 - **轻快**：Tauri 2 + React 原生壳，安装包小、内存占用低。
 
@@ -63,6 +63,6 @@ task build           # 构建 Web 控制台 + 编译单二进制到 bin/tietiezh
 
 需要 Go 1.26+；详见 `server/Taskfile.yml`。
 
-## 版权
+## 开源许可
 
-闭源专有软件，版权所有 © 2026 Tietiezhi，保留所有权利。
+Copyright © 2026 Tietiezhi。本项目基于 [Apache License 2.0](./LICENSE) 发布。

@@ -1,6 +1,5 @@
 mod agent;
 mod commands;
-mod defaults;
 mod mcp;
 mod permission;
 mod secrets;

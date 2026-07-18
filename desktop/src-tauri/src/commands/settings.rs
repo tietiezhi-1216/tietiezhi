@@ -2,7 +2,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use super::models::{deserialize_models, ModelInfo};
-use crate::{defaults, secrets};
+use crate::secrets;
+
+const CURRENT_SETTINGS_VERSION: u32 = 1;
+const LEGACY_BUILTIN_PROVIDER_NAME: &str = "官方中转站";
+const LEGACY_BUILTIN_PROVIDER_URL: &str = "https://api.terln.com";
 
 /// A model provider (relay / vendor). API keys never live here — they go to the
 /// OS credential store, keyed by the provider id.
@@ -25,6 +29,8 @@ pub struct Provider {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppSettings {
+    /// Internal schema version used for one-time settings migrations.
+    pub settings_version: u32,
     /// Configured providers.
     pub providers: Vec<Provider>,
     /// Selection for the main chat.
@@ -83,76 +89,114 @@ fn write_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String>
     std::fs::write(&path, raw).map_err(|e| format!("写入设置失败：{e}"))
 }
 
-/// Read stored settings, running one-time migration from the legacy single-relay
-/// shape into a seeded default provider. Also used internally by request
-/// commands so the frontend never has to pass connection details back to Rust.
+/// Read stored settings and run one-time migrations. Also used internally by
+/// request commands so the frontend never has to pass connection details back
+/// to Rust.
 pub(crate) fn read_settings(app: &AppHandle) -> Result<AppSettings, String> {
     let path = settings_path(app)?;
     if !path.exists() {
-        let seeded = seed_default(app);
-        let _ = write_settings(app, &seeded);
-        return Ok(seeded);
+        let settings = initial_settings();
+        write_settings(app, &settings)?;
+        return Ok(settings);
     }
     let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取设置失败：{e}"))?;
     let mut settings: AppSettings =
         serde_json::from_str(&raw).map_err(|e| format!("设置文件损坏：{e}"))?;
+    let mut changed = false;
 
-    if settings.providers.is_empty() {
+    if settings.settings_version < CURRENT_SETTINGS_VERSION {
+        remove_legacy_builtin_provider(&mut settings);
+        settings.settings_version = CURRENT_SETTINGS_VERSION;
+        changed = true;
+    }
+    if settings.providers.is_empty() && !settings.base_url.trim().is_empty() {
         settings = migrate_legacy(app, settings);
-        let _ = write_settings(app, &settings);
+        changed = true;
     }
     if settings.output_language.is_empty() {
         settings.output_language = "auto".into();
+        changed = true;
     }
     if settings.permission_mode.is_empty() {
         settings.permission_mode = "auto".into();
+        changed = true;
+    }
+    if changed {
+        write_settings(app, &settings)?;
     }
     Ok(settings)
 }
 
-/// First-run seed: a single provider pointing at the built-in relay so chat
-/// works out of the box. The default key (if any) is copied into the keyring.
-fn seed_default(app: &AppHandle) -> AppSettings {
-    let mut settings = AppSettings {
+/// First-run settings deliberately contain no provider. Users add and own every
+/// model service connection themselves.
+fn initial_settings() -> AppSettings {
+    AppSettings {
+        settings_version: CURRENT_SETTINGS_VERSION,
         polish_enabled: true,
         output_language: "auto".into(),
+        permission_mode: "auto".into(),
         ..Default::default()
-    };
-    if !defaults::DEFAULT_BASE_URL.is_empty() {
-        let id = new_id(app);
-        if !defaults::DEFAULT_API_KEY.is_empty() {
-            let _ = secrets::set_provider_key(&id, defaults::DEFAULT_API_KEY);
-        }
-        settings.providers.push(Provider {
-            id: id.clone(),
-            name: "官方中转站".into(),
-            kind: "openai".into(),
-            base_url: defaults::DEFAULT_BASE_URL.into(),
-            models: Vec::new(),
-        });
-        settings.chat_provider_id = id;
     }
+}
+
+/// Remove the provider that older builds injected automatically. The version
+/// gate ensures a user-created provider with the same values is not repeatedly
+/// removed in future launches.
+fn remove_legacy_builtin_provider(settings: &mut AppSettings) {
+    let removed_ids: Vec<String> = settings
+        .providers
+        .iter()
+        .filter(|provider| {
+            provider.name == LEGACY_BUILTIN_PROVIDER_NAME
+                && provider.base_url.trim().trim_end_matches('/')
+                    == LEGACY_BUILTIN_PROVIDER_URL.trim_end_matches('/')
+        })
+        .map(|provider| provider.id.clone())
+        .collect();
+
+    if removed_ids.is_empty() {
+        return;
+    }
+
     settings
+        .providers
+        .retain(|provider| !removed_ids.contains(&provider.id));
+    for id in &removed_ids {
+        let _ = secrets::delete_provider_key(id);
+    }
+
+    if removed_ids.contains(&settings.chat_provider_id) {
+        settings.chat_provider_id.clear();
+        settings.chat_model.clear();
+    }
+    if removed_ids.contains(&settings.title_provider_id) {
+        settings.title_provider_id.clear();
+        settings.title_model.clear();
+    }
+    if removed_ids.contains(&settings.asr_provider_id) {
+        settings.asr_provider_id.clear();
+        settings.asr_model.clear();
+    }
+    if removed_ids.contains(&settings.polish_provider_id) {
+        settings.polish_provider_id.clear();
+        settings.polish_model.clear();
+    }
 }
 
 /// Migrate legacy `{base_url, model}` + the old single keyring key into a
 /// provider named "我的中转站".
 fn migrate_legacy(app: &AppHandle, mut settings: AppSettings) -> AppSettings {
-    let base = if settings.base_url.trim().is_empty() {
-        defaults::DEFAULT_BASE_URL.to_string()
-    } else {
-        settings.base_url.trim().to_string()
-    };
+    let base = settings.base_url.trim().to_string();
     if base.is_empty() {
         return settings;
     }
     let id = new_id(app);
-    // Carry the old key over: prefer the user's stored key, else the built-in.
-    let legacy_key = secrets::get_api_key().ok().flatten();
-    let key = legacy_key.filter(|k| !k.trim().is_empty()).or_else(|| {
-        (!defaults::DEFAULT_API_KEY.is_empty()).then(|| defaults::DEFAULT_API_KEY.to_string())
-    });
-    if let Some(k) = key {
+    // Carry over only the key the user stored in the legacy app.
+    if let Some(k) = secrets::get_api_key()
+        .ok()
+        .flatten()
+        .filter(|key| !key.trim().is_empty())
+    {
         let _ = secrets::set_provider_key(&id, &k);
     }
     let model = settings.model.trim().to_string();
@@ -197,6 +241,7 @@ pub fn load_settings(app: AppHandle) -> Result<AppSettings, String> {
 #[tauri::command]
 pub fn save_settings(app: AppHandle, mut settings: AppSettings) -> Result<(), String> {
     // Never let legacy fields round-trip back into storage.
+    settings.settings_version = CURRENT_SETTINGS_VERSION;
     settings.base_url = String::new();
     settings.model = String::new();
     write_settings(&app, &settings)
@@ -212,5 +257,14 @@ mod tests {
 
         assert!(settings.title_provider_id.is_empty());
         assert!(settings.title_model.is_empty());
+    }
+
+    #[test]
+    fn first_run_starts_without_a_provider() {
+        let settings = initial_settings();
+
+        assert!(settings.providers.is_empty());
+        assert!(settings.chat_provider_id.is_empty());
+        assert_eq!(settings.settings_version, CURRENT_SETTINGS_VERSION);
     }
 }

@@ -6,7 +6,7 @@ use tauri::{AppHandle, State};
 use super::models::ModelInfo;
 use super::settings::{read_settings, Provider};
 use super::{api_url, snippet};
-use crate::{defaults, secrets, AppState};
+use crate::{secrets, AppState};
 
 /// A provider as sent to the frontend: the same fields plus whether a key is
 /// stored (the key itself never leaves Rust).
@@ -59,15 +59,7 @@ pub(crate) fn resolve(app: &AppHandle, provider_id: &str) -> Result<Resolved, St
         .find(|p| p.id == provider_id)
         .ok_or("未找到所选供应商，请到「设置」检查")?;
 
-    let mut key = secrets::get_provider_key(provider_id)?;
-    // The built-in default relay falls back to the compiled-in key when nothing
-    // is stored (e.g. after switching secret backends in dev, or if the keyring
-    // entry was lost) so it keeps working out of the box.
-    let is_default = provider.base_url.trim().trim_end_matches('/')
-        == defaults::DEFAULT_BASE_URL.trim_end_matches('/');
-    if key.is_none() && is_default && !defaults::DEFAULT_API_KEY.is_empty() {
-        key = Some(defaults::DEFAULT_API_KEY.to_string());
-    }
+    let key = secrets::get_provider_key(provider_id)?;
 
     Ok(Resolved {
         base_url: provider.base_url.clone(),
@@ -77,8 +69,7 @@ pub(crate) fn resolve(app: &AppHandle, provider_id: &str) -> Result<Resolved, St
 }
 
 /// The stored API key for a provider, so the settings editor can show it behind
-/// a reveal toggle. Only what the user themselves saved is returned — the
-/// built-in default key stays compiled-in and is never handed out.
+/// a reveal toggle.
 #[tauri::command]
 pub fn provider_key(id: String) -> Result<Option<String>, String> {
     validate_id(&id)?;

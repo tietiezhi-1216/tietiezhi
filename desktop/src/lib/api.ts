@@ -84,6 +84,8 @@ export interface Skill {
 }
 
 export interface AppSettings {
+  /** Internal settings schema version; preserved when settings are saved. */
+  settingsVersion: number;
   providers: Provider[];
   chatProviderId: string;
   chatModel: string;
