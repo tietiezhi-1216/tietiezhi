@@ -1,6 +1,6 @@
 # 铁铁汁官网（website/）
 
-铁铁汁（Tietiezhi）的官方网站与**下载页**，纯静态站点（无框架）：Tailwind CSS v2 经 PostCSS 构建，一个 `app.js` 负责国际化、交互与下载区。部署到 `https://tietiezhi.xyz`。
+铁铁汁（Tietiezhi）的官方网站与**下载页**，纯静态站点（无框架）：Tailwind CSS v3 经 PostCSS 构建，一个 `app.js` 负责国际化、交互与下载区。由 GitHub Pages 发布。
 
 > 与 `desktop/`（Tauri + React 应用）相互独立：这里是对外官网，不参与桌面端构建，也不受其 shadcn / Tailwind v4 规范约束。
 
@@ -50,13 +50,14 @@ npm run prod         # 生产精简（purge），上线前用
 - **默认固定简体中文，不跟随浏览器**；用户的选择存于 `localStorage["tietiezhi-lang"]`。
 - **新增一种语言**：① 在 `SUPPORTED` 数组加语言码；② 在 `I18N` 加一份同 key 的字典；③ 在两处 `<select class="langSelect">`（桌面导航 + 移动菜单）各加一个 `<option>`。
 
-## 下载区（对接 latest.json）
+## 下载区（对接 GitHub Releases）
 
-- `app.js` 顶部 `DL` 配置 `feedUrl`（`https://tietiezhi.xyz/latest.json`）与 `releases` 目录。
-- `pickPlatformUrls / pickVersion / pickDate` 做**容错解析**，兼容三种结构：Tauri updater 风格（`platforms['darwin-aarch64'].url`）、显式 `downloads` 字段、GitHub-assets 数组（按 `.dmg / .exe / .msi` 扩展名匹配）。
-- 拿到真实 `latest.json` 后，按其实际字段精简这几个函数即可，其余无需改动。
-- **feed 不可达时兜底**：三个下载按钮指向 `releases/` 目录，并提示稍后重试，保证用户仍能找到安装包。
+- `app.js` 直接请求 GitHub Releases API，并选择最新、非草稿且包含 macOS 安装包的版本。
+- `pickPlatformUrls / pickVersion / pickDate` 从 Release assets 中识别 universal/arm64/Intel macOS 包与 Windows 安装包。
+- **GitHub API 暂时不可达时兜底**：下载按钮指向仓库 Releases 页面，用户仍可手动选择版本。
 
 ## 部署
 
-把 `public/` 目录作为站点根发布到 `tietiezhi.xyz`（Caddy 静态托管）。上线前建议先 `npm run prod` 精简 CSS。
+推送 `website/**` 到 `main` 后，`.github/workflows/pages.yml` 会构建 CSS，并把 `public/` 发布到：
+
+`https://tietiezhi-1216.github.io/tietiezhi/`

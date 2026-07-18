@@ -9,6 +9,8 @@
 [![Desktop CI](https://github.com/tietiezhi-1216/tietiezhi/actions/workflows/desktop.yml/badge.svg)](https://github.com/tietiezhi-1216/tietiezhi/actions/workflows/desktop.yml)
 [![Server CI](https://github.com/tietiezhi-1216/tietiezhi/actions/workflows/server-ci.yml/badge.svg)](https://github.com/tietiezhi-1216/tietiezhi/actions/workflows/server-ci.yml)
 
+[官网与下载](https://tietiezhi-1216.github.io/tietiezhi/) · [版本发布](https://github.com/tietiezhi-1216/tietiezhi/releases)
+
 </div>
 
 > 本项目采用 [Apache License 2.0](./LICENSE) 开源。欢迎提交 Issue 与 Pull Request。

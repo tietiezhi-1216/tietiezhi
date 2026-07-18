@@ -75,7 +75,8 @@ pnpm tauri icon ../assets/brand/tietiezhi-mark.png   # 重新生成全套图标
 ## CI
 
 - `.github/workflows/desktop.yml` —— Windows + macOS 双平台：typecheck + cargo check/test + `tauri build`。macOS 签名+公证已接入：配齐 `APPLE_*` secrets（证书 p12、签名身份、Apple ID、app 专用密码、Team ID）后 `tauri build` 自动签名/公证/装订；未配置则回退 ad-hoc。
-- **应用内自动更新**（tauri updater）已接入：更新产物（macOS `*.app.tar.gz`、Windows nsis exe）由 CI 用 `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` secrets 签名（minisign 密钥对在开发机 `~/.tauri/tietiezhi-updater.*`，**注意 bundler 只认内容变量、不认 `_PATH` 变体**），`updater-manifest` job 生成 tauri 格式的 `updater-latest.json`。清单端点 `https://tietiezhi.xyz/updater/latest.json`（与根 `latest.json` 官网下载清单是两个文件、两种格式）。发版：bump `tauri.conf.json` 的 `version` → push → 把 CI artifacts 传到分发机 MinIO（`releases/<ver>/` + 覆盖 `updater/latest.json`）。
+- **发布与应用内自动更新**由 GitHub 承担：`.github/workflows/release.yml` 在推送 `v*` Tag 后构建 macOS universal 与 Windows 安装包，用 `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` 签名，生成 `updater-latest.json` 并创建 GitHub Release。无后缀版本为稳定版，带 `-alpha/-beta/-rc` 的版本自动标为 Pre-release。应用更新端点固定为 GitHub Latest Release asset；发版前须同步修改 `desktop/package.json` 与 `desktop/src-tauri/tauri.conf.json` 的 `version`，再推送同版本 Tag。
+- `.github/workflows/pages.yml` 将 `website/public/` 发布到 GitHub Pages；官网通过 GitHub Releases API 获取版本和下载链接，不依赖自建分发服务器。
 - `.github/workflows/server-ci.yml` —— Go 服务端（保持原样）。
 
 ## 文档状态

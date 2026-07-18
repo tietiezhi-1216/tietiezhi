@@ -27,7 +27,9 @@
   },
   "plugins": {
     "updater": {
-      "endpoints": ["https://tietiezhi.xyz/updater/latest.json"],
+      "endpoints": [
+        "https://github.com/tietiezhi-1216/tietiezhi/releases/latest/download/updater-latest.json"
+      ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc4MzdFMkMzQjRBN0UxNTUKUldSVjRhZTB3K0kzZU5JdWtVS1J5Tng3UDVlbFZuUHpkcFJxeml1ZW92aVhLZnFMUWlROFRwdi8K"
     }
   },

@@ -11,10 +11,10 @@
   let currentLang = "zh-CN";
   let dlState = null; // null | "ok" | "partial" | "offline"
 
-  // ---- 下载源配置（真实 latest.json 结构确认后，只需校准这里与 pickPlatformUrls）----
+  // ---- GitHub Releases 下载源 ----
   const DL = {
-    feedUrl: "https://tietiezhi.xyz/latest.json",
-    releases: "https://tietiezhi.xyz/releases/",
+    feedUrl: "https://api.github.com/repos/tietiezhi-1216/tietiezhi/releases?per_page=20",
+    releases: "https://github.com/tietiezhi-1216/tietiezhi/releases",
   };
 
   // ---- 文案字典 ----
@@ -70,7 +70,7 @@
       "faq.4.q": "我的 API Key 安全吗？",
       "faq.4.a": "安全。API Key 仅保存在系统钥匙串中，不会明文写入磁盘，也不会回传或在界面展示。",
       "faq.5.q": "这是开源软件吗？",
-      "faq.5.a": "不是。铁铁汁为闭源专有软件，遵循专有许可协议。",
+      "faq.5.a": "是。铁铁汁基于 Apache License 2.0 开源，源代码与版本发布均托管在 GitHub。",
       "footer.tagline": "连接各家模型的智能体终端 · 面向万物互联",
       "footer.rights": "© 2026 铁铁汁 Tietiezhi. 保留所有权利。",
       "shot.tagline": "智能体终端 · 模型枢纽",
@@ -142,7 +142,7 @@
       "faq.4.q": "Is my API key safe?",
       "faq.4.a": "Yes. Your API key is stored only in the system keychain — never written to disk in plaintext, sent back, or displayed.",
       "faq.5.q": "Is it open source?",
-      "faq.5.a": "No. Tietiezhi is proprietary, closed-source software under a proprietary license.",
+      "faq.5.a": "Yes. Tietiezhi is open source under the Apache License 2.0, with source code and releases hosted on GitHub.",
       "footer.tagline": "An agent terminal that connects every model · built for universal connectivity",
       "footer.rights": "© 2026 Tietiezhi. All rights reserved.",
       "shot.tagline": "Agent terminal · Model hub",
@@ -214,7 +214,7 @@
       "faq.4.q": "API キーは安全ですか？",
       "faq.4.a": "安全です。API キーはシステムのキーチェーンにのみ保存され、平文でディスクに書き込まれることも、送信・表示されることもありません。",
       "faq.5.q": "オープンソースですか？",
-      "faq.5.a": "いいえ。Tietiezhi は独自ライセンスのクローズドソースソフトウェアです。",
+      "faq.5.a": "はい。Tietiezhi は Apache License 2.0 のもとでオープンソースとして公開され、ソースコードとリリースは GitHub で管理されています。",
       "footer.tagline": "あらゆるモデルをつなぐエージェント端末 · 万物接続へ",
       "footer.rights": "© 2026 Tietiezhi. All rights reserved.",
       "shot.tagline": "エージェント端末 · モデルハブ",
@@ -286,7 +286,7 @@
       "faq.4.q": "제 API 키는 안전한가요?",
       "faq.4.a": "안전합니다. API 키는 시스템 키체인에만 저장되며 평문으로 디스크에 기록되거나 전송·표시되지 않습니다.",
       "faq.5.q": "오픈소스인가요?",
-      "faq.5.a": "아니요. Tietiezhi는 독점 라이선스의 클로즈드 소스 소프트웨어입니다.",
+      "faq.5.a": "네. Tietiezhi는 Apache License 2.0으로 공개된 오픈소스이며, 소스 코드와 릴리스는 GitHub에서 관리됩니다.",
       "footer.tagline": "모든 모델을 잇는 에이전트 터미널 · 만물 연결을 향해",
       "footer.rights": "© 2026 Tietiezhi. All rights reserved.",
       "shot.tagline": "에이전트 터미널 · 모델 허브",
@@ -377,16 +377,24 @@
       out.mac_x64 = out.mac_x64 || dl.macIntel || dl.mac_x64 || dl.mac_x86_64 || dl.dmg_x64 || null;
       out.win = out.win || dl.windows || dl.win || dl.win_x64 || dl.nsis || dl.exe || null;
     }
-    // 3) GitHub-release 风格 assets 数组，按文件名/扩展名匹配
+    // 3) GitHub Release assets，按文件名与扩展名匹配
     const assets = d.assets || d.files;
     if (Array.isArray(assets)) {
       assets.forEach((a) => {
         const url = typeof a === "string" ? a : a.browser_download_url || a.url || a.download_url || "";
         const name = (typeof a === "string" ? a : a.name || a.url || "").toLowerCase();
         if (!url) return;
-        if (name.endsWith(".dmg") && /(aarch64|arm64|apple|silicon)/.test(name)) out.mac_arm = out.mac_arm || url;
+        if (name.endsWith(".dmg") && /universal/.test(name)) {
+          out.mac_arm = out.mac_arm || url;
+          out.mac_x64 = out.mac_x64 || url;
+        } else if (name.endsWith(".dmg") && /(aarch64|arm64|apple|silicon)/.test(name)) out.mac_arm = out.mac_arm || url;
         else if (name.endsWith(".dmg")) out.mac_x64 = out.mac_x64 || url;
-        else if (name.endsWith(".exe") || name.endsWith(".msi") || name.includes("setup")) out.win = out.win || url;
+        else if (
+          name.endsWith(".exe") ||
+          name.endsWith(".msi") ||
+          name.includes("setup") ||
+          (name.endsWith(".zip") && /windows|win-x64|win64/.test(name))
+        ) out.win = out.win || url;
       });
     }
     return out;
@@ -436,7 +444,11 @@
         clearTimeout(timer);
       }
       if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.json();
+      const payload = await res.json();
+      const data = Array.isArray(payload)
+        ? payload.find((release) => !release.draft && pickPlatformUrls(release).mac_arm)
+        : payload;
+      if (!data) throw new Error("没有可用的 GitHub Release");
       const version = pickVersion(data);
       const date = pickDate(data);
       const urls = pickPlatformUrls(data);
