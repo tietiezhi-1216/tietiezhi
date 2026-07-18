@@ -37,7 +37,7 @@ export const ErrorNotice = memo(function ErrorNotice({
     <div className="border-destructive/25 bg-destructive/5 flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2">
       <CircleAlert className="text-destructive size-4 shrink-0" />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium">{item.summary}</p>
+        <p className="truncate text-sm font-medium select-text">{item.summary}</p>
         {item.retries > 0 && (
           <p className="text-muted-foreground text-[11px]">已重试 {item.retries} 次</p>
         )}

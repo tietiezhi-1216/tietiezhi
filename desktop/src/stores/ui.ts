@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { ProductMode } from "@/lib/product-mode";
 
 export type SettingsCategory =
   | "providers"
@@ -24,6 +25,9 @@ export const clampSidebarWidth = (px: number): number =>
   Math.min(SIDEBAR_MAX_PX, Math.max(SIDEBAR_MIN_PX, Math.round(px)));
 
 interface UiState {
+  /** Active top-level product area. */
+  productMode: ProductMode;
+  setProductMode: (mode: ProductMode) => void;
   /** Settings dialog visibility + active category. */
   settingsOpen: boolean;
   settingsCategory: SettingsCategory;
@@ -50,6 +54,8 @@ interface UiState {
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
+      productMode: "code",
+      setProductMode: (productMode) => set({ productMode }),
       settingsOpen: false,
       settingsCategory: "providers",
       openSettings: (category) =>
@@ -81,6 +87,7 @@ export const useUiStore = create<UiState>()(
     {
       name: "tietiezhi-ui",
       partialize: (state) => ({
+        productMode: state.productMode,
         sidebarWidth: state.sidebarWidth,
         expandedProjects: state.expandedProjects,
         projectsSectionExpanded: state.projectsSectionExpanded,

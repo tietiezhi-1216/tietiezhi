@@ -29,7 +29,7 @@ const TERLN_MODELS: ModelInfo[] = [
   { id: "gpt-5.6-luna", kind: "chat" },
   { id: "gpt-image-2", kind: "image" },
   { id: "gpt-oss-120b-medium", kind: "chat" },
-  { id: "sensenova-u1-fast", kind: "chat" },
+  { id: "sensenova-u1-fast", kind: "image" },
 ];
 
 const MIMO_MODELS: ModelInfo[] = [
@@ -60,15 +60,26 @@ export function installTauriMock(): void {
   if (w.__TAURI_INTERNALS__) return;
 
   const callbacks = new Map<number, (payload: unknown) => void>();
+  const setupState = new URLSearchParams(window.location.search).get("setup");
   let nextCallbackId = 1;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
   const state = {
     settings: {
-      settingsVersion: 1,
-      providers: [] as Provider[],
-      chatProviderId: "",
-      chatModel: "",
+      settingsVersion: 2,
+      providers: [
+        {
+          id: "builtin-official",
+          name: "Tietiezhi Gateway",
+          type: "openai",
+          baseUrl: "https://api.terln.com/v1",
+          builtIn: true,
+          models:
+            setupState === "choose-model" || setupState === "ready" ? TERLN_MODELS : [],
+        },
+      ] as Provider[],
+      chatProviderId: setupState === "ready" ? "builtin-official" : "",
+      chatModel: setupState === "ready" ? "gpt-5.6-luna" : "",
       titleProviderId: "",
       titleModel: "",
       asrProviderId: "",
@@ -118,9 +129,9 @@ export function installTauriMock(): void {
     keys: {} as Record<string, string>,
     projects: [
       {
-        id: "project-orbit",
-        name: "Orbit",
-        rootPath: "/Users/demo/Projects/Orbit",
+        id: "project-tietiezhi",
+        name: "Tietiezhi",
+        rootPath: "/Users/demo/Projects/Tietiezhi",
         createdAt: Date.now() - 86_400_000,
         lastOpenedAt: Date.now(),
       },

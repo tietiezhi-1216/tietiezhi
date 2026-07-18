@@ -1,12 +1,13 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use super::models::{deserialize_models, ModelInfo};
+use super::models::{deserialize_models, known_kind_override, ModelInfo, ModelKind};
 use crate::secrets;
 
-const CURRENT_SETTINGS_VERSION: u32 = 1;
-const LEGACY_BUILTIN_PROVIDER_NAME: &str = "官方中转站";
-const LEGACY_BUILTIN_PROVIDER_URL: &str = "https://api.terln.com";
+const CURRENT_SETTINGS_VERSION: u32 = 2;
+const BUILTIN_PROVIDER_ID: &str = "builtin-official";
+pub(crate) const BUILTIN_PROVIDER_NAME: &str = "Tietiezhi Gateway";
+const BUILTIN_PROVIDER_URL: &str = "https://api.terln.com/v1";
 
 /// A model provider (relay / vendor). API keys never live here — they go to the
 /// OS credential store, keyed by the provider id.
@@ -19,6 +20,10 @@ pub struct Provider {
     #[serde(rename = "type")]
     pub kind: String,
     pub base_url: String,
+    /// Built-in entries provide a ready-to-configure starting point. They can
+    /// be edited, but are kept in the list so the empty state stays actionable.
+    #[serde(default)]
+    pub built_in: bool,
     /// Models last fetched from the provider, with their capability (cached for
     /// the pickers so each one only offers models it can actually use).
     #[serde(default, deserialize_with = "deserialize_models")]
@@ -104,13 +109,18 @@ pub(crate) fn read_settings(app: &AppHandle) -> Result<AppSettings, String> {
         serde_json::from_str(&raw).map_err(|e| format!("设置文件损坏：{e}"))?;
     let mut changed = false;
 
-    if settings.settings_version < CURRENT_SETTINGS_VERSION {
-        remove_legacy_builtin_provider(&mut settings);
-        settings.settings_version = CURRENT_SETTINGS_VERSION;
-        changed = true;
-    }
     if settings.providers.is_empty() && !settings.base_url.trim().is_empty() {
         settings = migrate_legacy(app, settings);
+        changed = true;
+    }
+    if ensure_builtin_provider(&mut settings) {
+        changed = true;
+    }
+    if normalize_known_model_capabilities(&mut settings) {
+        changed = true;
+    }
+    if settings.settings_version < CURRENT_SETTINGS_VERSION {
+        settings.settings_version = CURRENT_SETTINGS_VERSION;
         changed = true;
     }
     if settings.output_language.is_empty() {
@@ -127,11 +137,10 @@ pub(crate) fn read_settings(app: &AppHandle) -> Result<AppSettings, String> {
     Ok(settings)
 }
 
-/// First-run settings deliberately contain no provider. Users add and own every
-/// model service connection themselves.
 fn initial_settings() -> AppSettings {
     AppSettings {
         settings_version: CURRENT_SETTINGS_VERSION,
+        providers: vec![builtin_provider()],
         polish_enabled: true,
         output_language: "auto".into(),
         permission_mode: "auto".into(),
@@ -139,48 +148,71 @@ fn initial_settings() -> AppSettings {
     }
 }
 
-/// Remove the provider that older builds injected automatically. The version
-/// gate ensures a user-created provider with the same values is not repeatedly
-/// removed in future launches.
-fn remove_legacy_builtin_provider(settings: &mut AppSettings) {
-    let removed_ids: Vec<String> = settings
-        .providers
-        .iter()
-        .filter(|provider| {
-            provider.name == LEGACY_BUILTIN_PROVIDER_NAME
-                && provider.base_url.trim().trim_end_matches('/')
-                    == LEGACY_BUILTIN_PROVIDER_URL.trim_end_matches('/')
-        })
-        .map(|provider| provider.id.clone())
-        .collect();
+fn builtin_provider() -> Provider {
+    Provider {
+        id: BUILTIN_PROVIDER_ID.into(),
+        name: BUILTIN_PROVIDER_NAME.into(),
+        kind: "openai".into(),
+        base_url: BUILTIN_PROVIDER_URL.into(),
+        built_in: true,
+        models: Vec::new(),
+    }
+}
 
-    if removed_ids.is_empty() {
-        return;
+fn normalized_provider_url(value: &str) -> &str {
+    let trimmed = value.trim().trim_end_matches('/');
+    trimmed.strip_suffix("/v1").unwrap_or(trimmed)
+}
+
+/// Reuse an existing official-endpoint entry when possible so upgrades neither
+/// duplicate the provider nor disconnect its keyring entry.
+fn ensure_builtin_provider(settings: &mut AppSettings) -> bool {
+    let official_url = normalized_provider_url(BUILTIN_PROVIDER_URL);
+    if let Some(index) = settings.providers.iter().position(|provider| {
+        provider.built_in || normalized_provider_url(&provider.base_url) == official_url
+    }) {
+        let mut provider = settings.providers.remove(index);
+        let changed = index != 0 || !provider.built_in || provider.name != BUILTIN_PROVIDER_NAME;
+        provider.built_in = true;
+        provider.name = BUILTIN_PROVIDER_NAME.into();
+        settings.providers.insert(0, provider);
+        return changed;
+    }
+    settings.providers.insert(0, builtin_provider());
+    true
+}
+
+/// Correct cached capabilities for documented ambiguous model ids and clear
+/// stale text-model selections. This runs on every settings read so existing
+/// installations are repaired without requiring a manual model refresh.
+fn normalize_known_model_capabilities(settings: &mut AppSettings) -> bool {
+    let mut changed = false;
+
+    for provider in &mut settings.providers {
+        for model in &mut provider.models {
+            if let Some(kind) = known_kind_override(&model.id) {
+                if model.kind != kind {
+                    model.kind = kind;
+                    changed = true;
+                }
+            }
+        }
     }
 
-    settings
-        .providers
-        .retain(|provider| !removed_ids.contains(&provider.id));
-    for id in &removed_ids {
-        let _ = secrets::delete_provider_key(id);
+    for (provider_id, model) in [
+        (&mut settings.chat_provider_id, &mut settings.chat_model),
+        (&mut settings.title_provider_id, &mut settings.title_model),
+        (&mut settings.asr_provider_id, &mut settings.asr_model),
+        (&mut settings.polish_provider_id, &mut settings.polish_model),
+    ] {
+        if matches!(known_kind_override(model), Some(kind) if kind != ModelKind::Chat) {
+            provider_id.clear();
+            model.clear();
+            changed = true;
+        }
     }
 
-    if removed_ids.contains(&settings.chat_provider_id) {
-        settings.chat_provider_id.clear();
-        settings.chat_model.clear();
-    }
-    if removed_ids.contains(&settings.title_provider_id) {
-        settings.title_provider_id.clear();
-        settings.title_model.clear();
-    }
-    if removed_ids.contains(&settings.asr_provider_id) {
-        settings.asr_provider_id.clear();
-        settings.asr_model.clear();
-    }
-    if removed_ids.contains(&settings.polish_provider_id) {
-        settings.polish_provider_id.clear();
-        settings.polish_model.clear();
-    }
+    changed
 }
 
 /// Migrate legacy `{base_url, model}` + the old single keyring key into a
@@ -205,6 +237,7 @@ fn migrate_legacy(app: &AppHandle, mut settings: AppSettings) -> AppSettings {
         name: "我的中转站".into(),
         kind: "openai".into(),
         base_url: base,
+        built_in: false,
         models: if model.is_empty() {
             Vec::new()
         } else {
@@ -244,6 +277,8 @@ pub fn save_settings(app: AppHandle, mut settings: AppSettings) -> Result<(), St
     settings.settings_version = CURRENT_SETTINGS_VERSION;
     settings.base_url = String::new();
     settings.model = String::new();
+    ensure_builtin_provider(&mut settings);
+    normalize_known_model_capabilities(&mut settings);
     write_settings(&app, &settings)
 }
 
@@ -260,11 +295,70 @@ mod tests {
     }
 
     #[test]
-    fn first_run_starts_without_a_provider() {
+    fn first_run_starts_with_an_editable_builtin_provider() {
         let settings = initial_settings();
 
-        assert!(settings.providers.is_empty());
+        assert_eq!(settings.providers.len(), 1);
+        assert!(settings.providers[0].built_in);
+        assert_eq!(settings.providers[0].id, BUILTIN_PROVIDER_ID);
         assert!(settings.chat_provider_id.is_empty());
         assert_eq!(settings.settings_version, CURRENT_SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn existing_official_endpoint_is_promoted_without_duplication() {
+        let mut settings = AppSettings {
+            providers: vec![Provider {
+                id: "existing".into(),
+                name: "我的渠道".into(),
+                kind: "openai".into(),
+                base_url: "https://api.terln.com/v1/".into(),
+                built_in: false,
+                models: Vec::new(),
+            }],
+            ..Default::default()
+        };
+
+        let changed = ensure_builtin_provider(&mut settings);
+
+        assert!(changed);
+        assert_eq!(settings.providers.len(), 1);
+        assert!(settings.providers[0].built_in);
+        assert_eq!(settings.providers[0].id, "existing");
+        assert_eq!(settings.providers[0].name, BUILTIN_PROVIDER_NAME);
+    }
+
+    #[test]
+    fn ambiguous_image_model_is_reclassified_and_removed_from_text_selections() {
+        let mut settings = AppSettings {
+            providers: vec![Provider {
+                id: "provider".into(),
+                name: "Provider".into(),
+                kind: "openai".into(),
+                base_url: "https://example.com/v1".into(),
+                built_in: false,
+                models: vec![ModelInfo {
+                    id: "sensenova-u1-fast".into(),
+                    kind: ModelKind::Chat,
+                }],
+            }],
+            chat_provider_id: "provider".into(),
+            chat_model: "sensenova-u1-fast".into(),
+            title_provider_id: "provider".into(),
+            title_model: "sensenova-u1-fast".into(),
+            polish_provider_id: "provider".into(),
+            polish_model: "sensenova-u1-fast".into(),
+            ..Default::default()
+        };
+
+        assert!(normalize_known_model_capabilities(&mut settings));
+        assert_eq!(settings.providers[0].models[0].kind, ModelKind::Image);
+        assert!(settings.chat_provider_id.is_empty());
+        assert!(settings.chat_model.is_empty());
+        assert!(settings.title_provider_id.is_empty());
+        assert!(settings.title_model.is_empty());
+        assert!(settings.polish_provider_id.is_empty());
+        assert!(settings.polish_model.is_empty());
+        assert!(!normalize_known_model_capabilities(&mut settings));
     }
 }

@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn same_path_rejects_missing_paths() {
         assert!(!same_path(
-            "/definitely/missing/orbit-project",
+            "/definitely/missing/project",
             Path::new("/tmp")
         ));
     }

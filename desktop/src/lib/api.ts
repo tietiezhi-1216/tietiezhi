@@ -26,6 +26,7 @@ export interface Provider {
   name: string;
   type: ProviderType;
   baseUrl: string;
+  builtIn: boolean;
   models: ModelInfo[];
 }
 

@@ -22,15 +22,13 @@ import { formatShortcut } from "@/lib/shortcut";
 import { cn } from "@/lib/utils";
 
 /**
- * The floating dictation capsule — a faithful port of Orbit's dictation pill
- * (apple/Sources/Orbit/Dictation/Pill.swift in git history): a black
- * bottom-centered capsule with a hairline border and big soft shadow. It morphs
- * across the dictation lifecycle:
+ * The floating dictation capsule: a black bottom-centered capsule with a
+ * hairline border and big soft shadow. It morphs across the dictation lifecycle:
  *   • recording  — live mic level bars, with cancel / commit buttons;
  *   • processing — a light sweeps across it and a sky-blue glow arc rotates
  *     around its edge while ASR runs, then the polished text scrolls as a
  *     one-line ticker;
- *   • result     — an Orbit notice-style card above the pill (copy fallback when
+ *   • result     — a notice card above the pill (copy fallback when
  *     there was no caret to auto-insert into).
  */
 
@@ -47,7 +45,7 @@ interface Result {
 
 let nextRequestId = 1;
 
-/** Progressive reveal decoupled from token arrival (Orbit's typewriter). */
+/** Progressive reveal decoupled from token arrival. */
 function useTypewriter(target: string): string {
   const [shown, setShown] = useState(0);
   const targetRef = useRef(target);
@@ -70,9 +68,9 @@ function useTypewriter(target: string): string {
 }
 
 /**
- * Recording: live mic level bars (Orbit's LevelBars). Heights are picked from a
- * fixed set of Tailwind classes (static strings so the scanner emits them) — the
- * bar's target pixel height maps to the nearest step, keeping this style-free.
+ * Recording: live mic level bars. Heights are picked from a fixed set of
+ * Tailwind classes (static strings so the scanner emits them) — the bar's target
+ * pixel height maps to the nearest step, keeping this style-free.
  */
 const BAR_HEIGHTS = [
   "h-[5px]",
@@ -165,7 +163,7 @@ function ThinkingBackground() {
   );
 }
 
-/** Orbit notice-style card shown above the pill with the final text. */
+/** Result card shown above the pill with the final text. */
 function ResultCard({ result, onClose }: { result: Result; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
@@ -298,7 +296,7 @@ export function CapsuleApp() {
   /**
    * Finish the recording and run the pipeline. `polish` comes from the gesture:
    * a click (hands-free) polishes, a hold (push-to-talk) delivers the raw
-   * transcript — matching Orbit.
+   * transcript.
    */
   const finish = async (polish: boolean) => {
     const recorder = recorderRef.current;

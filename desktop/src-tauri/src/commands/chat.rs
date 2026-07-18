@@ -5,11 +5,19 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
 
+use super::models::{classify, ModelKind};
 use super::{api_url, providers, snippet};
 use crate::agent::failure::ChatFailure;
 use crate::AppState;
 
 pub use crate::agent::events::ChatEvent;
+
+fn ensure_chat_model(model: &str) -> Result<(), String> {
+    match classify(model) {
+        ModelKind::Chat => Ok(()),
+        _ => Err(format!("模型「{model}」不支持聊天接口，请选择一个聊天模型")),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -102,24 +110,29 @@ pub async fn chat_stream(
                     // Per-agent model override beats the frontend selection.
                     let model =
                         super::agents::model_override(&app, agent_id.as_deref()).unwrap_or(model);
-                    let _ = on_event.send(ChatEvent::Started {
-                        model: model.clone(),
-                    });
-                    crate::agent::loop_::run_agent_loop(
-                        &app,
-                        &state.http,
-                        &state.permissions,
-                        &state.mcp,
-                        request_id,
-                        &resolved.base_url,
-                        resolved.key.as_deref(),
-                        &model,
-                        messages,
-                        env,
-                        &cancel,
-                        &on_event,
-                    )
-                    .await
+                    match ensure_chat_model(&model) {
+                        Ok(()) => {
+                            let _ = on_event.send(ChatEvent::Started {
+                                model: model.clone(),
+                            });
+                            crate::agent::loop_::run_agent_loop(
+                                &app,
+                                &state.http,
+                                &state.permissions,
+                                &state.mcp,
+                                request_id,
+                                &resolved.base_url,
+                                resolved.key.as_deref(),
+                                &model,
+                                messages,
+                                env,
+                                &cancel,
+                                &on_event,
+                            )
+                            .await
+                        }
+                        Err(e) => Err(ChatFailure::message(e)),
+                    }
                 }
                 Err(e) => Err(ChatFailure::message(e)),
             }
@@ -164,25 +177,28 @@ pub(crate) async fn stream_to_channel(
         .insert(request_id, cancel.clone());
 
     let result = match providers::resolve(&app, &provider_id) {
-        Ok(resolved) => {
-            let _ = on_event.send(ChatEvent::Started {
-                model: model.clone(),
-            });
-            run_stream(
-                &state.http,
-                &resolved.base_url,
-                &model,
-                &messages,
-                resolved.key.as_deref(),
-                &cancel,
-                |content| {
-                    on_event
-                        .send(ChatEvent::Delta { content })
-                        .map_err(|e| format!("推送消息到界面失败：{e}"))
-                },
-            )
-            .await
-        }
+        Ok(resolved) => match ensure_chat_model(&model) {
+            Ok(()) => {
+                let _ = on_event.send(ChatEvent::Started {
+                    model: model.clone(),
+                });
+                run_stream(
+                    &state.http,
+                    &resolved.base_url,
+                    &model,
+                    &messages,
+                    resolved.key.as_deref(),
+                    &cancel,
+                    |content| {
+                        on_event
+                            .send(ChatEvent::Delta { content })
+                            .map_err(|e| format!("推送消息到界面失败：{e}"))
+                    },
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        },
         Err(e) => Err(e),
     };
 
@@ -343,6 +359,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chunk.choices[0].delta.content.as_deref(), Some("你好"));
+    }
+
+    #[test]
+    fn image_model_is_rejected_before_chat_request() {
+        let error = ensure_chat_model("sensenova-u1-fast").unwrap_err();
+        assert!(error.contains("不支持聊天接口"));
+        assert!(ensure_chat_model("deepseek-v4-flash").is_ok());
     }
 
     /// End-to-end: HTTP request → SSE body → parsed deltas, against a real

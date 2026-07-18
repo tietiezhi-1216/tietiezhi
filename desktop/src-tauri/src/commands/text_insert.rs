@@ -1,8 +1,7 @@
-//! Deliver the polished text into whatever app has focus. Ported from Orbit's
-//! TextInserter: put the text on the clipboard, and — if there's an editable
-//! field focused and we're trusted for Accessibility — synthesize ⌘V so it lands
-//! at the caret. Otherwise the text stays on the clipboard and the caller shows
-//! a copy card.
+//! Deliver the polished text into whatever app has focus: put the text on the
+//! clipboard, and — if there's an editable field focused and we're trusted for
+//! Accessibility — synthesize ⌘V so it lands at the caret. Otherwise the text
+//! stays on the clipboard and the caller shows a copy card.
 //!
 //! The caller hides the capsule window *before* invoking this, so the user's
 //! target app is frontmost and its focused element is the real field.

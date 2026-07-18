@@ -27,7 +27,7 @@ function CodeBlock({ language, children }: { language?: string; children: React.
   };
 
   return (
-    <div className="bg-muted/40 my-3 overflow-hidden rounded-lg border">
+    <div className="bg-muted/40 my-3 overflow-hidden rounded-lg border select-none">
       <div className="bg-muted/60 flex items-center justify-between border-b px-3 py-1.5">
         <span className="text-muted-foreground font-mono text-[11px]">{language ?? "code"}</span>
         <button
@@ -39,7 +39,7 @@ function CodeBlock({ language, children }: { language?: string; children: React.
           {copied ? "已复制" : "复制"}
         </button>
       </div>
-      <pre ref={preRef} className="overflow-x-auto p-3 text-xs leading-relaxed">
+      <pre ref={preRef} className="overflow-x-auto p-3 text-xs leading-relaxed select-text">
         {children}
       </pre>
     </div>
@@ -115,7 +115,7 @@ const components: Components = {
 
 export function Markdown({ content, className }: { content: string; className?: string }) {
   return (
-    <div className={cn("text-sm break-words", className)}>
+    <div className={cn("text-sm break-words select-text", className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[[rehypeHighlight, { detect: true, ignoreMissing: true }]]}

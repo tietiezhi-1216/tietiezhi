@@ -167,7 +167,7 @@ export const MessageItem = memo(function MessageItem({
         onPointerEnter={() => onHoverChange(hoverKey)}
         onPointerLeave={() => onHoverChange(null)}
       >
-        <div className="bg-muted max-w-[70%] rounded-xl px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
+        <div className="bg-muted max-w-[70%] rounded-xl px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap select-text">
           {item.content}
         </div>
         <ActionRow createdAt={item.createdAt} align="end" visible={hovered}>
@@ -211,7 +211,7 @@ export const MessageItem = memo(function MessageItem({
     >
       {item.content && (
         item.error ? (
-          <p className="text-destructive text-sm leading-relaxed whitespace-pre-wrap">
+          <p className="text-destructive text-sm leading-relaxed whitespace-pre-wrap select-text">
             {item.content}
           </p>
         ) : (

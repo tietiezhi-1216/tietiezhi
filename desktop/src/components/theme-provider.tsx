@@ -27,6 +27,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const apply = () => {
       const dark = theme === "dark" || (theme === "system" && media.matches);
       root.classList.toggle("dark", dark);
+
+      // The macOS title bar is native UI. Keep its title/controls in sync with
+      // the webview theme so a dark app never gets black native title text.
+      if (!new URLSearchParams(window.location.search).has("mock")) {
+        void import("@tauri-apps/api/window")
+          .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(dark ? "dark" : "light"))
+          .catch(() => undefined);
+      }
     };
 
     apply();

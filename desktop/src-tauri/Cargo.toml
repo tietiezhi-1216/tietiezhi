@@ -18,7 +18,9 @@ tauri = { version = "2", features = ["macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # rustls avoids the OpenSSL toolchain dependency on Windows CI runners.
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
+# Keep system-proxy explicit because disabling reqwest's default features also
+# disables reading the OS proxy configuration on macOS and Windows.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "multipart", "rustls-tls", "system-proxy"] }
 futures-util = "0.3"
 tokio = { version = "1", features = ["macros", "sync", "time", "process", "io-util", "fs"] }
 tokio-util = "0.7"
@@ -32,7 +34,7 @@ rmcp = { version = "2.2.0", default-features = false, features = [
 ] }
 # rmcp is on reqwest 0.13 while the app is on 0.12; alias the newer one just
 # for constructing the MCP HTTP transport client.
-reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls"] }
+reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls", "system-proxy"] }
 http = "1"
 regex = "1"
 globset = "0.4"

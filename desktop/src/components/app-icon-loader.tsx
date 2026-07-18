@@ -23,8 +23,8 @@ interface DecorationSpec {
   radiusX: number;
   radiusY: number;
   phase: number;
-  orbitTurns: number;
-  orbitDirection: 1 | -1;
+  loopTurns: number;
+  loopDirection: 1 | -1;
   spinTurns: number;
   spinDirection: 1 | -1;
   bobTurns: number;
@@ -91,8 +91,8 @@ const createDecoration = (
     radiusX: radiusX * ART_SCALE,
     radiusY: radiusY * ART_SCALE,
     phase: seeded(index, 3) * TAU,
-    orbitTurns: speedOptions[Math.floor(seeded(index, 4) * speedOptions.length)],
-    orbitDirection: seeded(index, 5) > 0.46 ? 1 : -1,
+    loopTurns: speedOptions[Math.floor(seeded(index, 4) * speedOptions.length)],
+    loopDirection: seeded(index, 5) > 0.46 ? 1 : -1,
     spinTurns: 1 + Math.floor(seeded(index, 6) * 4),
     spinDirection: seeded(index, 7) > 0.5 ? 1 : -1,
     bobTurns: 1 + Math.floor(seeded(index, 8) * 4),
@@ -304,10 +304,10 @@ const drawLoader = (
     const radiusPulse =
       1 +
       Math.sin(loopProgress * TAU * spec.bobTurns + spec.phase * 0.7) * spec.bobAmount;
-    const orbitAngle =
-      spec.phase + loopProgress * TAU * spec.orbitTurns * spec.orbitDirection;
-    const orbitX = CENTER + spec.radiusX * radiusPulse * Math.cos(orbitAngle);
-    const orbitY = CENTER + spec.radiusY * radiusPulse * Math.sin(orbitAngle);
+    const loopAngle =
+      spec.phase + loopProgress * TAU * spec.loopTurns * spec.loopDirection;
+    const loopX = CENTER + spec.radiusX * radiusPulse * Math.cos(loopAngle);
+    const loopY = CENTER + spec.radiusY * radiusPulse * Math.sin(loopAngle);
     const originX = spec.isOriginal ? asset.originX : CENTER;
     const originY = spec.isOriginal ? asset.originY : CENTER;
     const idleAngle = idleProgress * TAU * (index % 3 === 0 ? 2 : 1) + spec.phase;
@@ -315,9 +315,9 @@ const drawLoader = (
       spec.isOriginal && idleEnabled ? Math.cos(idleAngle) * 0.9 * ART_SCALE : 0;
     const idleOffsetY =
       spec.isOriginal && idleEnabled ? Math.sin(idleAngle) * 1.15 * ART_SCALE : 0;
-    const x = mix(originX + idleOffsetX, orbitX, easedBlend);
-    const y = mix(originY + idleOffsetY, orbitY, easedBlend);
-    const depthScale = 1 + Math.sin(orbitAngle) * 0.065 * easedBlend;
+    const x = mix(originX + idleOffsetX, loopX, easedBlend);
+    const y = mix(originY + idleOffsetY, loopY, easedBlend);
+    const depthScale = 1 + Math.sin(loopAngle) * 0.065 * easedBlend;
     const targetScale = spec.scale * depthScale;
     const idleScale =
       spec.isOriginal && idleEnabled ? 1 + Math.sin(idleAngle + 0.7) * 0.012 : 1;

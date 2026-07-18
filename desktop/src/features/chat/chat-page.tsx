@@ -6,19 +6,20 @@ import {
   useRef,
   useState,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ArrowUp, Mic, Settings2, Square } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowUp, Mic, RefreshCw, Settings2, Square } from "lucide-react";
 import { AppIconLoader } from "@/components/app-icon-loader";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { ErrorNotice } from "@/features/chat/error-notice";
+import { ChannelSetupMascot } from "@/features/chat/channel-setup-mascot";
 import { MessageItem } from "@/features/chat/message-item";
 import { ModelSelect } from "@/features/chat/model-select";
 import { PermissionPrompt } from "@/features/chat/permission-prompt";
 import { ProjectSelect } from "@/features/chat/project-select";
 import { ToolCallCard } from "@/features/chat/tool-call-card";
-import { dictationToggle, loadSettings } from "@/lib/api";
+import { dictationToggle, errorMessage, loadSettings, saveSettings } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat";
 import { useUiStore } from "@/stores/ui";
@@ -30,6 +31,7 @@ const MASCOT_MOVE_MS = 720;
 const MASCOT_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 
 export function ChatPage() {
+  const queryClient = useQueryClient();
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: loadSettings });
   const openSettings = useUiStore((s) => s.openSettings);
   const activeId = useChatStore((s) => s.activeId);
@@ -58,7 +60,7 @@ export function ChatPage() {
   const [peekHovered, setPeekHovered] = useState(false);
   const pageRef = useRef<HTMLDivElement>(null);
   const scrollHostRef = useRef<HTMLDivElement>(null);
-  const heroMascotRef = useRef<HTMLDivElement>(null);
+  const heroMascotRef = useRef<HTMLSpanElement>(null);
   const dockMascotRef = useRef<HTMLDivElement>(null);
   const ghostMascotRef = useRef<HTMLDivElement>(null);
   const lastDockRectRef = useRef<DOMRect | null>(null);
@@ -72,15 +74,96 @@ export function ChatPage() {
   const composingRef = useRef(false);
   const compositionEndAt = useRef(0);
   const peekTimersRef = useRef<number[]>([]);
+  const autoSelectionRef = useRef("");
 
-  const providerId = settingsQuery.data?.chatProviderId ?? "";
-  const model = settingsQuery.data?.chatModel ?? "";
-  const ready = Boolean(providerId && model);
+  const settings = settingsQuery.data;
+  const chatOptions = useMemo(
+    () =>
+      (settings?.providers ?? []).flatMap((provider) =>
+        provider.models
+          .filter((candidate) => candidate.kind === "chat")
+          .map((candidate) => ({
+            providerId: provider.id,
+            model: candidate.id,
+          })),
+      ),
+    [settings],
+  );
+  const selectedChat = chatOptions.find(
+    (option) =>
+      option.providerId === settings?.chatProviderId && option.model === settings?.chatModel,
+  );
+  const providerId = selectedChat?.providerId ?? "";
+  const model = selectedChat?.model ?? "";
+  const ready = selectedChat != null;
+  const readiness =
+    settingsQuery.isError
+      ? "error"
+      : settings == null
+        ? "loading"
+        : settings.providers.length === 0
+          ? "no-provider"
+          : chatOptions.length === 0
+            ? "no-chat-model"
+            : ready
+              ? "ready"
+              : "choose-model";
+  const setupTitle =
+    readiness === "error"
+      ? "渠道检查失败"
+      : readiness === "loading"
+        ? "正在检查渠道…"
+        : readiness === "no-provider"
+          ? "还没有可用渠道"
+          : readiness === "no-chat-model"
+            ? "渠道已添加，还缺聊天模型"
+            : "模型已到位，就等你选择";
+  const setupDescription =
+    readiness === "error"
+      ? errorMessage(settingsQuery.error)
+      : readiness === "loading"
+        ? "铁铁汁正在确认连接状态"
+        : readiness === "no-provider"
+          ? "添加一个供应商，让铁铁汁连上模型世界"
+          : readiness === "no-chat-model"
+            ? "供应商已经添加，请先获取或标记聊天模型"
+            : `从 ${chatOptions.length} 个聊天模型中选一个，开启新的任务`;
+  const composerPlaceholder =
+    readiness === "error"
+      ? "渠道状态异常，请重新检查"
+      : readiness === "loading"
+        ? "正在检查渠道…"
+        : readiness === "no-provider"
+          ? "添加供应商后即可输入消息"
+          : readiness === "no-chat-model"
+            ? "获取聊天模型后即可输入消息"
+            : readiness === "choose-model"
+              ? "选择聊天模型后即可输入消息"
+              : "输入消息…";
   const lastItem = items[items.length - 1];
   const waitingForPermission =
     lastItem?.kind === "permission" && lastItem.decision == null;
   const indicatorActive = streaming && !waitingForPermission;
   const hasConversation = items.length > 0;
+
+  useEffect(() => {
+    if (!settings || selectedChat || chatOptions.length !== 1) return;
+    const onlyOption = chatOptions[0];
+    const selectionKey = `${onlyOption.providerId}:${onlyOption.model}`;
+    if (autoSelectionRef.current === selectionKey) return;
+    autoSelectionRef.current = selectionKey;
+
+    void saveSettings({
+      ...settings,
+      chatProviderId: onlyOption.providerId,
+      chatModel: onlyOption.model,
+    })
+      .then(() => queryClient.invalidateQueries({ queryKey: ["settings"] }))
+      .catch((error: unknown) => {
+        autoSelectionRef.current = "";
+        console.error(error);
+      });
+  }, [chatOptions, queryClient, selectedChat, settings]);
 
   useEffect(() => {
     if (!streaming) return;
@@ -424,32 +507,85 @@ export function ChatPage() {
         <div
           aria-hidden={hasConversation}
           className={cn(
-            "absolute inset-0 flex flex-col items-center justify-center px-4 pt-28 text-center transition-[opacity,transform] duration-300 ease-out motion-reduce:transition-none",
+            "absolute inset-0 flex flex-col items-center justify-center px-4 text-center transition-[opacity,transform] duration-300 ease-out motion-reduce:transition-none",
             hasConversation
               ? "pointer-events-none -translate-y-1 opacity-0"
               : "translate-y-0 opacity-100",
           )}
         >
-          <div className="flex flex-col items-center gap-3">
-            <div ref={heroMascotRef} className="size-32">
-              <div className={mascotPhase === "hero" ? "opacity-100" : "opacity-0"}>
+          {ready ? (
+            <div className="flex flex-col items-center gap-1">
+              <ChannelSetupMascot
+                mascotRef={heroMascotRef}
+                className={cn(
+                  "h-56 w-80 transition-opacity duration-200 motion-reduce:transition-none",
+                  mascotPhase === "hero" ? "opacity-100" : "opacity-0",
+                )}
+                mascotClassName="size-32"
+              >
                 <AppIconLoader
                   active={false}
                   idle={!hasConversation && mascotPhase === "hero"}
                 />
-              </div>
-            </div>
-            <div className="flex flex-col gap-1">
+              </ChannelSetupMascot>
               <p className="text-lg font-semibold">开始新任务</p>
-              <p className="text-muted-foreground text-sm">
-                {ready ? `当前模型：${model}` : "先在设置里添加供应商并选择模型"}
-              </p>
             </div>
-          </div>
-          {!ready && (
-            <Button variant="outline" size="sm" onClick={() => openSettings("providers")}>
-              <Settings2 /> 去设置
-            </Button>
+          ) : (
+            <div className="flex select-none flex-col items-center">
+              <ChannelSetupMascot mascotRef={heroMascotRef} />
+              {readiness === "choose-model" && settings ? (
+                <div className="mt-1 flex justify-center">
+                  <ModelSelect
+                    prominent
+                    promptText="选择和铁铁汁一起探索世界的方式"
+                    settings={settings}
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="mt-1 flex flex-col gap-1.5">
+                    <p className="text-xl font-semibold tracking-tight">{setupTitle}</p>
+                    <p className="text-muted-foreground text-sm">{setupDescription}</p>
+                  </div>
+                  {readiness === "error" ? (
+                    <div className="mt-4 flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void settingsQuery.refetch()}
+                      >
+                        <RefreshCw /> 重新检查
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openSettings("providers")}
+                      >
+                        <Settings2 /> 打开渠道设置
+                      </Button>
+                    </div>
+                  ) : readiness === "loading" ? (
+                    <Button
+                      className="mt-4"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => openSettings("providers")}
+                    >
+                      <Settings2 /> 打开渠道设置
+                    </Button>
+                  ) : (
+                    <Button
+                      className="mt-4"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => openSettings("providers")}
+                    >
+                      <Settings2 /> {readiness === "no-provider" ? "添加供应商" : "配置渠道"}
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -539,8 +675,10 @@ export function ChatPage() {
         </div>
       </div>
 
-      {/* Composer, laid out like Claude Code / Codex: the input owns its whole
-          box, and the controls (model, dictation, send) sit on its bottom row. */}
+      {/* A fresh task without a model is configured from the focused empty
+          state above. Existing conversations keep the composer visible so a
+          removed model can be replaced without losing context. */}
+      {(ready || hasConversation) && (
       <div className="relative mx-auto w-full max-w-3xl px-4 pt-2 pb-4">
         <Button
           variant="ghost"
@@ -604,7 +742,7 @@ export function ChatPage() {
               e.preventDefault();
               handleSend();
             }}
-            placeholder={ready ? "输入消息…" : "先在设置里选择模型"}
+            placeholder={composerPlaceholder}
             disabled={!ready}
             className="max-h-40 min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:ring-0 dark:bg-transparent"
             rows={1}
@@ -612,43 +750,48 @@ export function ChatPage() {
 
           <div className="flex items-center gap-1 pt-0.5 pl-1">
             <span className="text-muted-foreground flex-1 truncate text-[11px]">
-              Enter 发送 · Shift+Enter 换行
+              {ready ? "Enter 发送 · Shift+Enter 换行" : setupDescription}
             </span>
-            <ModelSelect />
-            <Button
-              variant="ghost"
-              size="icon"
-              className="text-muted-foreground hover:text-foreground size-7 shrink-0 rounded-full"
-              onClick={() => void dictationToggle()}
-              aria-label="语音听写"
-              title="语音听写"
-            >
-              <Mic className="size-4" />
-            </Button>
-            {streaming ? (
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-8 shrink-0 rounded-full"
-                onClick={stop}
-                aria-label="停止生成"
-              >
-                <Square />
-              </Button>
-            ) : (
-              <Button
-                size="icon"
-                className="size-8 shrink-0 rounded-full"
-                onClick={handleSend}
-                disabled={!input.trim() || !ready}
-                aria-label="发送"
-              >
-                <ArrowUp />
-              </Button>
+            {settings && <ModelSelect settings={settings} />}
+            {ready && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="text-muted-foreground hover:text-foreground size-7 shrink-0 rounded-full"
+                  onClick={() => void dictationToggle()}
+                  aria-label="语音听写"
+                  title="语音听写"
+                >
+                  <Mic className="size-4" />
+                </Button>
+                {streaming ? (
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-8 shrink-0 rounded-full"
+                    onClick={stop}
+                    aria-label="停止生成"
+                  >
+                    <Square />
+                  </Button>
+                ) : (
+                  <Button
+                    size="icon"
+                    className="size-8 shrink-0 rounded-full"
+                    onClick={handleSend}
+                    disabled={!input.trim()}
+                    aria-label="发送"
+                  >
+                    <ArrowUp />
+                  </Button>
+                )}
+              </>
             )}
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }

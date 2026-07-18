@@ -1,8 +1,7 @@
 //! Dictation backend: speech-to-text (ASR) and the optional LLM polish step.
 //!
-//! Ported from the old Orbit dictation pipeline (git history:
-//! apple/Sources/Orbit/Dictation/*). Audio is captured in the WebView and handed
-//! here as a Base64 WAV; ASR dispatches on the provider type:
+//! Audio is captured in the WebView and handed here as a Base64 WAV; ASR
+//! dispatches on the provider type:
 //!   • "mimo"   — Xiaomi MiMo: WAV embedded as an `input_audio` content part in
 //!     `POST /v1/chat/completions` (model `mimo-v2.5-asr`, `asr_options.language`).
 //!   • "openai" — Whisper-style multipart `POST /v1/audio/transcriptions`.

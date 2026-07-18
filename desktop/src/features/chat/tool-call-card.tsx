@@ -62,7 +62,7 @@ export const ToolCallCard = memo(function ToolCallCard({
             {args && (
               <div className="flex flex-col gap-1">
                 <span className="text-muted-foreground text-[11px]">参数</span>
-                <pre className="bg-background max-h-40 overflow-auto rounded-md p-2 text-[11px] leading-relaxed break-all whitespace-pre-wrap">
+                <pre className="bg-background max-h-40 overflow-auto rounded-md p-2 text-[11px] leading-relaxed break-all whitespace-pre-wrap select-text">
                   {args}
                 </pre>
               </div>
@@ -72,7 +72,7 @@ export const ToolCallCard = memo(function ToolCallCard({
                 <span className="text-muted-foreground text-[11px]">结果</span>
                 <pre
                   className={cn(
-                    "bg-background max-h-60 overflow-auto rounded-md p-2 text-[11px] leading-relaxed break-all whitespace-pre-wrap",
+                    "bg-background max-h-60 overflow-auto rounded-md p-2 text-[11px] leading-relaxed break-all whitespace-pre-wrap select-text",
                     item.status === "error" && "text-destructive",
                   )}
                 >

@@ -1,7 +1,7 @@
 //! Global dictation hotkey + gesture resolution.
 //!
-//! Ported from Orbit's DictationEngine gesture state machine: the monitor only
-//! reports raw down/up, and which gesture it was comes down to the FIRST press:
+//! The monitor only reports raw down/up, and which gesture it was comes down to
+//! the FIRST press:
 //!
 //!   • 单击切换 (click): released before the hold threshold → a hands-free
 //!     session that records until the next press. ASR + LLM polish.

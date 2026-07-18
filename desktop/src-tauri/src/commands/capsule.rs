@@ -1,6 +1,5 @@
 //! The floating dictation capsule window: borderless, transparent, always on
-//! top, pinned bottom-center of the primary monitor's work area (Orbit pill
-//! style).
+//! top, and pinned bottom-center of the primary monitor's work area.
 //!
 //! It is created hidden at startup and **never takes focus** — dictation targets
 //! whatever app the user is typing in, so stealing focus would move the caret

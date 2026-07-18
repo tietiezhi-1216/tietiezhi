@@ -97,7 +97,7 @@ pub fn list_providers(app: AppHandle) -> Result<Vec<ProviderView>, String> {
 #[tauri::command]
 pub fn upsert_provider(
     app: AppHandle,
-    provider: Provider,
+    mut provider: Provider,
     api_key: Option<String>,
 ) -> Result<(), String> {
     validate_id(&provider.id)?;
@@ -110,7 +110,13 @@ pub fn upsert_provider(
 
     let mut settings = read_settings(&app)?;
     match settings.providers.iter_mut().find(|p| p.id == provider.id) {
-        Some(existing) => *existing = provider.clone(),
+        Some(existing) => {
+            provider.built_in = existing.built_in;
+            if existing.built_in {
+                provider.name = super::settings::BUILTIN_PROVIDER_NAME.into();
+            }
+            *existing = provider.clone();
+        }
         None => settings.providers.push(provider.clone()),
     }
     super::settings::save_settings(app.clone(), settings)?;
@@ -127,6 +133,9 @@ pub fn upsert_provider(
 #[tauri::command]
 pub fn delete_provider(app: AppHandle, id: String) -> Result<(), String> {
     let mut settings = read_settings(&app)?;
+    if settings.providers.iter().any(|p| p.id == id && p.built_in) {
+        return Err("内置渠道不能删除，其访问凭据由应用管理".into());
+    }
     settings.providers.retain(|p| p.id != id);
     // Clear any selection that referenced the removed provider.
     for sel in [

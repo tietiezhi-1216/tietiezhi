@@ -57,6 +57,13 @@ pub fn classify(id: &str) -> ModelKind {
     let tokens = tokens(id);
     let has = |t: &str| tokens.iter().any(|x| x == t);
 
+    // Some provider model ids do not expose their capability in the name.
+    // Keep exact, documented exceptions here so they never fall through to
+    // the permissive Chat default.
+    if let Some(kind) = known_kind_override(&lower) {
+        return kind;
+    }
+
     // Speech-to-text first: "speech" alone is ambiguous, so ASR's distinctive
     // markers get to claim it before the TTS rule below.
     if has("asr") || has("stt") || lower.contains("whisper") || lower.contains("transcrib") {
@@ -85,6 +92,14 @@ pub fn classify(id: &str) -> ModelKind {
         return ModelKind::Other;
     }
     ModelKind::Chat
+}
+
+/// Curated capability overrides for model ids whose names are ambiguous.
+pub fn known_kind_override(id: &str) -> Option<ModelKind> {
+    match id.trim().to_ascii_lowercase().as_str() {
+        "sensenova-u1-fast" => Some(ModelKind::Image),
+        _ => None,
+    }
 }
 
 /// Deserialize `models` from either the current `[{id, kind}]` shape or the
@@ -125,7 +140,6 @@ mod tests {
             "gemini-3-flash-agent",
             "deepseek-v4-flash",
             "gpt-oss-120b-medium",
-            "sensenova-u1-fast",
             "agnes-2.0-flash",
             "codex-auto-review",
             "mimo-v2.5-pro",
@@ -139,6 +153,7 @@ mod tests {
             "agnes-image-2.1-flash",
             "gemini-2.5-flash-image",
             "gemini-3-pro-image-preview",
+            "sensenova-u1-fast",
         ] {
             assert_eq!(classify(id), ModelKind::Image, "{id}");
         }

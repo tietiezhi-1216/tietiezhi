@@ -1,6 +1,6 @@
 //! Microphone capture in the WebView: taps the default input via Web Audio,
 //! accumulates mono PCM, and encodes it as a 16 kHz 16-bit WAV (Base64) for the
-//! Rust ASR command. Mirrors the old Orbit AudioCapture pipeline.
+//! Rust ASR command.
 
 const TARGET_RATE = 16000;
 

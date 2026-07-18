@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "主窗口与胶囊窗口的默认能力",
   "windows": ["main", "capsule"],
-  "permissions": ["core:default", "updater:default", "process:default", "dialog:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "updater:default",
+    "process:default",
+    "dialog:default"
+  ]
 }

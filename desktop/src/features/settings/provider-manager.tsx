@@ -128,6 +128,7 @@ interface DraftState {
   name: string;
   type: ProviderType;
   baseUrl: string;
+  builtIn: boolean;
   apiKey: string;
   models: ModelInfo[];
   hasKey: boolean;
@@ -140,6 +141,7 @@ function blankDraft(): DraftState {
     name: "",
     type: "openai",
     baseUrl: "",
+    builtIn: false,
     apiKey: "",
     models: [],
     hasKey: false,
@@ -153,6 +155,7 @@ function toDraft(p: ProviderView): DraftState {
     name: p.name,
     type: p.type,
     baseUrl: p.baseUrl,
+    builtIn: p.builtIn,
     apiKey: "",
     models: p.models,
     hasKey: p.hasKey,
@@ -172,58 +175,96 @@ export function ProviderManager() {
   };
 
   const providers = providersQuery.data ?? [];
+  const builtInProvider = providers.find((provider) => provider.builtIn);
+  const customProviders = providers.filter((provider) => !provider.builtIn);
+
+  const editProvider = async (provider: ProviderView) => {
+    const key = await providerKey(provider.id).catch(() => null);
+    setDraft({ ...toDraft(provider), apiKey: key ?? "" });
+  };
 
   return (
-    <SettingsSection
-      action={
-        <Button variant="outline" size="sm" onClick={() => setDraft(blankDraft())}>
-          <Plus /> 添加供应商
-        </Button>
-      }
-    >
-      <div className="flex flex-col gap-2.5">
-        {providers.map((p) => (
-          <div
-            key={p.id}
-            className="hover:bg-accent/40 flex items-center gap-3 rounded-lg border px-3.5 py-3 transition-colors"
-          >
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-sm font-medium">{p.name}</span>
-                <Badge variant="secondary" className="shrink-0">
-                  {TYPE_LABELS[p.type]}
-                </Badge>
-                {p.hasKey && (
-                  <Badge
-                    variant="outline"
-                    className="shrink-0 text-emerald-600 dark:text-emerald-400"
-                  >
-                    已存 Key
-                  </Badge>
-                )}
-              </div>
-              <span className="text-muted-foreground truncate text-xs">
-                {p.baseUrl} · {summarizeModels(p.models)}
+    <SettingsSection>
+      <div className="flex flex-col gap-5">
+        {builtInProvider && (
+          <div className="flex items-center gap-4 rounded-xl border px-4 py-3.5">
+            <img
+              src="/gateway/tietiezhi-gateway.png"
+              alt="Tietiezhi Gateway"
+              draggable={false}
+              className="size-12 shrink-0 select-none rounded-full object-contain"
+            />
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <span className="truncate text-sm font-semibold">Tietiezhi Gateway</span>
+              <span className="text-muted-foreground text-xs">
+                {summarizeModels(builtInProvider.models)}
               </span>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="编辑"
-              onClick={async () => {
-                // Pull the saved key in so the editor shows it (behind the eye).
-                const key = await providerKey(p.id).catch(() => null);
-                setDraft({ ...toDraft(p), apiKey: key ?? "" });
-              }}
-            >
-              <Pencil />
-            </Button>
-            <Button variant="ghost" size="icon" aria-label="删除" onClick={() => setPendingDelete(p)}>
-              <Trash2 />
+            <span className="shrink-0 text-sm font-medium text-emerald-600 dark:text-emerald-400">
+              免费
+            </span>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-2.5">
+          <div className="flex items-center justify-between gap-3 px-0.5">
+            <div className="flex flex-col gap-0.5">
+              <h3 className="text-sm font-medium">自定义供应商</h3>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => setDraft(blankDraft())}>
+              <Plus /> 添加供应商
             </Button>
           </div>
-        ))}
 
+          {customProviders.length === 0 ? (
+            <div className="text-muted-foreground rounded-lg border border-dashed px-4 py-5 text-center text-xs">
+              暂无自定义供应商，需要时可在右上角添加
+            </div>
+          ) : (
+            customProviders.map((provider) => (
+              <div
+                key={provider.id}
+                className="hover:bg-accent/40 flex items-center gap-3 rounded-lg border px-3.5 py-3 transition-colors"
+              >
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium">{provider.name}</span>
+                    <Badge variant="secondary" className="shrink-0">
+                      {TYPE_LABELS[provider.type]}
+                    </Badge>
+                    {provider.hasKey && (
+                      <Badge
+                        variant="outline"
+                        className="shrink-0 text-emerald-600 dark:text-emerald-400"
+                      >
+                        已存 Key
+                      </Badge>
+                    )}
+                  </div>
+                  <span className="text-muted-foreground truncate text-xs">
+                    {provider.baseUrl} · {summarizeModels(provider.models)}
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="编辑"
+                  onClick={() => void editProvider(provider)}
+                >
+                  <Pencil />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="删除"
+                  onClick={() => setPendingDelete(provider)}
+                >
+                  <Trash2 />
+                </Button>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <ProviderFormDialog draft={draft} setDraft={setDraft} onSaved={invalidate} />
@@ -287,6 +328,7 @@ function ProviderFormDialog({
         name: d.name.trim(),
         type: d.type,
         baseUrl: d.baseUrl.trim(),
+        builtIn: d.builtIn,
         models: d.models,
       };
       await upsertProvider(provider, d.apiKey.trim() || undefined);

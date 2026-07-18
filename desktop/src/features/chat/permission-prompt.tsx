@@ -44,7 +44,7 @@ export const PermissionPrompt = memo(function PermissionPrompt({
           {item.tool}
         </span>
       </div>
-      <p className="text-sm break-all">{item.description}</p>
+      <p className="text-sm break-all select-text">{item.description}</p>
       <div className="flex items-center gap-2">
         <Button size="sm" className="h-7" onClick={() => answer("allow")}>
           允许一次

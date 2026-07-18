@@ -46,7 +46,7 @@ import {
   SidebarMenuItem,
   SidebarResizeHandle,
 } from "@/components/ui/sidebar";
-import { AppIcon } from "@/components/app-icon";
+import { ProductModeSwitcher } from "@/components/product-mode-switcher";
 import { Separator } from "@/components/ui/separator";
 import {
   dictationHotkey,
@@ -70,6 +70,7 @@ import {
 const revealProjectLabel = navigator.userAgent.includes("Mac")
   ? "在 Finder 中显示"
   : "打开项目文件夹";
+const IS_MACOS = navigator.userAgent.includes("Mac");
 
 export function AppSidebar() {
   const openSettings = useUiStore((state) => state.openSettings);
@@ -148,16 +149,8 @@ export function AppSidebar() {
 
   return (
     <Sidebar>
-      <SidebarHeader>
-        <div className="flex items-center gap-2.5 px-2 py-1.5">
-          <AppIcon size="md" />
-          <div className="flex flex-col">
-            <span className="text-sm leading-tight font-semibold">铁铁汁</span>
-            <span className="text-muted-foreground text-xs leading-tight">
-              智能体终端 · 模型枢纽
-            </span>
-          </div>
-        </div>
+      <SidebarHeader className={IS_MACOS ? "pt-10" : undefined}>
+        <ProductModeSwitcher />
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
