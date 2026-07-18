@@ -2,6 +2,7 @@ module.exports = {
   content: ["./public/**/*.html", "./public/**/*.js"],
   theme: {
     colors: {
+      transparent: "transparent",
       secondary: "#F4F2ED",
       black: "black",
       white: "white",
