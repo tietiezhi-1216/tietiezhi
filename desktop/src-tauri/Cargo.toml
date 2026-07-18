@@ -1,6 +1,6 @@
 [package]
 name = "tietiezhi-desktop"
-version = "0.2.0"
+version = "0.0.1"
 description = "铁铁汁 —— AI 中转站官方桌面客户端"
 edition = "2021"
 license = "Apache-2.0"

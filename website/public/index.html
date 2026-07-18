@@ -1,372 +1,47 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>铁铁汁 Tietiezhi — 连接各家模型的智能体终端</title>
-  <meta name="description"
-    content="铁铁汁（Tietiezhi）是连接各家 AI 模型的枢纽与智能体终端：在一处接入不同厂商的模型、发起对话与智能体任务，密钥由系统钥匙串安全保管，支持 Windows 与 macOS。" />
-  <link rel="icon" href="dist/assets/tietiezhi-mark.png" />
+  <title>Tietiezhi · 下载</title>
+  <meta name="description" content="Tietiezhi 桌面客户端下载。" />
+  <meta name="theme-color" content="#020205" />
+  <link rel="icon" href="dist/assets/tietiezhi-mark-transparent.png" />
   <link rel="stylesheet" href="dist/styles.css" />
   <script src="app.js" defer></script>
 </head>
+<body class="bg-black font-montserrat text-white antialiased selection:bg-[#7657ff] selection:text-white">
+  <main class="relative h-screen overflow-hidden bg-black">
+    <img src="dist/assets/hero/tietiezhi-glass-octopus.png" alt="Tietiezhi 玻璃章鱼形象" class="absolute inset-0 h-full w-full object-cover object-center" />
+    <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-transparent to-black/55"></div>
+    <img src="dist/assets/hero/tietiezhi-starfield.png" alt="" aria-hidden="true" class="pointer-events-none absolute -inset-[6%] z-[2] h-[112%] w-[112%] object-cover opacity-55 mix-blend-screen motion-safe:animate-star-drift motion-reduce:opacity-35" />
+    <img src="dist/assets/hero/tietiezhi-starfield.png" alt="" aria-hidden="true" class="pointer-events-none absolute -inset-[12%] z-[2] h-[124%] w-[124%] rotate-180 object-cover opacity-25 mix-blend-screen motion-safe:animate-star-drift-reverse motion-reduce:hidden" />
+    <img src="dist/assets/hero/tietiezhi-light-beam.png" alt="" aria-hidden="true" class="pointer-events-none absolute inset-y-0 left-0 z-[3] h-full w-64 object-cover opacity-0 mix-blend-screen motion-safe:animate-page-sweep motion-reduce:hidden md:w-96" />
 
-<body>
-  <!-- Navigation -->
-  <nav class="fixed flex justify-between py-6 w-full lg:px-48 md:px-12 px-4 content-center bg-secondary z-10">
-    <a href="#top" class="flex items-center">
-      <img src='dist/assets/tietiezhi-mark.png' alt="铁铁汁" class="h-8 w-8 mr-2" />
-      <span class="font-pt-serif font-bold text-xl">铁铁汁</span>
-    </a>
-    <ul class="font-montserrat items-center hidden md:flex">
-      <li class="mx-3">
-        <a class="growing-underline" href="#howitworks" data-i18n="nav.howitworks">工作原理</a>
-      </li>
-      <li class="mx-3">
-        <a class="growing-underline" href="#features" data-i18n="nav.features">功能特性</a>
-      </li>
-      <li class="mx-3">
-        <a class="growing-underline" href="#download" data-i18n="nav.download">下载</a>
-      </li>
-      <li class="mx-3">
-        <a class="growing-underline" href="#faq" data-i18n="nav.faq">常见问题</a>
-      </li>
-    </ul>
-    <div class="font-montserrat hidden md:flex items-center">
-      <select
-        class="langSelect mr-4 bg-secondary border border-black rounded-lg py-2 px-3 cursor-pointer focus:outline-none"
-        aria-label="Language">
-        <option value="zh-CN">简体中文</option>
-        <option value="en">English</option>
-        <option value="ja">日本語</option>
-        <option value="ko">한국어</option>
-      </select>
-      <a href="#download" class="py-2 px-4 text-white bg-black rounded-3xl" data-i18n="nav.cta">下载客户端</a>
-    </div>
-    <div id="showMenu" class="md:hidden flex items-center cursor-pointer">
-      <img src='dist/assets/logos/Menu.svg' alt="菜单" />
-    </div>
-  </nav>
-  <div id='mobileNav' class="hidden px-4 py-6 fixed top-0 left-0 h-full w-full bg-secondary z-20 animate-fade-in-down">
-    <div id="hideMenu" class="flex justify-end cursor-pointer">
-      <img src='dist/assets/logos/Cross.svg' alt="关闭" class="h-16 w-16" />
-    </div>
-    <ul class="font-montserrat flex flex-col mx-8 my-16 items-center text-3xl">
-      <li class="my-5"><a href="#howitworks" data-i18n="nav.howitworks">工作原理</a></li>
-      <li class="my-5"><a href="#features" data-i18n="nav.features">功能特性</a></li>
-      <li class="my-5"><a href="#download" data-i18n="nav.download">下载</a></li>
-      <li class="my-5"><a href="#faq" data-i18n="nav.faq">常见问题</a></li>
-      <li class="my-5">
-        <select class="langSelect bg-secondary border border-black rounded-lg py-2 px-3 text-lg cursor-pointer"
-          aria-label="Language">
-          <option value="zh-CN">简体中文</option>
-          <option value="en">English</option>
-          <option value="ja">日本語</option>
-          <option value="ko">한국어</option>
-        </select>
-      </li>
-    </ul>
-  </div>
+    <header class="relative z-10 flex items-center justify-between px-6 py-6 md:px-12 md:py-9">
+      <a href="#top" aria-label="Tietiezhi 首页" class="block rounded-xl transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60">
+        <img src="dist/assets/tietiezhi-mark-transparent.png" alt="Tietiezhi" class="h-12 w-12 object-contain drop-shadow-[0_8px_24px_rgba(77,221,255,.25)] md:h-14 md:w-14" />
+      </a>
+      <a href="https://github.com/tietiezhi-1216/tietiezhi" class="rounded-full border border-white/15 bg-black/20 px-5 py-2.5 text-sm font-semibold backdrop-blur-xl transition hover:bg-white/10">GitHub</a>
+    </header>
 
-  <!-- Hero -->
-  <section id="top"
-    class="pt-24 md:mt-0 md:h-screen flex flex-col justify-center text-center md:text-left md:flex-row md:justify-between md:items-center lg:px-48 md:px-12 px-4 bg-secondary">
-    <div class="md:flex-1 md:mr-10">
-      <h1 class="font-pt-serif text-5xl font-bold mb-7 leading-tight" data-i18n-html="hero.title">
-        连接每一个模型的
-        <span class="bg-underline1 bg-left-bottom bg-no-repeat pb-2 bg-100%">智能体终端</span>
-      </h1>
-      <p class="font-pt-serif font-normal mb-7" data-i18n="hero.desc">
-        铁铁汁把各家厂商的模型汇聚到一处——一个终端连接所有模型。智能体可以读写文件、执行命令、调用 MCP 工具，危险操作先征求你的批准。密钥由系统钥匙串守护，支持 Windows 与 macOS。
-      </p>
-      <div class="font-montserrat">
-        <a href="#download"
-          class="inline-block bg-black px-6 py-4 rounded-lg border-2 border-black border-solid text-white mr-2 mb-2"
-          data-i18n="hero.cta1">立即下载</a>
-        <a href="#features" class="inline-block px-6 py-4 border-2 border-black border-solid rounded-lg"
-          data-i18n="hero.cta2">了解功能</a>
+    <section id="top" class="absolute inset-0 z-[5] mx-auto flex h-full w-full max-w-7xl flex-col items-center px-5 pt-28 text-center md:pt-24">
+      <p class="text-[11px] font-semibold uppercase tracking-[.3em] text-white/45 sm:text-xs">Latest / <span id="dlVersion">Version</span></p>
+      <div class="relative mt-5">
+        <h1 class="text-[2.1rem] font-bold leading-none tracking-[-.055em] text-white drop-shadow-[0_10px_36px_rgba(0,0,0,.7)] sm:text-5xl md:text-[5rem]">Tietiezhi Desktop</h1>
+        <span aria-hidden="true" class="pointer-events-none absolute inset-0 bg-[linear-gradient(105deg,transparent_0%,transparent_38%,#8bdfff_47%,#ffffff_52%,#d9c7ff_57%,transparent_66%,transparent_100%)] bg-[length:250%_100%] bg-clip-text text-[2.1rem] font-bold leading-none tracking-[-.055em] text-transparent motion-safe:animate-title-shine motion-reduce:hidden sm:text-5xl md:text-[5rem]">Tietiezhi Desktop</span>
       </div>
-    </div>
-    <div class="flex justify-around md:block mt-8 md:mt-0 md:flex-1">
-      <div class="relative">
-        <img src='dist/assets/Highlight1.svg' alt="" class="absolute -top-16 -left-10" />
-      </div>
-      <!-- CSS 笔记本外框 + 屏幕内的 app 界面摹本（深色主题，随宽度缩放） -->
-      <div class="laptop" role="img" aria-label="铁铁汁桌面客户端界面">
-        <div class="laptop-screen">
-          <div class="appshot">
-            <div class="appshot-side">
-              <div class="appshot-brand">
-                <img src='dist/assets/tietiezhi-mark.png' alt="" />
-                <span>铁铁汁<small data-i18n="shot.tagline">智能体终端 · 模型枢纽</small></span>
-              </div>
-              <div class="appshot-item" data-i18n="shot.new">✎ 新对话</div>
-              <div class="appshot-label" data-i18n="shot.history">对话记录</div>
-              <div class="appshot-item active" data-i18n="shot.conv1">重构登录模块</div>
-              <div class="appshot-item" data-i18n="shot.conv2">整理产品需求文档</div>
-              <div class="appshot-item" data-i18n="shot.conv3">周报速写</div>
-              <div class="spacer"></div>
-              <div class="appshot-item" data-i18n="shot.settings">⚙ 设置</div>
-            </div>
-            <div class="appshot-main">
-              <div class="appshot-header">
-                <span data-i18n="shot.conv1">重构登录模块</span>
-                <div class="pill">
-                  <span data-i18n="shot.agent">🤖 编码助手</span>
-                  <span data-i18n="shot.workspace">📁 my-project</span>
-                </div>
-              </div>
-              <div class="appshot-chat">
-                <div class="appshot-user" data-i18n="shot.user">帮我把登录逻辑拆成独立模块并跑一下测试</div>
-                <div class="appshot-tool">
-                  <span class="dot"></span>
-                  <span>read_file&nbsp; src/auth/login.ts</span>
-                  <span class="tag" data-i18n="shot.done">完成</span>
-                </div>
-                <div class="appshot-tool">
-                  <span class="dot"></span>
-                  <span>edit_file&nbsp; src/auth/session.ts</span>
-                  <span class="tag" data-i18n="shot.done">完成</span>
-                </div>
-                <div class="appshot-perm">
-                  <div data-i18n="shot.perm">🛡 需要你的许可 — 执行命令：pnpm test</div>
-                  <div class="btns">
-                    <span data-i18n="shot.allow">允许一次</span>
-                    <span data-i18n="shot.always">本会话始终允许</span>
-                    <span data-i18n="shot.deny">拒绝</span>
-                  </div>
-                </div>
-                <div class="appshot-tool">
-                  <span class="dot run"></span>
-                  <span>bash&nbsp; pnpm test</span>
-                  <span class="tag" data-i18n="shot.running">运行中</span>
-                </div>
-              </div>
-              <div class="appshot-composer">
-                <span data-i18n="shot.input">输入消息…</span>
-                <span class="send">↑</span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="laptop-base"></div>
-      </div>
-      <div class="relative">
-        <img src='dist/assets/Highlight2.svg' alt="" class="absolute -bottom-10 -right-6" />
-      </div>
-    </div>
-  </section>
+      <p class="mt-5 text-xs font-medium tracking-[.08em] text-white/45 sm:text-sm">Available on macOS and Windows</p>
 
-  <!-- How it works -->
-  <section id="howitworks" class="bg-black text-white sectionSize">
-    <div>
-      <h2 class="secondaryTitle bg-underline2 bg-100%" data-i18n="steps.title">三步开始使用</h2>
-    </div>
-    <div class="flex flex-col md:flex-row">
-      <div class="flex-1 mx-8 flex flex-col items-center my-4">
-        <div class="border-2 rounded-full bg-secondary text-black h-12 w-12 flex justify-center items-center mb-3">1</div>
-        <h3 class="font-montserrat font-medium text-xl mb-2" data-i18n="steps.1.t">接入模型</h3>
-        <p class="text-center font-montserrat" data-i18n="steps.1.d">
-          在「接入配置」填入中转站 baseURL 与 API Key，一键测试连通，把各家模型接入终端。
-        </p>
-      </div>
-      <div class="flex-1 mx-8 flex flex-col items-center my-4">
-        <div class="border-2 rounded-full bg-secondary text-black h-12 w-12 flex justify-center items-center mb-3">2</div>
-        <h3 class="font-montserrat font-medium text-xl mb-2" data-i18n="steps.2.t">选择模型</h3>
-        <p class="text-center font-montserrat" data-i18n="steps.2.d">
-          从中转站支持的模型中选择，随时按需切换。
-        </p>
-      </div>
-      <div class="flex-1 mx-8 flex flex-col items-center my-4">
-        <div class="border-2 rounded-full bg-secondary text-black h-12 w-12 flex justify-center items-center mb-3">3</div>
-        <h3 class="font-montserrat font-medium text-xl mb-2" data-i18n="steps.3.t">开始对话</h3>
-        <p class="text-center font-montserrat" data-i18n="steps.3.d">
-          发送消息，实时流式返回，畅快交流。
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <!-- Features -->
-  <section id="features" class="sectionSize bg-secondary">
-    <div>
-      <h2 class="secondaryTitle bg-underline3 bg-100%" data-i18n="features.title">功能特性</h2>
-    </div>
-    <div class="md:grid md:grid-cols-2 md:grid-rows-2">
-      <div class="flex items-start font-montserrat my-6 mr-10">
-        <img src='dist/assets/logos/Lightning.svg' alt='' class="h-7 mr-4" />
-        <div>
-          <h3 class="font-semibold text-2xl" data-i18n="features.1.t">兼容各家模型</h3>
-          <p data-i18n-html="features.1.d">
-            兼容 <code>/v1/chat/completions</code> 标准接口，填好 baseURL 与 API Key 即可对接主流中转站，无需额外适配。
-          </p>
-        </div>
-      </div>
-      <div class="flex items-start font-montserrat my-6 mr-10">
-        <img src='dist/assets/logos/CheckedBox.svg' alt='' class="h-7 mr-4" />
-        <div>
-          <h3 class="font-semibold text-2xl" data-i18n="features.2.t">密钥安全存储</h3>
-          <p data-i18n="features.2.d">
-            API Key 存入系统钥匙串（macOS Keychain / Windows 凭据管理器），不明文落盘、不回传、不在界面展示。
-          </p>
-        </div>
-      </div>
-      <div class="flex items-start font-montserrat my-6 mr-10">
-        <img src='dist/assets/logos/Star.svg' alt='' class="h-7 mr-4" />
-        <div>
-          <h3 class="font-semibold text-2xl" data-i18n="features.3.t">智能体与内置工具</h3>
-          <p data-i18n="features.3.d">
-            智能体可以读写文件、检索代码、执行命令、抓取网页，危险操作先征求你的批准；可创建多个智能体，各自带独立提示词、工具与权限模式。
-          </p>
-        </div>
-      </div>
-      <div class="flex items-start font-montserrat my-6 mr-10">
-        <img src='dist/assets/logos/Heart.svg' alt='' class="h-7 mr-4" />
-        <div>
-          <h3 class="font-semibold text-2xl" data-i18n="features.4.t">Skills 与 MCP 扩展</h3>
-          <p data-i18n="features.4.d">
-            按 Anthropic Skills 规范管理技能文档，模型按需加载；支持接入 MCP 服务器（本地命令或远程 HTTP），为智能体添加外部工具。
-          </p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Download -->
-  <section id="download" class="sectionSize bg-secondary pt-8">
-    <div>
-      <h2 class="secondaryTitle bg-underline4 mb-2 bg-100%" data-i18n="download.title">下载客户端</h2>
-    </div>
-    <p class="font-montserrat text-center mb-4 max-w-2xl" data-i18n="download.desc">
-      选择你的平台，下载并安装铁铁汁。当前为测试版本，欢迎反馈。
-    </p>
-    <div class="font-montserrat text-sm mb-10 flex items-center">
-      <span data-i18n="download.current">当前版本</span>
-      <span id="dlVersion" class="font-bold mx-2">—</span>
-      <span id="dlDate" class="opacity-70"></span>
-    </div>
-
-    <div class="flex w-full flex-col md:flex-row">
-      <div class='flex-1 flex flex-col mx-6 shadow-2xl bg-secondary rounded-2xl py-6 px-8 my-4'>
-        <h3 class="font-pt-serif font-normal text-2xl mb-1">macOS</h3>
-        <div class="font-montserrat font-bold text-lg mb-1" data-i18n="download.mac_arm.name">Apple 芯片</div>
-        <p class="font-montserrat text-sm opacity-70 mb-6" data-i18n="download.mac_arm.req">
-          适用于 M 系列芯片 · 需 macOS 13.3 及以上
-        </p>
-        <a id="dlMacArm" href="#"
-          class="dlBtn mt-auto text-center border-2 border-solid border-black rounded-xl text-lg py-3"
-          data-i18n="download.btn">下载</a>
+      <div id="download" class="absolute bottom-12 left-1/2 flex w-[calc(100%-2.5rem)] max-w-xl -translate-x-1/2 flex-col gap-2 rounded-[2rem] border border-white/15 bg-black/35 p-2 shadow-[0_28px_80px_rgba(0,0,0,.45)] backdrop-blur-2xl sm:flex-row">
+        <a id="dlMacArm" href="#" class="flex-1 rounded-[1.5rem] bg-white px-6 py-4 font-semibold text-black transition hover:bg-[#e8faff] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8bdfff]">下载 macOS</a>
+        <a id="dlWin" href="#" class="flex-1 rounded-[1.5rem] px-6 py-4 font-semibold transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60">下载 Windows</a>
       </div>
 
-      <div class='flex-1 flex flex-col mx-6 shadow-2xl bg-secondary rounded-2xl py-6 px-8 my-4'>
-        <h3 class="font-pt-serif font-normal text-2xl mb-1">macOS</h3>
-        <div class="font-montserrat font-bold text-lg mb-1" data-i18n="download.mac_x64.name">Intel 芯片</div>
-        <p class="font-montserrat text-sm opacity-70 mb-6" data-i18n="download.mac_x64.req">
-          适用于 Intel 芯片 · 需 macOS 13.3 及以上
-        </p>
-        <a id="dlMacX64" href="#"
-          class="dlBtn mt-auto text-center border-2 border-solid border-black rounded-xl text-lg py-3"
-          data-i18n="download.btn">下载</a>
-      </div>
-
-      <div class='flex-1 flex flex-col mx-6 shadow-2xl bg-secondary rounded-2xl py-6 px-8 my-4'>
-        <h3 class="font-pt-serif font-normal text-2xl mb-1">Windows</h3>
-        <div class="font-montserrat font-bold text-lg mb-1" data-i18n="download.win.name">64 位</div>
-        <p class="font-montserrat text-sm opacity-70 mb-6" data-i18n="download.win.req">
-          适用于 Windows 10 / 11 (x64)
-        </p>
-        <a id="dlWin" href="#"
-          class="dlBtn mt-auto text-center border-2 border-solid border-black rounded-xl text-lg py-3"
-          data-i18n="download.btn">下载</a>
-      </div>
-    </div>
-
-    <p id="dlHint" class="font-montserrat text-sm opacity-70 mt-8 text-center"></p>
-    <a id="dlMore" href="https://github.com/tietiezhi-1216/tietiezhi/releases" class="growing-underline font-montserrat text-sm mt-2"
-      data-i18n="download.more">查看历史版本</a>
-  </section>
-
-  <!-- FAQ -->
-  <section id="faq" class="sectionSize items-start pt-8 md:pt-24 bg-black text-white">
-    <div>
-      <h2 class="secondaryTitle bg-highlight3 p-10 mb-0 bg-center bg-100%" data-i18n="faq.title">常见问题</h2>
-    </div>
-
-    <div toggleElement class="w-full py-4 cursor-pointer">
-      <div class="flex justify-between items-center">
-        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.1.q">铁铁汁是什么？</div>
-        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
-      </div>
-      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.1.a">
-        铁铁汁是一个连接各家 AI 模型的枢纽与智能体终端：在一处接入不同厂商的模型、统一发起对话，并持续演进出 Agent 与多模态能力。
-      </div>
-    </div>
-    <hr class="w-full bg-white" />
-
-    <div toggleElement class="w-full py-4 cursor-pointer">
-      <div class="flex justify-between items-center">
-        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.2.q">支持哪些操作系统？</div>
-        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
-      </div>
-      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.2.a">
-        目前支持 Windows 10 / 11 与 macOS 13.3 及以上（含 Apple 芯片与 Intel 芯片）。
-      </div>
-    </div>
-    <hr class="w-full bg-white" />
-
-    <div toggleElement class="w-full py-4 cursor-pointer">
-      <div class="flex justify-between items-center">
-        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.3.q">如何开始使用？</div>
-        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
-      </div>
-      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.3.a">
-        下载安装后，在「接入配置」中填入中转站的 baseURL 与 API Key，测试连通后即可在聊天页使用。
-      </div>
-    </div>
-    <hr class="w-full bg-white" />
-
-    <div toggleElement class="w-full py-4 cursor-pointer">
-      <div class="flex justify-between items-center">
-        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.4.q">我的 API Key 安全吗？</div>
-        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
-      </div>
-      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.4.a">
-        安全。API Key 仅保存在系统钥匙串中，不会明文写入磁盘，也不会回传或在界面展示。
-      </div>
-    </div>
-    <hr class="w-full bg-white" />
-
-    <div toggleElement class="w-full py-4 cursor-pointer">
-      <div class="flex justify-between items-center">
-        <div question class="font-montserrat font-medium mr-auto" data-i18n="faq.5.q">这是开源软件吗？</div>
-        <img src='dist/assets/logos/CaretRight.svg' alt="" class="transform transition-transform" />
-      </div>
-      <div answer class="font-montserrat text-sm font-extralight pb-8 hidden" data-i18n="faq.5.a">
-        是。铁铁汁基于 Apache License 2.0 开源，源代码与版本发布均托管在 GitHub。
-      </div>
-    </div>
-    <hr class="w-full bg-white" />
-  </section>
-
-  <!-- Footer -->
-  <section class="bg-black sectionSize items-center">
-    <div class="mb-3 flex items-center">
-      <img src='dist/assets/tietiezhi-mark.png' alt="铁铁汁" class="h-8 w-8 mr-2" />
-      <span class="font-pt-serif font-bold text-xl text-white">铁铁汁</span>
-    </div>
-    <p class="text-white font-montserrat text-sm opacity-70 mb-6 text-center" data-i18n="footer.tagline">
-      连接各家模型的智能体终端 · 面向万物互联
-    </p>
-    <div class="flex font-montserrat text-white text-sm mb-6">
-      <a href="#features" class="growing-underline mx-3" data-i18n="nav.features">功能特性</a>
-      <a href="#download" class="growing-underline mx-3" data-i18n="nav.download">下载</a>
-      <a href="#faq" class="growing-underline mx-3" data-i18n="nav.faq">常见问题</a>
-    </div>
-    <div class="text-white font-montserrat text-sm opacity-70" data-i18n="footer.rights">
-      © 2026 铁铁汁 Tietiezhi. 保留所有权利。
-    </div>
-  </section>
+      <a id="dlMacX64" href="#" class="sr-only">下载 Intel Mac</a>
+      <span id="dlDate" class="sr-only"></span>
+      <p id="dlHint" class="sr-only"></p>
+    </section>
+  </main>
 </body>
-
 </html>

@@ -20,7 +20,7 @@
   // ---- 文案字典 ----
   const I18N = {
     "zh-CN": {
-      "meta.title": "铁铁汁 Tietiezhi — 连接各家模型的智能体终端",
+      "meta.title": "Tietiezhi · 下载",
       "nav.howitworks": "工作原理",
       "nav.features": "功能特性",
       "nav.download": "下载",

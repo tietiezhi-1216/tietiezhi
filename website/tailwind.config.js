@@ -35,9 +35,56 @@ module.exports = {
             transform: "translateY(0)",
           },
         },
+        "title-shine": {
+          "0%, 18%": {
+            backgroundPosition: "125% 50%",
+          },
+          "52%, 100%": {
+            backgroundPosition: "-55% 50%",
+          },
+        },
+        "star-drift": {
+          "0%": {
+            transform: "translate3d(-1.5%, -1%, 0) scale(1.02)",
+          },
+          "50%": {
+            opacity: ".72",
+          },
+          "100%": {
+            transform: "translate3d(1.5%, 1%, 0) scale(1.06)",
+          },
+        },
+        "star-drift-reverse": {
+          "0%": {
+            transform: "translate3d(1%, -1%, 0) scale(1.03) rotate(180deg)",
+          },
+          "100%": {
+            transform: "translate3d(-1%, 1.5%, 0) scale(1.08) rotate(180deg)",
+          },
+        },
+        "page-sweep": {
+          "0%, 12%": {
+            opacity: "0",
+            transform: "translate3d(-35vw, 0, 0) skewX(-8deg)",
+          },
+          "20%": {
+            opacity: ".2",
+          },
+          "43%": {
+            opacity: ".12",
+          },
+          "52%, 100%": {
+            opacity: "0",
+            transform: "translate3d(145vw, 0, 0) skewX(-8deg)",
+          },
+        },
       },
       animation: {
         "fade-in-down": "fade-in-down 0.5s ease-out",
+        "title-shine": "title-shine 4.8s ease-in-out infinite",
+        "star-drift": "star-drift 18s ease-in-out infinite alternate",
+        "star-drift-reverse": "star-drift-reverse 24s ease-in-out infinite alternate",
+        "page-sweep": "page-sweep 8s ease-in-out infinite",
       },
     },
   },
