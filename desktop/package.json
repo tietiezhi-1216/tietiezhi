@@ -1,7 +1,7 @@
 {
   "name": "tietiezhi-desktop",
   "private": true,
-  "version": "2026.7.19-162135",
+  "version": "2026.7.19-174254",
   "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@10.30.3",
