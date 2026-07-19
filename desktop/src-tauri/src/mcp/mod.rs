@@ -61,19 +61,15 @@ impl McpManager {
     async fn connect(&self, cfg: &McpServerConfig) -> Result<Arc<Client>, String> {
         let client = match &cfg.transport {
             McpTransport::Stdio { command, args, env } => {
-                let transport =
-                    TokioChildProcess::new(tokio::process::Command::new(command).configure(|c| {
+                let transport = TokioChildProcess::new(
+                    crate::process::background_tokio_command(command).configure(|c| {
                         c.args(args);
                         for (k, v) in env {
                             c.env(k, v);
                         }
-                        #[cfg(windows)]
-                        {
-                            use std::os::windows::process::CommandExt;
-                            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-                        }
-                    }))
-                    .map_err(|e| format!("启动 MCP 进程失败：{e}"))?;
+                    }),
+                )
+                .map_err(|e| format!("启动 MCP 进程失败：{e}"))?;
                 tokio::time::timeout(INIT_TIMEOUT, ().serve(transport))
                     .await
                     .map_err(|_| "MCP 初始化超时".to_string())?

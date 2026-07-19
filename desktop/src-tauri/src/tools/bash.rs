@@ -1,5 +1,4 @@
 use serde_json::Value;
-use tokio::process::Command;
 
 use super::{str_arg, ToolCtx};
 
@@ -16,13 +15,13 @@ pub async fn bash_tool(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
 
     #[cfg(windows)]
     let mut cmd = {
-        let mut c = Command::new("cmd");
+        let mut c = crate::process::background_tokio_command("cmd");
         c.arg("/C").arg(command);
         c
     };
     #[cfg(not(windows))]
     let mut cmd = {
-        let mut c = Command::new("sh");
+        let mut c = crate::process::background_tokio_command("sh");
         c.arg("-lc").arg(command);
         c
     };

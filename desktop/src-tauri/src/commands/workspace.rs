@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use tauri::AppHandle;
 use tauri_plugin_dialog::DialogExt;
@@ -52,17 +51,17 @@ pub(crate) fn cleanup_legacy_task_worktree(app: &AppHandle, project_id: &str, wo
         return;
     };
     let root = PathBuf::from(project.root_path);
-    let _ = Command::new("git")
+    let mut remove = crate::process::background_command("git");
+    remove
         .args(["-C"])
         .arg(&root)
         .args(["worktree", "remove", "--force"])
-        .arg(workspace)
-        .status();
-    let _ = Command::new("git")
-        .args(["-C"])
-        .arg(root)
-        .args(["worktree", "prune"])
-        .status();
+        .arg(workspace);
+    let _ = remove.status();
+
+    let mut prune = crate::process::background_command("git");
+    prune.args(["-C"]).arg(root).args(["worktree", "prune"]);
+    let _ = prune.status();
 }
 
 #[cfg(test)]

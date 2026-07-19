@@ -193,14 +193,25 @@ pub fn reveal_project(app: AppHandle, id: String) -> Result<(), String> {
     }
 
     #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .spawn();
+    let mut command = {
+        let mut command = crate::process::background_command("open");
+        command.arg("-R").arg(path);
+        command
+    };
     #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("explorer").arg(path).spawn();
+    let mut command = {
+        let mut command = crate::process::background_command("explorer");
+        command.arg(path);
+        command
+    };
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let result = std::process::Command::new("xdg-open").arg(path).spawn();
+    let mut command = {
+        let mut command = crate::process::background_command("xdg-open");
+        command.arg(path);
+        command
+    };
+
+    let result = command.spawn();
 
     result
         .map(|_| ())
@@ -213,9 +224,6 @@ mod tests {
 
     #[test]
     fn same_path_rejects_missing_paths() {
-        assert!(!same_path(
-            "/definitely/missing/project",
-            Path::new("/tmp")
-        ));
+        assert!(!same_path("/definitely/missing/project", Path::new("/tmp")));
     }
 }

@@ -2,6 +2,7 @@ mod agent;
 mod commands;
 mod mcp;
 mod permission;
+mod process;
 mod secrets;
 mod skills;
 mod tools;
