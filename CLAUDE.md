@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. **禁止手写 style**——不允许内联 `style={}`、不允许新建 `.css` / `.scss` 文件（全局 `desktop/src/index.css` 中的 Tailwind 指令和 shadcn 主题变量除外）。所有样式必须通过 Tailwind 类名表达；确需动态样式时用 `cva` / `cn()` 组合类名。未经明确允许不得违反本条。
 3. **组件一律用 shadcn/ui 现有组件组合实现**——shadcn 没有的先用其原语（Radix）组合，不引入其它 UI 库。添加组件：`pnpm dlx shadcn@latest add <name>`（本工程为 radix 基座 + nova 预设，见 `components.json`）。
 4. **TypeScript 严格模式，禁止 `any`**——确实无法避免时用 `unknown` + 类型收窄。
-5. **重逻辑下沉到 Rust command**——网络请求（含签名）、文件、密钥存储等在 `desktop/src-tauri/src/` 实现，前端只做展示与交互。**API Key 用系统安全存储（keyring），不得明文落盘**（dev 构建例外，见下）。用户自己保存的 Key 在设置里默认掩码显示、可用眼睛切换成明文；应用不得内置真实 API Key。
+5. **重逻辑下沉到 Rust command**——网络请求（含签名）、文件、密钥存储等在 `desktop/src-tauri/src/` 实现，前端只做展示与交互。**API Key 用系统安全存储（keyring），不得明文落盘**（dev 构建例外，见下）。用户自己保存的 Key 在设置里默认掩码显示、可用眼睛切换成明文；应用不得内置用户或付费账户的真实 API Key。`Tietiezhi Gateway` 使用明确面向公开分发的免费客户端凭据，该凭据不是用户秘密，可随客户端发布。
 6. **兼容性按 Safari（WKWebView）基线开发**——使用新 CSS/JS 特性前先确认 WKWebView 支持。browserslist（`desktop/package.json`）= `Chrome >= 111 / Safari >= 16.4`，经 `browserslist-to-esbuild` 接到 Vite 的 `build.target`。macOS 最低 **13.3**（= Safari 16.4，Tailwind v4 的硬底线）；Windows 用 evergreen WebView2（打包配置了 `downloadBootstrapper` 引导安装）。
 7. **优先用主流方案**——状态管理 zustand（轻量优先）、数据请求 TanStack Query、构建 Vite、包管理统一 **pnpm**。能用现有抽象就不要自造轮子。
 

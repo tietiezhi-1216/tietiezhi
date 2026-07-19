@@ -74,8 +74,7 @@ export function installTauriMock(): void {
           type: "openai",
           baseUrl: "https://api.terln.com/v1",
           builtIn: true,
-          models:
-            setupState === "choose-model" || setupState === "ready" ? TERLN_MODELS : [],
+          models: setupState === "no-model" ? [] : TERLN_MODELS,
         },
       ] as Provider[],
       chatProviderId: setupState === "ready" ? "builtin-official" : "",

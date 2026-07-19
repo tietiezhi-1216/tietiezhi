@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use super::models::ModelInfo;
-use super::settings::{read_settings, Provider};
+use super::settings::{read_settings, Provider, BUILTIN_PROVIDER_API_KEY};
 use super::{api_url, snippet};
 use crate::{secrets, AppState};
 
@@ -59,7 +59,11 @@ pub(crate) fn resolve(app: &AppHandle, provider_id: &str) -> Result<Resolved, St
         .find(|p| p.id == provider_id)
         .ok_or("未找到所选供应商，请到「设置」检查")?;
 
-    let key = secrets::get_provider_key(provider_id)?;
+    let key = secrets::get_provider_key(provider_id)?.or_else(|| {
+        provider
+            .built_in
+            .then(|| BUILTIN_PROVIDER_API_KEY.to_owned())
+    });
 
     Ok(Resolved {
         base_url: provider.base_url.clone(),
@@ -188,6 +192,12 @@ pub async fn fetch_provider_models(
         Some(k) => Some(k),
         None => secrets::get_provider_key(&id)?,
     };
+    let key = key.or_else(|| {
+        stored
+            .as_ref()
+            .is_some_and(|provider| provider.built_in)
+            .then(|| BUILTIN_PROVIDER_API_KEY.to_owned())
+    });
 
     let models = fetch_models(&state.http, &base, key.as_deref(), &kind).await?;
 
@@ -202,7 +212,7 @@ pub async fn fetch_provider_models(
     Ok(models)
 }
 
-async fn fetch_models(
+pub(crate) async fn fetch_models(
     http: &reqwest::Client,
     base_url: &str,
     api_key: Option<&str>,
@@ -280,4 +290,18 @@ async fn fetch_models(
     // `/v1/models` carries no capability metadata (the relay drops it — see
     // models.rs), so each id is classified by name.
     Ok(ids.into_iter().map(ModelInfo::new).collect())
+}
+
+#[cfg(test)]
+mod builtin_tests {
+    use super::*;
+
+    #[test]
+    fn built_in_provider_has_a_public_client_credential() {
+        assert_eq!(
+            super::super::settings::BUILTIN_PROVIDER_ID,
+            "builtin-official"
+        );
+        assert!(!BUILTIN_PROVIDER_API_KEY.trim().is_empty());
+    }
 }

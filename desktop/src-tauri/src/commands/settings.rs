@@ -1,13 +1,16 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 
 use super::models::{deserialize_models, known_kind_override, ModelInfo, ModelKind};
-use crate::secrets;
+use crate::{secrets, AppState};
 
 const CURRENT_SETTINGS_VERSION: u32 = 2;
-const BUILTIN_PROVIDER_ID: &str = "builtin-official";
+pub(crate) const BUILTIN_PROVIDER_ID: &str = "builtin-official";
 pub(crate) const BUILTIN_PROVIDER_NAME: &str = "Tietiezhi Gateway";
-const BUILTIN_PROVIDER_URL: &str = "https://api.terln.com/v1";
+pub(crate) const BUILTIN_PROVIDER_URL: &str = "https://api.terln.com/v1";
+// Public client credential for the free built-in gateway. This is intentionally
+// distributed with the app and must not be used for private or paid accounts.
+pub(crate) const BUILTIN_PROVIDER_API_KEY: &str = "sk-terln-fiMX4TCzhvzVLruPLZGoN9JxdjADgTPU";
 
 /// A model provider (relay / vendor). API keys never live here — they go to the
 /// OS credential store, keyed by the provider id.
@@ -267,8 +270,43 @@ fn new_id(_app: &AppHandle) -> String {
 }
 
 #[tauri::command]
-pub fn load_settings(app: AppHandle) -> Result<AppSettings, String> {
-    read_settings(&app)
+pub async fn load_settings(
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<AppSettings, String> {
+    let mut settings = read_settings(&app)?;
+    let needs_builtin_models = settings
+        .providers
+        .iter()
+        .any(|provider| provider.built_in && provider.models.is_empty());
+    if !needs_builtin_models {
+        return Ok(settings);
+    }
+
+    let models = super::providers::fetch_models(
+        &state.http,
+        BUILTIN_PROVIDER_URL,
+        Some(BUILTIN_PROVIDER_API_KEY),
+        "openai",
+    )
+    .await
+    .map_err(|error| format!("自动获取 Tietiezhi Gateway 模型失败：{error}"))?;
+    if models.is_empty() {
+        return Err("Tietiezhi Gateway 暂未返回可用模型，请稍后重试".into());
+    }
+
+    // Re-read before persisting so a slow model request cannot overwrite a
+    // provider the user added while the request was in flight.
+    settings = read_settings(&app)?;
+    if let Some(provider) = settings
+        .providers
+        .iter_mut()
+        .find(|provider| provider.built_in)
+    {
+        provider.models = models;
+    }
+    write_settings(&app, &settings)?;
+    Ok(settings)
 }
 
 #[tauri::command]
