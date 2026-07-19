@@ -331,6 +331,7 @@ function SidebarResizeHandle({
   const { wrapperRef, state } = useSidebar()
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
     if (state === "collapsed") return
     const wrapper = wrapperRef.current
     if (!wrapper) return
@@ -349,14 +350,18 @@ function SidebarResizeHandle({
       width = Math.min(maxWidth, Math.max(minWidth, base + ev.clientX - startX))
       wrapper.style.setProperty("--sidebar-width", `${width}px`)
     }
-    const onUp = () => {
+    const finishResize = () => {
       handle.removeEventListener("pointermove", onMove)
-      handle.removeEventListener("pointerup", onUp)
+      handle.removeEventListener("pointerup", finishResize)
+      handle.removeEventListener("pointercancel", finishResize)
+      handle.removeEventListener("lostpointercapture", finishResize)
       wrapper.removeAttribute("data-resizing")
       onResizeEnd?.(width)
     }
     handle.addEventListener("pointermove", onMove)
-    handle.addEventListener("pointerup", onUp)
+    handle.addEventListener("pointerup", finishResize)
+    handle.addEventListener("pointercancel", finishResize)
+    handle.addEventListener("lostpointercapture", finishResize)
   }
 
   return (
@@ -365,7 +370,7 @@ function SidebarResizeHandle({
       onPointerDown={onPointerDown}
       onDoubleClick={onReset}
       className={cn(
-        "absolute inset-y-0 -right-0.5 z-30 hidden w-1.5 cursor-col-resize hover:bg-sidebar-border active:bg-primary/40 group-data-[collapsible=icon]:hidden group-data-[state=collapsed]:hidden md:block",
+        "absolute inset-y-0 -right-1 z-30 hidden w-2 touch-none cursor-col-resize before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-transparent before:transition-colors hover:before:bg-sidebar-ring/70 group-data-[resizing=true]/sidebar-wrapper:before:bg-sidebar-ring group-data-[collapsible=icon]:hidden group-data-[state=collapsed]:hidden md:block",
         className
       )}
       {...props}

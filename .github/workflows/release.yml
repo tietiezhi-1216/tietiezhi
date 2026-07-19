@@ -38,18 +38,26 @@ jobs:
           set -euo pipefail
           VERSION=$(jq -r .version desktop/src-tauri/tauri.conf.json)
           PACKAGE_VERSION=$(jq -r .version desktop/package.json)
+          CARGO_VERSION=$(sed -n '/^\[package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p;}' desktop/src-tauri/Cargo.toml | head -1)
           [ "$VERSION" = "$PACKAGE_VERSION" ] || {
             echo "tauri.conf.json ($VERSION) 与 package.json ($PACKAGE_VERSION) 版本不一致"
+            exit 1
+          }
+          [ "$VERSION" = "$CARGO_VERSION" ] || {
+            echo "tauri.conf.json ($VERSION) 与 Cargo.toml ($CARGO_VERSION) 版本不一致"
             exit 1
           }
           [ "$RELEASE_TAG" = "v$VERSION" ] || {
             echo "Tag $RELEASE_TAG 必须与应用版本 v$VERSION 一致"
             exit 1
           }
-          case "$VERSION" in
-            *-*) PRERELEASE=true ;;
-            *) PRERELEASE=false ;;
-          esac
+          if [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}-[0-9]{6}$ ]]; then
+            PRERELEASE=false
+          elif [[ "$VERSION" == *-* ]]; then
+            PRERELEASE=true
+          else
+            PRERELEASE=false
+          fi
           echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"

@@ -82,6 +82,8 @@ interface ChatState {
   conversations: ConversationMeta[];
   /** Current conversation id; null = a fresh, not-yet-persisted chat. */
   activeId: string | null;
+  /** Increments whenever a fresh draft is requested, even if already on one. */
+  draftVersion: number;
   /** Agent profile bound to the current conversation ("" = default). */
   activeAgentId: string;
   /** Project bound to the current task ("" = standalone task). */
@@ -365,6 +367,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
   return {
     conversations: [],
     activeId: null,
+    draftVersion: 0,
     activeAgentId: "",
     projectId: "",
     items: [],
@@ -386,13 +389,14 @@ export const useChatStore = create<ChatState>()((set, get) => {
       interruptStream();
       // Keep the picked agent so「换个话题」stays in the same persona;
       // Project binding is per task and resets for a fresh draft.
-      set({
+      set((state) => ({
         activeId: null,
+        draftVersion: state.draftVersion + 1,
         items: [],
         projectId,
         streamStartedAt: null,
         streamRetry: null,
-      });
+      }));
     },
 
     async openConversation(id) {

@@ -35,6 +35,7 @@ export function ChatPage() {
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: loadSettings });
   const openSettings = useUiStore((s) => s.openSettings);
   const activeId = useChatStore((s) => s.activeId);
+  const draftVersion = useChatStore((s) => s.draftVersion);
   const items = useChatStore((s) => s.items);
   const streaming = useChatStore((s) => s.streaming);
   const streamStartedAt = useChatStore((s) => s.streamStartedAt);
@@ -465,8 +466,9 @@ export function ChatPage() {
   // Focus the composer when switching / starting conversations.
   useEffect(() => {
     stickToBottomRef.current = true;
+    setInput("");
     inputRef.current?.focus();
-  }, [activeId]);
+  }, [activeId, draftVersion]);
 
   const handleSend = () => {
     const text = input.trim();

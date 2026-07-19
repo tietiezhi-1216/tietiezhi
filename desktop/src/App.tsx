@@ -1,9 +1,11 @@
 import { useEffect } from "react";
-import { Separator } from "@/components/ui/separator";
+import { SquarePen } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   SidebarInset,
   SidebarProvider,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AgentsDialog } from "@/features/agents/agents-dialog";
@@ -34,23 +36,9 @@ export default function App() {
 
   return (
     <SidebarProvider width={`${sidebarWidth}px`}>
-      {IS_MACOS && (
-        <div
-          data-tauri-drag-region
-          aria-hidden
-          className="fixed inset-x-0 top-0 z-40 h-8"
-        />
-      )}
       <AppSidebar />
-      <SidebarInset className={IS_MACOS ? "h-svh overflow-hidden pt-8" : "h-svh overflow-hidden"}>
-        <header className="flex h-12 shrink-0 items-center gap-1 border-b px-3">
-          <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="mr-1 h-4!" />
-          <span className="truncate text-sm font-medium">{title}</span>
-          <div className="ml-auto flex items-center gap-1.5">
-            <AgentSelect />
-          </div>
-        </header>
+      <SidebarInset className="h-svh overflow-hidden">
+        <AppHeader title={title} />
         <div className="min-h-0 flex-1">
           <ChatPage />
         </div>
@@ -58,5 +46,50 @@ export default function App() {
       <SettingsDialog />
       <AgentsDialog />
     </SidebarProvider>
+  );
+}
+
+function AppHeader({ title }: { title: string }) {
+  const { state } = useSidebar();
+  const collapsed = state === "collapsed";
+  const newConversation = useChatStore((s) => s.newConversation);
+
+  return (
+    <header
+      data-tauri-drag-region
+      className="flex h-12 shrink-0 items-center gap-3 border-b px-3"
+    >
+      {collapsed && IS_MACOS && (
+        <div
+          data-tauri-drag-region
+          aria-hidden="true"
+          className="w-16 shrink-0"
+        />
+      )}
+      {collapsed && (
+        <div className="flex shrink-0 items-center gap-1">
+          <SidebarTrigger />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            title="新建任务"
+            aria-label="新建任务"
+            onClick={() => newConversation()}
+          >
+            <SquarePen />
+          </Button>
+        </div>
+      )}
+      <span
+        data-tauri-drag-region
+        className="min-w-0 truncate text-sm font-medium"
+      >
+        {title}
+      </span>
+      <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <AgentSelect />
+      </div>
+    </header>
   );
 }

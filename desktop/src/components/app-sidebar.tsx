@@ -45,6 +45,8 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarResizeHandle,
+  SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
 import { ProductModeSwitcher } from "@/components/product-mode-switcher";
 import { Separator } from "@/components/ui/separator";
@@ -70,9 +72,8 @@ import {
 const revealProjectLabel = navigator.userAgent.includes("Mac")
   ? "在 Finder 中显示"
   : "打开项目文件夹";
-const IS_MACOS = navigator.userAgent.includes("Mac");
-
 export function AppSidebar() {
+  const { state: sidebarState } = useSidebar();
   const openSettings = useUiStore((state) => state.openSettings);
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth);
   const expandedProjects = useUiStore((state) => state.expandedProjects);
@@ -149,19 +150,30 @@ export function AppSidebar() {
 
   return (
     <Sidebar>
-      <SidebarHeader className={IS_MACOS ? "pt-10" : undefined}>
-        <ProductModeSwitcher />
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              onClick={() => newConversation()}
-              isActive={activeId == null}
-            >
-              <SquarePen />
-              <span>新建任务</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+      <SidebarHeader
+        data-tauri-drag-region
+        className="gap-0 p-0"
+      >
+        <div
+          data-tauri-drag-region
+          className="flex h-12 shrink-0 items-center justify-end border-b px-2"
+        >
+          {sidebarState === "expanded" && <SidebarTrigger />}
+        </div>
+        <div className="flex flex-col gap-2 p-2">
+          <ProductModeSwitcher />
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                onClick={() => newConversation()}
+                isActive={activeId == null}
+              >
+                <SquarePen />
+                <span>新建任务</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </div>
       </SidebarHeader>
 
       <SidebarContent>

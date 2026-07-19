@@ -5,6 +5,7 @@
   "windows": ["main", "capsule"],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
     "core:window:allow-set-theme",
     "updater:default",
     "process:default",

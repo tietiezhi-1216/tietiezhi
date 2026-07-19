@@ -1,7 +1,7 @@
 {
   "name": "tietiezhi-desktop",
   "private": true,
-  "version": "0.0.1",
+  "version": "2026.7.19-162135",
   "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@10.30.3",
@@ -12,6 +12,7 @@
     "build:store": "tsc --noEmit && vite build --mode store",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "version:timestamp": "node scripts/set-release-version.mjs",
     "tauri": "tauri"
   },
   "browserslist": [
