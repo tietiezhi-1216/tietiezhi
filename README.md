@@ -16,9 +16,9 @@
 
 <div align="center">
 
-<img src="./artifacts/home-model-title-explore-open.png" alt="Tietiezhi 桌面应用展开多供应商模型选择器" width="860">
+<img src="./docs/images/tietiezhi-choose-model.jpg" alt="Tietiezhi 桌面应用尚未选择模型的初始状态" width="860">
 
-<sub>在一个入口中搜索并选择不同供应商的模型</sub>
+<sub>渠道连接完成后，由用户为新任务选择合适的模型</sub>
 
 </div>
 

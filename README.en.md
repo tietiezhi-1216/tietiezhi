@@ -16,9 +16,9 @@ An open agent network for macOS, Windows, Linux, iOS, Android, servers, and edge
 
 <div align="center">
 
-<img src="./artifacts/home-model-title-explore-open.png" alt="Tietiezhi desktop with the multi-provider model picker open" width="860">
+<img src="./docs/images/tietiezhi-choose-model.jpg" alt="Tietiezhi desktop before a model is selected" width="860">
 
-<sub>Search and select models from different providers in one place</sub>
+<sub>Once providers are connected, the user chooses the right model for each new task</sub>
 
 </div>
 

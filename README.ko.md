@@ -16,9 +16,9 @@ macOS, Windows, Linux, iOS, Android, 서버와 엣지 노드를 잇는 개방형
 
 <div align="center">
 
-<img src="./artifacts/home-model-title-explore-open.png" alt="여러 공급자의 모델 선택기를 연 Tietiezhi 데스크톱" width="860">
+<img src="./docs/images/tietiezhi-choose-model.jpg" alt="모델을 선택하기 전의 Tietiezhi 데스크톱" width="860">
 
-<sub>여러 공급자의 모델을 한곳에서 검색하고 선택</sub>
+<sub>공급자를 연결한 뒤 새 작업에 적합한 모델을 사용자가 선택</sub>
 
 </div>
 
