@@ -448,7 +448,7 @@ pub fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
             .and_then(|raw| serde_json::from_str::<Conversation>(&raw).ok())
             .map(|conversation| conversation.project_id)
             .unwrap_or_default();
-        super::workspace::cleanup_task_workspace(&app, &project_id, &root.join("workspace"));
+        super::workspace::cleanup_legacy_task_worktree(&app, &project_id, &root.join("workspace"));
         std::fs::remove_dir_all(root).map_err(|e| format!("删除任务失败：{e}"))
     })
 }
