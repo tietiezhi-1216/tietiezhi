@@ -9,7 +9,7 @@
 [![Desktop CI](https://github.com/tietiezhi-1216/tietiezhi/actions/workflows/desktop.yml/badge.svg)](https://github.com/tietiezhi-1216/tietiezhi/actions/workflows/desktop.yml)
 [![Server CI](https://github.com/tietiezhi-1216/tietiezhi/actions/workflows/server-ci.yml/badge.svg)](https://github.com/tietiezhi-1216/tietiezhi/actions/workflows/server-ci.yml)
 
-[官网与下载](https://tietiezhi-1216.github.io/tietiezhi/) · [版本发布](https://github.com/tietiezhi-1216/tietiezhi/releases)
+[官网与下载](https://tietiezhi-1216.github.io/tietiezhi/) · [版本发布](https://github.com/tietiezhi-1216/tietiezhi/releases) · [隐私政策](./docs/PRIVACY.md)
 
 </div>
 
@@ -68,3 +68,14 @@ task build           # 构建 Web 控制台 + 编译单二进制到 bin/tietiezh
 ## 开源许可
 
 Copyright © 2026 Tietiezhi。本项目基于 [Apache License 2.0](./LICENSE) 发布。
+
+## Code signing policy
+
+Tietiezhi 正在申请 SignPath Foundation 的开源项目代码签名支持。申请获批后，Windows 正式发布产物将通过可验证的 GitHub Actions 流水线构建，并由维护者人工批准签名。
+
+Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+
+- Committer 与 reviewer：[tietiezhi-1216](https://github.com/tietiezhi-1216)
+- Approver：[tietiezhi-1216](https://github.com/tietiezhi-1216)
+- 完整政策：[代码签名政策](./docs/CODE_SIGNING.md)
+- 数据处理：[隐私政策](./docs/PRIVACY.md)
