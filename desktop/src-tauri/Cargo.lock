@@ -4216,7 +4216,7 @@ dependencies = [
 
 [[package]]
 name = "tietiezhi-desktop"
-version = "2026.7.20-230808"
+version = "2026.7.20-231534"
 dependencies = [
  "arboard",
  "base64 0.22.1",

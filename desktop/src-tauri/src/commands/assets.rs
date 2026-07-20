@@ -250,7 +250,7 @@ fn directory_manifest(root: &Path) -> Result<(String, bool), String> {
             break;
         }
         let relative = entry.path().strip_prefix(root).unwrap_or(entry.path());
-        let mut display = relative.to_string_lossy().into_owned();
+        let mut display = relative.to_string_lossy().replace('\\', "/");
         if entry.file_type().is_dir() {
             display.push('/');
         }
