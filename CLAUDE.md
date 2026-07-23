@@ -76,7 +76,7 @@ pnpm tauri icon ../assets/brand/tietiezhi-mark.png   # 重新生成全套图标
 ## CI
 
 - `.github/workflows/desktop.yml` —— Windows + macOS 双平台：typecheck + cargo check/test + `tauri build`。macOS 签名+公证已接入：配齐 `APPLE_*` secrets（证书 p12、签名身份、Apple ID、app 专用密码、Team ID）后 `tauri build` 自动签名/公证/装订；未配置则回退 ad-hoc。
-- **发布与应用内自动更新**由 GitHub 承担：`.github/workflows/release.yml` 在推送 `v*` Tag 后构建 macOS universal 与 Windows 安装包，用 `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` 签名，生成 `updater-latest.json` 并创建 GitHub Release。版本号统一采用北京时间 `YYYY.M.D-HHmmss`；发版前在 `desktop/` 执行 `pnpm version:timestamp`，脚本会同步 `package.json`、Tauri 与 Cargo 版本，并输出对应 Tag 和 Microsoft Store 四段版本。时间版本按稳定版发布，`-alpha/-beta/-rc` 等其它后缀仍标为 Pre-release。应用更新端点固定为 GitHub Latest Release asset。
+- **发布与应用内自动更新**由 GitHub 承担：`.github/workflows/release.yml` 在推送 `v*` Tag 后构建 macOS universal 与 Windows 安装包，用 `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` 签名，生成 `updater-latest.json` 并创建 GitHub Release。版本号统一采用北京时间 `YYYY.M.D-tHHmmss`（`t` 避免凌晨小时的前导零违反 SemVer）；发版前在 `desktop/` 执行 `pnpm version:timestamp`，脚本会同步 `package.json`、Tauri 与 Cargo 版本，并输出对应 Tag 和 Microsoft Store 四段版本。时间版本按稳定版发布，`-alpha/-beta/-rc` 等其它后缀仍标为 Pre-release。应用更新端点固定为 GitHub Latest Release asset。
 - `.github/workflows/pages.yml` 将 `website/public/` 发布到 GitHub Pages；官网通过 GitHub Releases API 获取版本和下载链接，不依赖自建分发服务器。
 - `.github/workflows/server-ci.yml` —— Go 服务端（保持原样）。
 

@@ -17,6 +17,7 @@ pub use config::{McpServerConfig, McpTransport};
 
 const INIT_TIMEOUT: Duration = Duration::from_secs(15);
 const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+const LIST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Prefix separating MCP tools from builtins in the model-facing tool list.
 pub fn namespaced(server_id: &str, tool: &str) -> String {
@@ -126,9 +127,9 @@ impl McpManager {
     /// List the tools of one server (starting it if necessary).
     pub async fn list_tools(&self, cfg: &McpServerConfig) -> Result<Vec<McpToolInfo>, String> {
         let client = self.ensure_started(cfg).await?;
-        let tools = client
-            .list_all_tools()
+        let tools = tokio::time::timeout(LIST_TIMEOUT, client.list_all_tools())
             .await
+            .map_err(|_| "获取 MCP 工具列表超时".to_string())?
             .map_err(|e| format!("获取 MCP 工具列表失败：{e}"))?;
         Ok(tools
             .into_iter()

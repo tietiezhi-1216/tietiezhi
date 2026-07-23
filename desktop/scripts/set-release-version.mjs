@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 
 const timeZone = "Asia/Shanghai";
-const versionPattern = /^\d{4}\.\d{1,2}\.\d{1,2}-\d{6}$/;
+const versionPattern = /^\d{4}\.\d{1,2}\.\d{1,2}-t\d{6}$/;
 
 function currentVersion() {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -15,11 +15,13 @@ function currentVersion() {
     hourCycle: "h23",
   }).formatToParts(new Date());
   const value = Object.fromEntries(parts.map(({ type, value: part }) => [type, part]));
-  return `${value.year}.${Number(value.month)}.${Number(value.day)}-${value.hour}${value.minute}${value.second}`;
+  // The `t` keeps an HHmmss value beginning with 0 SemVer-compatible:
+  // numeric prerelease identifiers may not contain leading zeroes.
+  return `${value.year}.${Number(value.month)}.${Number(value.day)}-t${value.hour}${value.minute}${value.second}`;
 }
 
 export function toStoreVersion(version) {
-  const match = /^(\d{4})\.(\d{1,2})\.(\d{1,2})-(\d{2})(\d{2})(\d{2})$/.exec(version);
+  const match = /^(\d{4})\.(\d{1,2})\.(\d{1,2})-t(\d{2})(\d{2})(\d{2})$/.exec(version);
   if (!match) {
     throw new Error(`无效的时间版本号：${version}`);
   }
@@ -29,7 +31,7 @@ export function toStoreVersion(version) {
 
 const version = process.argv[2] ?? currentVersion();
 if (!versionPattern.test(version)) {
-  throw new Error("版本号必须采用 YYYY.M.D-HHmmss 格式");
+  throw new Error("版本号必须采用 YYYY.M.D-tHHmmss 格式");
 }
 
 const packagePath = new URL("../package.json", import.meta.url);

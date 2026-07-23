@@ -8,8 +8,11 @@ pub mod skill;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
+use tauri::ipc::Channel;
 use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
+
+use crate::agent::events::ChatEvent;
 
 /// Everything a builtin tool needs to run.
 pub struct ToolCtx {
@@ -18,6 +21,49 @@ pub struct ToolCtx {
     pub workspace: PathBuf,
     pub available_skills: Vec<String>,
     pub cancel: CancellationToken,
+    pub call_id: String,
+    pub on_event: Channel<ChatEvent>,
+}
+
+impl ToolCtx {
+    pub fn emit_progress(
+        &self,
+        output: String,
+        elapsed_ms: u64,
+        truncated: bool,
+    ) -> Result<(), String> {
+        self.on_event
+            .send(ChatEvent::ToolProgress {
+                id: self.call_id.clone(),
+                output,
+                elapsed_ms,
+                truncated,
+            })
+            .map_err(|error| format!("推送工具进度失败：{error}"))
+    }
+}
+
+#[derive(Debug)]
+pub struct ToolRunResult {
+    pub output: String,
+    pub is_error: bool,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub cancelled: bool,
+    pub truncated: bool,
+}
+
+impl ToolRunResult {
+    fn success(output: String) -> Self {
+        Self {
+            output,
+            is_error: false,
+            exit_code: None,
+            timed_out: false,
+            cancelled: false,
+            truncated: false,
+        }
+    }
 }
 
 /// Output caps shared by all tools so a single call can't blow up the
@@ -91,7 +137,7 @@ pub fn specs(allowed: &[String], available_skills: &[String]) -> Vec<Value> {
     if want("write_file") {
         out.push(spec(
             "write_file",
-            "在工作区内创建或覆盖写入一个文本文件（父目录会自动创建）。",
+            "在工作区内创建或覆盖写入真实的文本文件（父目录会自动创建）。适合 Markdown、JSON、源码和 UTF-8 CSV；不能生成 XLS/XLSX 等二进制格式，禁止仅靠扩展名伪造。",
             json!({"type":"object","properties":{
                 "path":{"type":"string","description":"相对工作区的文件路径"},
                 "content":{"type":"string","description":"完整文件内容"}
@@ -141,10 +187,10 @@ pub fn specs(allowed: &[String], available_skills: &[String]) -> Vec<Value> {
     if want("bash") {
         out.push(spec(
             "bash",
-            "在工作区目录下执行 shell 命令，返回合并的 stdout/stderr。默认超时 120 秒。",
+            "在工作区目录下非交互执行 shell 命令，实时返回有界输出。默认超时 120 秒，超时或取消会终止整个进程树。不要启动需要输入、GUI、常驻服务或 watch 模式的前台命令。",
             json!({"type":"object","properties":{
                 "command":{"type":"string","description":"要执行的命令"},
-                "timeout_ms":{"type":"integer","description":"超时毫秒数，可选，最大 600000"}
+                "timeout_ms":{"type":"integer","description":"超时毫秒数，可选；默认 120000，最大 600000。仅为确实需要长时间运行的有限命令调高"}
             },"required":["command"]}),
         ));
     }
@@ -182,21 +228,24 @@ pub fn specs(allowed: &[String], available_skills: &[String]) -> Vec<Value> {
 
 /// Dispatch a builtin tool call. Returns the tool output text or an error
 /// string that is fed back to the model as an error tool result.
-pub async fn run(name: &str, args: &Value, ctx: &ToolCtx) -> Result<String, String> {
+pub async fn run(name: &str, args: &Value, ctx: &ToolCtx) -> Result<ToolRunResult, String> {
     let out = match name {
-        "read_file" => fs_tools::read_file(ctx, args)?,
-        "write_file" => fs_tools::write_file(ctx, args)?,
-        "edit_file" => fs_tools::edit_file(ctx, args)?,
-        "list_dir" => fs_tools::list_dir(ctx, args)?,
-        "glob" => search::glob_tool(ctx, args)?,
-        "grep" => search::grep_tool(ctx, args)?,
+        "read_file" => ToolRunResult::success(fs_tools::read_file(ctx, args)?),
+        "write_file" => ToolRunResult::success(fs_tools::write_file(ctx, args)?),
+        "edit_file" => ToolRunResult::success(fs_tools::edit_file(ctx, args)?),
+        "list_dir" => ToolRunResult::success(fs_tools::list_dir(ctx, args)?),
+        "glob" => ToolRunResult::success(search::glob_tool(ctx, args)?),
+        "grep" => ToolRunResult::success(search::grep_tool(ctx, args)?),
         "bash" => bash::bash_tool(ctx, args).await?,
-        "fetch" => fetch::fetch_tool(ctx, args).await?,
-        "skill" => skill::skill_tool(ctx, args)?,
-        "device_call" => device::device_call(ctx, args).await?,
+        "fetch" => ToolRunResult::success(fetch::fetch_tool(ctx, args).await?),
+        "skill" => ToolRunResult::success(skill::skill_tool(ctx, args)?),
+        "device_call" => ToolRunResult::success(device::device_call(ctx, args).await?),
         other => return Err(format!("未知工具：{other}")),
     };
-    Ok(truncate_output(&out))
+    Ok(ToolRunResult {
+        output: truncate_output(&out.output),
+        ..out
+    })
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {

@@ -51,7 +51,7 @@ jobs:
             echo "Tag $RELEASE_TAG 必须与应用版本 v$VERSION 一致"
             exit 1
           }
-          if [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}-[0-9]{6}$ ]]; then
+          if [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}-t[0-9]{6}$ ]]; then
             PRERELEASE=false
           elif [[ "$VERSION" == *-* ]]; then
             PRERELEASE=true

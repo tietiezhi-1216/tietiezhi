@@ -359,6 +359,11 @@ export interface StoredMessage {
   toolCallId?: string;
   toolArgs?: unknown;
   toolOutput?: string;
+  toolStatus?: "running" | "success" | "error" | "cancelled";
+  toolDurationMs?: number;
+  toolExitCode?: number;
+  toolTimedOut?: boolean;
+  toolTruncated?: boolean;
   decision?: PermissionDecision;
   model?: string;
   providerId?: string;
@@ -464,8 +469,31 @@ export type ChatEvent =
       totalTokens: number;
       cachedTokens: number;
     }
-  | { type: "toolCallStart"; id: string; name: string; args: unknown }
-  | { type: "toolResult"; id: string; output: string; isError: boolean }
+  | {
+      type: "toolCallStart";
+      id: string;
+      name: string;
+      args: unknown;
+      timeoutMs?: number;
+    }
+  | {
+      type: "toolProgress";
+      id: string;
+      output: string;
+      elapsedMs: number;
+      truncated: boolean;
+    }
+  | {
+      type: "toolResult";
+      id: string;
+      output: string;
+      isError: boolean;
+      durationMs: number;
+      exitCode?: number;
+      timedOut: boolean;
+      cancelled: boolean;
+      truncated: boolean;
+    }
   | {
       type: "permissionRequest";
       id: string;

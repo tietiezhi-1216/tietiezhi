@@ -62,6 +62,16 @@ pub struct StoredMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_timed_out: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,

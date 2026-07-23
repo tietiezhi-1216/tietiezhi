@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
+use std::time::Instant;
 
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -24,9 +25,19 @@ use crate::mcp::{self, McpManager, McpServerConfig};
 use crate::permission::{needs_approval, Decision, PermissionBroker, PermissionMode};
 use crate::tools::{self, ToolCtx};
 
-pub const MAX_ITERATIONS: usize = 50;
+pub const MAX_ITERATIONS: usize = 20;
 const MODEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+const TURN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const MAX_IDENTICAL_TOOL_CALLS: u8 = 3;
+
+struct CancelOnDrop(CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
 
 /// The fully-resolved execution environment for one agent chat turn.
 pub struct AgentEnv {
@@ -553,6 +564,17 @@ pub async fn run_agent_loop(
     cancel: &CancellationToken,
     on_event: &Channel<ChatEvent>,
 ) -> Result<bool, ChatFailure> {
+    let turn_started = Instant::now();
+    let turn_cancel = cancel.child_token();
+    let _turn_guard = CancelOnDrop(turn_cancel.clone());
+    let deadline_cancel = turn_cancel.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = deadline_cancel.cancelled() => {}
+            _ = tokio::time::sleep(TURN_TIMEOUT) => deadline_cancel.cancel(),
+        }
+    });
+
     // MCP is a client-side bridge implemented through native function calling.
     // Unknown and explicitly unsupported models run as plain chat instead of
     // receiving a request body they may reject with HTTP 400.
@@ -621,7 +643,7 @@ pub async fn run_agent_loop(
             false,
             estimated_tokens,
             context_window,
-            cancel,
+            &turn_cancel,
             on_event,
         )
         .await?
@@ -664,7 +686,7 @@ pub async fn run_agent_loop(
             true,
             estimated_tokens,
             context_window,
-            cancel,
+            &turn_cancel,
             on_event,
         )
         .await?
@@ -690,13 +712,8 @@ pub async fn run_agent_loop(
             .map_err(|error| ChatFailure::channel(format!("推送上下文压缩结果失败：{error}")))?;
     }
 
-    let ctx = ToolCtx {
-        app: app.clone(),
-        http: http.clone(),
-        workspace: env.workspace.clone(),
-        available_skills: env.available_skills.clone(),
-        cancel: cancel.clone(),
-    };
+    let mut last_tool_signature = String::new();
+    let mut identical_tool_calls = 0_u8;
 
     for _ in 0..MAX_ITERATIONS {
         let outcome = stream_with_retries(
@@ -709,12 +726,17 @@ pub async fn run_agent_loop(
             model_info.and_then(ModelInfo::effective_reasoning),
             reasoning_effort,
             true,
-            cancel,
+            &turn_cancel,
             on_event,
         )
         .await?;
         if outcome.cancelled {
-            return Ok(true);
+            if cancel.is_cancelled() {
+                return Ok(true);
+            }
+            return Err(ChatFailure::message(
+                "任务执行已超过 15 分钟，已停止当前工具和相关进程。请缩小任务范围后继续",
+            ));
         }
         if outcome.tool_calls.is_empty() {
             return Ok(false);
@@ -731,17 +753,52 @@ pub async fn run_agent_loop(
         }));
 
         for call in &outcome.tool_calls {
-            if cancel.is_cancelled() {
-                return Ok(true);
+            if turn_cancel.is_cancelled() {
+                if cancel.is_cancelled() {
+                    return Ok(true);
+                }
+                return Err(ChatFailure::message(
+                    "任务执行已超过 15 分钟，已停止当前工具和相关进程。请缩小任务范围后继续",
+                ));
             }
             let args = call.parsed_args();
+            let signature = format!("{}\0{}", call.name, args);
+            if signature == last_tool_signature {
+                identical_tool_calls = identical_tool_calls.saturating_add(1);
+            } else {
+                last_tool_signature = signature;
+                identical_tool_calls = 1;
+            }
+            let timeout_ms =
+                (call.name == "bash").then(|| tools::bash::effective_timeout_ms(&args));
             on_event
                 .send(ChatEvent::ToolCallStart {
                     id: call.id.clone(),
                     name: call.name.clone(),
                     args: args.clone(),
+                    timeout_ms,
                 })
                 .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
+
+            if identical_tool_calls >= MAX_IDENTICAL_TOOL_CALLS {
+                let output = format!(
+                    "重复调用保护：工具 {} 使用相同参数连续调用了 {} 次，任务已停止。请检查前一次结果或改用其他方法",
+                    call.name, identical_tool_calls
+                );
+                on_event
+                    .send(ChatEvent::ToolResult {
+                        id: call.id.clone(),
+                        output: output.clone(),
+                        is_error: true,
+                        duration_ms: 0,
+                        exit_code: None,
+                        timed_out: false,
+                        cancelled: false,
+                        truncated: false,
+                    })
+                    .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
+                return Err(ChatFailure::message(output));
+            }
 
             // Tool specs are a capability hint to the model, not a security
             // boundary. Reject hallucinated or adversarial builtin calls again
@@ -755,6 +812,11 @@ pub async fn run_agent_loop(
                         id: call.id.clone(),
                         output: output.clone(),
                         is_error: true,
+                        duration_ms: 0,
+                        exit_code: None,
+                        timed_out: false,
+                        cancelled: false,
+                        truncated: false,
                     })
                     .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
                 transcript.push(json!({
@@ -780,38 +842,89 @@ pub async fn run_agent_loop(
                         args: args.clone(),
                     })
                     .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
-                match broker.wait(&perm_id, rx, cancel).await {
+                match broker.wait(&perm_id, rx, &turn_cancel).await {
                     Decision::Allow => {}
                     Decision::AllowAlways => broker.allow_for_session(request_id, &call.name),
                     Decision::Deny => allowed = false,
                 }
-                if cancel.is_cancelled() {
-                    return Ok(true);
+                if turn_cancel.is_cancelled() {
+                    if cancel.is_cancelled() {
+                        return Ok(true);
+                    }
+                    return Err(ChatFailure::message(
+                        "任务执行已超过 15 分钟，已停止等待操作授权",
+                    ));
                 }
             }
 
-            let (output, is_error) = if !allowed {
-                ("用户拒绝了此操作".to_string(), true)
+            let tool_started = Instant::now();
+            let (output, is_error, exit_code, timed_out, cancelled, truncated) = if !allowed {
+                (
+                    "用户拒绝了此操作".to_string(),
+                    true,
+                    None,
+                    false,
+                    false,
+                    false,
+                )
             } else if let Some((server_id, tool)) = mcp::parse_namespaced(&call.name) {
                 match env.mcp_configs.iter().find(|c| c.id == server_id) {
-                    Some(cfg) => match mcp_manager.call_tool(cfg, tool, &args).await {
-                        Ok((out, err)) => (tools::truncate_output(&out), err),
-                        Err(e) => (e, true),
-                    },
-                    None => (format!("未知的 MCP 服务器：{server_id}"), true),
+                    Some(cfg) => {
+                        let call_result = tokio::select! {
+                            _ = turn_cancel.cancelled() => None,
+                            result = mcp_manager.call_tool(cfg, tool, &args) => Some(result),
+                        };
+                        match call_result {
+                            Some(Ok((out, err))) => {
+                                (tools::truncate_output(&out), err, None, false, false, false)
+                            }
+                            Some(Err(e)) => (e, true, None, false, false, false),
+                            None => ("MCP 工具调用已取消".into(), true, None, false, true, false),
+                        }
+                    }
+                    None => (
+                        format!("未知的 MCP 服务器：{server_id}"),
+                        true,
+                        None,
+                        false,
+                        false,
+                        false,
+                    ),
                 }
             } else {
+                let ctx = ToolCtx {
+                    app: app.clone(),
+                    http: http.clone(),
+                    workspace: env.workspace.clone(),
+                    available_skills: env.available_skills.clone(),
+                    cancel: turn_cancel.clone(),
+                    call_id: call.id.clone(),
+                    on_event: on_event.clone(),
+                };
                 match tools::run(&call.name, &args, &ctx).await {
-                    Ok(out) => (out, false),
-                    Err(e) => (e, true),
+                    Ok(result) => (
+                        result.output,
+                        result.is_error,
+                        result.exit_code,
+                        result.timed_out,
+                        result.cancelled,
+                        result.truncated,
+                    ),
+                    Err(e) => (e, true, None, false, false, false),
                 }
             };
+            let duration_ms = tool_started.elapsed().as_millis() as u64;
 
             on_event
                 .send(ChatEvent::ToolResult {
                     id: call.id.clone(),
                     output: output.clone(),
                     is_error,
+                    duration_ms,
+                    exit_code,
+                    timed_out,
+                    cancelled,
+                    truncated,
                 })
                 .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
 
@@ -820,6 +933,12 @@ pub async fn run_agent_loop(
                 "tool_call_id": call.id,
                 "content": output,
             }));
+
+            if cancelled && turn_started.elapsed() >= TURN_TIMEOUT && !cancel.is_cancelled() {
+                return Err(ChatFailure::message(
+                    "任务执行已超过 15 分钟，已停止当前工具和相关进程。请缩小任务范围后继续",
+                ));
+            }
         }
     }
     Err(ChatFailure::message(format!(

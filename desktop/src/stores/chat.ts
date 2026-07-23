@@ -57,8 +57,13 @@ export type ChatItem =
       callId: string;
       name: string;
       args: unknown;
-      status: "running" | "success" | "error";
+      status: "running" | "success" | "error" | "cancelled";
       output?: string;
+      timeoutMs?: number;
+      durationMs?: number;
+      exitCode?: number;
+      timedOut?: boolean;
+      truncated?: boolean;
     })
   | (ItemBase & {
       kind: "permission";
@@ -196,8 +201,22 @@ const toItems = (messages: StoredMessage[]): ChatItem[] =>
         callId: m.toolCallId ?? "",
         name: m.toolName ?? "",
         args: m.toolArgs,
-        status: m.error ? "error" : "success",
-        output: m.toolOutput,
+        status:
+          m.toolStatus === "running" || m.toolStatus === "cancelled"
+            ? "cancelled"
+            : m.toolStatus === "error" || m.error
+              ? "error"
+              : "success",
+        output:
+          m.toolStatus === "running"
+            ? m.toolOutput
+              ? `${m.toolOutput}\n\n[上次运行未正常结束]`
+              : "[上次运行未正常结束]"
+            : m.toolOutput,
+        durationMs: m.toolDurationMs,
+        exitCode: m.toolExitCode,
+        timedOut: m.toolTimedOut,
+        truncated: m.toolTruncated,
       };
     }
     if (m.kind === "permission") {
@@ -272,6 +291,11 @@ const toStored = (items: ChatItem[]): StoredMessage[] =>
         toolCallId: it.callId,
         toolArgs: it.args,
         toolOutput: it.output,
+        toolStatus: it.status,
+        toolDurationMs: it.durationMs,
+        toolExitCode: it.exitCode,
+        toolTimedOut: it.timedOut,
+        toolTruncated: it.truncated,
         ...(it.status === "error" ? { error: true } : {}),
       };
     }
@@ -477,16 +501,35 @@ export const useChatStore = create<ChatState>()((set, get) => {
   };
 
   const interruptStream = () => {
-    const { streaming, requestId } = get();
+    const { streaming, requestId, activeId, conversations } = get();
     if (streaming && requestId != null) {
       void chatCancel(requestId);
-      set({
+      const interruptedAt = Date.now();
+      set((state) => ({
+        items: state.items.map((item) =>
+          item.kind === "toolCall" && item.status === "running"
+            ? {
+                ...item,
+                status: "cancelled",
+                output: item.output
+                  ? `${item.output}\n\n[已由用户停止]`
+                  : "[已由用户停止]",
+                durationMs: interruptedAt - item.createdAt,
+              }
+            : item,
+        ),
         streaming: false,
         streamStartedAt: null,
         streamRetry: null,
         streamActivity: null,
         requestId: null,
-      });
+      }));
+      if (activeId != null) {
+        const title =
+          conversations.find((conversation) => conversation.id === activeId)?.title ??
+          DEFAULT_CONVERSATION_TITLE;
+        persist(activeId, title, toStored(get().items));
+      }
     }
   };
 
@@ -625,6 +668,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
             case "reasoning":
             case "usage":
             case "toolCallStart":
+            case "toolProgress":
             case "toolResult":
             case "permissionRequest":
               break;
@@ -1019,8 +1063,29 @@ export const useChatStore = create<ChatState>()((set, get) => {
                   name: event.name,
                   args: event.args,
                   status: "running",
+                  timeoutMs: event.timeoutMs,
                   createdAt: Date.now(),
                 });
+                if (get().requestId === requestId) {
+                  persist(convId, title, toStored(get().items));
+                }
+                break;
+              }
+              case "toolProgress": {
+                set((state) => ({
+                  items: state.items.map((it) =>
+                    it.kind === "toolCall" &&
+                    it.callId === event.id &&
+                    it.status === "running"
+                      ? {
+                          ...it,
+                          output: event.output,
+                          durationMs: event.elapsedMs,
+                          truncated: event.truncated,
+                        }
+                      : it,
+                  ),
+                }));
                 break;
               }
               case "toolResult": {
@@ -1031,12 +1096,23 @@ export const useChatStore = create<ChatState>()((set, get) => {
                     it.status === "running"
                       ? {
                           ...it,
-                          status: event.isError ? "error" : "success",
+                          status: event.cancelled
+                            ? "cancelled"
+                            : event.isError
+                              ? "error"
+                              : "success",
                           output: event.output,
+                          durationMs: event.durationMs,
+                          exitCode: event.exitCode,
+                          timedOut: event.timedOut,
+                          truncated: event.truncated,
                         }
                       : it,
                   ),
                 }));
+                if (get().requestId === requestId) {
+                  persist(convId, title, toStored(get().items));
+                }
                 break;
               }
               case "permissionRequest": {
@@ -1105,11 +1181,43 @@ export const useChatStore = create<ChatState>()((set, get) => {
               case "done": {
                 set({ streamRetry: null, streamActivity: null });
                 cancelled = event.cancelled;
+                if (event.cancelled) {
+                  const completedAt = Date.now();
+                  set((state) => ({
+                    items: state.items.map((it) =>
+                      it.kind === "toolCall" && it.status === "running"
+                        ? {
+                            ...it,
+                            status: "cancelled",
+                            output: it.output
+                              ? `${it.output}\n\n[任务已停止]`
+                              : "[任务已停止]",
+                            durationMs: completedAt - it.createdAt,
+                          }
+                        : it,
+                    ),
+                  }));
+                }
                 break;
               }
               case "error": {
                 set({ streamRetry: null, streamActivity: null });
                 cancelFlush();
+                const completedAt = Date.now();
+                set((state) => ({
+                  items: state.items.map((it) =>
+                    it.kind === "toolCall" && it.status === "running"
+                      ? {
+                          ...it,
+                          status: "error",
+                          output: it.output
+                            ? `${it.output}\n\n[任务异常结束：${event.message}]`
+                            : `[任务异常结束：${event.message}]`,
+                          durationMs: completedAt - it.createdAt,
+                        }
+                      : it,
+                  ),
+                }));
                 fail(event);
                 break;
               }
@@ -1119,6 +1227,21 @@ export const useChatStore = create<ChatState>()((set, get) => {
       } catch (err) {
         cancelFlush();
         const detail = errorMessage(err).replaceAll("中转站", "模型服务");
+        const completedAt = Date.now();
+        set((state) => ({
+          items: state.items.map((it) =>
+            it.kind === "toolCall" && it.status === "running"
+              ? {
+                  ...it,
+                  status: "error",
+                  output: it.output
+                    ? `${it.output}\n\n[连接异常结束]`
+                    : "[连接异常结束]",
+                  durationMs: completedAt - it.createdAt,
+                }
+              : it,
+          ),
+        }));
         fail({
           message: "模型服务请求失败",
           detail,

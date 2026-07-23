@@ -181,6 +181,9 @@ export function TietiezhiPage() {
       case "toolCallStart":
         setStatus("正在操作设备…");
         break;
+      case "toolProgress":
+        setStatus("正在操作设备…");
+        break;
       case "toolResult":
         setStatus("");
         break;

@@ -56,8 +56,8 @@ jobs:
           STORE_PUBLISHER_DISPLAY_NAME: ${{ inputs.publisher_display_name }}
         run: |
           $appVersion = (Get-Content -Raw package.json | ConvertFrom-Json).version
-          if ($appVersion -notmatch '^(\d{4})\.(\d{1,2})\.(\d{1,2})-(\d{2})(\d{2})(\d{2})$') {
-            throw "应用版本必须采用 YYYY.M.D-HHmmss 格式，实际为：$appVersion"
+          if ($appVersion -notmatch '^(\d{4})\.(\d{1,2})\.(\d{1,2})-t(\d{2})(\d{2})(\d{2})$') {
+            throw "应用版本必须采用 YYYY.M.D-tHHmmss 格式，实际为：$appVersion"
           }
           $monthDay = [int]$Matches[2] * 100 + [int]$Matches[3]
           $hourMinute = [int]$Matches[4] * 100 + [int]$Matches[5]

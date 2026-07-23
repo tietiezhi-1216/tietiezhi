@@ -34,11 +34,25 @@ pub enum ChatEvent {
         id: String,
         name: String,
         args: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
+    ToolProgress {
+        id: String,
+        output: String,
+        elapsed_ms: u64,
+        truncated: bool,
     },
     ToolResult {
         id: String,
         output: String,
         is_error: bool,
+        duration_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        timed_out: bool,
+        cancelled: bool,
+        truncated: bool,
     },
     PermissionRequest {
         id: String,
@@ -118,11 +132,26 @@ mod tests {
             id: "1".into(),
             output: "ok".into(),
             is_error: false,
+            duration_ms: 42,
+            exit_code: Some(0),
+            timed_out: false,
+            cancelled: false,
+            truncated: false,
         })
         .unwrap();
         assert_eq!(
             v,
-            json!({"type":"toolResult","id":"1","output":"ok","isError":false})
+            json!({
+                "type":"toolResult",
+                "id":"1",
+                "output":"ok",
+                "isError":false,
+                "durationMs":42,
+                "exitCode":0,
+                "timedOut":false,
+                "cancelled":false,
+                "truncated":false
+            })
         );
 
         let v = serde_json::to_value(ChatEvent::Retrying {

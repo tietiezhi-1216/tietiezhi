@@ -1,6 +1,6 @@
 [package]
 name = "tietiezhi-desktop"
-version = "2026.7.23-230833"
+version = "2026.7.24-t011819"
 description = "铁铁汁 —— AI 中转站官方桌面客户端"
 edition = "2021"
 license = "Apache-2.0"
@@ -51,6 +51,9 @@ arboard = "3.6.1"
 tauri-plugin-window-state = "2.4.1"
 dirs = "6.0.0"
 tauri-plugin-global-shortcut = "2.3.2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # The SSE integration test runs a raw TCP mock relay.

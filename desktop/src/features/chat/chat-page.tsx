@@ -290,8 +290,13 @@ export function ChatPage() {
 
   const elapsedSeconds =
     streamStartedAt == null ? 0 : Math.max(0, Math.floor((streamNow - streamStartedAt) / 1_000));
-  const runningTool =
-    lastItem?.kind === "toolCall" && lastItem.status === "running" ? lastItem.name : null;
+  const runningToolItem =
+    lastItem?.kind === "toolCall" && lastItem.status === "running" ? lastItem : null;
+  const runningTool = runningToolItem?.name ?? null;
+  const statusElapsedSeconds =
+    runningToolItem == null
+      ? elapsedSeconds
+      : Math.max(0, Math.floor((streamNow - runningToolItem.createdAt) / 1_000));
   const streamStatus = streamRetry
     ? `正在进行第 ${streamRetry.attempt}/${streamRetry.maxRetries} 次重试 · ${streamRetry.reason}`
     : streamActivity === "compacting"
@@ -775,7 +780,7 @@ export function ChatPage() {
                 return item.kind === "context" ? (
                   <ContextNotice key={item.id} item={item} />
                 ) : item.kind === "toolCall" ? (
-                  <ToolCallCard key={item.id} item={item} />
+                  <ToolCallCard key={item.id} item={item} now={streamNow} />
                 ) : item.kind === "permission" ? (
                   <PermissionPrompt key={item.id} item={item} />
                 ) : item.kind === "error" ? (
@@ -812,7 +817,9 @@ export function ChatPage() {
                 role="status"
                 aria-live="polite"
                 aria-label={
-                  streaming ? `${streamStatus}，已用时 ${elapsedSeconds} 秒` : "铁铁汁就绪"
+                  streaming
+                    ? `${streamStatus}，已用时 ${statusElapsedSeconds} 秒`
+                    : "铁铁汁就绪"
                 }
                 className="mt-auto flex h-12 items-center gap-2"
               >
@@ -843,7 +850,7 @@ export function ChatPage() {
                 >
                   <span className="truncate">{streamStatus}</span>
                   <span>·</span>
-                  <span>{elapsedSeconds}s</span>
+                  <span>{statusElapsedSeconds}s</span>
                   {streamModel && (
                     <>
                       <span>·</span>
