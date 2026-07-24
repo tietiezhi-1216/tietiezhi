@@ -9,7 +9,8 @@ use crate::secrets;
 const CURRENT_SETTINGS_VERSION: u32 = 6;
 pub(crate) const BUILTIN_PROVIDER_ID: &str = "builtin-official";
 pub(crate) const BUILTIN_PROVIDER_NAME: &str = "Tietiezhi Gateway";
-pub(crate) const BUILTIN_PROVIDER_URL: &str = "https://api.terln.com/v1";
+pub(crate) const BUILTIN_PROVIDER_URL: &str = "https://tietiezhi.vip/v1";
+const LEGACY_BUILTIN_PROVIDER_URL: &str = "https://api.terln.com/v1";
 // Public client credential for the free built-in gateway. This is intentionally
 // distributed with the app and must not be used for private or paid accounts.
 pub(crate) const BUILTIN_PROVIDER_API_KEY: &str = "sk-terln-fiMX4TCzhvzVLruPLZGoN9JxdjADgTPU";
@@ -258,13 +259,22 @@ fn normalized_provider_url(value: &str) -> &str {
 /// duplicate the provider nor disconnect its keyring entry.
 fn ensure_builtin_provider(settings: &mut AppSettings) -> bool {
     let official_url = normalized_provider_url(BUILTIN_PROVIDER_URL);
+    let legacy_url = normalized_provider_url(LEGACY_BUILTIN_PROVIDER_URL);
     if let Some(index) = settings.providers.iter().position(|provider| {
-        provider.built_in || normalized_provider_url(&provider.base_url) == official_url
+        let provider_url = normalized_provider_url(&provider.base_url);
+        provider.built_in || provider_url == official_url || provider_url == legacy_url
     }) {
         let mut provider = settings.providers.remove(index);
-        let changed = index != 0 || !provider.built_in || provider.name != BUILTIN_PROVIDER_NAME;
+        let migrate_legacy_url = normalized_provider_url(&provider.base_url) == legacy_url;
+        let changed = index != 0
+            || !provider.built_in
+            || provider.name != BUILTIN_PROVIDER_NAME
+            || migrate_legacy_url;
         provider.built_in = true;
         provider.name = BUILTIN_PROVIDER_NAME.into();
+        if migrate_legacy_url {
+            provider.base_url = BUILTIN_PROVIDER_URL.into();
+        }
         settings.providers.insert(0, provider);
         return changed;
     }
@@ -484,6 +494,7 @@ mod tests {
         assert!(settings.providers[0].built_in);
         assert_eq!(settings.providers[0].id, "existing");
         assert_eq!(settings.providers[0].name, BUILTIN_PROVIDER_NAME);
+        assert_eq!(settings.providers[0].base_url, BUILTIN_PROVIDER_URL);
     }
 
     #[test]

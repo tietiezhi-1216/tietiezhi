@@ -306,7 +306,7 @@ export function installTauriMock(): void {
           id: "builtin-official",
           name: "Tietiezhi Gateway",
           type: "openai",
-          baseUrl: "https://api.terln.com/v1",
+          baseUrl: "https://tietiezhi.vip/v1",
           builtIn: true,
           models: setupState === "no-model" ? [] : TERLN_MODELS,
         },
