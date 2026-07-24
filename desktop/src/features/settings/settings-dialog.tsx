@@ -18,6 +18,7 @@ import {
   Sparkles,
   Sun,
   Tags,
+  WalletCards,
 } from "lucide-react";
 import { AppIcon } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ import { ArchivedTasksSection } from "@/features/settings/archived-tasks-section
 import { DictationHotkeySection } from "@/features/settings/dictation-hotkey";
 import { DictationPromptSection } from "@/features/settings/dictation-prompt";
 import { McpSection } from "@/features/settings/mcp-section";
+import { QuotaCenter } from "@/features/settings/quota-center";
 import { PermissionSection } from "@/features/settings/permission-section";
 import { ProviderManager } from "@/features/settings/provider-manager";
 import { SkillsSection } from "@/features/settings/skills-section";
@@ -57,6 +59,10 @@ interface CategoryGroup {
 }
 
 const GROUPS: CategoryGroup[] = [
+  {
+    label: "账号",
+    items: [{ key: "quota", label: "额度中心", icon: WalletCards }],
+  },
   {
     label: "模型",
     items: [
@@ -146,6 +152,7 @@ export function SettingsDialog() {
           </header>
           <div className="flex-1 overflow-y-auto px-7 py-6">
             {category === "providers" && <ProviderManager />}
+            {category === "quota" && <QuotaCenter />}
             {category === "titleModel" && <TitleModelSection />}
             {category === "systemPrompt" && <SystemPromptSection />}
             {category === "skills" && <SkillsSection />}

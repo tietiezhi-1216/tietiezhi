@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import type { ProductArea } from "@/lib/product-area";
 
 export type SettingsCategory =
+  | "quota"
   | "providers"
   | "titleModel"
   | "systemPrompt"

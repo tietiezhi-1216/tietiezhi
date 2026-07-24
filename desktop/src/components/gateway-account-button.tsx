@@ -50,7 +50,7 @@ export function GatewayAccountButton() {
           tooltip={loggedIn ? account?.email : "登录中转站"}
           onClick={() => {
             if (loggedIn) {
-              openSettings("providers");
+              openSettings("quota");
             } else if (!pending) {
               login.mutate();
             }

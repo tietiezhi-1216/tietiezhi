@@ -1087,6 +1087,88 @@ export function installTauriMock(): void {
     gateway_logout: () => {
       gatewayLoggedIn = false;
     },
+    gateway_quota: () => {
+      if (!gatewayLoggedIn) throw "请先登录当前中转站";
+      return {
+        wallet: {
+          balanceMicro: 8_620_000,
+          frozenMicro: 0,
+          totalTopupMicro: 10_000_000,
+          totalSpendMicro: 1_380_000,
+        },
+        packages: [
+          {
+            id: 1,
+            name: "新人首充包",
+            status: "active",
+            meterBy: "sale_amount",
+            quotaPerWindow: 10_000_000,
+            totalQuotaCap: 10_000_000,
+            totalUsed: 1_380_000,
+            windowRemaining: 8_620_000,
+            validUntil: undefined,
+          },
+        ],
+        recentConsumption: [
+          {
+            requestId: "req-demo-1",
+            publicModel: "gpt-5.4",
+            amountMicro: 120_000,
+            userPackageId: 1,
+            cardMeasure: 120_000,
+            createdAt: new Date().toISOString(),
+          },
+        ],
+        paymentChannels: { alipay: true, wechat: true },
+      };
+    },
+    gateway_package_catalog: () => {
+      if (!gatewayLoggedIn) throw "请先登录当前中转站";
+      return {
+        items: [
+          {
+            id: 6,
+            name: "新人首充包",
+            description: "¥6 得 ¥10，全模型通用，每人限购一次",
+            meterBy: "sale_amount",
+            quotaPerWindow: 10_000_000,
+            validDays: 0,
+            maxPurchasesPerUser: 1,
+            priceMicro: 6_000_000,
+          },
+          {
+            id: 7,
+            name: "轻量包",
+            description: "适合短期体验",
+            meterBy: "sale_amount",
+            quotaPerWindow: 35_000_000,
+            validDays: 7,
+            maxPurchasesPerUser: 0,
+            priceMicro: 29_000_000,
+          },
+        ],
+        paymentChannels: { alipay: true, wechat: true },
+      };
+    },
+    gateway_create_package_order: (a) => ({
+      orderNo: `TPMOCK${Date.now()}`,
+      packageId: Number(a.packageId),
+      packageName: Number(a.packageId) === 6 ? "新人首充包" : "轻量包",
+      provider: String(a.paymentProvider),
+      payAmountMicro: Number(a.packageId) === 6 ? 6_000_000 : 29_000_000,
+      payAmountCny: Number(a.packageId) === 6 ? "6.00" : "29.00",
+      paymentUrl: "https://example.test/desktop-payment/mock",
+      status: 0,
+    }),
+    gateway_package_order_status: (a) => ({
+      orderNo: String(a.orderNo),
+      packageId: 6,
+      provider: "alipay",
+      payAmountMicro: 6_000_000,
+      status: 1,
+      paidAt: new Date().toISOString(),
+      promotionStatus: "applied",
+    }),
     generate_create_image: async (a) => {
       const request = a.request as {
         providerId?: string;

@@ -26,6 +26,7 @@ pub struct GatewayAccountView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayAccount {
+    #[serde(alias = "user_id")]
     pub user_id: u64,
     pub email: String,
     pub nickname: String,
@@ -39,6 +40,14 @@ struct Discovery {
     token_endpoint: String,
     session_endpoint: String,
     revocation_endpoint: String,
+    #[serde(default)]
+    quota_endpoint: Option<String>,
+    #[serde(default)]
+    catalog_endpoint: Option<String>,
+    #[serde(default)]
+    order_endpoint: Option<String>,
+    #[serde(default)]
+    order_status_endpoint: Option<String>,
     client_id: String,
 }
 
@@ -62,6 +71,138 @@ struct TokenData {
 struct SessionData {
     expires: i64,
     account: GatewayAccount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayWallet {
+    #[serde(alias = "balance_micro")]
+    pub balance_micro: i64,
+    #[serde(alias = "frozen_micro")]
+    pub frozen_micro: i64,
+    #[serde(alias = "total_topup_micro")]
+    pub total_topup_micro: i64,
+    #[serde(alias = "total_spend_micro")]
+    pub total_spend_micro: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayOwnedPackage {
+    pub id: u64,
+    pub name: String,
+    pub status: String,
+    #[serde(alias = "meter_by")]
+    pub meter_by: String,
+    #[serde(alias = "quota_per_window")]
+    pub quota_per_window: i64,
+    #[serde(alias = "total_quota_cap")]
+    pub total_quota_cap: i64,
+    #[serde(alias = "total_used")]
+    pub total_used: i64,
+    #[serde(alias = "window_remaining")]
+    pub window_remaining: i64,
+    #[serde(alias = "valid_until")]
+    pub valid_until: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayConsumption {
+    #[serde(alias = "request_id")]
+    pub request_id: String,
+    #[serde(alias = "public_model")]
+    pub public_model: String,
+    #[serde(alias = "amount_micro")]
+    pub amount_micro: i64,
+    #[serde(alias = "user_package_id")]
+    pub user_package_id: u64,
+    #[serde(alias = "card_measure")]
+    pub card_measure: i64,
+    #[serde(alias = "created_at")]
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayPaymentChannels {
+    pub alipay: bool,
+    pub wechat: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayQuotaView {
+    pub wallet: GatewayWallet,
+    pub packages: Vec<GatewayOwnedPackage>,
+    #[serde(alias = "recent_consumption")]
+    pub recent_consumption: Vec<GatewayConsumption>,
+    #[serde(alias = "payment_channels")]
+    pub payment_channels: GatewayPaymentChannels,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayCatalogPackage {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    #[serde(alias = "meter_by")]
+    pub meter_by: String,
+    #[serde(alias = "quota_per_window")]
+    pub quota_per_window: i64,
+    #[serde(alias = "valid_days")]
+    pub valid_days: i32,
+    #[serde(alias = "max_purchases_per_user")]
+    pub max_purchases_per_user: i32,
+    #[serde(alias = "price_micro")]
+    pub price_micro: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayPackageCatalog {
+    pub items: Vec<GatewayCatalogPackage>,
+    #[serde(alias = "payment_channels")]
+    pub payment_channels: GatewayPaymentChannels,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayPackageOrder {
+    #[serde(alias = "order_no")]
+    pub order_no: String,
+    #[serde(alias = "package_id")]
+    pub package_id: u64,
+    #[serde(alias = "package_name")]
+    pub package_name: String,
+    pub provider: String,
+    #[serde(alias = "pay_amount_micro")]
+    pub pay_amount_micro: i64,
+    #[serde(alias = "pay_amount_cny")]
+    pub pay_amount_cny: String,
+    #[serde(alias = "payment_url")]
+    pub payment_url: String,
+    pub status: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayOrderStatus {
+    #[serde(alias = "order_no")]
+    pub order_no: String,
+    #[serde(alias = "package_id")]
+    pub package_id: u64,
+    pub provider: String,
+    #[serde(alias = "pay_amount_micro")]
+    pub pay_amount_micro: i64,
+    pub status: i32,
+    #[serde(alias = "paid_at")]
+    pub paid_at: Option<String>,
+    #[serde(alias = "promotion_status")]
+    pub promotion_status: Option<String>,
+    #[serde(alias = "promotion_message")]
+    pub promotion_message: Option<String>,
 }
 
 #[tauri::command]
@@ -224,6 +365,129 @@ pub async fn gateway_logout(
     clear_gateway_secrets(&provider_id)
 }
 
+#[tauri::command]
+pub async fn gateway_quota(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    provider_id: String,
+) -> Result<GatewayQuotaView, String> {
+    let (discovery, session_token) =
+        native_billing_context(&state.http, &app, &provider_id).await?;
+    let endpoint = discovery
+        .quota_endpoint
+        .ok_or_else(|| "当前中转站版本不支持额度中心".to_string())?;
+    let result: APIResponse<GatewayQuotaView> = post_json(
+        &state.http,
+        &endpoint,
+        &serde_json::json!({ "session_token": session_token }),
+    )
+    .await?;
+    result
+        .data
+        .filter(|_| result.success)
+        .ok_or_else(|| api_error(result.message, "获取额度失败"))
+}
+
+#[tauri::command]
+pub async fn gateway_package_catalog(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    provider_id: String,
+) -> Result<GatewayPackageCatalog, String> {
+    let (discovery, session_token) =
+        native_billing_context(&state.http, &app, &provider_id).await?;
+    let endpoint = discovery
+        .catalog_endpoint
+        .ok_or_else(|| "当前中转站版本不支持套餐目录".to_string())?;
+    let result: APIResponse<GatewayPackageCatalog> = post_json(
+        &state.http,
+        &endpoint,
+        &serde_json::json!({ "session_token": session_token }),
+    )
+    .await?;
+    result
+        .data
+        .filter(|_| result.success)
+        .ok_or_else(|| api_error(result.message, "获取套餐失败"))
+}
+
+#[tauri::command]
+pub async fn gateway_create_package_order(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    provider_id: String,
+    package_id: u64,
+    payment_provider: String,
+) -> Result<GatewayPackageOrder, String> {
+    if payment_provider != "alipay" && payment_provider != "wechat" {
+        return Err("不支持的支付方式".into());
+    }
+    let (discovery, session_token) =
+        native_billing_context(&state.http, &app, &provider_id).await?;
+    let endpoint = discovery
+        .order_endpoint
+        .ok_or_else(|| "当前中转站版本不支持桌面购买".to_string())?;
+    let result: APIResponse<GatewayPackageOrder> = post_json(
+        &state.http,
+        &endpoint,
+        &serde_json::json!({
+            "session_token": session_token,
+            "package_id": package_id,
+            "provider": payment_provider,
+        }),
+    )
+    .await?;
+    let order = result
+        .data
+        .filter(|_| result.success)
+        .ok_or_else(|| api_error(result.message, "创建订单失败"))?;
+    open_system_browser(&order.payment_url)?;
+    Ok(order)
+}
+
+#[tauri::command]
+pub async fn gateway_package_order_status(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    provider_id: String,
+    order_no: String,
+) -> Result<GatewayOrderStatus, String> {
+    let (discovery, session_token) =
+        native_billing_context(&state.http, &app, &provider_id).await?;
+    let endpoint = discovery
+        .order_status_endpoint
+        .ok_or_else(|| "当前中转站版本不支持订单查询".to_string())?;
+    let result: APIResponse<GatewayOrderStatus> = post_json(
+        &state.http,
+        &endpoint,
+        &serde_json::json!({
+            "session_token": session_token,
+            "order_no": order_no,
+        }),
+    )
+    .await?;
+    result
+        .data
+        .filter(|_| result.success)
+        .ok_or_else(|| api_error(result.message, "查询订单失败"))
+}
+
+async fn native_billing_context(
+    http: &reqwest::Client,
+    app: &AppHandle,
+    provider_id: &str,
+) -> Result<(Discovery, String), String> {
+    let base_url = provider_base_url(app, provider_id)?;
+    let issuer = gateway_root(&base_url)?;
+    if secrets::get_gateway_issuer(provider_id)?.as_deref() != Some(issuer.as_str()) {
+        return Err("请先登录当前中转站".into());
+    }
+    let session_token = secrets::get_gateway_session(provider_id)?
+        .ok_or_else(|| "请先登录当前中转站".to_string())?;
+    let discovery = fetch_discovery(http, &base_url).await?;
+    Ok((discovery, session_token))
+}
+
 fn provider_base_url(app: &AppHandle, provider_id: &str) -> Result<String, String> {
     read_settings(app)?
         .providers
@@ -305,6 +569,32 @@ fn validate_discovery(expected_issuer: &str, discovery: &Discovery) -> Result<()
         );
         if origin != issuer {
             return Err("中转站登录端点必须与签发方同源".into());
+        }
+    }
+    for endpoint in [
+        discovery.quota_endpoint.as_ref(),
+        discovery.catalog_endpoint.as_ref(),
+        discovery.order_endpoint.as_ref(),
+        discovery.order_status_endpoint.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let parsed =
+            reqwest::Url::parse(endpoint).map_err(|_| "中转站返回了无效的额度地址".to_string())?;
+        let origin = format!(
+            "{}://{}{}",
+            parsed.scheme(),
+            parsed
+                .host_str()
+                .ok_or_else(|| "中转站返回了无效的额度地址".to_string())?,
+            parsed
+                .port()
+                .map(|port| format!(":{port}"))
+                .unwrap_or_default(),
+        );
+        if origin != issuer {
+            return Err("中转站额度端点必须与签发方同源".into());
         }
     }
     Ok(())
@@ -440,7 +730,7 @@ fn api_error(message: String, fallback: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{gateway_root, validate_discovery, Discovery};
+    use super::{gateway_root, validate_discovery, Discovery, GatewayQuotaView};
 
     #[test]
     fn derives_gateway_root() {
@@ -460,6 +750,18 @@ mod tests {
                 .into(),
             revocation_endpoint: "https://gateway.example.test/app-api/user/auth/native/revoke"
                 .into(),
+            quota_endpoint: Some(
+                "https://gateway.example.test/app-api/user/auth/native/quota".into(),
+            ),
+            catalog_endpoint: Some(
+                "https://gateway.example.test/app-api/user/auth/native/catalog".into(),
+            ),
+            order_endpoint: Some(
+                "https://gateway.example.test/app-api/user/auth/native/orders".into(),
+            ),
+            order_status_endpoint: Some(
+                "https://gateway.example.test/app-api/user/auth/native/orders/status".into(),
+            ),
             client_id: super::CLIENT_ID.into(),
         };
         assert!(validate_discovery("https://gateway.example.test", &discovery).is_ok());
@@ -467,5 +769,34 @@ mod tests {
         let mut foreign = discovery;
         foreign.token_endpoint = "https://other.example.test/token".into();
         assert!(validate_discovery("https://gateway.example.test", &foreign).is_err());
+    }
+
+    #[test]
+    fn gateway_quota_deserializes_snake_case_api_fields() {
+        let quota: GatewayQuotaView = serde_json::from_value(serde_json::json!({
+            "wallet": {
+                "balance_micro": 10_000_000,
+                "frozen_micro": 0,
+                "total_topup_micro": 10_000_000,
+                "total_spend_micro": 0
+            },
+            "packages": [{
+                "id": 1,
+                "name": "新人首充包",
+                "status": "active",
+                "meter_by": "sale_amount",
+                "quota_per_window": 10_000_000,
+                "total_quota_cap": 10_000_000,
+                "total_used": 0,
+                "window_remaining": 10_000_000,
+                "valid_until": null
+            }],
+            "recent_consumption": [],
+            "payment_channels": {"alipay": true, "wechat": false}
+        }))
+        .unwrap();
+        assert_eq!(quota.wallet.balance_micro, 10_000_000);
+        assert_eq!(quota.packages[0].window_remaining, 10_000_000);
+        assert!(quota.payment_channels.alipay);
     }
 }

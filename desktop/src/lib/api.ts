@@ -92,6 +92,84 @@ export interface GatewayAccountView {
   expires?: number;
 }
 
+export interface GatewayWallet {
+  balanceMicro: number;
+  frozenMicro: number;
+  totalTopupMicro: number;
+  totalSpendMicro: number;
+}
+
+export interface GatewayOwnedPackage {
+  id: number;
+  name: string;
+  status: string;
+  meterBy: string;
+  quotaPerWindow: number;
+  totalQuotaCap: number;
+  totalUsed: number;
+  windowRemaining: number;
+  validUntil?: string;
+}
+
+export interface GatewayConsumption {
+  requestId: string;
+  publicModel: string;
+  amountMicro: number;
+  userPackageId: number;
+  cardMeasure: number;
+  createdAt: string;
+}
+
+export interface GatewayPaymentChannels {
+  alipay: boolean;
+  wechat: boolean;
+}
+
+export interface GatewayQuotaView {
+  wallet: GatewayWallet;
+  packages: GatewayOwnedPackage[];
+  recentConsumption: GatewayConsumption[];
+  paymentChannels: GatewayPaymentChannels;
+}
+
+export interface GatewayCatalogPackage {
+  id: number;
+  name: string;
+  description: string;
+  meterBy: string;
+  quotaPerWindow: number;
+  validDays: number;
+  maxPurchasesPerUser: number;
+  priceMicro: number;
+}
+
+export interface GatewayPackageCatalog {
+  items: GatewayCatalogPackage[];
+  paymentChannels: GatewayPaymentChannels;
+}
+
+export interface GatewayPackageOrder {
+  orderNo: string;
+  packageId: number;
+  packageName: string;
+  provider: "alipay" | "wechat";
+  payAmountMicro: number;
+  payAmountCny: string;
+  paymentUrl: string;
+  status: number;
+}
+
+export interface GatewayOrderStatus {
+  orderNo: string;
+  packageId: number;
+  provider: "alipay" | "wechat";
+  payAmountMicro: number;
+  status: number;
+  paidAt?: string;
+  promotionStatus?: string;
+  promotionMessage?: string;
+}
+
 export type PermissionMode = "ask" | "auto" | "full";
 
 export type McpTransport =
@@ -605,6 +683,36 @@ export function gatewayLogin(providerId: string): Promise<GatewayAccountView> {
 
 export function gatewayLogout(providerId: string): Promise<void> {
   return invoke("gateway_logout", { providerId });
+}
+
+export function gatewayQuota(providerId: string): Promise<GatewayQuotaView> {
+  return invoke<GatewayQuotaView>("gateway_quota", { providerId });
+}
+
+export function gatewayPackageCatalog(providerId: string): Promise<GatewayPackageCatalog> {
+  return invoke<GatewayPackageCatalog>("gateway_package_catalog", { providerId });
+}
+
+export function gatewayCreatePackageOrder(
+  providerId: string,
+  packageId: number,
+  paymentProvider: "alipay" | "wechat",
+): Promise<GatewayPackageOrder> {
+  return invoke<GatewayPackageOrder>("gateway_create_package_order", {
+    providerId,
+    packageId,
+    paymentProvider,
+  });
+}
+
+export function gatewayPackageOrderStatus(
+  providerId: string,
+  orderNo: string,
+): Promise<GatewayOrderStatus> {
+  return invoke<GatewayOrderStatus>("gateway_package_order_status", {
+    providerId,
+    orderNo,
+  });
 }
 
 // MARK: - Create
