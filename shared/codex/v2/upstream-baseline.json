@@ -1,0 +1,1361 @@
+{
+  "codexVersion": "0.145.0",
+  "tag": "rust-v0.145.0",
+  "commit": "25af12f7e61572b0bc18ddb1008be543b91519b0",
+  "protocol": "app-server-v2",
+  "capturedAt": "2026-07-25",
+  "license": "Apache-2.0",
+  "source": "https://github.com/openai/codex/tree/rust-v0.145.0/codex-rs",
+  "allowedStatuses": [
+    "pending",
+    "in_progress",
+    "implemented",
+    "service_mapped"
+  ],
+  "surfaces": {
+    "clientRequests": [
+      {
+        "method": "account/login/cancel",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/login/start",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/logout",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/rateLimitResetCredit/consume",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/rateLimits/read",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/read",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/sendAddCreditsNudgeEmail",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/usage/read",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/workspaceMessages/read",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "app/installed",
+        "status": "pending",
+        "target": "R33",
+        "note": ""
+      },
+      {
+        "method": "app/list",
+        "status": "pending",
+        "target": "R33",
+        "note": ""
+      },
+      {
+        "method": "app/read",
+        "status": "pending",
+        "target": "R33",
+        "note": ""
+      },
+      {
+        "method": "command/exec",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "command/exec/resize",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "command/exec/terminate",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "command/exec/write",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "config/batchWrite",
+        "status": "pending",
+        "target": "R21",
+        "note": ""
+      },
+      {
+        "method": "config/mcpServer/reload",
+        "status": "pending",
+        "target": "R21",
+        "note": ""
+      },
+      {
+        "method": "config/read",
+        "status": "pending",
+        "target": "R21",
+        "note": ""
+      },
+      {
+        "method": "config/value/write",
+        "status": "pending",
+        "target": "R21",
+        "note": ""
+      },
+      {
+        "method": "configRequirements/read",
+        "status": "pending",
+        "target": "R21",
+        "note": ""
+      },
+      {
+        "method": "experimentalFeature/enablement/set",
+        "status": "pending",
+        "target": "R21",
+        "note": ""
+      },
+      {
+        "method": "experimentalFeature/list",
+        "status": "pending",
+        "target": "R21",
+        "note": ""
+      },
+      {
+        "method": "externalAgentConfig/detect",
+        "status": "pending",
+        "target": "R38",
+        "note": ""
+      },
+      {
+        "method": "externalAgentConfig/import",
+        "status": "pending",
+        "target": "R38",
+        "note": ""
+      },
+      {
+        "method": "externalAgentConfig/import/readHistories",
+        "status": "pending",
+        "target": "R38",
+        "note": ""
+      },
+      {
+        "method": "feedback/upload",
+        "status": "pending",
+        "target": "R36",
+        "note": ""
+      },
+      {
+        "method": "fs/copy",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fs/createDirectory",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fs/getMetadata",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fs/readDirectory",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fs/readFile",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fs/remove",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fs/unwatch",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fs/watch",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fs/writeFile",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fuzzyFileSearch",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "hooks/list",
+        "status": "pending",
+        "target": "R36",
+        "note": ""
+      },
+      {
+        "method": "initialize",
+        "status": "pending",
+        "target": "R2",
+        "note": ""
+      },
+      {
+        "method": "marketplace/add",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "marketplace/remove",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "marketplace/upgrade",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "mcpServer/oauth/login",
+        "status": "pending",
+        "target": "R19",
+        "note": ""
+      },
+      {
+        "method": "mcpServer/resource/read",
+        "status": "pending",
+        "target": "R19",
+        "note": ""
+      },
+      {
+        "method": "mcpServer/tool/call",
+        "status": "pending",
+        "target": "R19",
+        "note": ""
+      },
+      {
+        "method": "mcpServerStatus/list",
+        "status": "pending",
+        "target": "R19",
+        "note": ""
+      },
+      {
+        "method": "model/list",
+        "status": "pending",
+        "target": "R7",
+        "note": ""
+      },
+      {
+        "method": "modelProvider/capabilities/read",
+        "status": "pending",
+        "target": "R36",
+        "note": ""
+      },
+      {
+        "method": "permissionProfile/list",
+        "status": "pending",
+        "target": "R14",
+        "note": ""
+      },
+      {
+        "method": "plugin/install",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/installed",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/list",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/read",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/share/checkout",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/share/delete",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/share/list",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/share/save",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/share/updateTargets",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/skill/read",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "plugin/uninstall",
+        "status": "pending",
+        "target": "R24",
+        "note": ""
+      },
+      {
+        "method": "review/start",
+        "status": "pending",
+        "target": "R27",
+        "note": ""
+      },
+      {
+        "method": "skills/config/write",
+        "status": "pending",
+        "target": "R22",
+        "note": ""
+      },
+      {
+        "method": "skills/extraRoots/set",
+        "status": "pending",
+        "target": "R22",
+        "note": ""
+      },
+      {
+        "method": "skills/list",
+        "status": "pending",
+        "target": "R22",
+        "note": ""
+      },
+      {
+        "method": "thread/approveGuardianDeniedAction",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/archive",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/compact/start",
+        "status": "pending",
+        "target": "R9",
+        "note": ""
+      },
+      {
+        "method": "thread/delete",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/fork",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/goal/clear",
+        "status": "pending",
+        "target": "R25",
+        "note": ""
+      },
+      {
+        "method": "thread/goal/get",
+        "status": "pending",
+        "target": "R25",
+        "note": ""
+      },
+      {
+        "method": "thread/goal/set",
+        "status": "pending",
+        "target": "R25",
+        "note": ""
+      },
+      {
+        "method": "thread/inject_items",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/list",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/loaded/list",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/metadata/update",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/name/set",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/read",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/resume",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/rollback",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/shellCommand",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "thread/start",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/unarchive",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/unsubscribe",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "turn/interrupt",
+        "status": "pending",
+        "target": "R6",
+        "note": ""
+      },
+      {
+        "method": "turn/start",
+        "status": "pending",
+        "target": "R6",
+        "note": ""
+      },
+      {
+        "method": "turn/steer",
+        "status": "pending",
+        "target": "R6",
+        "note": ""
+      },
+      {
+        "method": "windowsSandbox/readiness",
+        "status": "pending",
+        "target": "R16",
+        "note": ""
+      },
+      {
+        "method": "windowsSandbox/setupStart",
+        "status": "pending",
+        "target": "R16",
+        "note": ""
+      }
+    ],
+    "clientNotifications": [
+      {
+        "method": "initialized",
+        "status": "pending",
+        "target": "R2",
+        "note": ""
+      }
+    ],
+    "serverRequests": [
+      {
+        "method": "account/chatgptAuthTokens/refresh",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "applyPatchApproval",
+        "status": "pending",
+        "target": "R14",
+        "note": ""
+      },
+      {
+        "method": "attestation/generate",
+        "status": "pending",
+        "target": "R36",
+        "note": ""
+      },
+      {
+        "method": "execCommandApproval",
+        "status": "pending",
+        "target": "R14",
+        "note": ""
+      },
+      {
+        "method": "item/commandExecution/requestApproval",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "item/fileChange/requestApproval",
+        "status": "pending",
+        "target": "R12",
+        "note": ""
+      },
+      {
+        "method": "item/permissions/requestApproval",
+        "status": "pending",
+        "target": "R14",
+        "note": ""
+      },
+      {
+        "method": "item/tool/call",
+        "status": "pending",
+        "target": "R10",
+        "note": ""
+      },
+      {
+        "method": "item/tool/requestUserInput",
+        "status": "pending",
+        "target": "R25",
+        "note": ""
+      },
+      {
+        "method": "mcpServer/elicitation/request",
+        "status": "pending",
+        "target": "R19",
+        "note": ""
+      }
+    ],
+    "serverNotifications": [
+      {
+        "method": "account/login/completed",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/rateLimits/updated",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "account/updated",
+        "status": "pending",
+        "target": "R8",
+        "note": ""
+      },
+      {
+        "method": "app/list/updated",
+        "status": "pending",
+        "target": "R33",
+        "note": ""
+      },
+      {
+        "method": "command/exec/outputDelta",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "configWarning",
+        "status": "pending",
+        "target": "R21",
+        "note": ""
+      },
+      {
+        "method": "deprecationNotice",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "error",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "externalAgentConfig/import/completed",
+        "status": "pending",
+        "target": "R38",
+        "note": ""
+      },
+      {
+        "method": "externalAgentConfig/import/progress",
+        "status": "pending",
+        "target": "R38",
+        "note": ""
+      },
+      {
+        "method": "fs/changed",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fuzzyFileSearch/sessionCompleted",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "fuzzyFileSearch/sessionUpdated",
+        "status": "pending",
+        "target": "R31",
+        "note": ""
+      },
+      {
+        "method": "guardianWarning",
+        "status": "pending",
+        "target": "R27",
+        "note": ""
+      },
+      {
+        "method": "hook/completed",
+        "status": "pending",
+        "target": "R23",
+        "note": ""
+      },
+      {
+        "method": "hook/started",
+        "status": "pending",
+        "target": "R23",
+        "note": ""
+      },
+      {
+        "method": "item/agentMessage/delta",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "item/autoApprovalReview/completed",
+        "status": "pending",
+        "target": "R27",
+        "note": ""
+      },
+      {
+        "method": "item/autoApprovalReview/started",
+        "status": "pending",
+        "target": "R27",
+        "note": ""
+      },
+      {
+        "method": "item/commandExecution/outputDelta",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "item/commandExecution/terminalInteraction",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "item/completed",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "item/fileChange/outputDelta",
+        "status": "pending",
+        "target": "R12",
+        "note": ""
+      },
+      {
+        "method": "item/fileChange/patchUpdated",
+        "status": "pending",
+        "target": "R12",
+        "note": ""
+      },
+      {
+        "method": "item/mcpToolCall/progress",
+        "status": "pending",
+        "target": "R19",
+        "note": ""
+      },
+      {
+        "method": "item/plan/delta",
+        "status": "pending",
+        "target": "R25",
+        "note": ""
+      },
+      {
+        "method": "item/reasoning/summaryPartAdded",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "item/reasoning/summaryTextDelta",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "item/reasoning/textDelta",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "item/started",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "mcpServer/oauthLogin/completed",
+        "status": "pending",
+        "target": "R19",
+        "note": ""
+      },
+      {
+        "method": "mcpServer/startupStatus/updated",
+        "status": "pending",
+        "target": "R19",
+        "note": ""
+      },
+      {
+        "method": "model/rerouted",
+        "status": "pending",
+        "target": "R7",
+        "note": ""
+      },
+      {
+        "method": "model/safetyBuffering/updated",
+        "status": "pending",
+        "target": "R7",
+        "note": ""
+      },
+      {
+        "method": "model/verification",
+        "status": "pending",
+        "target": "R7",
+        "note": ""
+      },
+      {
+        "method": "process/exited",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "process/outputDelta",
+        "status": "pending",
+        "target": "R13",
+        "note": ""
+      },
+      {
+        "method": "remoteControl/status/changed",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "serverRequest/resolved",
+        "status": "pending",
+        "target": "R36",
+        "note": ""
+      },
+      {
+        "method": "skills/changed",
+        "status": "pending",
+        "target": "R22",
+        "note": ""
+      },
+      {
+        "method": "thread/archived",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/closed",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/compacted",
+        "status": "pending",
+        "target": "R9",
+        "note": ""
+      },
+      {
+        "method": "thread/deleted",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/environment/connected",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/environment/disconnected",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/goal/cleared",
+        "status": "pending",
+        "target": "R25",
+        "note": ""
+      },
+      {
+        "method": "thread/goal/updated",
+        "status": "pending",
+        "target": "R25",
+        "note": ""
+      },
+      {
+        "method": "thread/name/updated",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/realtime/closed",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "thread/realtime/error",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "thread/realtime/itemAdded",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "thread/realtime/outputAudio/delta",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "thread/realtime/sdp",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "thread/realtime/started",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "thread/realtime/transcript/delta",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "thread/realtime/transcript/done",
+        "status": "pending",
+        "target": "R35",
+        "note": ""
+      },
+      {
+        "method": "thread/settings/updated",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/started",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/status/changed",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/tokenUsage/updated",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "thread/unarchived",
+        "status": "pending",
+        "target": "R5",
+        "note": ""
+      },
+      {
+        "method": "turn/completed",
+        "status": "pending",
+        "target": "R6",
+        "note": ""
+      },
+      {
+        "method": "turn/diff/updated",
+        "status": "pending",
+        "target": "R12",
+        "note": ""
+      },
+      {
+        "method": "turn/moderationMetadata",
+        "status": "pending",
+        "target": "R6",
+        "note": ""
+      },
+      {
+        "method": "turn/plan/updated",
+        "status": "pending",
+        "target": "R25",
+        "note": ""
+      },
+      {
+        "method": "turn/started",
+        "status": "pending",
+        "target": "R6",
+        "note": ""
+      },
+      {
+        "method": "warning",
+        "status": "pending",
+        "target": "R3",
+        "note": ""
+      },
+      {
+        "method": "windows/worldWritableWarning",
+        "status": "pending",
+        "target": "R16",
+        "note": ""
+      },
+      {
+        "method": "windowsSandbox/setupCompleted",
+        "status": "pending",
+        "target": "R16",
+        "note": ""
+      }
+    ]
+  },
+  "threadItemTypes": [
+    "agentMessage",
+    "collabAgentToolCall",
+    "commandExecution",
+    "contextCompaction",
+    "dynamicToolCall",
+    "enteredReviewMode",
+    "exitedReviewMode",
+    "fileChange",
+    "hookPrompt",
+    "imageGeneration",
+    "imageView",
+    "mcpToolCall",
+    "plan",
+    "reasoning",
+    "sleep",
+    "subAgentActivity",
+    "userMessage",
+    "webSearch"
+  ],
+  "userInputTypes": [
+    "audio",
+    "image",
+    "localAudio",
+    "localImage",
+    "mention",
+    "skill",
+    "text"
+  ],
+  "milestoneStatuses": [
+    "pending",
+    "in_progress",
+    "completed"
+  ],
+  "milestones": [
+    {
+      "id": "R0",
+      "name": "基线治理",
+      "status": "completed",
+      "risk": "官方 V2 方法仍全部待实现；R1 起逐项推进",
+      "evidence": "shared/codex/v2/upstream-baseline.json；desktop/scripts/check-codex-parity.mjs；pnpm check:codex-parity；pnpm typecheck；pnpm build；cargo test（130 项）"
+    },
+    {
+      "id": "R1",
+      "name": "旧运行时止血",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R2",
+      "name": "协议层",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R3",
+      "name": "事件模型",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R4",
+      "name": "持久化",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R5",
+      "name": "Thread 生命周期",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R6",
+      "name": "Turn 生命周期",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R7",
+      "name": "Responses 模型层",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R8",
+      "name": "Gateway 对齐",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R9",
+      "name": "上下文系统",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R10",
+      "name": "工具内核",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R11",
+      "name": "基础工具",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R12",
+      "name": "Patch 与 Diff",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R13",
+      "name": "Unified Exec",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R14",
+      "name": "审批策略",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R15",
+      "name": "macOS 沙箱",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R16",
+      "name": "Windows 沙箱",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R17",
+      "name": "网络策略",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R18",
+      "name": "ExecPolicy",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R19",
+      "name": "MCP 完整实现",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R20",
+      "name": "指令层",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R21",
+      "name": "配置体系",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R22",
+      "name": "Skills",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R23",
+      "name": "Hooks",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R24",
+      "name": "Plugins",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R25",
+      "name": "Plan 与用户输入",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R26",
+      "name": "Collaboration",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R27",
+      "name": "Guardian 与 Review",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R28",
+      "name": "Memory",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R29",
+      "name": "Git 与 Worktree",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R30",
+      "name": "集成终端",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R31",
+      "name": "Desktop 时间线",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R32",
+      "name": "Diff 与 Git UI",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R33",
+      "name": "Apps 与连接器",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R34",
+      "name": "Automations",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R35",
+      "name": "远程与实时",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R36",
+      "name": "运维能力",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R37",
+      "name": "稳定性工程",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R38",
+      "name": "迁移切换",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    },
+    {
+      "id": "R39",
+      "name": "正式发布",
+      "status": "pending",
+      "risk": "",
+      "evidence": ""
+    }
+  ]
+}

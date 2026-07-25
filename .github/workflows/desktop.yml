@@ -6,10 +6,20 @@ name: CI (Desktop · Tauri)
 on:
   push:
     branches: [main]
-    paths: ['desktop/**', '.github/workflows/desktop.yml']
+    paths:
+      - 'desktop/**'
+      - 'shared/codex/**'
+      - 'docs/CODEX-*.md'
+      - 'THIRD_PARTY_NOTICES.md'
+      - '.github/workflows/desktop.yml'
   pull_request:
     branches: [main]
-    paths: ['desktop/**', '.github/workflows/desktop.yml']
+    paths:
+      - 'desktop/**'
+      - 'shared/codex/**'
+      - 'docs/CODEX-*.md'
+      - 'THIRD_PARTY_NOTICES.md'
+      - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
 concurrency:
@@ -58,6 +68,9 @@ jobs:
 
       - name: Typecheck (tsc --noEmit)
         run: pnpm typecheck
+
+      - name: Check Codex parity ledger
+        run: pnpm check:codex-parity
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
