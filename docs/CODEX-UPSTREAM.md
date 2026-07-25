@@ -75,4 +75,6 @@ R3 已增加独立的 `crates/agent-events` 事件总线和旧 `ChatEvent` 双�
 
 R4 已增加 `crates/agent-state`：SQLite 元数据索引、追加式 JSONL rollout、原子兼容快照、Schema 迁移、数据库损坏备份和崩溃尾部恢复。R3 事件身份会随流式事件和任务项持久化，独立子进程 `abort` 测试覆盖 checkpoint、未完成工具和半条 JSON 的恢复。详细写入顺序和迁移边界见 `docs/CODEX-STATE.md`。
 
-当前仍未接入正式 App Server 服务端通知传输，rollout 中的完整会话 checkpoint 也是迁移期格式。R5、R6 完成 Thread/Turn 状态机和 canonical Item 后，R3 目标的通知方法才能按行为证据转为 `implemented`。R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R5 已增加 `crates/agent-core` 源码级 `ThreadManager`、Tauri V2 请求入口、连接订阅路由、UUIDv7、canonical `session_meta`/`response_item` 与索引重建。15 个 Thread Client Request 和 11 个 Thread Server Notification 已按固定协议实现，详细行为见 `docs/CODEX-THREADS.md`。
+
+当前 Turn 列表仍是 R6 接入前的迁移快照，正式 Turn/Item rollout 投影和执行状态机尚未接入。R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

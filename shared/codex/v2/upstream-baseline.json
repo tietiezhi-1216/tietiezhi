@@ -400,15 +400,15 @@
       },
       {
         "method": "thread/approveGuardianDeniedAction",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/archive",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/compact/start",
@@ -418,15 +418,15 @@
       },
       {
         "method": "thread/delete",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/fork",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/goal/clear",
@@ -448,51 +448,51 @@
       },
       {
         "method": "thread/inject_items",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/loaded/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/metadata/update",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/name/set",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/read",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/resume",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/rollback",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/shellCommand",
@@ -502,21 +502,21 @@
       },
       {
         "method": "thread/start",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/unarchive",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "thread/unsubscribe",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口"
       },
       {
         "method": "turn/interrupt",
@@ -862,15 +862,15 @@
       },
       {
         "method": "thread/archived",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/closed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/compacted",
@@ -880,21 +880,21 @@
       },
       {
         "method": "thread/deleted",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/environment/connected",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/environment/disconnected",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/goal/cleared",
@@ -910,9 +910,9 @@
       },
       {
         "method": "thread/name/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/realtime/closed",
@@ -964,33 +964,33 @@
       },
       {
         "method": "thread/settings/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/started",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/status/changed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/tokenUsage/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "thread/unarchived",
-        "status": "pending",
+        "status": "implemented",
         "target": "R5",
-        "note": ""
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
       },
       {
         "method": "turn/completed",
@@ -1102,22 +1102,22 @@
       "id": "R3",
       "name": "事件模型",
       "status": "completed",
-      "risk": "事件身份已由 R4 写入 rollout 和任务项；正式 App Server 通知仍待 R5-R6 接入，LegacyChatEvent 在 R38 删除",
+      "risk": "Thread 生命周期通知已由 R5 接入正式 App Server 路由；Turn/Item 通知由 R6 接管，LegacyChatEvent 在 R38 删除",
       "evidence": "crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build"
     },
     {
       "id": "R4",
       "name": "持久化",
       "status": "completed",
-      "risk": "现有会话仍以 legacy_checkpoint 迁移格式写入 rollout；R5-R6 改为 canonical Thread/Turn/Item，task.json 镜像在 R38 删除",
+      "risk": "新 Runtime 已由 R5 写入 canonical session_meta/response_item；旧会话仍写 legacy_checkpoint，R6 接管 Turn/Item，task.json 镜像在 R38 删除",
       "evidence": "crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build"
     },
     {
       "id": "R5",
       "name": "Thread 生命周期",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Turn 列表暂存于 canonical_json 查询缓存；R6 将以 rollout 的 Turn/Item 事件重建并接入真实执行状态机，旧会话适配层在 R38 删除",
+      "evidence": "crates/agent-core；commands/codex.rs；docs/CODEX-THREADS.md；SQLite v2→v3 迁移与 canonical session_meta 索引重建测试；12 项 ThreadManager 测试；137 项桌面 Rust 测试；pnpm typecheck；pnpm build"
     },
     {
       "id": "R6",

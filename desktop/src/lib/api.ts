@@ -5,8 +5,40 @@ import {
   type LegacyChatEvent,
 } from "@/lib/chat-events";
 import type { TaskMode } from "@/lib/task-mode";
+import type { ClientRequest as CodexClientRequest } from "../../../shared/codex/v2/typescript/ClientRequest";
+import type { RequestId as CodexRequestId } from "../../../shared/codex/v2/typescript/RequestId";
+import type { ServerNotification as CodexServerNotification } from "../../../shared/codex/v2/typescript/ServerNotification";
 
 export type { ChatEvent } from "@/lib/chat-events";
+
+export type CodexV2Notification = CodexServerNotification & {
+  recipients: string[];
+};
+
+export interface CodexV2Response {
+  id: CodexRequestId;
+  result?: unknown;
+  error?: {
+    code: number;
+    message: string;
+    data?: unknown;
+  };
+}
+
+export interface CodexV2DispatchOutput {
+  response: CodexV2Response;
+  notifications: CodexV2Notification[];
+}
+
+export async function codexV2Request(
+  connectionId: string,
+  request: CodexClientRequest,
+): Promise<CodexV2DispatchOutput> {
+  return invoke<CodexV2DispatchOutput>("codex_v2_request", {
+    connectionId,
+    request,
+  });
+}
 
 export type ProviderType = "openai" | "mimo";
 

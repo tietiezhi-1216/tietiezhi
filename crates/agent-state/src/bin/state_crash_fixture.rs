@@ -32,6 +32,7 @@ fn main() {
                 revision: 0,
                 last_complete_ordinal: 0,
                 recovery_status: "clean".into(),
+                canonical: None,
             },
             &json!({"id": thread_id, "messages": [{"content": "before crash"}]}),
         )

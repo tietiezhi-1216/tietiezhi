@@ -3,6 +3,7 @@ pub mod assets;
 pub mod automations;
 pub mod capsule;
 pub mod chat;
+pub mod codex;
 pub mod conversations;
 pub mod create;
 pub mod devices;

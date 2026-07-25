@@ -68,6 +68,7 @@ jobs:
             crates/agent-protocol
             crates/agent-events
             crates/agent-state
+            crates/agent-core
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -98,6 +99,9 @@ jobs:
 
       - name: Codex state and crash recovery tests
         run: cargo test --manifest-path ../crates/agent-state/Cargo.toml
+
+      - name: Codex thread runtime tests
+        run: cargo test --manifest-path ../crates/agent-core/Cargo.toml
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

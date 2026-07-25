@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::NamedTempFile;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 const MIGRATION_1: &str = r#"
 CREATE TABLE schema_migrations (
     version INTEGER PRIMARY KEY NOT NULL,
@@ -48,6 +48,9 @@ ALTER TABLE threads ADD COLUMN recovery_status TEXT NOT NULL DEFAULT 'clean';
 
 CREATE INDEX idx_threads_visible
     ON threads(archived_at_ms, pinned_at_ms DESC, updated_at_ms DESC, id DESC);
+"#;
+const MIGRATION_3: &str = r#"
+ALTER TABLE threads ADD COLUMN canonical_json TEXT NOT NULL DEFAULT '';
 "#;
 
 #[derive(Debug)]
@@ -108,6 +111,11 @@ pub struct ThreadMetadata {
     pub revision: u64,
     pub last_complete_ordinal: u64,
     pub recovery_status: String,
+    /// Canonical App Server thread metadata owned by `agent-core`.
+    ///
+    /// This is an index cache. Rollout session metadata and response items
+    /// remain the durable history used to rebuild it.
+    pub canonical: Option<Value>,
 }
 
 impl ThreadMetadata {
@@ -145,8 +153,11 @@ pub struct RecoveredCheckpoint {
 #[derive(Debug, Clone, Default)]
 pub struct RolloutRecovery {
     pub session_thread_id: Option<String>,
+    pub session_meta: Option<Value>,
+    pub session_created_at_ms: Option<u64>,
     pub checkpoint: Option<RecoveredCheckpoint>,
     pub trailing_events: Vec<Value>,
+    pub response_items: Vec<Value>,
     pub last_ordinal: u64,
     pub truncated_bytes: u64,
 }
@@ -210,6 +221,12 @@ impl StateStore {
 
     pub fn upsert_metadata(&self, metadata: &ThreadMetadata) -> StateResult<()> {
         metadata.validate()?;
+        let canonical_json = metadata
+            .canonical
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?
+            .unwrap_or_default();
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         transaction.execute(
@@ -217,9 +234,9 @@ impl StateStore {
 INSERT INTO threads (
     id, rollout_path, created_at_ms, updated_at_ms, title, project_id,
     task_mode, archived_at_ms, pinned_at_ms, agent_id, preview, revision,
-    last_complete_ordinal, recovery_status
+    last_complete_ordinal, recovery_status, canonical_json
 ) VALUES (
-    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
 )
 ON CONFLICT(id) DO UPDATE SET
     rollout_path = excluded.rollout_path,
@@ -234,7 +251,8 @@ ON CONFLICT(id) DO UPDATE SET
     preview = excluded.preview,
     revision = excluded.revision,
     last_complete_ordinal = excluded.last_complete_ordinal,
-    recovery_status = excluded.recovery_status
+    recovery_status = excluded.recovery_status,
+    canonical_json = excluded.canonical_json
 "#,
             params![
                 metadata.id,
@@ -251,6 +269,7 @@ ON CONFLICT(id) DO UPDATE SET
                 to_i64(metadata.revision, "revision")?,
                 to_i64(metadata.last_complete_ordinal, "last_complete_ordinal")?,
                 metadata.recovery_status,
+                canonical_json,
             ],
         )?;
         transaction.commit()?;
@@ -371,6 +390,7 @@ fn apply_migrations(connection: &mut Connection) -> StateResult<()> {
         let sql = match next_version {
             1 => MIGRATION_1,
             2 => MIGRATION_2,
+            3 => MIGRATION_3,
             _ => unreachable!(),
         };
         transaction.execute_batch(sql)?;
@@ -387,10 +407,22 @@ fn apply_migrations(connection: &mut Connection) -> StateResult<()> {
 fn thread_columns() -> &'static str {
     "id, rollout_path, created_at_ms, updated_at_ms, title, project_id, \
      task_mode, archived_at_ms, pinned_at_ms, agent_id, preview, revision, \
-     last_complete_ordinal, recovery_status"
+     last_complete_ordinal, recovery_status, canonical_json"
 }
 
 fn row_to_metadata(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
+    let canonical_json: String = row.get(14)?;
+    let canonical = if canonical_json.is_empty() {
+        None
+    } else {
+        Some(serde_json::from_str(&canonical_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                14,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?)
+    };
     Ok(ThreadMetadata {
         id: row.get(0)?,
         rollout_path: PathBuf::from(row.get::<_, String>(1)?),
@@ -406,6 +438,7 @@ fn row_to_metadata(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> 
         revision: from_i64(row.get(11)?, 11)?,
         last_complete_ordinal: from_i64(row.get(12)?, 12)?,
         recovery_status: row.get(13)?,
+        canonical,
     })
 }
 
@@ -458,7 +491,8 @@ fn sqlite_paths(database_path: &Path) -> Vec<PathBuf> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 enum RolloutItem {
-    SessionMeta(SessionMeta),
+    SessionMeta(Value),
+    ResponseItem(Value),
     LegacyCheckpoint(LegacyCheckpoint),
     EventMsg(Value),
 }
@@ -582,18 +616,45 @@ impl RolloutAppender {
                 "rollout belongs to thread {existing}, not {thread_id}"
             )));
         }
-        writer.append(RolloutItem::SessionMeta(SessionMeta {
+        let meta = serde_json::to_value(SessionMeta {
             thread_id: thread_id.into(),
             created_at_ms,
             rollout_path: path_to_string(rollout_path)?,
             originator: "tietiezhi-desktop".into(),
-        }))?;
+        })?;
+        writer.append(RolloutItem::SessionMeta(meta))?;
+        writer.session_thread_id = Some(thread_id.into());
+        Ok(())
+    }
+
+    pub fn ensure_canonical_session_meta(&self, thread_id: &str, meta: Value) -> StateResult<()> {
+        let meta_thread_id = session_meta_thread_id(&meta)
+            .ok_or_else(|| StateError::Invalid("session_meta id is required".into()))?;
+        if meta_thread_id != thread_id {
+            return Err(StateError::Invalid(format!(
+                "session_meta belongs to thread {meta_thread_id}, not {thread_id}"
+            )));
+        }
+        let mut writer = self.writer()?;
+        if let Some(existing) = &writer.session_thread_id {
+            if existing == thread_id {
+                return Ok(());
+            }
+            return Err(StateError::Invalid(format!(
+                "rollout belongs to thread {existing}, not {thread_id}"
+            )));
+        }
+        writer.append(RolloutItem::SessionMeta(meta))?;
         writer.session_thread_id = Some(thread_id.into());
         Ok(())
     }
 
     pub fn append_event(&self, event: Value) -> StateResult<u64> {
         self.writer()?.append(RolloutItem::EventMsg(event))
+    }
+
+    pub fn append_response_item(&self, item: Value) -> StateResult<u64> {
+        self.writer()?.append(RolloutItem::ResponseItem(item))
     }
 
     pub fn append_checkpoint(
@@ -673,9 +734,12 @@ fn recover_rollout(path: &Path) -> StateResult<RolloutRecovery> {
                 events_since_checkpoint.clear();
             }
             RolloutItem::EventMsg(event) => events_since_checkpoint.push(event),
+            RolloutItem::ResponseItem(item) => recovery.response_items.push(item),
             RolloutItem::SessionMeta(meta) => {
                 if recovery.session_thread_id.is_none() {
-                    recovery.session_thread_id = Some(meta.thread_id);
+                    recovery.session_thread_id = session_meta_thread_id(&meta).map(str::to_owned);
+                    recovery.session_created_at_ms = Some(line.timestamp_ms);
+                    recovery.session_meta = Some(meta);
                 }
             }
         }
@@ -690,6 +754,13 @@ fn recover_rollout(path: &Path) -> StateResult<RolloutRecovery> {
         recovery.truncated_bytes = original_len - valid_offset;
     }
     Ok(recovery)
+}
+
+fn session_meta_thread_id(meta: &Value) -> Option<&str> {
+    meta.get("id")
+        .or_else(|| meta.get("threadId"))
+        .or_else(|| meta.get("thread_id"))
+        .and_then(Value::as_str)
 }
 
 pub fn atomic_write(path: impl AsRef<Path>, bytes: &[u8]) -> StateResult<()> {
@@ -746,6 +817,7 @@ mod tests {
             revision: 0,
             last_complete_ordinal: 0,
             recovery_status: "clean".into(),
+            canonical: None,
         }
     }
 
@@ -781,11 +853,53 @@ mod tests {
         assert_eq!(thread.title, "legacy");
         assert_eq!(thread.pinned_at_ms, 0);
         assert_eq!(thread.revision, 0);
+        assert_eq!(thread.canonical, None);
         let connection = Connection::open(store.database_path()).unwrap();
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_v2_index_and_roundtrips_canonical_metadata() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("state.sqlite3");
+        let connection = Connection::open(&db).unwrap();
+        connection.execute_batch(MIGRATION_1).unwrap();
+        connection.execute_batch(MIGRATION_2).unwrap();
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at_ms) VALUES (1, 1), (2, 2)",
+                [],
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        connection
+            .execute(
+                r#"INSERT INTO threads (
+                    id, rollout_path, created_at_ms, updated_at_ms, title,
+                    project_id, task_mode, archived_at_ms, pinned_at_ms,
+                    agent_id, preview, revision, last_complete_ordinal,
+                    recovery_status
+                ) VALUES (?1, ?2, 1, 2, 'v2', '', 'code', 0, 0, '', '', 0, 0, 'clean')"#,
+                params![
+                    "thread-v2",
+                    temp.path().join("rollout.jsonl").display().to_string()
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = StateStore::open(temp.path()).unwrap();
+        let mut thread = store.thread("thread-v2").unwrap().unwrap();
+        assert_eq!(thread.canonical, None);
+        thread.canonical = Some(json!({"sessionId": "session-1"}));
+        store.upsert_metadata(&thread).unwrap();
+        assert_eq!(
+            store.thread("thread-v2").unwrap().unwrap().canonical,
+            Some(json!({"sessionId": "session-1"}))
+        );
     }
 
     #[test]

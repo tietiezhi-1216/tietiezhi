@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 170 |
+| 待实现 | 144 |
 | 实现中 | 0 |
-| 已实现 | 0 |
+| 已实现 | 26 |
 | 服务映射 | 0 |
 
 ## 阶段进度
@@ -41,9 +41,9 @@
 | R0 | 基线治理 | 已完成 | shared/codex/v2/upstream-baseline.json；desktop/scripts/check-codex-parity.mjs；pnpm check:codex-parity；pnpm typecheck；pnpm build；cargo test（130 项） | 官方 V2 方法仍全部待实现；R1 起逐项推进 |
 | R1 | 旧运行时止血 | 已完成 | desktop/src-tauri/src/permission/mod.rs；desktop/src-tauri/src/agent/loop_.rs；commands::conversations 旧决策迁移测试；scripts/check-permission-prompt.mjs；pnpm test:permission-ui；pnpm typecheck；pnpm build；cargo test | 尚未具备 Codex OS 沙箱、ExecPolicy 和独立 Approval 状态机；这些能力由 R14-R18 实现 |
 | R2 | 协议层 | 已完成 | crates/agent-protocol；shared/codex/v2/schema；shared/codex/v2/typescript；desktop/scripts/check-codex-schema.mjs；Rust 双向 fixture 与反向 Schema 测试；pnpm test:codex-protocol-ts | 本阶段只实现协议类型与生成门禁，170 个方法的运行时行为仍由 R3-R39 逐项实现 |
-| R3 | 事件模型 | 已完成 | crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build | 事件身份已由 R4 写入 rollout 和任务项；正式 App Server 通知仍待 R5-R6 接入，LegacyChatEvent 在 R38 删除 |
-| R4 | 持久化 | 已完成 | crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build | 现有会话仍以 legacy_checkpoint 迁移格式写入 rollout；R5-R6 改为 canonical Thread/Turn/Item，task.json 镜像在 R38 删除 |
-| R5 | Thread 生命周期 | 待开始 |  |  |
+| R3 | 事件模型 | 已完成 | crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build | Thread 生命周期通知已由 R5 接入正式 App Server 路由；Turn/Item 通知由 R6 接管，LegacyChatEvent 在 R38 删除 |
+| R4 | 持久化 | 已完成 | crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build | 新 Runtime 已由 R5 写入 canonical session_meta/response_item；旧会话仍写 legacy_checkpoint，R6 接管 Turn/Item，task.json 镜像在 R38 删除 |
+| R5 | Thread 生命周期 | 已完成 | crates/agent-core；commands/codex.rs；docs/CODEX-THREADS.md；SQLite v2→v3 迁移与 canonical session_meta 索引重建测试；12 项 ThreadManager 测试；137 项桌面 Rust 测试；pnpm typecheck；pnpm build | Turn 列表暂存于 canonical_json 查询缓存；R6 将以 rollout 的 Turn/Item 事件重建并接入真实执行状态机，旧会话适配层在 R38 删除 |
 | R6 | Turn 生命周期 | 待开始 |  |  |
 | R7 | Responses 模型层 | 待开始 |  |  |
 | R8 | Gateway 对齐 | 待开始 |  |  |
@@ -147,26 +147,26 @@
 | `skills/config/write` | 待实现 | R22 |  |
 | `skills/extraRoots/set` | 待实现 | R22 |  |
 | `skills/list` | 待实现 | R22 |  |
-| `thread/approveGuardianDeniedAction` | 待实现 | R5 |  |
-| `thread/archive` | 待实现 | R5 |  |
+| `thread/approveGuardianDeniedAction` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/archive` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/compact/start` | 待实现 | R9 |  |
-| `thread/delete` | 待实现 | R5 |  |
-| `thread/fork` | 待实现 | R5 |  |
+| `thread/delete` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/fork` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/goal/clear` | 待实现 | R25 |  |
 | `thread/goal/get` | 待实现 | R25 |  |
 | `thread/goal/set` | 待实现 | R25 |  |
-| `thread/inject_items` | 待实现 | R5 |  |
-| `thread/list` | 待实现 | R5 |  |
-| `thread/loaded/list` | 待实现 | R5 |  |
-| `thread/metadata/update` | 待实现 | R5 |  |
-| `thread/name/set` | 待实现 | R5 |  |
-| `thread/read` | 待实现 | R5 |  |
-| `thread/resume` | 待实现 | R5 |  |
-| `thread/rollback` | 待实现 | R5 |  |
+| `thread/inject_items` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/list` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/loaded/list` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/metadata/update` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/name/set` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/read` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/resume` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/rollback` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/shellCommand` | 待实现 | R13 |  |
-| `thread/start` | 待实现 | R5 |  |
-| `thread/unarchive` | 待实现 | R5 |  |
-| `thread/unsubscribe` | 待实现 | R5 |  |
+| `thread/start` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/unarchive` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
+| `thread/unsubscribe` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `turn/interrupt` | 待实现 | R6 |  |
 | `turn/start` | 待实现 | R6 |  |
 | `turn/steer` | 待实现 | R6 |  |
@@ -238,15 +238,15 @@
 | `remoteControl/status/changed` | 待实现 | R35 |  |
 | `serverRequest/resolved` | 待实现 | R36 |  |
 | `skills/changed` | 待实现 | R22 |  |
-| `thread/archived` | 待实现 | R5 |  |
-| `thread/closed` | 待实现 | R5 |  |
+| `thread/archived` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
+| `thread/closed` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/compacted` | 待实现 | R9 |  |
-| `thread/deleted` | 待实现 | R5 |  |
-| `thread/environment/connected` | 待实现 | R5 |  |
-| `thread/environment/disconnected` | 待实现 | R5 |  |
+| `thread/deleted` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
+| `thread/environment/connected` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
+| `thread/environment/disconnected` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/goal/cleared` | 待实现 | R25 |  |
 | `thread/goal/updated` | 待实现 | R25 |  |
-| `thread/name/updated` | 待实现 | R5 |  |
+| `thread/name/updated` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/realtime/closed` | 待实现 | R35 |  |
 | `thread/realtime/error` | 待实现 | R35 |  |
 | `thread/realtime/itemAdded` | 待实现 | R35 |  |
@@ -255,11 +255,11 @@
 | `thread/realtime/started` | 待实现 | R35 |  |
 | `thread/realtime/transcript/delta` | 待实现 | R35 |  |
 | `thread/realtime/transcript/done` | 待实现 | R35 |  |
-| `thread/settings/updated` | 待实现 | R5 |  |
-| `thread/started` | 待实现 | R5 |  |
-| `thread/status/changed` | 待实现 | R5 |  |
-| `thread/tokenUsage/updated` | 待实现 | R5 |  |
-| `thread/unarchived` | 待实现 | R5 |  |
+| `thread/settings/updated` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
+| `thread/started` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
+| `thread/status/changed` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
+| `thread/tokenUsage/updated` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
+| `thread/unarchived` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `turn/completed` | 待实现 | R6 |  |
 | `turn/diff/updated` | 待实现 | R12 |  |
 | `turn/moderationMetadata` | 待实现 | R6 |  |

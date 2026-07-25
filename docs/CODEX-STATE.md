@@ -22,6 +22,7 @@ SQLite 使用 WAL、`synchronous=FULL`、外键和五秒 busy timeout。`threads
 - 标题、预览、项目、任务模式和 Agent
 - checkpoint revision 与最后完整 ordinal
 - 恢复状态
+- R5 canonical Thread 查询缓存（SQLite v3 `canonical_json`）
 
 迁移按 `PRAGMA user_version` 顺序运行，并记录在 `schema_migrations`。启动时执行 `quick_check`；确认损坏时只移动当前状态数据库及其 `-wal`、`-shm`，随后创建新数据库。Thread 索引会从 rollout 和兼容快照重建。
 
@@ -32,12 +33,13 @@ SQLite 不是会话历史的单一事实源。发生“rollout 已写入、SQLit
 每行都有毫秒时间和递增 ordinal，载荷使用 Codex 风格的扁平 `type` 与 `payload`：
 
 - `session_meta`：Thread 身份、创建时间、rollout 路径和来源
+- `response_item`：模型可见的 canonical Responses API Item
 - `legacy_checkpoint`：迁移期完整会话快照
 - `event_msg`：带 `threadId`、`turnId`、`itemId` 和 `sequence` 的 R3 流式事件
 
 新写入先进入 rollout 并 flush，checkpoint 还会执行 `sync_data`，随后用 SQLite 事务更新索引，最后原子替换兼容 `task.json`。同一进程内相同路径共享一个锁和文件句柄，checkpoint 与流式事件不会互相覆盖。
 
-R5、R6 建立正式 Thread/Turn 状态机后，新执行记录会逐步改为官方 canonical Item；`legacy_checkpoint` 只负责迁移现有任务，并在 R38 删除旧运行时后停止写入。
+R5 新 Thread 已写入 canonical `session_meta` 和 `response_item`。状态库重建后，`ThreadManager` 直接从 `session_meta` 恢复索引；R4 的旧 `threadId` 元数据继续由会话迁移层处理。R6 将 Turn 边界和 Item 投影改为 canonical rollout；`legacy_checkpoint` 只负责迁移现有任务，并在 R38 删除旧运行时后停止写入。
 
 ## 崩溃恢复
 
@@ -67,6 +69,7 @@ R5、R6 建立正式 Thread/Turn 状态机后，新执行记录会逐步改为�
 
 ```bash
 cargo test --manifest-path ../crates/agent-state/Cargo.toml
+cargo test --manifest-path ../crates/agent-core/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 pnpm test:chat-event-migration
 pnpm test:conversation-migration

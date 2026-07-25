@@ -361,6 +361,7 @@ fn metadata_for(
         revision,
         last_complete_ordinal,
         recovery_status: recovery_status.into(),
+        canonical: None,
     }
 }
 
@@ -888,6 +889,7 @@ fn list_conversation_metas(
         .list_threads(archived)
         .map_err(|error| format!("读取任务索引失败：{error}"))?
         .into_iter()
+        .filter(|thread| thread.canonical.is_none())
         .map(|thread| {
             Ok(ConversationMeta {
                 id: thread.id,
@@ -921,6 +923,9 @@ pub(crate) fn suggestion_history(
         );
         let mut tasks = Vec::new();
         for thread in indexed {
+            if thread.canonical.is_some() {
+                continue;
+            }
             if thread.project_id != expected_project_id || thread.task_mode != task_mode.as_str() {
                 continue;
             }
@@ -1001,6 +1006,13 @@ pub fn save_conversation(
 ) -> Result<SaveConversationResult, String> {
     with_store(&app, |store| {
         validate_id(&conversation.id)?;
+        if store
+            .thread(&conversation.id)
+            .map_err(|error| format!("读取任务索引失败：{error}"))?
+            .is_some_and(|thread| thread.canonical.is_some())
+        {
+            return Err("该任务由 Codex Runtime 管理，请使用 App Server V2 接口".into());
+        }
         if conversation.title.trim().is_empty() {
             conversation.title = DEFAULT_CONVERSATION_TITLE.into();
         }
@@ -1121,6 +1133,13 @@ pub fn archive_project_conversations(app: AppHandle, project_id: String) -> Resu
 #[tauri::command]
 pub fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
     with_store(&app, |store| {
+        if store
+            .thread(&id)
+            .map_err(|error| format!("读取任务索引失败：{error}"))?
+            .is_some_and(|thread| thread.canonical.is_some())
+        {
+            return Err("该任务由 Codex Runtime 管理，请使用 thread/delete".into());
+        }
         let root = task_root(&app, &id)?;
         if !root.exists() {
             store

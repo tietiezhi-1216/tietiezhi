@@ -28,6 +28,8 @@ pub struct AppState {
     /// Persistent connections that expose this install as a device node to
     /// every configured remote Core.
     pub(crate) device_fabric: commands::devices::DeviceFabric,
+    /// Lazily initialized source-native App Server V2 runtime.
+    pub(crate) codex_core: Mutex<Option<tietiezhi_agent_core::ThreadManager>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -64,6 +66,7 @@ pub fn run() {
             permissions: permission::PermissionBroker::default(),
             mcp: mcp::McpManager::default(),
             device_fabric: commands::devices::DeviceFabric::default(),
+            codex_core: Mutex::new(None),
         })
         .manage(commands::hotkey::HotkeyState::default())
         .setup(|app| {
@@ -110,6 +113,7 @@ pub fn run() {
             commands::create::delete_create_asset,
             commands::chat::chat_stream,
             commands::chat::tietiezhi_stream,
+            commands::codex::codex_v2_request,
             commands::tietiezhi::get_tietiezhi_config,
             commands::tietiezhi::save_tietiezhi_config,
             commands::tietiezhi::list_tietiezhi_files,
