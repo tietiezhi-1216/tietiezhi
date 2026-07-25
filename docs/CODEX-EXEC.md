@@ -33,7 +33,7 @@ R13 在 Tauri Rust 进程内实现 Codex Unified Exec，不运行或嵌入上游
 ## 模型工具生命周期
 
 1. Core 先创建 `commandExecution` Item，状态为 `inProgress`。
-2. 非 `never` 审批策略发送 `item/commandExecution/requestApproval`，等待期间 Thread 标记 `waitingOnApproval`。
+2. R14 Policy Stage 返回 `NeedsApproval` 时发送 `item/commandExecution/requestApproval`，精确会话键命中时直接复用，等待期间 Thread 标记 `waitingOnApproval`。
 3. 执行输出持续发送 `item/commandExecution/outputDelta` 并累积到 Item。
 4. 非空 stdin 或仍存活的空轮询发送 `item/commandExecution/terminalInteraction`。
 5. 进程退出后，同一 Item 记录 `processId`、聚合输出、退出码、耗时与 `completed/failed` 状态并持久化到 canonical rollout。

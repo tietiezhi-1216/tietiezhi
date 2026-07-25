@@ -1,6 +1,8 @@
 //! Reverse JSON-RPC approval broker compatible with Codex App Server V2.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -8,6 +10,311 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tietiezhi_agent_protocol::{JSONRPCResponse, ServerRequest};
 use tokio::sync::oneshot;
+
+/// Codex approval policy. The externally tagged `granular` representation is
+/// intentionally identical to App Server V2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AskForApproval {
+    #[serde(rename = "untrusted")]
+    UnlessTrusted,
+    #[serde(alias = "on-failure")]
+    #[default]
+    OnRequest,
+    Granular(GranularApprovalConfig),
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GranularApprovalConfig {
+    pub sandbox_approval: bool,
+    pub rules: bool,
+    #[serde(default)]
+    pub skill_approval: bool,
+    #[serde(default)]
+    pub request_permissions: bool,
+    pub mcp_elicitations: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalCategory {
+    Sandbox,
+    Rule,
+    Skill,
+    RequestPermissions,
+    McpElicitation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxAvailability {
+    /// The operation must run under a restricted filesystem policy.
+    Restricted,
+    /// The selected profile is danger-full-access.
+    Unrestricted,
+    /// Isolation is supplied by the execution environment rather than Codex.
+    External,
+    /// The requested platform sandbox has not been installed yet.
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApprovalRequirement {
+    Skip { bypass_sandbox: bool },
+    NeedsApproval { reason: Option<String> },
+    Forbidden { reason: String },
+}
+
+impl AskForApproval {
+    pub fn allows(self, category: ApprovalCategory) -> bool {
+        match self {
+            Self::Never => false,
+            Self::UnlessTrusted | Self::OnRequest => true,
+            Self::Granular(config) => match category {
+                ApprovalCategory::Sandbox => config.sandbox_approval,
+                ApprovalCategory::Rule => config.rules,
+                ApprovalCategory::Skill => config.skill_approval,
+                ApprovalCategory::RequestPermissions => config.request_permissions,
+                ApprovalCategory::McpElicitation => config.mcp_elicitations,
+            },
+        }
+    }
+}
+
+/// Source-compatible default policy stage. ExecPolicy can pass
+/// `trusted_read_only=true` once R18 has classified a command.
+pub fn default_exec_approval_requirement(
+    policy: AskForApproval,
+    sandbox: SandboxAvailability,
+    trusted_read_only: bool,
+) -> ApprovalRequirement {
+    if policy == AskForApproval::Never {
+        return ApprovalRequirement::Skip {
+            bypass_sandbox: false,
+        };
+    }
+    if policy == AskForApproval::UnlessTrusted && trusted_read_only {
+        return ApprovalRequirement::Skip {
+            bypass_sandbox: false,
+        };
+    }
+
+    let needs_approval = match policy {
+        AskForApproval::UnlessTrusted => true,
+        AskForApproval::OnRequest | AskForApproval::Granular(_) => matches!(
+            sandbox,
+            SandboxAvailability::Restricted | SandboxAvailability::Unavailable
+        ),
+        AskForApproval::Never => false,
+    };
+    if needs_approval && !policy.allows(ApprovalCategory::Sandbox) {
+        ApprovalRequirement::Forbidden {
+            reason: "approval policy disallowed sandbox approval prompt".into(),
+        }
+    } else if needs_approval {
+        ApprovalRequirement::NeedsApproval { reason: None }
+    } else {
+        ApprovalRequirement::Skip {
+            bypass_sandbox: false,
+        }
+    }
+}
+
+pub fn category_approval_requirement(
+    policy: AskForApproval,
+    category: ApprovalCategory,
+    reason: impl Into<String>,
+) -> ApprovalRequirement {
+    if policy == AskForApproval::Never {
+        return ApprovalRequirement::Forbidden {
+            reason: "approval policy is never".into(),
+        };
+    }
+    if policy.allows(category) {
+        ApprovalRequirement::NeedsApproval {
+            reason: Some(reason.into()),
+        }
+    } else {
+        ApprovalRequirement::Forbidden {
+            reason: format!("approval policy disallowed {category:?} prompt"),
+        }
+    }
+}
+
+/// Exact, session-local approval keys. They deliberately include execution
+/// context so approving one shell command never grants all future shell calls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ApprovalKey {
+    Command {
+        environment_id: String,
+        command: Vec<String>,
+        cwd: String,
+        tty: bool,
+        sandbox_permissions: String,
+        additional_permissions: Option<Value>,
+    },
+    FileChange {
+        environment_id: String,
+        path: String,
+    },
+    Permissions {
+        environment_id: String,
+        cwd: String,
+        permissions: Value,
+    },
+    Mcp {
+        server: String,
+        tool: String,
+        arguments: Value,
+    },
+    Network {
+        scheme: String,
+        host: String,
+        port: Option<u16>,
+        action: String,
+    },
+}
+
+#[derive(Clone, Default)]
+pub struct SessionApprovalStore {
+    approved: std::sync::Arc<Mutex<HashMap<String, ()>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PersistentApprovalRule {
+    ExecPolicy { amendment: Vec<String> },
+    NetworkPolicy { amendment: Value },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistentApprovalRules {
+    #[serde(default = "approval_rules_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub rules: Vec<PersistentApprovalRule>,
+}
+
+fn approval_rules_version() -> u32 {
+    1
+}
+
+#[derive(Clone)]
+pub struct PersistentApprovalStore {
+    path: PathBuf,
+    state: std::sync::Arc<Mutex<PersistentApprovalRules>>,
+}
+
+impl PersistentApprovalStore {
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, ApprovalError> {
+        let path = path.into();
+        let state = if path.exists() {
+            let bytes = fs::read(&path).map_err(io_approval_error)?;
+            serde_json::from_slice(&bytes).map_err(|error| ApprovalError::new(error.to_string()))?
+        } else {
+            PersistentApprovalRules {
+                version: approval_rules_version(),
+                rules: Vec::new(),
+            }
+        };
+        Ok(Self {
+            path,
+            state: std::sync::Arc::new(Mutex::new(state)),
+        })
+    }
+
+    pub fn append(&self, rule: PersistentApprovalRule) -> Result<bool, ApprovalError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ApprovalError::new("persistent approval store lock poisoned"))?;
+        if state.rules.contains(&rule) {
+            return Ok(false);
+        }
+        state.rules.push(rule);
+        atomic_write_json(&self.path, &*state)?;
+        Ok(true)
+    }
+
+    pub fn snapshot(&self) -> Result<PersistentApprovalRules, ApprovalError> {
+        self.state
+            .lock()
+            .map_err(|_| ApprovalError::new("persistent approval store lock poisoned"))
+            .map(|state| state.clone())
+    }
+}
+
+fn atomic_write_json(path: &Path, value: &impl Serialize) -> Result<(), ApprovalError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| ApprovalError::new("approval rule path has no parent"))?;
+    fs::create_dir_all(parent).map_err(io_approval_error)?;
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    let bytes =
+        serde_json::to_vec_pretty(value).map_err(|error| ApprovalError::new(error.to_string()))?;
+    fs::write(&temporary, bytes).map_err(io_approval_error)?;
+    fs::rename(&temporary, path).map_err(io_approval_error)
+}
+
+fn io_approval_error(error: std::io::Error) -> ApprovalError {
+    ApprovalError::new(error.to_string())
+}
+
+impl SessionApprovalStore {
+    pub fn contains_all(&self, keys: &[ApprovalKey]) -> bool {
+        self.contains_all_for("", keys)
+    }
+
+    pub fn contains_all_for(&self, session_id: &str, keys: &[ApprovalKey]) -> bool {
+        if keys.is_empty() {
+            return false;
+        }
+        let Ok(approved) = self.approved.lock() else {
+            return false;
+        };
+        keys.iter().all(|key| {
+            serde_json::to_string(key)
+                .ok()
+                .map(|key| format!("{session_id}\u{0}{key}"))
+                .is_some_and(|key| approved.contains_key(&key))
+        })
+    }
+
+    pub fn approve_for_session(&self, keys: &[ApprovalKey]) -> Result<(), ApprovalError> {
+        self.approve_for("", keys)
+    }
+
+    pub fn approve_for(&self, session_id: &str, keys: &[ApprovalKey]) -> Result<(), ApprovalError> {
+        let mut approved = self
+            .approved
+            .lock()
+            .map_err(|_| ApprovalError::new("approval cache lock poisoned"))?;
+        for key in keys {
+            let key = serde_json::to_string(key)
+                .map_err(|error| ApprovalError::new(error.to_string()))?;
+            approved.insert(format!("{session_id}\u{0}{key}"), ());
+        }
+        Ok(())
+    }
+
+    pub fn clear_session(&self, session_id: &str) -> Result<(), ApprovalError> {
+        let prefix = format!("{session_id}\u{0}");
+        self.approved
+            .lock()
+            .map_err(|_| ApprovalError::new("approval cache lock poisoned"))?
+            .retain(|key, _| !key.starts_with(&prefix));
+        Ok(())
+    }
+
+    pub fn clear(&self) -> Result<(), ApprovalError> {
+        self.approved
+            .lock()
+            .map_err(|_| ApprovalError::new("approval cache lock poisoned"))?
+            .clear();
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +366,18 @@ pub struct PendingCommandExecutionApproval {
     pub receiver: oneshot::Receiver<Result<CommandExecutionApprovalDecision, ApprovalError>>,
 }
 
+#[derive(Debug)]
+pub struct PendingPermissionsApproval {
+    pub request: RoutedServerRequest,
+    pub receiver: oneshot::Receiver<Result<PermissionsApprovalResponse, ApprovalError>>,
+}
+
+#[derive(Debug)]
+pub struct PendingLegacyApproval {
+    pub request: RoutedServerRequest,
+    pub receiver: oneshot::Receiver<Result<Value, ApprovalError>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileChangeApprovalParams {
     pub thread_id: String,
@@ -78,8 +397,38 @@ pub struct CommandExecutionApprovalParams {
     pub command: Option<String>,
     pub cwd: Option<String>,
     pub command_actions: Option<Vec<Value>>,
+    pub environment_id: Option<String>,
+    pub network_approval_context: Option<Value>,
+    pub proposed_execpolicy_amendment: Option<Vec<String>>,
+    pub proposed_network_policy_amendments: Option<Vec<Value>>,
     pub reason: Option<String>,
     pub started_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PermissionsApprovalParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub environment_id: Option<String>,
+    pub cwd: String,
+    pub reason: Option<String>,
+    pub permissions: Value,
+    pub started_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionsApprovalResponse {
+    pub permissions: Value,
+    #[serde(default = "default_permission_scope")]
+    pub scope: String,
+    #[serde(default)]
+    pub strict_auto_review: Option<bool>,
+}
+
+fn default_permission_scope() -> String {
+    "turn".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +461,8 @@ pub struct ServerRequestBroker {
 enum ApprovalSender {
     FileChange(oneshot::Sender<Result<FileChangeApprovalDecision, ApprovalError>>),
     CommandExecution(oneshot::Sender<Result<CommandExecutionApprovalDecision, ApprovalError>>),
+    Permissions(oneshot::Sender<Result<PermissionsApprovalResponse, ApprovalError>>),
+    Legacy(oneshot::Sender<Result<Value, ApprovalError>>),
 }
 type PendingMap = HashMap<String, ApprovalSender>;
 
@@ -170,6 +521,10 @@ impl ServerRequestBroker {
                 "command": params.command,
                 "cwd": params.cwd,
                 "commandActions": params.command_actions,
+                "environmentId": params.environment_id,
+                "networkApprovalContext": params.network_approval_context,
+                "proposedExecpolicyAmendment": params.proposed_execpolicy_amendment,
+                "proposedNetworkPolicyAmendments": params.proposed_network_policy_amendments,
                 "reason": params.reason
             }),
         };
@@ -181,6 +536,69 @@ impl ServerRequestBroker {
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
             .insert(id, ApprovalSender::CommandExecution(sender));
         Ok(PendingCommandExecutionApproval { request, receiver })
+    }
+
+    pub fn begin_permissions(
+        &self,
+        recipients: Vec<String>,
+        params: PermissionsApprovalParams,
+    ) -> Result<PendingPermissionsApproval, ApprovalError> {
+        let id = format!(
+            "approval-{}",
+            self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        let request = RoutedServerRequest {
+            recipients,
+            id: json!(id),
+            method: "item/permissions/requestApproval".into(),
+            params: json!({
+                "threadId": params.thread_id,
+                "turnId": params.turn_id,
+                "itemId": params.item_id,
+                "environmentId": params.environment_id,
+                "cwd": params.cwd,
+                "reason": params.reason,
+                "permissions": params.permissions,
+                "startedAtMs": params.started_at_ms
+            }),
+        };
+        serde_json::from_value::<ServerRequest>(request.wire_message())
+            .map_err(|error| ApprovalError::new(error.to_string()))?;
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
+            .insert(id, ApprovalSender::Permissions(sender));
+        Ok(PendingPermissionsApproval { request, receiver })
+    }
+
+    pub fn begin_legacy(
+        &self,
+        recipients: Vec<String>,
+        method: &str,
+        params: Value,
+    ) -> Result<PendingLegacyApproval, ApprovalError> {
+        if !matches!(method, "applyPatchApproval" | "execCommandApproval") {
+            return Err(ApprovalError::new("unsupported legacy approval method"));
+        }
+        let id = format!(
+            "approval-{}",
+            self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        let request = RoutedServerRequest {
+            recipients,
+            id: json!(id),
+            method: method.into(),
+            params,
+        };
+        serde_json::from_value::<ServerRequest>(request.wire_message())
+            .map_err(|error| ApprovalError::new(error.to_string()))?;
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
+            .insert(id, ApprovalSender::Legacy(sender));
+        Ok(PendingLegacyApproval { request, receiver })
     }
 
     pub fn resolve(&self, response: &Value) -> Result<bool, ApprovalError> {
@@ -213,6 +631,26 @@ impl ServerRequestBroker {
                     "command execution approval failed",
                 )
                 .map(|response| response.decision);
+                let _ = sender.send(result);
+            }
+            ApprovalSender::Permissions(sender) => {
+                let result = parse_result::<PermissionsApprovalResponse>(
+                    response,
+                    "permissions approval failed",
+                );
+                let _ = sender.send(result);
+            }
+            ApprovalSender::Legacy(sender) => {
+                let result = response
+                    .get("result")
+                    .cloned()
+                    .ok_or_else(|| ApprovalError::new("legacy approval failed"))
+                    .and_then(|result| {
+                        result
+                            .get("decision")
+                            .cloned()
+                            .ok_or_else(|| ApprovalError::new("legacy decision is required"))
+                    });
                 let _ = sender.send(result);
             }
         }
@@ -339,6 +777,10 @@ mod tests {
                         command: Some("git status".into()),
                         cwd: Some("/tmp/project".into()),
                         command_actions: None,
+                        environment_id: Some("local".into()),
+                        network_approval_context: None,
+                        proposed_execpolicy_amendment: None,
+                        proposed_network_policy_amendments: None,
                         reason: Some("inspect repository".into()),
                         started_at_ms: 42,
                     },
@@ -358,5 +800,211 @@ mod tests {
             );
             pending.receiver.await.unwrap().unwrap();
         }
+    }
+
+    #[test]
+    fn policy_modes_match_codex_default_sandbox_decisions() {
+        let granular = serde_json::from_value::<AskForApproval>(json!({
+            "granular":{
+                "sandbox_approval":true,
+                "rules":false,
+                "skill_approval":true,
+                "request_permissions":true,
+                "mcp_elicitations":false
+            }
+        }))
+        .unwrap();
+        assert!(granular.allows(ApprovalCategory::Sandbox));
+        assert!(!granular.allows(ApprovalCategory::Rule));
+        assert!(granular.allows(ApprovalCategory::RequestPermissions));
+        assert_eq!(
+            default_exec_approval_requirement(
+                AskForApproval::OnRequest,
+                SandboxAvailability::Restricted,
+                false
+            ),
+            ApprovalRequirement::NeedsApproval { reason: None }
+        );
+        assert_eq!(
+            default_exec_approval_requirement(
+                AskForApproval::OnRequest,
+                SandboxAvailability::External,
+                false
+            ),
+            ApprovalRequirement::Skip {
+                bypass_sandbox: false
+            }
+        );
+        assert_eq!(
+            default_exec_approval_requirement(
+                AskForApproval::UnlessTrusted,
+                SandboxAvailability::Restricted,
+                true
+            ),
+            ApprovalRequirement::Skip {
+                bypass_sandbox: false
+            }
+        );
+        assert_eq!(
+            default_exec_approval_requirement(
+                AskForApproval::Granular(GranularApprovalConfig {
+                    sandbox_approval: false,
+                    rules: true,
+                    skill_approval: false,
+                    request_permissions: false,
+                    mcp_elicitations: true,
+                }),
+                SandboxAvailability::Restricted,
+                false
+            ),
+            ApprovalRequirement::Forbidden {
+                reason: "approval policy disallowed sandbox approval prompt".into()
+            }
+        );
+    }
+
+    #[test]
+    fn approval_cache_is_exact_and_session_only() {
+        let store = SessionApprovalStore::default();
+        let first = ApprovalKey::Command {
+            environment_id: "local".into(),
+            command: vec!["git".into(), "status".into()],
+            cwd: "/tmp/a".into(),
+            tty: false,
+            sandbox_permissions: "useDefault".into(),
+            additional_permissions: None,
+        };
+        let different_cwd = ApprovalKey::Command {
+            environment_id: "local".into(),
+            command: vec!["git".into(), "status".into()],
+            cwd: "/tmp/b".into(),
+            tty: false,
+            sandbox_permissions: "useDefault".into(),
+            additional_permissions: None,
+        };
+        assert!(!store.contains_all(std::slice::from_ref(&first)));
+        store
+            .approve_for_session(std::slice::from_ref(&first))
+            .unwrap();
+        assert!(store.contains_all(std::slice::from_ref(&first)));
+        assert!(!store.contains_all(&[different_cwd]));
+        store.clear().unwrap();
+        assert!(!store.contains_all(&[first]));
+    }
+
+    #[test]
+    fn session_cache_does_not_cross_threads() {
+        let store = SessionApprovalStore::default();
+        let key = ApprovalKey::FileChange {
+            environment_id: "local".into(),
+            path: "/tmp/a".into(),
+        };
+        store
+            .approve_for("thread-a", std::slice::from_ref(&key))
+            .unwrap();
+        assert!(store.contains_all_for("thread-a", std::slice::from_ref(&key)));
+        assert!(!store.contains_all_for("thread-b", &[key]));
+    }
+
+    #[test]
+    fn persistent_amendments_are_atomic_and_deduplicated() {
+        let root = std::env::temp_dir().join(format!(
+            "tietiezhi-approval-{}-{}",
+            std::process::id(),
+            crate::tests::unique_test_id()
+        ));
+        let path = root.join("rules.json");
+        let store = PersistentApprovalStore::open(&path).unwrap();
+        let rule = PersistentApprovalRule::ExecPolicy {
+            amendment: vec!["git".into(), "status".into()],
+        };
+        assert!(store.append(rule.clone()).unwrap());
+        assert!(!store.append(rule.clone()).unwrap());
+        drop(store);
+        let reopened = PersistentApprovalStore::open(&path).unwrap();
+        assert_eq!(reopened.snapshot().unwrap().rules, vec![rule]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn unique_test_id() -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
+
+    #[test]
+    fn file_cache_accepts_only_approved_subset() {
+        let store = SessionApprovalStore::default();
+        let a = ApprovalKey::FileChange {
+            environment_id: "local".into(),
+            path: "/tmp/a".into(),
+        };
+        let b = ApprovalKey::FileChange {
+            environment_id: "local".into(),
+            path: "/tmp/b".into(),
+        };
+        store.approve_for_session(&[a.clone(), b.clone()]).unwrap();
+        assert!(store.contains_all(&[a]));
+        assert!(store.contains_all(&[b]));
+    }
+
+    #[tokio::test]
+    async fn permissions_request_matches_v2_and_defaults_scope() {
+        let broker = ServerRequestBroker::default();
+        let pending = broker
+            .begin_permissions(
+                vec!["desktop".into()],
+                PermissionsApprovalParams {
+                    thread_id: "01900000-0000-7000-8000-000000000001".into(),
+                    turn_id: "01900000-0000-7000-8000-000000000002".into(),
+                    item_id: "call_1".into(),
+                    environment_id: Some("local".into()),
+                    cwd: "/tmp/project".into(),
+                    reason: Some("read generated files".into()),
+                    permissions: json!({"fileSystem":{"read":["/tmp/generated"]}}),
+                    started_at_ms: 42,
+                },
+            )
+            .unwrap();
+        assert_eq!(pending.request.method, "item/permissions/requestApproval");
+        assert!(
+            broker
+                .resolve(&json!({
+                    "id": pending.request.id,
+                    "result":{"permissions":{"fileSystem":{"read":["/tmp/generated"]}}}
+                }))
+                .unwrap()
+        );
+        let response = pending.receiver.await.unwrap().unwrap();
+        assert_eq!(response.scope, "turn");
+    }
+
+    #[tokio::test]
+    async fn legacy_approval_methods_stay_wire_compatible() {
+        let broker = ServerRequestBroker::default();
+        let pending = broker
+            .begin_legacy(
+                vec!["desktop".into()],
+                "execCommandApproval",
+                json!({
+                    "conversationId":"01900000-0000-7000-8000-000000000001",
+                    "callId":"call_1",
+                    "command":["git","status"],
+                    "cwd":"/tmp/project",
+                    "parsedCmd":[]
+                }),
+            )
+            .unwrap();
+        assert!(
+            broker
+                .resolve(&json!({
+                    "id":pending.request.id,
+                    "result":{"decision":"approved_for_session"}
+                }))
+                .unwrap()
+        );
+        assert_eq!(
+            pending.receiver.await.unwrap().unwrap(),
+            json!("approved_for_session")
+        );
     }
 }

@@ -39,7 +39,7 @@
 | 基础工具与 Responses 工具循环 | `core/src/tools/handlers/{current_time,sleep,get_context_remaining,view_image,tool_search}.rs`、`core/src/tools/spec_plan.rs` | `crates/agent-tools`、`crates/agent-core`、`desktop/src-tauri/src/commands/codex.rs` | R11 |
 | Apply Patch | `codex-rs/apply-patch`、`core/src/tools/handlers/apply_patch*` | `crates/agent-patch` | R12 |
 | Unified Exec | `codex-rs/core/src/tools/handlers/unified_exec`、`utils/pty` | `crates/agent-exec` | R13 |
-| 审批 | `codex-rs/core/src/tools/approvals.rs` | `crates/agent-approval` | R14 |
+| 审批 | `codex-rs/core/src/tools/approvals.rs`、`tools/sandboxing.rs`、`protocol/src/approvals.rs`、`config/permission_profile_catalog.rs` | `crates/agent-approval`、`crates/agent-tools`、`desktop/src-tauri/src/commands/codex.rs` | R14 |
 | macOS Seatbelt | `codex-rs/sandboxing/src/seatbelt.rs` | `crates/agent-sandbox` | R15 |
 | Windows Sandbox | `codex-rs/windows-sandbox-rs` | `crates/agent-sandbox` | R16 |
 | 网络策略 | `codex-rs/network-proxy` | `crates/agent-sandbox` | R17 |
@@ -95,4 +95,6 @@ R12 已增加 `crates/agent-patch` 和 `crates/agent-approval` 的文件审批�
 
 R13 已增加 `crates/agent-exec`，实现 Pipe、PTY/ConPTY、stdin、resize、输出上限、后台轮询、超时、进程树清理、`command/exec*`、`thread/shellCommand`、CommandExecution Item、输出/交互通知和命令审批请求。详细行为和安全阶段边界见 `docs/CODEX-EXEC.md`。
 
-R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责把上游默认关闭的高级 TokenBudget 配置暴露到分层配置；R14-R18 仍需分别完成完整审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R14 已实现四种 Approval Policy、granular 分类、精确 Thread 会话缓存、持久 Amendment 边界、新旧审批反向 RPC、Permission Profile 目录和 `request_permissions`。详细行为见 `docs/CODEX-APPROVAL.md`。
+
+R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责把上游默认关闭的高级 TokenBudget 配置暴露到分层配置；R15-R18 仍需分别完成 macOS/Windows 沙箱、网络策略和 ExecPolicy。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

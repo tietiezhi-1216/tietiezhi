@@ -10,8 +10,11 @@ use tietiezhi_agent_account::{
     ImmediateLogin,
 };
 use tietiezhi_agent_approval::{
-    CommandExecutionApprovalDecision, CommandExecutionApprovalParams, FileChangeApprovalDecision,
-    FileChangeApprovalParams, RoutedServerRequest as ApprovalServerRequest,
+    category_approval_requirement, default_exec_approval_requirement, ApprovalCategory,
+    ApprovalKey, ApprovalRequirement, AskForApproval, CommandExecutionApprovalDecision,
+    CommandExecutionApprovalParams, FileChangeApprovalDecision, FileChangeApprovalParams,
+    PermissionsApprovalParams, PersistentApprovalRule, PersistentApprovalStore,
+    RoutedServerRequest as ApprovalServerRequest, SandboxAvailability,
 };
 use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
@@ -23,12 +26,14 @@ use tietiezhi_agent_model::{
     ResponseEvent, ResponsesApiRequest, ResponsesClient, TextControls, TextFormat, TextFormatType,
 };
 use tietiezhi_agent_protocol::{
-    ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse, ServerNotification,
+    ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse,
+    PermissionProfileListResponse, ServerNotification,
 };
 use tietiezhi_agent_tools::builtins::{
-    apply_patch_handler, context_remaining_handler, current_time_handler, sleep_handler,
-    unified_exec_handlers, view_image_handler, web_search_handler, CommandApprovalRequest,
-    CommandRuntimeEvent, FileChangeApprovalRequest,
+    apply_patch_handler, context_remaining_handler, current_time_handler,
+    request_permissions_handler, sleep_handler, unified_exec_handlers, view_image_handler,
+    web_search_handler, CommandApprovalRequest, CommandRuntimeEvent, FileChangeApprovalRequest,
+    PermissionsApprovalRequest,
 };
 use tietiezhi_agent_tools::{ToolCall, ToolCallRuntime, ToolPayload, ToolRegistry, ToolRouter};
 use tokio_util::sync::CancellationToken;
@@ -128,6 +133,28 @@ fn thread_manager(app: &AppHandle, state: &AppState) -> Result<ThreadManager, St
     .map_err(|error| format!("初始化 Codex Runtime 失败：{error:?}"))?;
     *slot = Some(manager.clone());
     Ok(manager)
+}
+
+fn persistent_approval_store(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<PersistentApprovalStore, String> {
+    let mut slot = state
+        .codex_persistent_approvals
+        .lock()
+        .map_err(|_| "Codex 持久审批规则锁已损坏".to_string())?;
+    if let Some(store) = slot.as_ref() {
+        return Ok(store.clone());
+    }
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let store =
+        PersistentApprovalStore::open(app_data.join("agent-runtime").join("approval-rules.json"))
+            .map_err(|error| format!("无法打开持久审批规则：{error}"))?;
+    *slot = Some(store.clone());
+    Ok(store)
 }
 
 fn emit_notifications(app: &AppHandle, notifications: &[RoutedNotification]) -> Result<(), String> {
@@ -241,6 +268,9 @@ pub async fn codex_v2_request(
             return Ok(output);
         }
     }
+    if method == "permissionProfile/list" {
+        return permission_profile_list(&request);
+    }
     if method.starts_with("command/exec") {
         return dispatch_command_exec(&app, &state, &connection_id, &request, &method).await;
     }
@@ -276,6 +306,12 @@ pub async fn codex_v2_request(
                 .then_some(requested_turn_id.as_deref())
                 .flatten();
             cancel_thread(&state, thread_id, expected_turn_id);
+            if matches!(method.as_str(), "thread/archive" | "thread/delete") {
+                state
+                    .codex_session_approvals
+                    .clear_session(thread_id)
+                    .map_err(|error| error.to_string())?;
+            }
         }
     }
     emit_notifications(&app, &output.notifications)?;
@@ -309,6 +345,55 @@ pub async fn codex_v2_request(
         }
     }
     Ok(output)
+}
+
+fn permission_profile_list(request: &Value) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("permissionProfile/list 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let profiles = [
+        json!({"id":":read-only","description":null,"allowed":true}),
+        json!({"id":":workspace","description":null,"allowed":true}),
+        json!({"id":":danger-full-access","description":null,"allowed":true}),
+    ];
+    let total = profiles.len();
+    let start = match params.get("cursor").filter(|value| !value.is_null()) {
+        Some(cursor) => match cursor
+            .as_str()
+            .and_then(|cursor| cursor.parse::<usize>().ok())
+        {
+            Some(start) if start <= total => start,
+            _ => {
+                return Ok(dispatch_error(
+                    request,
+                    -32602,
+                    "invalid permission profile cursor",
+                ));
+            }
+        },
+        None => 0,
+    };
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
+        .unwrap_or(total)
+        .max(1)
+        .min(total);
+    let end = start.saturating_add(limit).min(total);
+    let result = json!({
+        "data":profiles[start..end],
+        "nextCursor":(end < total).then(|| end.to_string())
+    });
+    debug_assert!(serde_json::from_value::<PermissionProfileListResponse>(result.clone()).is_ok());
+    dispatch_success(request, result)
 }
 
 fn online_model_list(app: &AppHandle, request: &Value) -> Result<Option<DispatchOutput>, String> {
@@ -2146,9 +2231,146 @@ fn turn_tool_runtime(
             supports_original_image_detail(&snapshot.model),
         ));
     }
-    let requires_patch_approval = snapshot.approval_policy.as_str() != Some("never");
+    let approval_policy =
+        serde_json::from_value::<AskForApproval>(snapshot.approval_policy.clone())
+            .unwrap_or_default();
+    // R15/R16 replace this transitional unavailable state with the real
+    // platform sandbox capability. Until then, restricted profiles fail closed.
+    let sandbox_availability = match snapshot.sandbox.get("type").and_then(Value::as_str) {
+        Some("dangerFullAccess") => SandboxAvailability::Unrestricted,
+        Some("externalSandbox") => SandboxAvailability::External,
+        _ => SandboxAvailability::Unavailable,
+    };
+    if approval_policy.allows(ApprovalCategory::RequestPermissions) {
+        let permissions_app = app.clone();
+        let permissions_manager = manager.clone();
+        let permissions_requirement = category_approval_requirement(
+            approval_policy,
+            ApprovalCategory::RequestPermissions,
+            "request additional permissions",
+        );
+        handlers.push(request_permissions_handler(
+            snapshot.cwd.clone(),
+            Arc::new(move |request: PermissionsApprovalRequest| {
+                let app = permissions_app.clone();
+                let manager = permissions_manager.clone();
+                let requirement = permissions_requirement.clone();
+                Box::pin(async move {
+                    if let ApprovalRequirement::Forbidden { reason } = requirement {
+                        return Err(tietiezhi_agent_tools::ToolError::Handler(reason));
+                    }
+                    let wire_permissions = permission_profile_to_v2(request.permissions.clone());
+                    let key = ApprovalKey::Permissions {
+                        environment_id: request.environment_id.clone(),
+                        cwd: request.cwd.clone(),
+                        permissions: wire_permissions.clone(),
+                    };
+                    let state = app.state::<AppState>();
+                    if state
+                        .codex_session_approvals
+                        .contains_all_for(&request.thread_id, std::slice::from_ref(&key))
+                    {
+                        return Ok(tietiezhi_agent_approval::PermissionsApprovalResponse {
+                            permissions: request.permissions,
+                            scope: "session".into(),
+                            strict_auto_review: None,
+                        });
+                    }
+                    let waiting = manager
+                        .set_thread_status(
+                            &request.thread_id,
+                            json!({"type":"active","activeFlags":["waitingOnApproval"]}),
+                        )
+                        .map_err(|error| {
+                            tietiezhi_agent_tools::ToolError::Handler(format!(
+                                "set permissions approval status: {error:?}"
+                            ))
+                        })?;
+                    emit_notifications(&app, &waiting)
+                        .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                    let recipients =
+                        manager
+                            .thread_recipients(&request.thread_id)
+                            .map_err(|error| {
+                                tietiezhi_agent_tools::ToolError::Handler(format!(
+                                    "resolve permissions approval recipients: {error:?}"
+                                ))
+                            })?;
+                    let started_at_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis()
+                        .min(i64::MAX as u128) as i64;
+                    let pending = state
+                        .codex_approval_requests
+                        .begin_permissions(
+                            recipients,
+                            PermissionsApprovalParams {
+                                thread_id: request.thread_id.clone(),
+                                turn_id: request.turn_id.clone(),
+                                item_id: request.item_id,
+                                environment_id: Some(request.environment_id),
+                                cwd: request.cwd,
+                                reason: request.reason,
+                                permissions: wire_permissions,
+                                started_at_ms,
+                            },
+                        )
+                        .map_err(|error| {
+                            tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                        })?;
+                    let request_id = pending.request.id.clone();
+                    emit_approval_server_request(&app, &pending.request)
+                        .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                    let mut response = tokio::select! {
+                        result = pending.receiver => result
+                            .map_err(|_| tietiezhi_agent_tools::ToolError::Handler(
+                                "permissions approval channel closed".into()
+                            ))?
+                            .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?,
+                        () = request.cancellation.cancelled() => {
+                            let _ = state.codex_approval_requests.cancel(&request_id);
+                            return Err(tietiezhi_agent_tools::ToolError::Handler(
+                                "permissions approval cancelled".into()
+                            ));
+                        }
+                    };
+                    if response.scope == "session" {
+                        state
+                            .codex_session_approvals
+                            .approve_for(&request.thread_id, &[key])
+                            .map_err(|error| {
+                                tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                            })?;
+                    }
+                    let active = manager
+                        .set_thread_status(
+                            &request.thread_id,
+                            json!({"type":"active","activeFlags":[]}),
+                        )
+                        .map_err(|error| {
+                            tietiezhi_agent_tools::ToolError::Handler(format!(
+                                "restore active status: {error:?}"
+                            ))
+                        })?;
+                    emit_notifications(&app, &active)
+                        .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                    response.permissions = permission_profile_to_tool(response.permissions);
+                    Ok(response)
+                }) as tietiezhi_agent_tools::builtins::PermissionsApprovalFuture
+            }),
+        ));
+    }
+    let patch_approval_requirement = default_exec_approval_requirement(
+        approval_policy,
+        sandbox_availability,
+        /*trusted_read_only*/ false,
+    );
+    let requires_patch_approval =
+        !matches!(patch_approval_requirement, ApprovalRequirement::Skip { .. });
     let approval_app = app.clone();
     let approval_manager = manager.clone();
+    let patch_requirement = patch_approval_requirement.clone();
     handlers.push(
         apply_patch_handler(
             snapshot.cwd.clone(),
@@ -2157,7 +2379,26 @@ fn turn_tool_runtime(
                 Arc::new(move |request: FileChangeApprovalRequest| {
                     let app = approval_app.clone();
                     let manager = approval_manager.clone();
+                    let requirement = patch_requirement.clone();
                     Box::pin(async move {
+                        if let ApprovalRequirement::Forbidden { .. } = requirement {
+                            return Ok(FileChangeApprovalDecision::Decline);
+                        }
+                        let keys = request
+                            .files
+                            .iter()
+                            .map(|path| ApprovalKey::FileChange {
+                                environment_id: request.environment_id.clone(),
+                                path: path.clone(),
+                            })
+                            .collect::<Vec<_>>();
+                        let state = app.state::<AppState>();
+                        if state
+                            .codex_session_approvals
+                            .contains_all_for(&request.thread_id, &keys)
+                        {
+                            return Ok(FileChangeApprovalDecision::AcceptForSession);
+                        }
                         let waiting = manager
                             .set_thread_status(
                                 &request.thread_id,
@@ -2213,6 +2454,14 @@ fn turn_tool_runtime(
                                 FileChangeApprovalDecision::Cancel
                             }
                         };
+                        if decision == FileChangeApprovalDecision::AcceptForSession {
+                            state
+                                .codex_session_approvals
+                                .approve_for(&request.thread_id, &keys)
+                                .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(
+                                    error.to_string()
+                                ))?;
+                        }
                         let active = manager
                             .set_thread_status(
                                 &request.thread_id,
@@ -2235,14 +2484,42 @@ fn turn_tool_runtime(
             ModelError::Consumer(format!("初始化 Codex apply_patch 失败：{error}"))
         })?,
     );
-    let requires_command_approval = snapshot.approval_policy.as_str() != Some("never");
+    let command_approval_requirement = default_exec_approval_requirement(
+        approval_policy,
+        sandbox_availability,
+        /*trusted_read_only*/ false,
+    );
+    let requires_command_approval = !matches!(
+        command_approval_requirement,
+        ApprovalRequirement::Skip { .. }
+    );
     let command_approval_app = app.clone();
     let command_approval_manager = manager.clone();
+    let command_requirement = command_approval_requirement.clone();
     let command_approver = requires_command_approval.then(|| {
         Arc::new(move |request: CommandApprovalRequest| {
             let app = command_approval_app.clone();
             let manager = command_approval_manager.clone();
+            let requirement = command_requirement.clone();
             Box::pin(async move {
+                if let ApprovalRequirement::Forbidden { .. } = requirement {
+                    return Ok(CommandExecutionApprovalDecision::Decline);
+                }
+                let keys = vec![ApprovalKey::Command {
+                    environment_id: request.environment_id.clone(),
+                    command: vec![request.command.clone()],
+                    cwd: request.cwd.clone(),
+                    tty: request.tty,
+                    sandbox_permissions: request.sandbox_permissions.clone(),
+                    additional_permissions: request.additional_permissions.clone(),
+                }];
+                let state = app.state::<AppState>();
+                if state
+                    .codex_session_approvals
+                    .contains_all_for(&request.thread_id, &keys)
+                {
+                    return Ok(CommandExecutionApprovalDecision::AcceptForSession);
+                }
                 let waiting = manager
                     .set_thread_status(
                         &request.thread_id,
@@ -2272,14 +2549,18 @@ fn turn_tool_runtime(
                     .codex_approval_requests
                     .begin_command_execution(
                         recipients,
-                        CommandExecutionApprovalParams {
+                                CommandExecutionApprovalParams {
                             thread_id: request.thread_id.clone(),
                             turn_id: request.turn_id.clone(),
                             item_id: request.item_id.clone(),
                             approval_id: None,
                             command: Some(request.command),
                             cwd: Some(request.cwd),
-                            command_actions: None,
+                                    command_actions: None,
+                                    environment_id: Some(request.environment_id.clone()),
+                                    network_approval_context: None,
+                                    proposed_execpolicy_amendment: request.prefix_rule.clone(),
+                                    proposed_network_policy_amendments: None,
                             reason: request.reason,
                             started_at_ms,
                         },
@@ -2301,6 +2582,41 @@ fn turn_tool_runtime(
                         CommandExecutionApprovalDecision::Cancel
                     }
                 };
+                if decision == CommandExecutionApprovalDecision::AcceptForSession {
+                    state
+                        .codex_session_approvals
+                        .approve_for(&request.thread_id, &keys)
+                        .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(
+                            error.to_string()
+                        ))?;
+                }
+                match &decision {
+                    CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
+                        execpolicy_amendment,
+                    } => {
+                        persistent_approval_store(&app, &state)
+                            .map_err(tietiezhi_agent_tools::ToolError::Handler)?
+                            .append(PersistentApprovalRule::ExecPolicy {
+                                amendment: execpolicy_amendment.clone(),
+                            })
+                            .map_err(|error| {
+                                tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                            })?;
+                    }
+                    CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
+                        network_policy_amendment,
+                    } => {
+                        persistent_approval_store(&app, &state)
+                            .map_err(tietiezhi_agent_tools::ToolError::Handler)?
+                            .append(PersistentApprovalRule::NetworkPolicy {
+                                amendment: network_policy_amendment.clone(),
+                            })
+                            .map_err(|error| {
+                                tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                            })?;
+                    }
+                    _ => {}
+                }
                 let active = manager
                     .set_thread_status(
                         &request.thread_id,
@@ -2390,6 +2706,24 @@ fn turn_tool_runtime(
     let router = Arc::new(ToolRouter::new(registry));
     let specs = router.model_visible_wire_specs();
     Ok((ToolCallRuntime::new(router), specs))
+}
+
+fn permission_profile_to_v2(mut permissions: Value) -> Value {
+    if let Some(object) = permissions.as_object_mut() {
+        if let Some(file_system) = object.remove("file_system") {
+            object.insert("fileSystem".into(), file_system);
+        }
+    }
+    permissions
+}
+
+fn permission_profile_to_tool(mut permissions: Value) -> Value {
+    if let Some(object) = permissions.as_object_mut() {
+        if let Some(file_system) = object.remove("fileSystem") {
+            object.insert("file_system".into(), file_system);
+        }
+    }
+    permissions
 }
 
 fn merge_tool_specs(base: &[Value], loaded: &[Value]) -> Vec<Value> {
@@ -2828,7 +3162,8 @@ mod tests {
     use super::{
         assistant_response_text, compaction_response_request, empty_rate_limits, format_micro,
         gateway_rate_limits, local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured,
-        normalized_plan_type, response_request, ResponseEvent, ResponseProjection,
+        normalized_plan_type, permission_profile_list, permission_profile_to_tool,
+        permission_profile_to_v2, response_request, ResponseEvent, ResponseProjection,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
     use serde_json::json;
@@ -2939,6 +3274,7 @@ mod tests {
             model: "gpt-5.6-sol".into(),
             model_provider: "gateway".into(),
             approval_policy: json!("on-request"),
+            sandbox: json!({"type":"workspaceWrite"}),
             reasoning_effort: Some("high".into()),
             reasoning_summary: None,
             service_tier: Some("priority".into()),
@@ -3101,5 +3437,44 @@ mod tests {
                 .is_ok()
             );
         }
+    }
+
+    #[test]
+    fn permission_profile_catalog_matches_v2_pagination() {
+        let first = permission_profile_list(&json!({
+            "id":1,
+            "method":"permissionProfile/list",
+            "params":{"limit":2}
+        }))
+        .unwrap();
+        assert_eq!(
+            first.response["result"]["data"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(first.response["result"]["nextCursor"], "2");
+        assert_eq!(first.response["result"]["data"][0]["id"], ":read-only");
+        let second = permission_profile_list(&json!({
+            "id":2,
+            "method":"permissionProfile/list",
+            "params":{"cursor":"2"}
+        }))
+        .unwrap();
+        assert_eq!(
+            second.response["result"]["data"][0]["id"],
+            ":danger-full-access"
+        );
+        assert!(second.response["result"]["nextCursor"].is_null());
+    }
+
+    #[test]
+    fn permission_profiles_convert_between_tool_and_v2_shapes() {
+        let tool = json!({
+            "file_system":{"read":["/tmp/input"]},
+            "network":{"enabled":true}
+        });
+        let wire = permission_profile_to_v2(tool.clone());
+        assert!(wire.get("fileSystem").is_some());
+        assert!(wire.get("file_system").is_none());
+        assert_eq!(permission_profile_to_tool(wire), tool);
     }
 }

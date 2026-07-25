@@ -304,9 +304,9 @@
       },
       {
         "method": "permissionProfile/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R14",
-        "note": ""
+        "note": "crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md"
       },
       {
         "method": "plugin/install",
@@ -566,9 +566,9 @@
       },
       {
         "method": "applyPatchApproval",
-        "status": "pending",
+        "status": "implemented",
         "target": "R14",
-        "note": ""
+        "note": "crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md"
       },
       {
         "method": "attestation/generate",
@@ -578,9 +578,9 @@
       },
       {
         "method": "execCommandApproval",
-        "status": "pending",
+        "status": "implemented",
         "target": "R14",
-        "note": ""
+        "note": "crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md"
       },
       {
         "method": "item/commandExecution/requestApproval",
@@ -596,9 +596,9 @@
       },
       {
         "method": "item/permissions/requestApproval",
-        "status": "pending",
+        "status": "implemented",
         "target": "R14",
-        "note": ""
+        "note": "crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md"
       },
       {
         "method": "item/tool/call",
@@ -1178,9 +1178,9 @@
     {
       "id": "R14",
       "name": "审批策略",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R15/R16 尚需把审批决策绑定到真实 OS 沙箱，R17/R18 尚需消费持久网络与 ExecPolicy Amendment；关闭 granular 类别已 fail-closed。",
+      "evidence": "crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md"
     },
     {
       "id": "R15",

@@ -11,7 +11,9 @@ use bm25::{Document, Language, SearchEngine, SearchEngineBuilder};
 use chrono::{SecondsFormat, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tietiezhi_agent_approval::{CommandExecutionApprovalDecision, FileChangeApprovalDecision};
+use tietiezhi_agent_approval::{
+    CommandExecutionApprovalDecision, FileChangeApprovalDecision, PermissionsApprovalResponse,
+};
 use tietiezhi_agent_exec::{
     ExecEvent, ExecManager, ExecRequest, ExecResult, OutputChunk, SessionId, TerminalSize,
 };
@@ -55,6 +57,10 @@ pub type CommandApprovalFuture = Pin<
 >;
 pub type CommandApprover =
     Arc<dyn Fn(CommandApprovalRequest) -> CommandApprovalFuture + Send + Sync + 'static>;
+pub type PermissionsApprovalFuture =
+    Pin<Box<dyn Future<Output = Result<PermissionsApprovalResponse, ToolError>> + Send + 'static>>;
+pub type PermissionsApprover =
+    Arc<dyn Fn(PermissionsApprovalRequest) -> PermissionsApprovalFuture + Send + Sync + 'static>;
 pub type CommandObserver =
     Arc<dyn Fn(CommandRuntimeEvent) -> Result<(), ToolError> + Send + Sync + 'static>;
 
@@ -65,6 +71,9 @@ pub struct FileChangeApprovalRequest {
     pub item_id: String,
     pub reason: Option<String>,
     pub grant_root: Option<String>,
+    pub environment_id: String,
+    pub files: Vec<String>,
+    pub patch: String,
     pub cancellation: tokio_util::sync::CancellationToken,
 }
 
@@ -76,6 +85,23 @@ pub struct CommandApprovalRequest {
     pub command: String,
     pub cwd: String,
     pub reason: Option<String>,
+    pub environment_id: String,
+    pub tty: bool,
+    pub sandbox_permissions: String,
+    pub additional_permissions: Option<Value>,
+    pub prefix_rule: Option<Vec<String>>,
+    pub cancellation: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Debug, Clone)]
+pub struct PermissionsApprovalRequest {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub environment_id: String,
+    pub cwd: String,
+    pub reason: Option<String>,
+    pub permissions: Value,
     pub cancellation: tokio_util::sync::CancellationToken,
 }
 
@@ -175,6 +201,13 @@ pub fn unified_exec_handlers(
     ]
 }
 
+pub fn request_permissions_handler(
+    cwd: PathBuf,
+    approver: PermissionsApprover,
+) -> Arc<dyn ToolHandler> {
+    Arc::new(RequestPermissionsHandler { cwd, approver })
+}
+
 #[derive(Debug, Clone)]
 struct CommandSession {
     thread_id: String,
@@ -183,6 +216,97 @@ struct CommandSession {
     command: String,
     cwd: String,
     cursor: usize,
+}
+
+struct RequestPermissionsHandler {
+    cwd: PathBuf,
+    approver: PermissionsApprover,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestPermissionsArgs {
+    #[serde(default)]
+    environment_id: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+    permissions: Value,
+}
+
+impl ToolHandler for RequestPermissionsHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("request_permissions")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::function(
+            self.tool_name(),
+            "Request additional filesystem or network permissions from the user and wait for the client to grant a subset of the requested permission profile. Granted permissions apply to later shell-like commands in the current turn, or for the rest of the session when approved at session scope.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "reason":{"type":"string","description":"Optional short explanation for why additional permissions are needed."},
+                    "environment_id":{"type":"string","description":"Environment id; omit to use the primary environment."},
+                    "permissions":{
+                        "type":"object",
+                        "properties":{
+                            "network":{
+                                "type":"object",
+                                "properties":{"enabled":{"type":"boolean"}},
+                                "additionalProperties":false
+                            },
+                            "file_system":{
+                                "type":"object",
+                                "properties":{
+                                    "read":{"type":"array","items":{"type":"string"}},
+                                    "write":{"type":"array","items":{"type":"string"}}
+                                },
+                                "additionalProperties":false
+                            }
+                        },
+                        "additionalProperties":false
+                    }
+                },
+                "required":["permissions"],
+                "additionalProperties":false
+            }),
+        )
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        let cwd = self.cwd.clone();
+        let approver = self.approver.clone();
+        Box::pin(async move {
+            let args: RequestPermissionsArgs =
+                parse_function_args(&invocation, "request_permissions")?;
+            let permissions = args
+                .permissions
+                .as_object()
+                .filter(|permissions| {
+                    permissions.contains_key("network") || permissions.contains_key("file_system")
+                })
+                .ok_or_else(|| {
+                    ToolError::InvalidCall(
+                        "request_permissions requires at least one permission".into(),
+                    )
+                })?;
+            let response = approver(PermissionsApprovalRequest {
+                thread_id: invocation.thread_id,
+                turn_id: invocation.turn_id,
+                item_id: invocation.call.call_id,
+                environment_id: args.environment_id.unwrap_or_else(|| "local".into()),
+                cwd: cwd.to_string_lossy().into_owned(),
+                reason: args.reason,
+                permissions: Value::Object(permissions.clone()),
+                cancellation: invocation.cancellation,
+            })
+            .await?;
+            Ok(ToolOutput::success(
+                serde_json::to_value(response)
+                    .map_err(|error| ToolError::Handler(error.to_string()))?,
+            ))
+        })
+    }
 }
 
 struct ExecCommandHandler {
@@ -209,6 +333,18 @@ struct ExecCommandArgs {
     shell: Option<String>,
     #[serde(default)]
     login: bool,
+    #[serde(default = "default_sandbox_permissions")]
+    sandbox_permissions: String,
+    #[serde(default)]
+    additional_permissions: Option<Value>,
+    #[serde(default)]
+    justification: Option<String>,
+    #[serde(default)]
+    prefix_rule: Option<Vec<String>>,
+}
+
+fn default_sandbox_permissions() -> String {
+    "use_default".into()
 }
 
 impl ToolHandler for ExecCommandHandler {
@@ -229,7 +365,25 @@ impl ToolHandler for ExecCommandHandler {
                     "yield_time_ms":{"type":"integer","minimum":1,"description":"Wait before yielding output."},
                     "max_output_tokens":{"type":"integer","minimum":1,"description":"Maximum output tokens returned by this call."},
                     "shell":{"type":"string","description":"Shell binary to launch."},
-                    "login":{"type":"boolean","description":"Use login shell semantics."}
+                    "login":{"type":"boolean","description":"Use login shell semantics."},
+                    "sandbox_permissions":{
+                        "type":"string",
+                        "enum":["use_default","with_additional_permissions","require_escalated"],
+                        "description":"Per-command sandbox override. Defaults to use_default."
+                    },
+                    "additional_permissions":{
+                        "type":"object",
+                        "description":"Sandboxed filesystem or network access for this command; only with with_additional_permissions."
+                    },
+                    "justification":{
+                        "type":"string",
+                        "description":"User-facing approval question for require_escalated; omit otherwise."
+                    },
+                    "prefix_rule":{
+                        "type":"array",
+                        "items":{"type":"string"},
+                        "description":"Reusable approval prefix, only with require_escalated."
+                    }
                 },
                 "required":["cmd"],
                 "additionalProperties":false
@@ -270,6 +424,33 @@ impl ToolHandler for ExecCommandHandler {
                     "max_output_tokens must be greater than zero".into(),
                 ));
             }
+            if !matches!(
+                args.sandbox_permissions.as_str(),
+                "use_default" | "with_additional_permissions" | "require_escalated"
+            ) {
+                return Err(ToolError::InvalidCall(
+                    "sandbox_permissions must be use_default, with_additional_permissions, or require_escalated".into(),
+                ));
+            }
+            if args.sandbox_permissions == "with_additional_permissions"
+                && args.additional_permissions.is_none()
+            {
+                return Err(ToolError::InvalidCall(
+                    "additional_permissions is required with with_additional_permissions".into(),
+                ));
+            }
+            if args.sandbox_permissions != "with_additional_permissions"
+                && args.additional_permissions.is_some()
+            {
+                return Err(ToolError::InvalidCall(
+                    "additional_permissions is only valid with with_additional_permissions".into(),
+                ));
+            }
+            if args.sandbox_permissions != "require_escalated" && args.prefix_rule.is_some() {
+                return Err(ToolError::InvalidCall(
+                    "prefix_rule is only valid with require_escalated".into(),
+                ));
+            }
             let cwd = resolve_exec_cwd(&base_cwd, args.workdir.as_deref())?;
             let cwd_display = cwd.to_string_lossy().into_owned();
             if requires_approval {
@@ -287,7 +468,15 @@ impl ToolHandler for ExecCommandHandler {
                     item_id: invocation.call.call_id.clone(),
                     command: args.cmd.clone(),
                     cwd: cwd_display.clone(),
-                    reason: Some("execute command".into()),
+                    reason: args
+                        .justification
+                        .clone()
+                        .or_else(|| Some("execute command".into())),
+                    environment_id: "local".into(),
+                    tty: args.tty,
+                    sandbox_permissions: args.sandbox_permissions.clone(),
+                    additional_permissions: args.additional_permissions.clone(),
+                    prefix_rule: args.prefix_rule.clone(),
                     cancellation: invocation.cancellation.clone(),
                 })
                 .await?;
@@ -812,6 +1001,12 @@ impl ToolHandler for ApplyPatchHandler {
                     item_id: invocation.call.call_id.clone(),
                     reason: Some("apply patch to workspace files".into()),
                     grant_root: None,
+                    environment_id: "local".into(),
+                    files: changes
+                        .iter()
+                        .map(|change| cwd.join(&change.path).to_string_lossy().into_owned())
+                        .collect(),
+                    patch: input.clone(),
                     cancellation: invocation.cancellation.clone(),
                 })
                 .await?;
@@ -1427,6 +1622,41 @@ mod tests {
             .unwrap();
         assert_eq!(output.content[0]["type"], "input_image");
         assert_eq!(output.content[0]["detail"], "original");
+    }
+
+    #[tokio::test]
+    async fn request_permissions_uses_structured_approval_response() {
+        let temp = TempDir::new().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let approval_calls = calls.clone();
+        let handler = request_permissions_handler(
+            temp.path().to_path_buf(),
+            Arc::new(move |request| {
+                approval_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    assert_eq!(request.environment_id, "local");
+                    assert_eq!(request.permissions["network"]["enabled"], true);
+                    Ok(PermissionsApprovalResponse {
+                        permissions: request.permissions,
+                        scope: "turn".into(),
+                        strict_auto_review: Some(true),
+                    })
+                })
+            }),
+        );
+        let output = handler
+            .handle(invocation(
+                ToolName::plain("request_permissions"),
+                json!({
+                    "reason":"download dependency",
+                    "permissions":{"network":{"enabled":true}}
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(output.content["scope"], "turn");
+        assert_eq!(output.content["strictAutoReview"], true);
     }
 
     #[tokio::test]

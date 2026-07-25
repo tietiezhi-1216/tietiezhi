@@ -151,3 +151,18 @@ R13 的 Unified Exec 工具、App Server 命令接口和 Item 生命周期还参
 - `codex-rs/app-server/src/request_processors/thread_processor.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2/command_exec.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+
+R14 的审批策略、会话缓存、反向请求、权限 Profile 和 `request_permissions` 行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/protocol/src/protocol.rs`
+- `codex-rs/protocol/src/approvals.rs`
+- `codex-rs/protocol/src/request_permissions.rs`
+- `codex-rs/core/src/tools/approvals.rs`
+- `codex-rs/core/src/tools/sandboxing.rs`
+- `codex-rs/core/src/tools/runtimes/apply_patch.rs`
+- `codex-rs/core/src/tools/runtimes/unified_exec.rs`
+- `codex-rs/core/src/tools/handlers/request_permissions.rs`
+- `codex-rs/core/src/tools/handlers/shell_spec.rs`
+- `codex-rs/core/src/config/permission_profile_catalog.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/permissions.rs`

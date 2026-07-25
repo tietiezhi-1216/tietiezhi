@@ -97,6 +97,9 @@ jobs:
       - name: Check conversation persistence migration
         run: pnpm test:conversation-migration
 
+      - name: Check Codex approval UI
+        run: pnpm test:codex-approval-ui
+
       - name: Codex protocol Rust tests
         run: cargo test --manifest-path ../crates/agent-protocol/Cargo.toml
 

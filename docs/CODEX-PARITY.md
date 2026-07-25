@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 96 |
+| 待实现 | 92 |
 | 实现中 | 0 |
-| 已实现 | 65 |
+| 已实现 | 69 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -52,7 +52,7 @@
 | R11 | 基础工具 | 已完成 | crates/agent-tools 基础工具与 BM25 Tool Search；desktop Responses 工具闭环、steer 活动信号和模型能力门控；crates/agent-core 强类型 Sleep/ImageView/WebSearch Item；docs/CODEX-BUILTIN-TOOLS.md | R12/R13 仍需实现有文件或进程副作用的 Patch 与 Unified Exec；R14-R18 负责审批、沙箱、网络与 ExecPolicy，R19/R25 负责 MCP、Plan 和用户输入工具。 |
 | R12 | Patch 与 Diff | 已完成 | crates/agent-patch Lark/流式解析与多文件原子事务；crates/agent-approval FileChange 反向请求；agent-tools apply_patch；agent-core FileChange/Turn Diff；docs/CODEX-PATCH.md | R14 仍需扩展完整 Approval Policy、精确会话授权缓存及命令/网络审批；R15-R17 仍需提供 OS 沙箱和网络隔离。 |
 | R13 | Unified Exec | 已完成 | crates/agent-exec PTY/ConPTY、管道和会话管理；agent-tools exec_command/write_stdin；desktop command/exec* 与 thread/shellCommand；agent-core CommandExecution Item；docs/CODEX-EXEC.md | R14-R18 仍需完成精确审批策略、macOS/Windows OS 沙箱、网络隔离和 ExecPolicy；R30 再暴露多终端桌面 UI。 |
-| R14 | 审批策略 | 待开始 |  |  |
+| R14 | 审批策略 | 已完成 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md | R15/R16 尚需把审批决策绑定到真实 OS 沙箱，R17/R18 尚需消费持久网络与 ExecPolicy Amendment；关闭 granular 类别已 fail-closed。 |
 | R15 | macOS 沙箱 | 待开始 |  |  |
 | R16 | Windows 沙箱 | 待开始 |  |  |
 | R17 | 网络策略 | 待开始 |  |  |
@@ -131,7 +131,7 @@
 | `mcpServerStatus/list` | 待实现 | R19 |  |
 | `model/list` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、固定与在线模型目录测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md；docs/CODEX-GATEWAY.md |
 | `modelProvider/capabilities/read` | 待实现 | R36 |  |
-| `permissionProfile/list` | 待实现 | R14 |  |
+| `permissionProfile/list` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
 | `plugin/install` | 待实现 | R24 |  |
 | `plugin/installed` | 待实现 | R24 |  |
 | `plugin/list` | 待实现 | R24 |  |
@@ -184,12 +184,12 @@
 | 方法 | 状态 | 目标阶段 | 证据或备注 |
 | --- | --- | --- | --- |
 | `account/chatgptAuthTokens/refresh` | 已实现 | R8 | crates/agent-account AccountServerRequestBroker 的 Request ID 关联、V2 响应校验、超时取消与重复响应测试；desktop codex-v2-server-request IPC |
-| `applyPatchApproval` | 待实现 | R14 |  |
+| `applyPatchApproval` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
 | `attestation/generate` | 待实现 | R36 |  |
-| `execCommandApproval` | 待实现 | R14 |  |
+| `execCommandApproval` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
 | `item/commandExecution/requestApproval` | 已实现 | R13 | agent-approval command broker；V2 schema tests |
 | `item/fileChange/requestApproval` | 已实现 | R12 | crates/agent-approval ServerRequestBroker V2 Schema 与四决策测试；desktop/src-tauri/src/commands/codex.rs |
-| `item/permissions/requestApproval` | 待实现 | R14 |  |
+| `item/permissions/requestApproval` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
 | `item/tool/call` | 已实现 | R10 | crates/agent-tools 生成并校验精确 App Server V2 Dynamic Tool ServerRequest/Response，保持 thread/turn/call/namespace/tool/arguments；docs/CODEX-TOOLS.md |
 | `item/tool/requestUserInput` | 待实现 | R25 |  |
 | `mcpServer/elicitation/request` | 待实现 | R19 |  |
