@@ -263,3 +263,12 @@ R21 的 TOML 配置分层、来源追踪、原子编辑、Requirements 约束与
 - `codex-rs/app-server/src/request_processors/config_processor.rs`
 
 本地配置写入使用同目录临时文件、`fsync` 和原子重命名，并通过内容 SHA-256 版本实现乐观并发控制。
+
+R22 的技能根发现、元数据解析、配置规则、缓存失效与 App Server 投影参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/skills/src`
+- `codex-rs/core-skills/src`
+- `codex-rs/app-server/src/request_processors/catalog_processor.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`
+
+本地实现只在目录扫描时读取 `SKILL.md` frontmatter 和 `SKILL.json`；技能正文直到模型显式调用 `skill` 工具才读取。

@@ -42,6 +42,7 @@ use tietiezhi_agent_protocol::{
     McpResourceReadResponse, McpServerOauthLoginResponse, McpServerToolCallResponse,
     ModelListResponse, PermissionProfileListResponse, ServerNotification,
 };
+use tietiezhi_agent_skills::{SkillsPaths, SkillsRuntime};
 use tietiezhi_agent_tools::builtins::{
     apply_patch_handler, context_remaining_handler, current_time_handler,
     request_permissions_handler, sleep_handler, unified_exec_handlers, view_image_handler,
@@ -277,6 +278,11 @@ pub async fn codex_v2_request(
     if ConfigRuntime::handles(&method) {
         let output =
             dispatch_config_request(&app, &state, &connection_id, &request, &method).await?;
+        emit_notifications(&app, &output.notifications)?;
+        return Ok(output);
+    }
+    if SkillsRuntime::handles(&method) {
+        let output = dispatch_skills_request(&app, &state, &connection_id, &request, &method)?;
         emit_notifications(&app, &output.notifications)?;
         return Ok(output);
     }
@@ -1979,6 +1985,72 @@ fn system_codex_requirements_path() -> std::path::PathBuf {
     system_codex_root().join("requirements.toml")
 }
 
+fn skills_runtime(app: &AppHandle, state: &AppState) -> Result<SkillsRuntime, String> {
+    let mut slot = state
+        .codex_skills
+        .lock()
+        .map_err(|_| "Codex Skills 状态锁已损坏".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Ok(runtime.clone());
+    }
+    let config_root = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法定位配置目录：{error}"))?
+        .join("codex");
+    let home = dirs::home_dir().unwrap_or_else(|| config_root.clone());
+    let runtime = SkillsRuntime::new(SkillsPaths {
+        user_codex_root: config_root.join("skills"),
+        user_agents_root: home.join(".agents/skills"),
+        system_root: system_codex_root().join("skills"),
+        state_file: config_root.join("skills-state.json"),
+    });
+    *slot = Some(runtime.clone());
+    Ok(runtime)
+}
+
+fn dispatch_skills_request(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("{method} 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let runtime = skills_runtime(app, state)?;
+    let cwd = runtime_defaults(app)?.cwd;
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    match runtime.dispatch(method, &params, &cwd) {
+        Ok(dispatch) => {
+            let notifications = dispatch
+                .changed
+                .then(|| RoutedNotification {
+                    recipients: vec![connection_id.into()],
+                    method: "skills/changed".into(),
+                    params: json!({}),
+                })
+                .into_iter()
+                .collect();
+            Ok(DispatchOutput {
+                response: json!({
+                    "id":request.get("id").cloned().unwrap_or(Value::Null),
+                    "result":dispatch.result
+                }),
+                notifications,
+            })
+        }
+        Err(error) => Ok(dispatch_error(request, -32602, error)),
+    }
+}
+
 fn launch_compaction_executor(
     app: &AppHandle,
     state: &AppState,
@@ -2284,6 +2356,17 @@ async fn run_turn_executor(
     let mut auth_refresh_attempted = false;
     let (tool_runtime, base_tool_specs) = turn_tool_runtime(&app, &manager, &initial).await?;
     let mut loaded_tool_specs = Vec::new();
+    let skill_metadata = {
+        let state = app.state::<AppState>();
+        skills_runtime(&app, &state)
+            .map_err(ModelError::Consumer)?
+            .enabled_skills(&initial.cwd)
+            .map_err(ModelError::Consumer)?
+            .into_iter()
+            .map(|skill| serde_json::to_value(skill).map_err(|error| error.to_string()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ModelError::Consumer)?
+    };
     let project_instructions =
         load_project_instructions(&initial.cwd, &ProjectInstructionConfig::default())
             .ok()
@@ -2320,6 +2403,7 @@ async fn run_turn_executor(
             &manager,
             &context_snapshot,
             &tool_specs,
+            skill_metadata.clone(),
             project_instructions.clone(),
         )?;
         let snapshot = manager
@@ -2664,6 +2748,7 @@ fn record_runtime_world_state(
     manager: &ThreadManager,
     snapshot: &TurnExecutionSnapshot,
     tool_specs: &[Value],
+    skill_metadata: Vec<Value>,
     project_instructions: Option<tietiezhi_agent_config::LoadedProjectInstructions>,
 ) -> Result<(), ModelError> {
     let previous = manager
@@ -2692,6 +2777,7 @@ fn record_runtime_world_state(
             approval_policy: snapshot.approval_policy.clone(),
             sandbox_policy: snapshot.sandbox.clone(),
             tool_names,
+            skill_metadata,
             collaboration_mode: "default".into(),
             collaboration_mode_instructions: None,
             developer_instructions: snapshot.developer_instructions.clone(),
@@ -3436,6 +3522,14 @@ async fn turn_tool_runtime(
         Some(network_preparer),
         Some(policy_evaluator),
     ));
+    let app_state = app.state::<AppState>();
+    if let Some(handler) = skills_runtime(app, &app_state)
+        .map_err(ModelError::Consumer)?
+        .handler(snapshot.cwd.clone())
+        .map_err(ModelError::Consumer)?
+    {
+        handlers.push(handler);
+    }
     let mcp_observer_app = app.clone();
     let mcp_observer_manager = manager.clone();
     let mcp_observer = Arc::new(move |event: tietiezhi_agent_mcp::McpToolRuntimeEvent| {
@@ -4136,7 +4230,7 @@ mod tests {
         empty_rate_limits, format_micro, gateway_rate_limits, local_tool_timeline_item,
         merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, permission_profile_list,
         permission_profile_to_tool, permission_profile_to_v2, response_request, ConfigPaths,
-        ConfigRuntime, ResponseEvent, ResponseProjection,
+        ConfigRuntime, ResponseEvent, ResponseProjection, SkillsPaths, SkillsRuntime,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
     use serde_json::json;
@@ -4208,6 +4302,44 @@ mod tests {
             tietiezhi_agent_protocol::ExperimentalFeatureEnablementSetResponse,
         >(enabled.result)
         .is_ok());
+    }
+
+    #[test]
+    fn skills_runtime_results_match_app_server_v2_wire_types() {
+        let temp = tempfile::tempdir().unwrap();
+        let skill_dir = temp.path().join("skills/example");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: example\ndescription: Example skill\n---\nbody",
+        )
+        .unwrap();
+        let runtime = SkillsRuntime::new(SkillsPaths {
+            user_codex_root: temp.path().join("skills"),
+            user_agents_root: temp.path().join("agents"),
+            system_root: temp.path().join("system"),
+            state_file: temp.path().join("skills-state.json"),
+        });
+        let list = runtime
+            .dispatch("skills/list", &json!({}), temp.path())
+            .unwrap();
+        assert!(
+            serde_json::from_value::<tietiezhi_agent_protocol::SkillsListResponse>(list.result)
+                .is_ok()
+        );
+        let write = runtime
+            .dispatch(
+                "skills/config/write",
+                &json!({"name":"example","enabled":false}),
+                temp.path(),
+            )
+            .unwrap();
+        assert!(
+            serde_json::from_value::<tietiezhi_agent_protocol::SkillsConfigWriteResponse>(
+                write.result
+            )
+            .is_ok()
+        );
     }
 
     #[test]

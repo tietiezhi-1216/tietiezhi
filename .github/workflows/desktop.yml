@@ -66,6 +66,7 @@ jobs:
             crates/agent-state
             crates/agent-core
             crates/agent-config
+            crates/agent-skills
             crates/agent-context
             crates/agent-tools
             crates/agent-model
@@ -124,6 +125,9 @@ jobs:
 
       - name: Codex layered instructions and World State tests
         run: cargo test --manifest-path ../crates/agent-config/Cargo.toml
+
+      - name: Codex Skills discovery and lazy loading tests
+        run: cargo test --manifest-path ../crates/agent-skills/Cargo.toml
 
       - name: Codex tool kernel and built-in tool tests
         run: cargo test --manifest-path ../crates/agent-tools/Cargo.toml

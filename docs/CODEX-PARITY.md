@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 72 |
+| 待实现 | 68 |
 | 实现中 | 0 |
-| 已实现 | 89 |
+| 已实现 | 93 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -60,7 +60,7 @@
 | R19 | MCP 完整实现 | 已完成 | crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md | OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, R35 still needs remote approval routing, and R17 Windows WFP isolation remains a release blocker. |
 | R20 | 指令层 | 已完成 | crates/agent-config 分层 AGENTS/override/fallback 与 World State 测试；crates/agent-core canonical context/world_state 顺序、索引重建和指令恢复测试；desktop Responses/Compaction 指令接线；docs/CODEX-INSTRUCTIONS.md | R21 继续实现完整配置来源、Profile、Requirements 与来源追踪；R22-R24 再把 Skills、Hooks、Plugins 目录加入 World State。 |
 | R21 | 配置体系 | 已完成 | crates/agent-config 配置层/来源/CAS/Requirements/实验功能测试；desktop App Server V2 生成类型验证与 MCP reload；docs/CODEX-CONFIG.md | 企业云配置和 MDM 由 system/requirements 层映射；R23-R24 将 Hooks 与 Plugins 的 managed-only 细粒度要求接入。 |
-| R22 | Skills | 待开始 |  |  |
+| R22 | Skills | 已完成 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md | R24 将已安装插件的 Skills 根作为带 plugin provenance 的根注入；远程执行环境技能在 R35 映射。 |
 | R23 | Hooks | 待开始 |  |  |
 | R24 | Plugins | 待开始 |  |  |
 | R25 | Plan 与用户输入 | 待开始 |  |  |
@@ -144,9 +144,9 @@
 | `plugin/skill/read` | 待实现 | R24 |  |
 | `plugin/uninstall` | 待实现 | R24 |  |
 | `review/start` | 待实现 | R27 |  |
-| `skills/config/write` | 待实现 | R22 |  |
-| `skills/extraRoots/set` | 待实现 | R22 |  |
-| `skills/list` | 待实现 | R22 |  |
+| `skills/config/write` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
+| `skills/extraRoots/set` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
+| `skills/list` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
 | `thread/approveGuardianDeniedAction` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/archive` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/compact/start` | 已实现 | R9 | crates/agent-core 与 desktop commands/codex.rs 实现异步手动压缩 Turn、contextCompaction Item、Responses 摘要和 canonical replacement history；docs/CODEX-CONTEXT.md |
@@ -237,7 +237,7 @@
 | `process/outputDelta` | 已实现 | R13 | desktop thread shell executor；V2 notification validation |
 | `remoteControl/status/changed` | 待实现 | R35 |  |
 | `serverRequest/resolved` | 待实现 | R36 |  |
-| `skills/changed` | 待实现 | R22 |  |
+| `skills/changed` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
 | `thread/archived` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/closed` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/compacted` | 已实现 | R9 | 固定 Codex V2 已废弃并主动丢弃该通知；本实现同样不发布，以 contextCompaction Item started/completed 作为唯一可见生命周期；crates/agent-core 测试与 docs/CODEX-CONTEXT.md |

@@ -382,21 +382,21 @@
       },
       {
         "method": "skills/config/write",
-        "status": "pending",
+        "status": "implemented",
         "target": "R22",
-        "note": ""
+        "note": "crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md"
       },
       {
         "method": "skills/extraRoots/set",
-        "status": "pending",
+        "status": "implemented",
         "target": "R22",
-        "note": ""
+        "note": "crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md"
       },
       {
         "method": "skills/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R22",
-        "note": ""
+        "note": "crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md"
       },
       {
         "method": "thread/approveGuardianDeniedAction",
@@ -858,9 +858,9 @@
       },
       {
         "method": "skills/changed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R22",
-        "note": ""
+        "note": "crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md"
       },
       {
         "method": "thread/archived",
@@ -1238,9 +1238,9 @@
     {
       "id": "R22",
       "name": "Skills",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R24 将已安装插件的 Skills 根作为带 plugin provenance 的根注入；远程执行环境技能在 R35 映射。",
+      "evidence": "crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md"
     },
     {
       "id": "R23",

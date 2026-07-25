@@ -193,6 +193,7 @@ pub struct WorldStateInput {
     pub approval_policy: Value,
     pub sandbox_policy: Value,
     pub tool_names: Vec<String>,
+    pub skill_metadata: Vec<Value>,
     pub collaboration_mode: String,
     pub collaboration_mode_instructions: Option<String>,
     pub developer_instructions: Option<String>,
@@ -238,6 +239,7 @@ pub fn build_world_state(
             "timezone":input.timezone
         },
         "tools":{"names":tool_names},
+        "skills":{"metadata":input.skill_metadata},
         "collaboration_mode":{
             "mode":input.collaboration_mode,
             "instructions":input.collaboration_mode_instructions
@@ -270,6 +272,7 @@ pub fn render_world_state_items(
     for (section, renderer) in [
         ("permissions", render_permissions as fn(&Value) -> String),
         ("tools", render_tools),
+        ("skills", render_skills),
         ("collaboration_mode", render_collaboration_mode),
     ] {
         let current_section = current.get(section).unwrap_or(&Value::Null);
@@ -365,6 +368,18 @@ fn render_tools(value: &Value) -> String {
         .collect::<Vec<_>>()
         .join("\n    ");
     format!("<available_tools>\n    {names}\n</available_tools>")
+}
+
+fn render_skills(value: &Value) -> String {
+    let metadata = value
+        .get("metadata")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    format!(
+        "<available_skills>\n{}\n</available_skills>",
+        xml_escape(&Value::Array(metadata).to_string())
+    )
 }
 
 fn render_collaboration_mode(value: &Value) -> String {
@@ -1235,6 +1250,7 @@ mod tests {
                 approval_policy: json!("on-request"),
                 sandbox_policy: json!({"type":"workspaceWrite"}),
                 tool_names: vec!["exec_command".into(), "exec_command".into()],
+                skill_metadata: Vec::new(),
                 collaboration_mode: "default".into(),
                 collaboration_mode_instructions: None,
                 developer_instructions: Some("developer".into()),
@@ -1256,6 +1272,7 @@ mod tests {
                 approval_policy: json!("on-request"),
                 sandbox_policy: json!({"type":"workspaceWrite"}),
                 tool_names: vec!["exec_command".into()],
+                skill_metadata: Vec::new(),
                 collaboration_mode: "default".into(),
                 collaboration_mode_instructions: None,
                 developer_instructions: None,
@@ -1287,6 +1304,7 @@ mod tests {
                 approval_policy: json!("never"),
                 sandbox_policy: json!({"type":"readOnly"}),
                 tool_names: vec!["a<b".into()],
+                skill_metadata: Vec::new(),
                 collaboration_mode: "default".into(),
                 collaboration_mode_instructions: None,
                 developer_instructions: None,

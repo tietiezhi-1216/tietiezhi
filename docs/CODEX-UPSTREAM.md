@@ -107,4 +107,6 @@ R20 已增加 `crates/agent-config`，实现从项目根到当前目录的 `AGEN
 
 R21 已在 `crates/agent-config` 实现 system、user、Profile、项目目录和 session-ready 的配置合并、逐字段来源、TOML 原子写入与 CAS 版本、Requirements 收紧、实验功能分页/启停和 MCP 连接重载。详细行为见 `docs/CODEX-CONFIG.md`。
 
+R22 已增加 `crates/agent-skills`，实现 system、admin、user、repo、plugin/extra root 的技能发现，YAML/JSON 元数据预加载、正文延迟读取、按名称/路径启停、磁盘变化失效通知和 Responses `skill` 工具。详细行为见 `docs/CODEX-SKILLS.md`。
+
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
