@@ -373,6 +373,12 @@ pub struct PendingPermissionsApproval {
 }
 
 #[derive(Debug)]
+pub struct PendingUserInput {
+    pub request: RoutedServerRequest,
+    pub receiver: oneshot::Receiver<Result<Value, ApprovalError>>,
+}
+
+#[derive(Debug)]
 pub struct PendingLegacyApproval {
     pub request: RoutedServerRequest,
     pub receiver: oneshot::Receiver<Result<Value, ApprovalError>>,
@@ -415,6 +421,15 @@ pub struct PermissionsApprovalParams {
     pub reason: Option<String>,
     pub permissions: Value,
     pub started_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UserInputRequestParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub questions: Vec<Value>,
+    pub auto_resolution_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -462,6 +477,7 @@ enum ApprovalSender {
     FileChange(oneshot::Sender<Result<FileChangeApprovalDecision, ApprovalError>>),
     CommandExecution(oneshot::Sender<Result<CommandExecutionApprovalDecision, ApprovalError>>),
     Permissions(oneshot::Sender<Result<PermissionsApprovalResponse, ApprovalError>>),
+    UserInput(oneshot::Sender<Result<Value, ApprovalError>>),
     Legacy(oneshot::Sender<Result<Value, ApprovalError>>),
 }
 type PendingMap = HashMap<String, ApprovalSender>;
@@ -572,6 +588,37 @@ impl ServerRequestBroker {
         Ok(PendingPermissionsApproval { request, receiver })
     }
 
+    pub fn begin_user_input(
+        &self,
+        recipients: Vec<String>,
+        params: UserInputRequestParams,
+    ) -> Result<PendingUserInput, ApprovalError> {
+        let id = format!(
+            "user-input-{}",
+            self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        let request = RoutedServerRequest {
+            recipients,
+            id: json!(id),
+            method: "item/tool/requestUserInput".into(),
+            params: json!({
+                "threadId":params.thread_id,
+                "turnId":params.turn_id,
+                "itemId":params.item_id,
+                "questions":params.questions,
+                "autoResolutionMs":params.auto_resolution_ms
+            }),
+        };
+        serde_json::from_value::<ServerRequest>(request.wire_message())
+            .map_err(|error| ApprovalError::new(error.to_string()))?;
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
+            .insert(id, ApprovalSender::UserInput(sender));
+        Ok(PendingUserInput { request, receiver })
+    }
+
     pub fn begin_legacy(
         &self,
         recipients: Vec<String>,
@@ -638,6 +685,20 @@ impl ServerRequestBroker {
                     response,
                     "permissions approval failed",
                 );
+                let _ = sender.send(result);
+            }
+            ApprovalSender::UserInput(sender) => {
+                let result = response
+                    .get("result")
+                    .cloned()
+                    .ok_or_else(|| ApprovalError::new("user input request failed"))
+                    .and_then(|result| {
+                        serde_json::from_value::<
+                            tietiezhi_agent_protocol::ToolRequestUserInputResponse,
+                        >(result.clone())
+                        .map(|_| result)
+                        .map_err(|error| ApprovalError::new(error.to_string()))
+                    });
                 let _ = sender.send(result);
             }
             ApprovalSender::Legacy(sender) => {
@@ -751,6 +812,44 @@ mod tests {
             !broker
                 .resolve(&json!({"id": 999, "result": {"decision":"accept"}}))
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn user_input_request_matches_v2_and_routes_answers() {
+        let broker = ServerRequestBroker::default();
+        let pending = broker
+            .begin_user_input(
+                vec!["desktop".into()],
+                UserInputRequestParams {
+                    thread_id: "01900000-0000-7000-8000-000000000001".into(),
+                    turn_id: "01900000-0000-7000-8000-000000000002".into(),
+                    item_id: "call_1".into(),
+                    questions: vec![json!({
+                        "id":"strategy",
+                        "header":"Strategy",
+                        "question":"How should this proceed?",
+                        "isOther":true,
+                        "isSecret":false,
+                        "options":[
+                            {"label":"Direct","description":"Continue immediately."},
+                            {"label":"Plan","description":"Review the plan first."}
+                        ]
+                    })],
+                    auto_resolution_ms: Some(60_000),
+                },
+            )
+            .unwrap();
+        assert_eq!(pending.request.method, "item/tool/requestUserInput");
+        assert!(serde_json::from_value::<ServerRequest>(pending.request.wire_message()).is_ok());
+        let response = json!({
+            "id":pending.request.id,
+            "result":{"answers":{"strategy":{"answers":["Direct"]}}}
+        });
+        assert!(broker.resolve(&response).unwrap());
+        assert_eq!(
+            pending.receiver.await.unwrap().unwrap(),
+            response["result"].clone()
         );
     }
 

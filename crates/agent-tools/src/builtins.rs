@@ -65,6 +65,9 @@ pub type PermissionsApprovalFuture =
     Pin<Box<dyn Future<Output = Result<PermissionsApprovalResponse, ToolError>> + Send + 'static>>;
 pub type PermissionsApprover =
     Arc<dyn Fn(PermissionsApprovalRequest) -> PermissionsApprovalFuture + Send + Sync + 'static>;
+pub type UserInputFuture = Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'static>>;
+pub type UserInputRequester =
+    Arc<dyn Fn(UserInputRequest) -> UserInputFuture + Send + Sync + 'static>;
 pub type CommandObserver =
     Arc<dyn Fn(CommandRuntimeEvent) -> Result<(), ToolError> + Send + Sync + 'static>;
 pub type NetworkPreparationFuture = Pin<
@@ -145,6 +148,16 @@ pub struct PermissionsApprovalRequest {
     pub cwd: String,
     pub reason: Option<String>,
     pub permissions: Value,
+    pub cancellation: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserInputRequest {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub questions: Vec<Value>,
+    pub auto_resolution_ms: Option<u64>,
     pub cancellation: tokio_util::sync::CancellationToken,
 }
 
@@ -265,6 +278,14 @@ pub fn request_permissions_handler(
     Arc::new(RequestPermissionsHandler { cwd, approver })
 }
 
+pub fn update_plan_handler() -> Arc<dyn ToolHandler> {
+    Arc::new(UpdatePlanHandler)
+}
+
+pub fn request_user_input_handler(requester: UserInputRequester) -> Arc<dyn ToolHandler> {
+    Arc::new(RequestUserInputHandler { requester })
+}
+
 #[derive(Clone)]
 struct CommandSession {
     thread_id: String,
@@ -279,6 +300,259 @@ struct CommandSession {
 struct RequestPermissionsHandler {
     cwd: PathBuf,
     approver: PermissionsApprover,
+}
+
+struct UpdatePlanHandler;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdatePlanArgs {
+    #[serde(default)]
+    explanation: Option<String>,
+    plan: Vec<PlanStep>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanStep {
+    step: String,
+    status: String,
+}
+
+impl ToolHandler for UpdatePlanHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("update_plan")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::function(
+            self.tool_name(),
+            "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "explanation":{"type":"string","description":"Optional explanation for this plan update."},
+                    "plan":{
+                        "type":"array",
+                        "description":"The list of steps",
+                        "items":{
+                            "type":"object",
+                            "properties":{
+                                "step":{"type":"string","description":"Task step text."},
+                                "status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Step status."}
+                            },
+                            "required":["step","status"],
+                            "additionalProperties":false
+                        }
+                    }
+                },
+                "required":["plan"],
+                "additionalProperties":false
+            }),
+        )
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        Box::pin(async move {
+            let args: UpdatePlanArgs = parse_function_args(&invocation, "update_plan")?;
+            if args.plan.is_empty() {
+                return Err(ToolError::InvalidCall(
+                    "update_plan requires at least one step".into(),
+                ));
+            }
+            let mut in_progress = 0;
+            let plan = args
+                .plan
+                .into_iter()
+                .map(|step| {
+                    if step.step.trim().is_empty() {
+                        return Err(ToolError::InvalidCall("plan step must not be empty".into()));
+                    }
+                    if !matches!(
+                        step.status.as_str(),
+                        "pending" | "in_progress" | "completed"
+                    ) {
+                        return Err(ToolError::InvalidCall(format!(
+                            "invalid plan status: {}",
+                            step.status
+                        )));
+                    }
+                    if step.status == "in_progress" {
+                        in_progress += 1;
+                    }
+                    Ok(json!({"step":step.step,"status":step.status}))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if in_progress > 1 {
+                return Err(ToolError::InvalidCall(
+                    "at most one plan step can be in_progress".into(),
+                ));
+            }
+            Ok(
+                ToolOutput::success("Plan updated".into()).with_metadata(json!({
+                    "kind":"planUpdate",
+                    "explanation":args.explanation,
+                    "plan":plan
+                })),
+            )
+        })
+    }
+}
+
+struct RequestUserInputHandler {
+    requester: UserInputRequester,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RequestUserInputArgs {
+    questions: Vec<RequestUserInputQuestion>,
+    #[serde(default)]
+    auto_resolution_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestUserInputQuestion {
+    id: String,
+    header: String,
+    question: String,
+    options: Vec<RequestUserInputOption>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestUserInputOption {
+    label: String,
+    description: String,
+}
+
+impl ToolHandler for RequestUserInputHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("request_user_input")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::function(
+            self.tool_name(),
+            "Request user input for one to three short questions and wait for the response. Set autoResolutionMs, from 60000 to 240000 milliseconds, only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "questions":{
+                        "type":"array",
+                        "minItems":1,
+                        "maxItems":3,
+                        "description":"Questions to show the user. Prefer 1 and do not exceed 3",
+                        "items":{
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string","description":"Stable identifier for mapping answers (snake_case)."},
+                                "header":{"type":"string","description":"Short header label shown in the UI (12 or fewer chars)."},
+                                "question":{"type":"string","description":"Single-sentence prompt shown to the user."},
+                                "options":{
+                                    "type":"array",
+                                    "minItems":2,
+                                    "maxItems":3,
+                                    "description":"Provide 2-3 mutually exclusive choices.",
+                                    "items":{
+                                        "type":"object",
+                                        "properties":{
+                                            "label":{"type":"string","description":"User-facing label (1-5 words)."},
+                                            "description":{"type":"string","description":"One short sentence explaining impact/tradeoff if selected."}
+                                        },
+                                        "required":["label","description"],
+                                        "additionalProperties":false
+                                    }
+                                }
+                            },
+                            "required":["id","header","question","options"],
+                            "additionalProperties":false
+                        }
+                    },
+                    "autoResolutionMs":{"type":"integer","minimum":60000,"maximum":240000}
+                },
+                "required":["questions"],
+                "additionalProperties":false
+            }),
+        )
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        let requester = self.requester.clone();
+        Box::pin(async move {
+            let mut args: RequestUserInputArgs =
+                parse_function_args(&invocation, "request_user_input")?;
+            if !(1..=3).contains(&args.questions.len()) {
+                return Err(ToolError::InvalidCall(
+                    "request_user_input requires one to three questions".into(),
+                ));
+            }
+            let mut ids = std::collections::HashSet::new();
+            let questions = args
+                .questions
+                .drain(..)
+                .map(|question| {
+                    if question.id.is_empty()
+                        || !question
+                            .id
+                            .bytes()
+                            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+                        || !ids.insert(question.id.clone())
+                    {
+                        return Err(ToolError::InvalidCall(
+                            "question ids must be unique snake_case identifiers".into(),
+                        ));
+                    }
+                    if question.header.trim().is_empty()
+                        || question.header.chars().count() > 12
+                        || question.question.trim().is_empty()
+                    {
+                        return Err(ToolError::InvalidCall(
+                            "question header and prompt are invalid".into(),
+                        ));
+                    }
+                    if !(2..=3).contains(&question.options.len())
+                        || question.options.iter().any(|option| {
+                            option.label.trim().is_empty() || option.description.trim().is_empty()
+                        })
+                    {
+                        return Err(ToolError::InvalidCall(
+                            "each question requires two or three complete options".into(),
+                        ));
+                    }
+                    Ok(json!({
+                        "id":question.id,
+                        "header":question.header,
+                        "question":question.question,
+                        "isOther":true,
+                        "isSecret":false,
+                        "options":question.options.into_iter().map(|option|json!({
+                            "label":option.label,
+                            "description":option.description
+                        })).collect::<Vec<_>>()
+                    }))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let auto_resolution_ms = args
+                .auto_resolution_ms
+                .map(|duration| duration.clamp(60_000, 240_000));
+            let response = requester(UserInputRequest {
+                thread_id: invocation.thread_id,
+                turn_id: invocation.turn_id,
+                item_id: invocation.call.call_id,
+                questions,
+                auto_resolution_ms,
+                cancellation: invocation.cancellation,
+            })
+            .await?;
+            Ok(ToolOutput::success(response))
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -1856,6 +2130,81 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(output.content["scope"], "turn");
         assert_eq!(output.content["strictAutoReview"], true);
+    }
+
+    #[tokio::test]
+    async fn update_plan_validates_and_returns_plan_metadata() {
+        let handler = update_plan_handler();
+        let output = handler
+            .handle(invocation(
+                ToolName::plain("update_plan"),
+                json!({
+                    "explanation":"Start implementation",
+                    "plan":[
+                        {"step":"Inspect","status":"completed"},
+                        {"step":"Implement","status":"in_progress"}
+                    ]
+                }),
+            ))
+            .await
+            .unwrap();
+        let metadata = output.metadata.unwrap();
+        assert_eq!(metadata["kind"], "planUpdate");
+        assert_eq!(metadata["plan"][1]["status"], "in_progress");
+
+        let error = handler
+            .handle(invocation(
+                ToolName::plain("update_plan"),
+                json!({
+                    "plan":[
+                        {"step":"One","status":"in_progress"},
+                        {"step":"Two","status":"in_progress"}
+                    ]
+                }),
+            ))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("at most one"));
+    }
+
+    #[tokio::test]
+    async fn request_user_input_normalizes_questions_and_returns_answers() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let request_calls = calls.clone();
+        let handler = request_user_input_handler(Arc::new(move |request| {
+            request_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                assert_eq!(request.thread_id, "thread");
+                assert_eq!(request.item_id, "call");
+                assert_eq!(request.auto_resolution_ms, Some(60_000));
+                assert_eq!(request.questions[0]["isOther"], true);
+                assert_eq!(request.questions[0]["isSecret"], false);
+                Ok(json!({"answers":{"strategy":{"answers":["Direct"]}}}))
+            })
+        }));
+        let output = handler
+            .handle(invocation(
+                ToolName::plain("request_user_input"),
+                json!({
+                    "questions":[{
+                        "id":"strategy",
+                        "header":"Strategy",
+                        "question":"How should this proceed?",
+                        "options":[
+                            {"label":"Direct","description":"Continue immediately."},
+                            {"label":"Plan","description":"Review the plan first."}
+                        ]
+                    }],
+                    "autoResolutionMs":1
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            output.content["answers"]["strategy"]["answers"][0],
+            "Direct"
+        );
     }
 
     #[tokio::test]

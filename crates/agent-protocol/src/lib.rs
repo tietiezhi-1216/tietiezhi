@@ -52,6 +52,10 @@ pub mod server_request {
         "../../shared/codex/v2/schema/ToolRequestUserInputParams.json"
     );
     import_params!(
+        tool_user_input_response,
+        "../../shared/codex/v2/schema/ToolRequestUserInputResponse.json"
+    );
+    import_params!(
         permissions,
         "../../shared/codex/v2/schema/PermissionsRequestApprovalParams.json"
     );
@@ -98,6 +102,7 @@ pub mod server_request {
     pub use mcp_schema::McpElicitationSchema;
     pub use permissions::PermissionsRequestApprovalParams;
     pub use tool_user_input::ToolRequestUserInputParams;
+    pub use tool_user_input_response::ToolRequestUserInputResponse;
 
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
     #[serde(rename_all = "camelCase")]
@@ -298,6 +303,7 @@ pub use rpc::{
     JSONRPCResponse,
 };
 pub use server_request::ServerRequest;
+pub use server_request::ToolRequestUserInputResponse;
 
 pub fn canonical_v2_schema() -> serde_json::Value {
     serde_json::from_str(include_str!(

@@ -16,6 +16,7 @@ use tietiezhi_agent_approval::{
     AskForApproval, CommandExecutionApprovalDecision, CommandExecutionApprovalParams,
     FileChangeApprovalDecision, FileChangeApprovalParams, PermissionsApprovalParams,
     PersistentApprovalRule, PersistentApprovalStore, RoutedServerRequest as ApprovalServerRequest,
+    UserInputRequestParams,
 };
 use tietiezhi_agent_config::{
     build_world_state, load_project_instructions, strip_internal_world_state_metadata, ConfigPaths,
@@ -56,10 +57,10 @@ use tietiezhi_agent_protocol::{
 use tietiezhi_agent_skills::{SkillsPaths, SkillsRuntime};
 use tietiezhi_agent_tools::builtins::{
     apply_patch_handler, context_remaining_handler, current_time_handler,
-    request_permissions_handler, sleep_handler, unified_exec_handlers, view_image_handler,
-    web_search_handler, CommandApprovalRequest, CommandNetworkRequest, CommandPolicyOutcome,
-    CommandPolicyRequest, CommandRuntimeEvent, FileChangeApprovalRequest,
-    PermissionsApprovalRequest,
+    request_permissions_handler, request_user_input_handler, sleep_handler, unified_exec_handlers,
+    update_plan_handler, view_image_handler, web_search_handler, CommandApprovalRequest,
+    CommandNetworkRequest, CommandPolicyOutcome, CommandPolicyRequest, CommandRuntimeEvent,
+    FileChangeApprovalRequest, PermissionsApprovalRequest, UserInputRequest,
 };
 use tietiezhi_agent_tools::{
     ToolCall, ToolCallRuntime, ToolModelCallResult, ToolOutput, ToolPayload, ToolRegistry,
@@ -3118,6 +3119,23 @@ async fn run_turn_executor(
                         .map_err(core_model_error)?;
                     emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
                 }
+                if let Some(metadata) = output.metadata.as_ref().filter(|metadata| {
+                    metadata.get("kind").and_then(Value::as_str) == Some("planUpdate")
+                }) {
+                    let plan = metadata
+                        .get("plan")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    let explanation = metadata
+                        .get("explanation")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    let notifications = manager
+                        .turn_plan_updated(&thread_id, &turn_id, explanation, plan)
+                        .map_err(core_model_error)?;
+                    emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                }
                 if matches!(call.payload, ToolPayload::ToolSearch { .. }) {
                     if let Some(tools) = output.response_item.get("tools").and_then(Value::as_array)
                     {
@@ -3458,7 +3476,102 @@ async fn turn_tool_runtime(
                 .flatten()
         })),
         web_search_handler(),
+        update_plan_handler(),
     ];
+    let user_input_app = app.clone();
+    let user_input_manager = manager.clone();
+    handlers.push(request_user_input_handler(Arc::new(
+        move |request: UserInputRequest| {
+            let app = user_input_app.clone();
+            let manager = user_input_manager.clone();
+            Box::pin(async move {
+                let waiting = manager
+                    .set_thread_status(
+                        &request.thread_id,
+                        json!({"type":"active","activeFlags":["waitingOnUserInput"]}),
+                    )
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(format!(
+                            "set user input status: {error:?}"
+                        ))
+                    })?;
+                emit_notifications(&app, &waiting)
+                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                let state = app.state::<AppState>();
+                let recipients = manager
+                    .thread_recipients(&request.thread_id)
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(format!(
+                            "resolve user input recipients: {error:?}"
+                        ))
+                    })?;
+                let pending = state
+                    .codex_approval_requests
+                    .begin_user_input(
+                        recipients,
+                        UserInputRequestParams {
+                            thread_id: request.thread_id.clone(),
+                            turn_id: request.turn_id.clone(),
+                            item_id: request.item_id,
+                            questions: request.questions,
+                            auto_resolution_ms: request.auto_resolution_ms,
+                        },
+                    )
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                    })?;
+                let request_id = pending.request.id.clone();
+                emit_approval_server_request(&app, &pending.request)
+                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                let response = if let Some(timeout_ms) = request.auto_resolution_ms {
+                    tokio::select! {
+                        result = pending.receiver => result
+                            .map_err(|_| tietiezhi_agent_tools::ToolError::Handler(
+                                "user input response channel closed".into()
+                            ))?
+                            .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string())),
+                        () = request.cancellation.cancelled() => {
+                            let _ = state.codex_approval_requests.cancel(&request_id);
+                            Err(tietiezhi_agent_tools::ToolError::Handler(
+                                "user input request cancelled".into()
+                            ))
+                        },
+                        () = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+                            let _ = state.codex_approval_requests.cancel(&request_id);
+                            Ok(json!({"answers":{}}))
+                        }
+                    }
+                } else {
+                    tokio::select! {
+                        result = pending.receiver => result
+                            .map_err(|_| tietiezhi_agent_tools::ToolError::Handler(
+                                "user input response channel closed".into()
+                            ))?
+                            .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string())),
+                        () = request.cancellation.cancelled() => {
+                            let _ = state.codex_approval_requests.cancel(&request_id);
+                            Err(tietiezhi_agent_tools::ToolError::Handler(
+                                "user input request cancelled".into()
+                            ))
+                        }
+                    }
+                };
+                let active = manager
+                    .set_thread_status(
+                        &request.thread_id,
+                        json!({"type":"active","activeFlags":[]}),
+                    )
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(format!(
+                            "restore active status: {error:?}"
+                        ))
+                    })?;
+                emit_notifications(&app, &active)
+                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                response
+            }) as tietiezhi_agent_tools::builtins::UserInputFuture
+        },
+    )));
     let settings = super::settings::read_settings(app).map_err(ModelError::Consumer)?;
     let supports_images = settings
         .providers

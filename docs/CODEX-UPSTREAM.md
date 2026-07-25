@@ -113,4 +113,6 @@ R23 已增加 `crates/agent-hooks`，实现 system、user、project 与 plugin-r
 
 R24 已增加 `crates/agent-plugins`，实现本地/Git Marketplace、原子安装与回滚、启停、卸载、目录/详情/Skill 读取、共享 checkout 和 `.codex-plugin/plugin.json`。激活后的 Skills、Hooks 与 MCP 统一进入现有运行时，MCP Item 保留 `pluginId` 来源；Apps 在 R33 接入 Dynamic Tool。详细行为见 `docs/CODEX-PLUGINS.md`。
 
+R25 已实现 `update_plan`、`request_user_input` 和 Thread Goal。Plan 使用正式 Turn 通知，用户输入通过可取消的反向 JSON-RPC 与 `waitingOnUserInput` 状态运行，Goal 进入 canonical metadata 与 rollout 并支持重建、Fork 和预算核算。详细行为见 `docs/CODEX-PLAN-GOALS.md`。
+
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

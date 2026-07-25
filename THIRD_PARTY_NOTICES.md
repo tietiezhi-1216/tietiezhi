@@ -292,3 +292,18 @@ R24 的 Plugin Manifest、Marketplace、安装、共享与激活行为参考以�
 - `codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`
 
 本地实现位于 `crates/agent-plugins`，以 staging、原子重命名和 rollback 目录管理插件包；Git Marketplace 由源码级 `git` 子进程获取，不运行、链接或分发上游 Codex 二进制。
+
+R25 的 Plan、用户输入和 Thread Goal 行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/core/src/tools/handlers/plan.rs`
+- `codex-rs/core/src/tools/handlers/plan_spec.rs`
+- `codex-rs/core/src/tools/handlers/request_user_input.rs`
+- `codex-rs/core/src/tools/handlers/request_user_input_spec.rs`
+- `codex-rs/ext/goal/src/api.rs`
+- `codex-rs/ext/goal/src/accounting.rs`
+- `codex-rs/app-server/src/request_processors/thread_goal_processor.rs`
+- `codex-rs/app-server/src/bespoke_event_handling.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+- `codex-rs/protocol/src/protocol.rs`
+
+本地实现复用统一 Tool Runtime、Server Request Broker 和 canonical rollout，不调用、链接或分发上游 Codex 二进制。

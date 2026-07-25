@@ -107,6 +107,64 @@ try {
   ) {
     throw new Error("MCP Elicitation 响应不符合 V2");
   }
+  const userInput = {
+    recipients: ["desktop"],
+    id: "user-input-1",
+    method: "item/tool/requestUserInput",
+    params: {
+      threadId: "thread",
+      turnId: "turn",
+      itemId: "call",
+      autoResolutionMs: 60_000,
+      questions: [
+        {
+          id: "strategy",
+          header: "Strategy",
+          question: "How should this proceed?",
+          isOther: true,
+          isSecret: false,
+          options: [
+            {
+              label: "Direct (Recommended)",
+              description: "Continue immediately.",
+            },
+            { label: "Plan", description: "Review the plan first." },
+          ],
+        },
+      ],
+    },
+  };
+  const userInputHtml = renderToStaticMarkup(
+    React.createElement(CodexApprovalPrompt, {
+      request: userInput,
+      onRespond() {},
+    }),
+  );
+  for (const label of [
+    "Codex 需要你的选择",
+    "Strategy",
+    "Direct (Recommended)",
+    "其他答案",
+    "提交",
+  ]) {
+    if (!userInputHtml.includes(label)) {
+      throw new Error(`Request User Input 界面缺少内容：${label}`);
+    }
+  }
+  if (userInputHtml.includes("本作用域允许")) {
+    throw new Error("Request User Input 不应显示会话授权入口");
+  }
+  const userInputResponse = codexApprovalResponse(
+    userInput,
+    "accept",
+    { strategy: "Direct (Recommended)" },
+  );
+  if (
+    userInputResponse.result.answers.strategy.answers[0] !==
+    "Direct (Recommended)"
+  ) {
+    throw new Error("Request User Input 响应不符合 V2");
+  }
   process.stdout.write("Codex approval prompt SSR verification passed\n");
 } finally {
   await server.close();

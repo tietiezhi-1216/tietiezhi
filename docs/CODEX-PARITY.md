@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 52 |
+| 待实现 | 44 |
 | 实现中 | 0 |
-| 已实现 | 109 |
+| 已实现 | 117 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -63,7 +63,7 @@
 | R22 | Skills | 已完成 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md | R24 将已安装插件的 Skills 根作为带 plugin provenance 的根注入；远程执行环境技能在 R35 映射。 |
 | R23 | Hooks | 已完成 | crates/agent-hooks 发现/信任/命令/超时/输出解析测试；crates/agent-core hook notification 与 hookPrompt canonical persistence；desktop Session/Prompt/Tool/Permission/Compact/Stop 生命周期接线；docs/CODEX-HOOKS.md | prompt/agent handler declarations are retained as typed failed runs until the R26 model-backed collaboration runner is available；R24 injects plugin hook sources and provenance；project hook execution requires an exact trusted SHA-256 hash. |
 | R24 | Plugins | 已完成 | crates/agent-plugins; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md | Apps execution remains assigned to R33; hosted OpenAI Share is mapped to local auditable storage. |
-| R25 | Plan 与用户输入 | 待开始 |  |  |
+| R25 | Plan 与用户输入 | 已完成 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md | The unified Item timeline consumes these notifications in R31; the current reverse-request component is SSR-verified. |
 | R26 | Collaboration | 待开始 |  |  |
 | R27 | Guardian 与 Review | 待开始 |  |  |
 | R28 | Memory | 待开始 |  |  |
@@ -152,9 +152,9 @@
 | `thread/compact/start` | 已实现 | R9 | crates/agent-core 与 desktop commands/codex.rs 实现异步手动压缩 Turn、contextCompaction Item、Responses 摘要和 canonical replacement history；docs/CODEX-CONTEXT.md |
 | `thread/delete` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/fork` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
-| `thread/goal/clear` | 待实现 | R25 |  |
-| `thread/goal/get` | 待实现 | R25 |  |
-| `thread/goal/set` | 待实现 | R25 |  |
+| `thread/goal/clear` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
+| `thread/goal/get` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
+| `thread/goal/set` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
 | `thread/inject_items` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/list` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/loaded/list` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
@@ -191,7 +191,7 @@
 | `item/fileChange/requestApproval` | 已实现 | R12 | crates/agent-approval ServerRequestBroker V2 Schema 与四决策测试；desktop/src-tauri/src/commands/codex.rs |
 | `item/permissions/requestApproval` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
 | `item/tool/call` | 已实现 | R10 | crates/agent-tools 生成并校验精确 App Server V2 Dynamic Tool ServerRequest/Response，保持 thread/turn/call/namespace/tool/arguments；docs/CODEX-TOOLS.md |
-| `item/tool/requestUserInput` | 待实现 | R25 |  |
+| `item/tool/requestUserInput` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
 | `mcpServer/elicitation/request` | 已实现 | R19 | crates/agent-mcp ElicitationBroker/ClientHandler; desktop DesktopMcpHost; codex-approval-prompt SSR V2 response test |
 
 ## Server Notifications
@@ -223,7 +223,7 @@
 | `item/fileChange/outputDelta` | 已实现 | R12 | crates/agent-core 兼容发布器与 V2 载荷测试；正常执行按 Codex 0.145.0 不发送废弃通知 |
 | `item/fileChange/patchUpdated` | 已实现 | R12 | crates/agent-core FileChange 增量投影；desktop Responses delta/最终预览；FileChange 生命周期测试 |
 | `item/mcpToolCall/progress` | 已实现 | R19 | crates/agent-mcp exact progress token attribution and stdio fixture; DesktopMcpHost V2 validation |
-| `item/plan/delta` | 待实现 | R25 |  |
+| `item/plan/delta` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
 | `item/reasoning/summaryPartAdded` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `item/reasoning/summaryTextDelta` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `item/reasoning/textDelta` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
@@ -244,8 +244,8 @@
 | `thread/deleted` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/environment/connected` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/environment/disconnected` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
-| `thread/goal/cleared` | 待实现 | R25 |  |
-| `thread/goal/updated` | 待实现 | R25 |  |
+| `thread/goal/cleared` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
+| `thread/goal/updated` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
 | `thread/name/updated` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/realtime/closed` | 待实现 | R35 |  |
 | `thread/realtime/error` | 待实现 | R35 |  |
@@ -263,7 +263,7 @@
 | `turn/completed` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `turn/diff/updated` | 已实现 | R12 | crates/agent-patch TurnDiffTracker；crates/agent-core V2 发布器；desktop apply_patch 成功路径 |
 | `turn/moderationMetadata` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
-| `turn/plan/updated` | 待实现 | R25 |  |
+| `turn/plan/updated` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
 | `turn/started` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `warning` | 待实现 | R3 |  |
 | `windows/worldWritableWarning` | 已实现 | R16 | 源码构建 self-reentry；真实 Windows runner 执行沙箱、ConPTY 和桌面构建。 |

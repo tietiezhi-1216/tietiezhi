@@ -22,8 +22,9 @@ use tietiezhi_agent_model::{ModelError, TokenUsage, list_models};
 use tietiezhi_agent_protocol::{
     ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse, ServerNotification,
     ThreadApproveGuardianDeniedActionResponse, ThreadArchiveResponse, ThreadCompactStartResponse,
-    ThreadDeleteResponse, ThreadForkResponse, ThreadInjectItemsResponse, ThreadItem,
-    ThreadListResponse, ThreadLoadedListResponse, ThreadMetadataUpdateResponse, ThreadReadResponse,
+    ThreadDeleteResponse, ThreadForkResponse, ThreadGoalClearResponse, ThreadGoalGetResponse,
+    ThreadGoalSetResponse, ThreadInjectItemsResponse, ThreadItem, ThreadListResponse,
+    ThreadLoadedListResponse, ThreadMetadataUpdateResponse, ThreadReadResponse,
     ThreadResumeResponse, ThreadRollbackResponse, ThreadSetNameResponse, ThreadStartResponse,
     ThreadUnarchiveResponse, ThreadUnsubscribeResponse, TurnInterruptResponse, TurnStartResponse,
     TurnSteerResponse,
@@ -119,6 +120,8 @@ struct ThreadRecord {
     #[serde(default)]
     personality: Option<Value>,
     service_tier: Option<String>,
+    #[serde(default)]
+    goal: Option<Value>,
     created_at_ms: u64,
     updated_at_ms: u64,
     recency_at_ms: Option<u64>,
@@ -409,6 +412,9 @@ impl ThreadManager {
             "thread/unarchive" => self.thread_unarchive(&params)?,
             "thread/delete" => self.thread_delete(&params)?,
             "thread/name/set" => self.thread_set_name(&params)?,
+            "thread/goal/set" => self.thread_goal_set(&params)?,
+            "thread/goal/get" => (self.thread_goal_get(&params)?, Vec::new()),
+            "thread/goal/clear" => self.thread_goal_clear(&params)?,
             "thread/metadata/update" => (self.thread_metadata_update(&params)?, Vec::new()),
             "thread/inject_items" => (self.thread_inject_items(&params)?, Vec::new()),
             "thread/rollback" => (self.thread_rollback(&params)?, Vec::new()),
@@ -459,6 +465,9 @@ impl ThreadManager {
             "thread/unarchive" => validate!(ThreadUnarchiveResponse),
             "thread/delete" => validate!(ThreadDeleteResponse),
             "thread/name/set" => validate!(ThreadSetNameResponse),
+            "thread/goal/set" => validate!(ThreadGoalSetResponse),
+            "thread/goal/get" => validate!(ThreadGoalGetResponse),
+            "thread/goal/clear" => validate!(ThreadGoalClearResponse),
             "thread/metadata/update" => validate!(ThreadMetadataUpdateResponse),
             "thread/inject_items" => validate!(ThreadInjectItemsResponse),
             "thread/rollback" => validate!(ThreadRollbackResponse),
@@ -567,6 +576,7 @@ impl ThreadManager {
             reasoning_summary: None,
             personality: None,
             service_tier,
+            goal: None,
             created_at_ms: now,
             updated_at_ms: now,
             recency_at_ms: Some(now),
@@ -683,6 +693,9 @@ impl ThreadManager {
         record.forked_from_id = Some(source_id);
         record.parent_thread_id = None;
         record.name = None;
+        if let Some(goal) = record.goal.as_mut() {
+            goal["threadId"] = json!(id);
+        }
         record.created_at_ms = now;
         record.updated_at_ms = now;
         record.recency_at_ms = Some(now);
@@ -727,6 +740,18 @@ impl ThreadManager {
             loaded.world_state_baseline = context.world_state_baseline;
         }
         loaded.turns = turns;
+        if let Some(goal) = loaded.record.goal.clone()
+            && let Some(appender) = rollout_appender(&loaded)?
+        {
+            appender
+                .append_event(json!({
+                    "type": "thread_goal_updated",
+                    "thread_id": id,
+                    "goal": goal
+                }))
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
         self.persist_loaded(&mut loaded)?;
         state.loaded.insert(id.clone(), loaded.clone());
         state
@@ -1084,6 +1109,178 @@ impl ThreadManager {
             json!({"threadId": id, "threadName": name}),
         );
         Ok((json!({}), vec![notification]))
+    }
+
+    fn thread_goal_set(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
+        let id = required_string(params, "threadId")?;
+        validate_thread_id(&id)?;
+        let mut state = self.state()?;
+        let (mut loaded, was_loaded) = self.thread_for_update_locked(&id, &state)?;
+        if loaded.record.ephemeral {
+            return Err(RpcError::invalid(format!(
+                "ephemeral thread does not support goals: {id}"
+            )));
+        }
+
+        let now = milliseconds_to_seconds(now_ms());
+        let objective = params
+            .get("objective")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::trim)
+                    .ok_or_else(|| RpcError::invalid("objective must be a string"))
+            })
+            .transpose()?;
+        if let Some(objective) = objective {
+            validate_goal_objective(objective)?;
+        }
+        let status = params
+            .get("status")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| RpcError::invalid("status must be a string"))
+                    .and_then(validate_goal_status)
+            })
+            .transpose()?;
+        let token_budget_update = if params
+            .as_object()
+            .is_some_and(|params| params.contains_key("tokenBudget"))
+        {
+            match params.get("tokenBudget") {
+                Some(Value::Null) => Some(None),
+                Some(value) => {
+                    let budget = value.as_i64().ok_or_else(|| {
+                        RpcError::invalid("tokenBudget must be an integer or null")
+                    })?;
+                    if budget <= 0 {
+                        return Err(RpcError::invalid(
+                            "goal budgets must be positive when provided",
+                        ));
+                    }
+                    Some(Some(budget))
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        let mut goal = loaded.record.goal.clone().unwrap_or_else(|| {
+            json!({
+                "threadId": id,
+                "objective": "",
+                "status": "active",
+                "tokenBudget": Value::Null,
+                "tokensUsed": 0,
+                "timeUsedSeconds": 0,
+                "createdAt": now,
+                "updatedAt": now
+            })
+        });
+        if loaded.record.goal.is_none() && objective.is_none() {
+            return Err(RpcError::invalid(format!(
+                "cannot update goal for thread {id}: no goal exists"
+            )));
+        }
+        refresh_goal_time(&mut goal, now);
+        if let Some(objective) = objective {
+            goal["objective"] = json!(objective);
+            if loaded.record.preview.is_empty() {
+                loaded.record.preview = objective.into();
+            }
+        }
+        if let Some(status) = status {
+            goal["status"] = json!(status);
+        }
+        if let Some(token_budget) = token_budget_update {
+            goal["tokenBudget"] = token_budget.map_or(Value::Null, Value::from);
+        }
+        goal["threadId"] = json!(id);
+        goal["updatedAt"] = json!(now);
+        apply_goal_budget_status(&mut goal);
+
+        loaded.record.goal = Some(goal.clone());
+        loaded.record.updated_at_ms = now_ms();
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(json!({
+                    "type": "thread_goal_updated",
+                    "thread_id": id,
+                    "goal": goal
+                }))
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        self.persist_loaded(&mut loaded)?;
+        if was_loaded {
+            state.loaded.insert(id.clone(), loaded);
+        }
+        let notification = self.checked_global_notification(
+            &state,
+            "thread/goal/updated",
+            json!({"threadId": id, "turnId": Value::Null, "goal": goal}),
+        )?;
+        Ok((json!({"goal": goal}), vec![notification]))
+    }
+
+    fn thread_goal_get(&self, params: &Value) -> RpcResult<Value> {
+        let id = required_string(params, "threadId")?;
+        validate_thread_id(&id)?;
+        let mut state = self.state()?;
+        let (mut loaded, was_loaded) = self.thread_for_update_locked(&id, &state)?;
+        if loaded.record.ephemeral {
+            return Err(RpcError::invalid(format!(
+                "ephemeral thread does not support goals: {id}"
+            )));
+        }
+        if let Some(goal) = loaded.record.goal.as_mut() {
+            refresh_goal_time(goal, milliseconds_to_seconds(now_ms()));
+        }
+        let goal = loaded.record.goal.clone();
+        if was_loaded {
+            state.loaded.insert(id, loaded);
+        }
+        Ok(json!({"goal": goal}))
+    }
+
+    fn thread_goal_clear(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
+        let id = required_string(params, "threadId")?;
+        validate_thread_id(&id)?;
+        let mut state = self.state()?;
+        let (mut loaded, was_loaded) = self.thread_for_update_locked(&id, &state)?;
+        if loaded.record.ephemeral {
+            return Err(RpcError::invalid(format!(
+                "ephemeral thread does not support goals: {id}"
+            )));
+        }
+        let cleared = loaded.record.goal.take().is_some();
+        let mut notifications = Vec::new();
+        if cleared {
+            loaded.record.updated_at_ms = now_ms();
+            if let Some(appender) = rollout_appender(&loaded)? {
+                appender
+                    .append_event(json!({
+                        "type": "thread_goal_cleared",
+                        "thread_id": id
+                    }))
+                    .map_err(state_error)?;
+                appender.sync_data().map_err(state_error)?;
+            }
+            self.persist_loaded(&mut loaded)?;
+            if was_loaded {
+                state.loaded.insert(id.clone(), loaded);
+            }
+            notifications.push(self.checked_global_notification(
+                &state,
+                "thread/goal/cleared",
+                json!({"threadId": id}),
+            )?);
+        }
+        Ok((json!({"cleared": cleared}), notifications))
     }
 
     fn thread_metadata_update(&self, params: &Value) -> RpcResult<Value> {
@@ -2806,6 +3003,74 @@ impl ThreadManager {
         )?])
     }
 
+    pub fn turn_plan_updated(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        explanation: Option<String>,
+        plan: Vec<Value>,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_turn(&loaded, turn_id)?;
+        let plan = plan
+            .into_iter()
+            .map(normalize_plan_step)
+            .collect::<RpcResult<Vec<_>>>()?;
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(json!({
+                    "type": "turn_plan_updated",
+                    "turn_id": turn_id,
+                    "explanation": explanation,
+                    "plan": plan
+                }))
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        let notification = self.checked_notification_for(
+            &state,
+            thread_id,
+            "turn/plan/updated",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "explanation": explanation,
+                "plan": plan
+            }),
+        )?;
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(vec![notification])
+    }
+
+    pub fn plan_delta_notification(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        delta: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        if item_id.is_empty() {
+            return Err(RpcError::invalid("itemId must not be empty"));
+        }
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_turn(&loaded, turn_id)?;
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            "item/plan/delta",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "delta": delta
+            }),
+        )?])
+    }
+
     pub fn hook_started_notification(
         &self,
         thread_id: &str,
@@ -2918,6 +3183,14 @@ impl ThreadManager {
             "last": last.as_v2_breakdown(),
             "modelContextWindow": model_context_window
         });
+        let mut goal_update = None;
+        if let Some(goal) = loaded.record.goal.as_mut() {
+            refresh_goal_time(goal, milliseconds_to_seconds(now_ms()));
+            let used = goal.get("tokensUsed").and_then(Value::as_i64).unwrap_or(0);
+            goal["tokensUsed"] = json!(used.saturating_add(last.total_tokens.max(0)));
+            apply_goal_budget_status(goal);
+            goal_update = Some(goal.clone());
+        }
         if let Some(appender) = rollout_appender(&loaded)? {
             appender
                 .append_event(json!({
@@ -2930,10 +3203,22 @@ impl ThreadManager {
                     "rate_limits": Value::Null
                 }))
                 .map_err(state_error)?;
+            if let Some(goal) = goal_update.as_ref() {
+                appender
+                    .append_event(json!({
+                        "type": "thread_goal_updated",
+                        "thread_id": thread_id,
+                        "turn_id": turn_id,
+                        "goal": goal
+                    }))
+                    .map_err(state_error)?;
+            }
             appender.sync_data().map_err(state_error)?;
         }
+        loaded.record.updated_at_ms = now_ms();
+        self.persist_loaded(&mut loaded)?;
         state.loaded.insert(thread_id.into(), loaded);
-        Ok(vec![self.checked_notification_for(
+        let mut notifications = vec![self.checked_notification_for(
             &state,
             thread_id,
             "thread/tokenUsage/updated",
@@ -2942,7 +3227,15 @@ impl ThreadManager {
                 "turnId": turn_id,
                 "tokenUsage": token_usage
             }),
-        )?])
+        )?];
+        if let Some(goal) = goal_update {
+            notifications.push(self.checked_global_notification(
+                &state,
+                "thread/goal/updated",
+                json!({"threadId": thread_id, "turnId": turn_id, "goal": goal}),
+            )?);
+        }
+        Ok(notifications)
     }
 
     /// R6 uses this hook to project canonical turns into Thread responses.
@@ -3434,6 +3727,7 @@ impl ThreadManager {
             .recover_rollout(&metadata.rollout_path)
             .map_err(state_error)?;
         apply_latest_turn_context(&mut record, &recovery.rollout_items);
+        apply_latest_goal(&mut record, &recovery.rollout_items);
         let mut projection = project_turns(&recovery.rollout_items)?;
         if projection.turns.is_empty() && !record.turns.is_empty() {
             projection.turns = std::mem::take(&mut record.turns);
@@ -3492,7 +3786,15 @@ impl ThreadManager {
             return Ok((loaded.clone(), true));
         }
         let metadata = self.metadata(id)?;
-        let record = self.record_from_metadata(&metadata)?;
+        let mut record = self.record_from_metadata(&metadata)?;
+        if record.goal.is_none() {
+            let recovery = self
+                .inner
+                .store
+                .recover_rollout(&metadata.rollout_path)
+                .map_err(state_error)?;
+            apply_latest_goal(&mut record, &recovery.rollout_items);
+        }
         Ok((
             LoadedThread {
                 record,
@@ -3566,6 +3868,7 @@ impl ThreadManager {
                 recovery.session_created_at_ms.unwrap_or_else(now_ms),
             )?;
             apply_latest_turn_context(&mut record, &recovery.rollout_items);
+            apply_latest_goal(&mut record, &recovery.rollout_items);
             let context = reconstruct_context(&recovery.rollout_items);
             if let Some(world_state) = context.world_state_baseline.as_ref() {
                 record.developer_instructions = world_state
@@ -3663,6 +3966,7 @@ impl ThreadManager {
             reasoning_summary: None,
             personality: None,
             service_tier: self.inner.defaults.service_tier.clone(),
+            goal: None,
             created_at_ms,
             updated_at_ms: created_at_ms,
             recency_at_ms: Some(created_at_ms),
@@ -3721,6 +4025,7 @@ impl ThreadManager {
             reasoning_summary: None,
             personality: None,
             service_tier: self.inner.defaults.service_tier.clone(),
+            goal: None,
             created_at_ms: metadata.created_at_ms,
             updated_at_ms: metadata.updated_at_ms,
             recency_at_ms: Some(metadata.updated_at_ms),
@@ -4925,6 +5230,23 @@ fn apply_latest_turn_context(record: &mut ThreadRecord, items: &[RecoveredRollou
         .map(str::to_owned);
 }
 
+fn apply_latest_goal(record: &mut ThreadRecord, items: &[RecoveredRolloutItem]) {
+    for event in items.iter().filter_map(|item| match &item.item {
+        RecoveredRolloutItemKind::EventMsg(event) => Some(event),
+        _ => None,
+    }) {
+        match event.get("type").and_then(Value::as_str) {
+            Some("thread_goal_updated") => {
+                record.goal = event.get("goal").cloned();
+            }
+            Some("thread_goal_cleared") => {
+                record.goal = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 fn response_item_to_v2(item: &Value) -> RpcResult<Option<Value>> {
     match item.get("type").and_then(Value::as_str) {
         Some("message") if item.get("role").and_then(Value::as_str) == Some("assistant") => {
@@ -5068,6 +5390,91 @@ fn add_token_usage(total: &mut TokenUsage, last: &TokenUsage) {
     total.output_tokens += last.output_tokens;
     total.reasoning_output_tokens += last.reasoning_output_tokens;
     total.total_tokens += last.total_tokens;
+}
+
+fn validate_goal_objective(objective: &str) -> RpcResult<()> {
+    if objective.is_empty() {
+        return Err(RpcError::invalid("goal objective must not be empty"));
+    }
+    if objective.chars().count() > 4_000 {
+        return Err(RpcError::invalid(
+            "goal objective must be at most 4000 characters",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_goal_status(status: &str) -> RpcResult<&str> {
+    match status {
+        "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete" => {
+            Ok(status)
+        }
+        _ => Err(RpcError::invalid(format!(
+            "unknown thread goal status `{status}`"
+        ))),
+    }
+}
+
+fn refresh_goal_time(goal: &mut Value, now_seconds: i64) {
+    let last_updated = goal
+        .get("updatedAt")
+        .and_then(Value::as_i64)
+        .unwrap_or(now_seconds);
+    if goal.get("status").and_then(Value::as_str) == Some("active") {
+        let elapsed = now_seconds.saturating_sub(last_updated);
+        let accumulated = goal
+            .get("timeUsedSeconds")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        goal["timeUsedSeconds"] = json!(accumulated.saturating_add(elapsed));
+    }
+    goal["updatedAt"] = json!(now_seconds);
+}
+
+fn apply_goal_budget_status(goal: &mut Value) {
+    let budget = goal.get("tokenBudget").and_then(Value::as_i64);
+    let used = goal.get("tokensUsed").and_then(Value::as_i64).unwrap_or(0);
+    if budget.is_some_and(|budget| used >= budget)
+        && goal.get("status").and_then(Value::as_str) == Some("active")
+    {
+        goal["status"] = json!("budgetLimited");
+    }
+}
+
+fn normalize_plan_step(mut step: Value) -> RpcResult<Value> {
+    let step_object = step
+        .as_object_mut()
+        .ok_or_else(|| RpcError::invalid("plan steps must be objects"))?;
+    let description = step_object
+        .get("step")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|step| !step.is_empty())
+        .ok_or_else(|| RpcError::invalid("plan step must not be empty"))?
+        .to_owned();
+    let status = step_object
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::invalid("plan status must be a string"))?;
+    let status = match status {
+        "pending" => "pending",
+        "in_progress" | "inProgress" => "inProgress",
+        "completed" => "completed",
+        _ => return Err(RpcError::invalid(format!("invalid plan status: {status}"))),
+    };
+    Ok(json!({"step": description, "status": status}))
+}
+
+fn require_turn(loaded: &LoadedThread, turn_id: &str) -> RpcResult<()> {
+    if loaded
+        .turns
+        .iter()
+        .any(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+    {
+        Ok(())
+    } else {
+        Err(RpcError::invalid(format!("turn not found: {turn_id}")))
+    }
 }
 
 fn require_active_turn(loaded: &LoadedThread, turn_id: &str) -> RpcResult<()> {
@@ -5606,6 +6013,107 @@ mod tests {
             fork_id,
             "source session_meta must never be copied"
         );
+    }
+
+    #[test]
+    fn goals_persist_rebuild_fork_and_clear_with_v2_notifications() {
+        let (temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let created = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "thread/goal/set",
+                json!({
+                    "threadId":id,
+                    "objective":"Complete parity",
+                    "tokenBudget":1000
+                }),
+            ),
+        );
+        assert_eq!(result(&created)["goal"]["objective"], "Complete parity");
+        assert_eq!(result(&created)["goal"]["status"], "active");
+        assert_eq!(created.notifications[0].method, "thread/goal/updated");
+        let forked = manager.dispatch("desktop", request(3, "thread/fork", json!({"threadId":id})));
+        let fork_id = result(&forked)["thread"]["id"].as_str().unwrap();
+        let fork_goal = manager.dispatch(
+            "desktop",
+            request(4, "thread/goal/get", json!({"threadId":fork_id})),
+        );
+        assert_eq!(result(&fork_goal)["goal"]["threadId"], fork_id);
+        assert_eq!(result(&fork_goal)["goal"]["objective"], "Complete parity");
+
+        let mut metadata = manager.inner.store.thread(&id).unwrap().unwrap();
+        metadata.canonical = None;
+        manager.inner.store.upsert_metadata(&metadata).unwrap();
+        drop(manager);
+        let manager = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "fallback".into(),
+                model_provider: "fallback".into(),
+                cwd: temp.path().join("workspace"),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        let restored = manager.dispatch(
+            "desktop",
+            request(5, "thread/goal/get", json!({"threadId":id})),
+        );
+        assert_eq!(result(&restored)["goal"]["objective"], "Complete parity");
+        let cleared = manager.dispatch(
+            "desktop",
+            request(6, "thread/goal/clear", json!({"threadId":id})),
+        );
+        assert_eq!(result(&cleared)["cleared"], true);
+        assert_eq!(cleared.notifications[0].method, "thread/goal/cleared");
+        let empty = manager.dispatch(
+            "desktop",
+            request(7, "thread/goal/get", json!({"threadId":id})),
+        );
+        assert_eq!(result(&empty)["goal"], Value::Null);
+    }
+
+    #[test]
+    fn plan_updates_and_deltas_use_v2_statuses() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"].as_str().unwrap();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"Plan this task","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap();
+        let notifications = manager
+            .turn_plan_updated(
+                thread_id,
+                turn_id,
+                Some("Implementation order".into()),
+                vec![
+                    json!({"step":"Inspect","status":"completed"}),
+                    json!({"step":"Implement","status":"in_progress"}),
+                ],
+            )
+            .unwrap();
+        assert_eq!(notifications[0].method, "turn/plan/updated");
+        assert_eq!(notifications[0].params["plan"][1]["status"], "inProgress");
+        let delta = manager
+            .plan_delta_notification(thread_id, turn_id, "plan-1", "Inspect")
+            .unwrap();
+        assert_eq!(delta[0].method, "item/plan/delta");
     }
 
     #[test]

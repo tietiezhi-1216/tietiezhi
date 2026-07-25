@@ -444,21 +444,21 @@
       },
       {
         "method": "thread/goal/clear",
-        "status": "pending",
+        "status": "implemented",
         "target": "R25",
-        "note": ""
+        "note": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
       },
       {
         "method": "thread/goal/get",
-        "status": "pending",
+        "status": "implemented",
         "target": "R25",
-        "note": ""
+        "note": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
       },
       {
         "method": "thread/goal/set",
-        "status": "pending",
+        "status": "implemented",
         "target": "R25",
-        "note": ""
+        "note": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
       },
       {
         "method": "thread/inject_items",
@@ -624,9 +624,9 @@
       },
       {
         "method": "item/tool/requestUserInput",
-        "status": "pending",
+        "status": "implemented",
         "target": "R25",
-        "note": ""
+        "note": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
       },
       {
         "method": "mcpServer/elicitation/request",
@@ -788,9 +788,9 @@
       },
       {
         "method": "item/plan/delta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R25",
-        "note": ""
+        "note": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
       },
       {
         "method": "item/reasoning/summaryPartAdded",
@@ -914,15 +914,15 @@
       },
       {
         "method": "thread/goal/cleared",
-        "status": "pending",
+        "status": "implemented",
         "target": "R25",
-        "note": ""
+        "note": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
       },
       {
         "method": "thread/goal/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R25",
-        "note": ""
+        "note": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
       },
       {
         "method": "thread/name/updated",
@@ -1028,9 +1028,9 @@
       },
       {
         "method": "turn/plan/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R25",
-        "note": ""
+        "note": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
       },
       {
         "method": "turn/started",
@@ -1273,9 +1273,9 @@
     {
       "id": "R25",
       "name": "Plan 与用户输入",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "The unified Item timeline consumes these notifications in R31; the current reverse-request component is SSR-verified.",
+      "evidence": "crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md"
     },
     {
       "id": "R26",
