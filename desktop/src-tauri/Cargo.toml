@@ -32,6 +32,7 @@ tietiezhi-agent-plugins = { path = "../../crates/agent-plugins" }
 tietiezhi-agent-sandbox = { path = "../../crates/agent-sandbox" }
 tietiezhi-agent-skills = { path = "../../crates/agent-skills" }
 tietiezhi-agent-protocol = { path = "../../crates/agent-protocol" }
+tietiezhi-agent-review = { path = "../../crates/agent-review" }
 tietiezhi-agent-state = { path = "../../crates/agent-state" }
 tietiezhi-agent-tools = { path = "../../crates/agent-tools" }
 tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }

@@ -20,15 +20,16 @@ use tietiezhi_agent_context::{
 };
 use tietiezhi_agent_model::{ModelError, TokenUsage, list_models};
 use tietiezhi_agent_protocol::{
-    ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse, ServerNotification,
-    ThreadApproveGuardianDeniedActionResponse, ThreadArchiveResponse, ThreadCompactStartResponse,
-    ThreadDeleteResponse, ThreadForkResponse, ThreadGoalClearResponse, ThreadGoalGetResponse,
-    ThreadGoalSetResponse, ThreadInjectItemsResponse, ThreadItem, ThreadListResponse,
-    ThreadLoadedListResponse, ThreadMetadataUpdateResponse, ThreadReadResponse,
+    ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse, ReviewStartResponse,
+    ServerNotification, ThreadApproveGuardianDeniedActionResponse, ThreadArchiveResponse,
+    ThreadCompactStartResponse, ThreadDeleteResponse, ThreadForkResponse, ThreadGoalClearResponse,
+    ThreadGoalGetResponse, ThreadGoalSetResponse, ThreadInjectItemsResponse, ThreadItem,
+    ThreadListResponse, ThreadLoadedListResponse, ThreadMetadataUpdateResponse, ThreadReadResponse,
     ThreadResumeResponse, ThreadRollbackResponse, ThreadSetNameResponse, ThreadStartResponse,
     ThreadUnarchiveResponse, ThreadUnsubscribeResponse, TurnInterruptResponse, TurnStartResponse,
     TurnSteerResponse,
 };
+use tietiezhi_agent_review::{ResolvedReview, ReviewDelivery, ReviewTarget, resolve_review};
 use tietiezhi_agent_state::{
     RecoveredRolloutItem, RecoveredRolloutItemKind, RolloutAppender, StateError, StateStore,
     ThreadMetadata,
@@ -187,6 +188,7 @@ pub struct TurnExecutionSnapshot {
     pub base_instructions: Option<String>,
     pub developer_instructions: Option<String>,
     pub approval_policy: Value,
+    pub approvals_reviewer: String,
     pub sandbox: Value,
     pub reasoning_effort: Option<String>,
     pub reasoning_summary: Option<Value>,
@@ -195,6 +197,7 @@ pub struct TurnExecutionSnapshot {
     pub model_context_window: Option<i64>,
     pub active_context_tokens: i64,
     pub auto_compact_token_limit: Option<i64>,
+    pub review: Option<ResolvedReview>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -249,6 +252,7 @@ struct LoadedThread {
     world_state_baseline: Option<Value>,
     active_compaction_item_id: Option<String>,
     active_compaction_automatic: bool,
+    active_review: Option<ResolvedReview>,
 }
 
 #[derive(Debug, Default)]
@@ -451,6 +455,7 @@ impl ThreadManager {
                 self.thread_approve_guardian_denied_action(&params)?,
                 Vec::new(),
             ),
+            "review/start" => self.review_start(connection_id, &params)?,
             "turn/start" => self.turn_start(&params)?,
             "turn/steer" => self.turn_steer(&params)?,
             "turn/interrupt" => self.turn_interrupt(&params)?,
@@ -503,6 +508,7 @@ impl ThreadManager {
             "thread/approveGuardianDeniedAction" => {
                 validate!(ThreadApproveGuardianDeniedActionResponse)
             }
+            "review/start" => validate!(ReviewStartResponse),
             "turn/start" => validate!(TurnStartResponse),
             "turn/steer" => validate!(TurnSteerResponse),
             "turn/interrupt" => validate!(TurnInterruptResponse),
@@ -1561,6 +1567,236 @@ impl ThreadManager {
         Ok((json!({}), notifications))
     }
 
+    fn review_start(
+        &self,
+        connection_id: &str,
+        params: &Value,
+    ) -> RpcResult<(Value, Vec<RoutedNotification>)> {
+        let parent_thread_id = required_string(params, "threadId")?;
+        validate_thread_id(&parent_thread_id)?;
+        let target = params
+            .get("target")
+            .cloned()
+            .ok_or_else(|| RpcError::invalid("target is required"))
+            .and_then(|target| {
+                serde_json::from_value::<ReviewTarget>(target)
+                    .map_err(|error| RpcError::invalid(format!("invalid review target: {error}")))
+            })?;
+        let delivery = params
+            .get("delivery")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value::<ReviewDelivery>)
+            .transpose()
+            .map_err(|error| RpcError::invalid(format!("invalid review delivery: {error}")))?
+            .unwrap_or_default();
+        let parent = {
+            let mut state = self.state()?;
+            self.load_thread_locked(&parent_thread_id, &mut state)?
+        };
+        let resolved = resolve_review(target, &parent.record.cwd).map_err(|error| match error {
+            tietiezhi_agent_review::ReviewError::Invalid(message) => {
+                RpcError::invalid_request(message)
+            }
+            error => RpcError::internal(error.to_string()),
+        })?;
+
+        let (review_thread_id, mut notifications) = match delivery {
+            ReviewDelivery::Inline => (parent_thread_id.clone(), Vec::new()),
+            ReviewDelivery::Detached => {
+                let mut detached_notifications = Vec::new();
+                if parent.record.history_mode == "paginated" {
+                    return Err(RpcError::invalid_request(
+                        "paginated threads do not support detached review",
+                    ));
+                }
+                let sandbox = match parent.record.sandbox.get("type").and_then(Value::as_str) {
+                    Some("dangerFullAccess") => "danger-full-access",
+                    Some("readOnly") => "read-only",
+                    _ => "workspace-write",
+                };
+                let (created, _) = self.thread_start(
+                    connection_id,
+                    &json!({
+                        "model":parent.record.model,
+                        "modelProvider":parent.record.model_provider,
+                        "cwd":parent.record.cwd,
+                        "approvalPolicy":parent.record.approval_policy,
+                        "approvalsReviewer":parent.record.approvals_reviewer,
+                        "sandbox":sandbox,
+                        "serviceTier":parent.record.service_tier,
+                        "baseInstructions":parent.record.base_instructions,
+                        "developerInstructions":parent.record.developer_instructions,
+                        "threadSource":"subagentReview"
+                    }),
+                )?;
+                let child_id = created
+                    .pointer("/thread/id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| RpcError::internal("review thread is missing id"))?
+                    .to_owned();
+                self.thread_inject_items(
+                    &json!({"threadId":child_id,"items":parent.injected_items}),
+                )?;
+                {
+                    let mut state = self.state()?;
+                    let mut child = self.loaded_thread_locked(&child_id, &state)?;
+                    child.record.parent_thread_id = Some(parent_thread_id.clone());
+                    child.record.forked_from_id = Some(parent_thread_id.clone());
+                    child.record.source = json!({"subAgent":"review"});
+                    child.record.thread_source = Some(json!("subagentReview"));
+                    child.record.updated_at_ms = now_ms();
+                    self.persist_loaded(&mut child)?;
+                    let thread =
+                        self.thread_value(&child.record, &child.status, child.turns.clone());
+                    state.loaded.insert(child_id.clone(), child);
+                    detached_notifications.push(self.notification_global(
+                        &state,
+                        "thread/started",
+                        json!({"thread":thread}),
+                    ));
+                }
+                (child_id, detached_notifications)
+            }
+        };
+
+        let (turn, started_notifications) =
+            self.begin_review_turn(&review_thread_id, resolved.clone())?;
+        notifications.extend(started_notifications);
+        Ok((
+            json!({"turn":turn,"reviewThreadId":review_thread_id}),
+            notifications,
+        ))
+    }
+
+    fn begin_review_turn(
+        &self,
+        thread_id: &str,
+        review: ResolvedReview,
+    ) -> RpcResult<(Value, Vec<RoutedNotification>)> {
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        if let Some(active_turn_id) = &loaded.active_turn_id {
+            return Err(RpcError::invalid_request(format!(
+                "thread already has an active turn: {active_turn_id}"
+            )));
+        }
+        let turn_id = Uuid::now_v7().to_string();
+        let now = now_ms();
+        let started_at = milliseconds_to_seconds(now);
+        let entered_item = json!({
+            "type":"enteredReviewMode",
+            "id":Uuid::now_v7().to_string(),
+            "review":review.user_facing_hint
+        });
+        let prompt_input = vec![json!({"type":"text","text":review.prompt,"textElements":[]})];
+        let turn = turn_value(
+            &turn_id,
+            vec![entered_item.clone()],
+            "inProgress",
+            None,
+            Some(started_at),
+            None,
+            None,
+            "full",
+        );
+        self.append_turn_start_records(&loaded, &turn_id, None, &[], now)?;
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_response_item(response_item_from_user_input(&prompt_input))
+                .map_err(state_error)?;
+            appender
+                .append_event(item_lifecycle_event(
+                    "item_started",
+                    thread_id,
+                    &turn_id,
+                    &entered_item,
+                    "started_at_ms",
+                    now,
+                )?)
+                .map_err(state_error)?;
+            appender
+                .append_event(item_lifecycle_event(
+                    "item_completed",
+                    thread_id,
+                    &turn_id,
+                    &entered_item,
+                    "completed_at_ms",
+                    now,
+                )?)
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        append_model_history(&mut loaded, response_item_from_user_input(&prompt_input));
+        loaded.pending_inputs.push(TurnInputBatch {
+            thread_id: thread_id.into(),
+            turn_id: turn_id.clone(),
+            client_user_message_id: None,
+            item_id: None,
+            input: prompt_input,
+            output_schema: Some(tietiezhi_agent_review::review_output_schema()),
+        });
+        loaded.turns.push(turn);
+        loaded.active_turn_id = Some(turn_id.clone());
+        loaded.active_review = Some(review.clone());
+        loaded.status = active_thread_status();
+        loaded.record.preview = review.user_facing_hint.clone();
+        loaded.record.updated_at_ms = now;
+        loaded.record.recency_at_ms = Some(now);
+        self.persist_loaded(&mut loaded)?;
+        state.loaded.insert(thread_id.into(), loaded);
+
+        let response_turn = turn_value(
+            &turn_id,
+            vec![json!({
+                "type":"userMessage",
+                "id":turn_id,
+                "clientId":Value::Null,
+                "content":[{
+                    "type":"text",
+                    "text":review.user_facing_hint,
+                    "textElements":[]
+                }]
+            })],
+            "inProgress",
+            None,
+            None,
+            None,
+            None,
+            "notLoaded",
+        );
+        let notifications = vec![
+            self.checked_notification_for(
+                &state,
+                thread_id,
+                "item/started",
+                json!({
+                    "threadId":thread_id,
+                    "turnId":turn_id,
+                    "item":entered_item,
+                    "startedAtMs":now
+                }),
+            )?,
+            self.checked_notification_for(
+                &state,
+                thread_id,
+                "item/completed",
+                json!({
+                    "threadId":thread_id,
+                    "turnId":turn_id,
+                    "item":entered_item,
+                    "completedAtMs":now
+                }),
+            )?,
+            self.checked_global_notification(
+                &state,
+                "thread/status/changed",
+                json!({"threadId":thread_id,"status":active_thread_status()}),
+            )?,
+        ];
+        Ok((response_turn, notifications))
+    }
+
     fn turn_start(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
         let thread_id = required_string(params, "threadId")?;
         validate_thread_id(&thread_id)?;
@@ -1711,6 +1947,11 @@ impl ThreadManager {
 
         let mut state = self.state()?;
         let mut loaded = self.loaded_thread_locked(&thread_id, &state)?;
+        if loaded.active_review.is_some() {
+            return Err(RpcError::invalid_request(
+                "review turns do not support turn/steer",
+            ));
+        }
         let client_id = optional_string(params, "clientUserMessageId");
         if let Some(client_id) = client_id.as_deref()
             && let Some(accepted) = loaded.accepted_client_messages.get(client_id)
@@ -1925,6 +2166,7 @@ impl ThreadManager {
             base_instructions: loaded.record.base_instructions,
             developer_instructions: loaded.record.developer_instructions,
             approval_policy: loaded.record.approval_policy,
+            approvals_reviewer: loaded.record.approvals_reviewer,
             sandbox: loaded.record.sandbox,
             reasoning_effort: loaded.record.reasoning_effort,
             reasoning_summary: loaded.record.reasoning_summary,
@@ -1933,6 +2175,7 @@ impl ThreadManager {
             model_context_window,
             active_context_tokens: loaded.active_context_tokens,
             auto_compact_token_limit: None,
+            review: loaded.active_review,
         })
     }
 
@@ -3248,6 +3491,87 @@ impl ThreadManager {
         )?])
     }
 
+    pub fn review_mode_completed(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        review: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let item = json!({
+            "type":"exitedReviewMode",
+            "id":Uuid::now_v7().to_string(),
+            "review":review
+        });
+        let mut notifications = self.local_tool_item_started(thread_id, turn_id, item.clone())?;
+        notifications.extend(self.local_tool_item_completed(thread_id, turn_id, item)?);
+        let response_item = json!({
+            "type":"message",
+            "id":Uuid::now_v7().to_string(),
+            "role":"assistant",
+            "content":[{"type":"output_text","text":review}]
+        });
+        notifications.extend(self.model_item_started(thread_id, turn_id, response_item.clone())?);
+        notifications.extend(self.model_item_completed(thread_id, turn_id, response_item)?);
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        loaded.active_review = None;
+        self.persist_loaded(&mut loaded)?;
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(notifications)
+    }
+
+    pub fn guardian_review_notification(
+        &self,
+        thread_id: &str,
+        method: &str,
+        params: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        if !matches!(
+            method,
+            "item/autoApprovalReview/started" | "item/autoApprovalReview/completed"
+        ) {
+            return Err(RpcError::invalid(
+                "unsupported guardian review notification",
+            ));
+        }
+        let mut state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        let turn_id = required_string(&params, "turnId")?;
+        require_turn(&loaded, &turn_id)?;
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(json!({
+                    "type":"guardian_assessment",
+                    "method":method,
+                    "params":params
+                }))
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        let notification = self.checked_notification_for(&state, thread_id, method, params)?;
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(vec![notification])
+    }
+
+    pub fn guardian_warning(
+        &self,
+        thread_id: &str,
+        message: impl Into<String>,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        self.loaded_thread_locked(thread_id, &state)?;
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            "guardianWarning",
+            json!({"threadId":thread_id,"message":message.into()}),
+        )?])
+    }
+
     pub fn hook_started_notification(
         &self,
         thread_id: &str,
@@ -3595,6 +3919,7 @@ impl ThreadManager {
         loaded.turns[index]["completedAt"] = json!(completed_at);
         loaded.turns[index]["durationMs"] = json!(duration_ms);
         loaded.active_turn_id = None;
+        loaded.active_review = None;
         loaded.active_compaction_item_id = None;
         loaded.active_compaction_automatic = false;
         loaded
@@ -3884,6 +4209,7 @@ impl ThreadManager {
             world_state_baseline: None,
             active_compaction_item_id: None,
             active_compaction_automatic: false,
+            active_review: None,
         };
         state.loaded.insert(record.id.clone(), loaded.clone());
         Ok(loaded)
@@ -3936,6 +4262,7 @@ impl ThreadManager {
             world_state_baseline: context.world_state_baseline,
             active_compaction_item_id: None,
             active_compaction_automatic: false,
+            active_review: None,
         };
         // A process restart cannot safely resume an in-flight model/tool
         // operation. Codex exposes such persisted turns as interrupted instead
@@ -3992,6 +4319,7 @@ impl ThreadManager {
                 world_state_baseline: None,
                 active_compaction_item_id: None,
                 active_compaction_automatic: false,
+                active_review: None,
             },
             false,
         ))
@@ -4785,6 +5113,22 @@ fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
             "error": item.get("error").cloned().unwrap_or(Value::Null),
             "duration_ms": item.get("durationMs").cloned().unwrap_or(Value::Null)
         })),
+        Some("enteredReviewMode") => Ok(json!({
+            "type":"EnteredReviewMode",
+            "id":required_item_string(item, "id", "enteredReviewMode item")?,
+            "target":{"Custom":{"instructions":item.get("review").cloned().unwrap_or_else(|| json!(""))}},
+            "user_facing_hint":item.get("review").cloned().unwrap_or_else(|| json!(""))
+        })),
+        Some("exitedReviewMode") => Ok(json!({
+            "type":"ExitedReviewMode",
+            "id":required_item_string(item, "id", "exitedReviewMode item")?,
+            "review_output":{
+                "findings":[],
+                "overall_correctness":"",
+                "overall_explanation":item.get("review").cloned().unwrap_or_else(|| json!("")),
+                "overall_confidence_score":0.0
+            }
+        })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported ThreadItem conversion to core: {other}"
         ))),
@@ -4888,6 +5232,19 @@ fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
             "result": item.get("result").cloned().unwrap_or(Value::Null),
             "error": item.get("error").cloned().unwrap_or(Value::Null),
             "durationMs": item.get("duration_ms").cloned().unwrap_or(Value::Null)
+        })),
+        Some("EnteredReviewMode") => Ok(json!({
+            "type":"enteredReviewMode",
+            "id":required_item_string(item, "id", "EnteredReviewMode item")?,
+            "review":item.get("user_facing_hint").cloned().unwrap_or_else(|| json!(""))
+        })),
+        Some("ExitedReviewMode") => Ok(json!({
+            "type":"exitedReviewMode",
+            "id":required_item_string(item, "id", "ExitedReviewMode item")?,
+            "review":item
+                .pointer("/review_output/overall_explanation")
+                .cloned()
+                .unwrap_or_else(|| json!("Review was interrupted."))
         })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported core TurnItem conversion: {other}"
@@ -6175,6 +6532,108 @@ mod tests {
         assert_eq!(thread["threadSource"], "subagent");
         assert_eq!(thread["agentNickname"], "Worker");
         assert_eq!(thread["agentRole"], "default");
+    }
+
+    #[test]
+    fn review_start_projects_inline_and_detached_review_lifecycle() {
+        let (_temp, manager) = manager();
+        let parent = start(&manager, "desktop");
+        let parent_id = result(&parent)["thread"]["id"].as_str().unwrap().to_owned();
+        let inline = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "review/start",
+                json!({
+                    "threadId":parent_id,
+                    "delivery":"inline",
+                    "target":{
+                        "type":"commit",
+                        "sha":"1234567deadbeef",
+                        "title":"Tidy UI"
+                    }
+                }),
+            ),
+        );
+        assert!(
+            inline.response.get("error").is_none(),
+            "{:?}",
+            inline.response
+        );
+        let turn_id = result(&inline)["turn"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(result(&inline)["reviewThreadId"], parent_id);
+        assert_eq!(
+            result(&inline)["turn"]["items"][0]["content"][0]["text"],
+            "commit 1234567: Tidy UI"
+        );
+        assert!(inline.notifications.iter().any(|notification| {
+            notification.method == "item/started"
+                && notification.params["item"]["type"] == "enteredReviewMode"
+        }));
+        assert!(
+            manager
+                .turn_execution_snapshot(&parent_id, &turn_id)
+                .unwrap()
+                .review
+                .is_some()
+        );
+        let steer = manager.dispatch(
+            "desktop",
+            request(
+                21,
+                "turn/steer",
+                json!({
+                    "threadId":parent_id,
+                    "expectedTurnId":turn_id,
+                    "input":[{"type":"text","text":"change review target","textElements":[]}]
+                }),
+            ),
+        );
+        assert_eq!(steer.response["error"]["code"], -32600);
+        assert!(
+            steer.response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("review turns")
+        );
+        let exit = manager
+            .review_mode_completed(&parent_id, &turn_id, "No findings.")
+            .unwrap();
+        assert!(exit.iter().any(|notification| {
+            notification.method == "item/completed"
+                && notification.params["item"]["type"] == "exitedReviewMode"
+        }));
+        manager.complete_turn(&parent_id, &turn_id, None).unwrap();
+
+        let detached = manager.dispatch(
+            "desktop",
+            request(
+                3,
+                "review/start",
+                json!({
+                    "threadId":parent_id,
+                    "delivery":"detached",
+                    "target":{"type":"custom","instructions":"Review API boundaries"}
+                }),
+            ),
+        );
+        assert!(
+            detached.response.get("error").is_none(),
+            "{:?}",
+            detached.response
+        );
+        let detached_id = result(&detached)["reviewThreadId"].as_str().unwrap();
+        assert_ne!(detached_id, parent_id);
+        let thread = manager.dispatch(
+            "desktop",
+            request(
+                4,
+                "thread/read",
+                json!({"threadId":detached_id,"includeTurns":false}),
+            ),
+        );
+        assert_eq!(result(&thread)["thread"]["parentThreadId"], parent_id);
+        assert_eq!(result(&thread)["thread"]["threadSource"], "subagentReview");
     }
 
     #[test]

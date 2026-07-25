@@ -5732,6 +5732,7 @@ dependencies = [
  "tietiezhi-agent-context",
  "tietiezhi-agent-model",
  "tietiezhi-agent-protocol",
+ "tietiezhi-agent-review",
  "tietiezhi-agent-state",
  "time",
  "uuid",
@@ -5874,6 +5875,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-review"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "tietiezhi-agent-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -5989,6 +6000,7 @@ dependencies = [
  "tietiezhi-agent-patch",
  "tietiezhi-agent-plugins",
  "tietiezhi-agent-protocol",
+ "tietiezhi-agent-review",
  "tietiezhi-agent-sandbox",
  "tietiezhi-agent-skills",
  "tietiezhi-agent-state",

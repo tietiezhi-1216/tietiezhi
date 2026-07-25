@@ -1259,6 +1259,7 @@ dependencies = [
  "tietiezhi-agent-context",
  "tietiezhi-agent-model",
  "tietiezhi-agent-protocol",
+ "tietiezhi-agent-review",
  "tietiezhi-agent-state",
  "time",
  "uuid",
@@ -1286,6 +1287,16 @@ dependencies = [
  "serde",
  "serde_json",
  "typify",
+]
+
+[[package]]
+name = "tietiezhi-agent-review"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+ "uuid",
 ]
 
 [[package]]

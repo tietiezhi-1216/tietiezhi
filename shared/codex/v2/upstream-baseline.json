@@ -390,9 +390,10 @@
       },
       {
         "method": "review/start",
-        "status": "pending",
+        "status": "implemented",
         "target": "R27",
-        "note": ""
+        "note": "Inline and detached source-native Review Turns use pinned rubric, restricted tools, structured output, lifecycle items, and interruption cleanup.",
+        "evidence": "crates/agent-review/src/lib.rs; crates/agent-core/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-REVIEW-GUARDIAN.md"
       },
       {
         "method": "skills/config/write",
@@ -716,9 +717,10 @@
       },
       {
         "method": "guardianWarning",
-        "status": "pending",
+        "status": "implemented",
         "target": "R27",
-        "note": ""
+        "note": "Protocol-exact Guardian lifecycle is persisted and emitted for command, patch, permissions, network, and destructive MCP review with fail-closed timeout and denial circuit breaker.",
+        "evidence": "crates/agent-review/src/lib.rs; crates/agent-core/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-REVIEW-GUARDIAN.md"
       },
       {
         "method": "hook/completed",
@@ -740,15 +742,17 @@
       },
       {
         "method": "item/autoApprovalReview/completed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R27",
-        "note": ""
+        "note": "Protocol-exact Guardian lifecycle is persisted and emitted for command, patch, permissions, network, and destructive MCP review with fail-closed timeout and denial circuit breaker.",
+        "evidence": "crates/agent-review/src/lib.rs; crates/agent-core/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-REVIEW-GUARDIAN.md"
       },
       {
         "method": "item/autoApprovalReview/started",
-        "status": "pending",
+        "status": "implemented",
         "target": "R27",
-        "note": ""
+        "note": "Protocol-exact Guardian lifecycle is persisted and emitted for command, patch, permissions, network, and destructive MCP review with fail-closed timeout and denial circuit breaker.",
+        "evidence": "crates/agent-review/src/lib.rs; crates/agent-core/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-REVIEW-GUARDIAN.md"
       },
       {
         "method": "item/commandExecution/outputDelta",
@@ -1287,9 +1291,9 @@
     {
       "id": "R27",
       "name": "Guardian 与 Review",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Guardian is an untrusted model reviewer and never expands Sandbox or durable approval scope; failures and timeouts fail closed. Review shares the selected environment but disables Web, image, Goal/Plan and collaboration tools.",
+      "evidence": "crates/agent-review; crates/agent-core review lifecycle and guardian audit rollout; desktop Responses executor and approval integration; docs/CODEX-REVIEW-GUARDIAN.md"
     },
     {
       "id": "R28",

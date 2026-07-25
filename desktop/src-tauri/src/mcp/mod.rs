@@ -115,10 +115,37 @@ impl McpHost for DesktopMcpHost {
         &self,
         request: McpElicitation,
     ) -> tietiezhi_agent_mcp::HostFuture<McpElicitationResponse> {
-        let recipients = self.recipients(Some(&request.context.thread_id));
-        let pending = self.broker.begin(recipients, request);
         let app = self.app.clone();
+        let broker = self.broker.clone();
+        let recipients = self.recipients(Some(&request.context.thread_id));
         Box::pin(async move {
+            if let Some(approval) = request.request.pointer("/_meta/tietiezhi~1mcpToolApproval") {
+                let server = approval
+                    .get("server")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&request.server_name);
+                let tool = approval
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let Some(action) = crate::commands::codex::guardian_mcp_approval(
+                    &app,
+                    &request.context.thread_id,
+                    &request.context.turn_id,
+                    &request.context.item_id,
+                    server,
+                    tool,
+                )
+                .await
+                {
+                    return McpElicitationResponse {
+                        action: action.into(),
+                        content: None,
+                        meta: None,
+                    };
+                }
+            }
+            let pending = broker.begin(recipients, request);
             let Ok(pending) = pending else {
                 return McpElicitationResponse {
                     action: "decline".into(),

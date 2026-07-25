@@ -52,7 +52,7 @@
 | Plugins | `codex-rs/plugin`、`core-plugins` | `crates/agent-plugins` | R24 |
 | Plan 与用户输入 | `core/src/tools/handlers/plan.rs`、`request_user_input.rs` | `crates/agent-tools` | R25 |
 | 子智能体 | `core/src/tools/handlers/multi_agents*` | `crates/agent-collab` | R26 |
-| Guardian 与 Review | `codex-rs/core/src/guardian`、`tasks/review.rs` | `crates/agent-collab` | R27 |
+| Guardian 与 Review | `codex-rs/core/src/guardian`、`session/review.rs`、`tasks/review.rs` | `crates/agent-review`、`crates/agent-core`、`desktop/src-tauri/src/commands/codex.rs` | R27 |
 | Rollout 持久化 | `codex-rs/rollout`、`thread-store`、`state` | `crates/agent-state`、`desktop/src-tauri/src/commands/conversations.rs` | R4 |
 | Git 与 Worktree | `codex-rs/git-utils`、桌面 Worktree 行为 | `crates/agent-git` | R29 |
 | 运维与追踪 | `codex-rs/otel`、`feedback`、Doctor 行为 | `crates/agent-observability` | R36 |
@@ -116,5 +116,7 @@ R24 已增加 `crates/agent-plugins`，实现本地/Git Marketplace、原子安�
 R25 已实现 `update_plan`、`request_user_input` 和 Thread Goal。Plan 使用正式 Turn 通知，用户输入通过可取消的反向 JSON-RPC 与 `waitingOnUserInput` 状态运行，Goal 进入 canonical metadata 与 rollout 并支持重建、Fork 和预算核算。详细行为见 `docs/CODEX-PLAN-GOALS.md`。
 
 R26 已增加 `crates/agent-collab`，实现 MultiAgentV2 canonical Agent Path、子 Thread 图、并发/深度限制、`spawn_agent`、消息、follow-up、等待、打断、列表、父子取消和终态回传。协作操作投影为正式 `collabAgentToolCall` 与 `subAgentActivity` Item，详细行为见 `docs/CODEX-COLLABORATION.md`。
+
+R27 已增加 `crates/agent-review`，实现 Review target/delivery、内联与独立 Review Thread、Review 专用工具约束和结构化输出，以及 Guardian 对命令、Patch、权限、网络和 MCP 的自动审批。Guardian 使用独立 Responses 调用、90 秒超时、精确 V2 生命周期、人工覆盖与拒绝熔断；沙箱边界始终由 R15/R16 执行，不由审查模型改变。详细行为见 `docs/CODEX-REVIEW-GUARDIAN.md`。
 
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

@@ -16,6 +16,7 @@ tietiezhi-agent-config = { path = "../agent-config" }
 tietiezhi-agent-context = { path = "../agent-context" }
 tietiezhi-agent-model = { path = "../agent-model" }
 tietiezhi-agent-protocol = { path = "../agent-protocol" }
+tietiezhi-agent-review = { path = "../agent-review" }
 tietiezhi-agent-state = { path = "../agent-state" }
 time = { version = "0.3", features = ["formatting"] }
 uuid = { version = "1", features = ["v7"] }

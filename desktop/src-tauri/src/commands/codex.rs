@@ -59,6 +59,13 @@ use tietiezhi_agent_protocol::{
     PluginShareUpdateTargetsResponse, PluginSkillReadResponse, PluginUninstallResponse,
     ServerNotification,
 };
+use tietiezhi_agent_review::{
+    guardian_completed_notification, guardian_output_schema, guardian_prompt,
+    guardian_started_notification, parse_guardian_assessment, parse_review_output,
+    render_review_output, review_output_schema, CircuitBreakerAction, GuardianAction,
+    GuardianApprovalReviewStatus, GuardianAssessment, GuardianAssessmentOutcome,
+    GuardianCommandSource, GUARDIAN_POLICY, GUARDIAN_REVIEW_TIMEOUT_SECS, REVIEW_RUBRIC,
+};
 use tietiezhi_agent_skills::{SkillsPaths, SkillsRuntime};
 use tietiezhi_agent_tools::builtins::{
     apply_patch_handler, context_remaining_handler, current_time_handler,
@@ -403,6 +410,20 @@ fn turn_input_activity_token(app: &AppHandle, thread_id: &str, turn_id: &str) ->
         .ok()
         .and_then(|activity| {
             activity
+                .get(thread_id)
+                .filter(|(active_turn_id, _)| active_turn_id == turn_id)
+                .map(|(_, token)| token.clone())
+        })
+        .unwrap_or_default()
+}
+
+fn turn_cancellation_token(app: &AppHandle, thread_id: &str, turn_id: &str) -> CancellationToken {
+    app.state::<AppState>()
+        .codex_cancels
+        .lock()
+        .ok()
+        .and_then(|cancels| {
+            cancels
                 .get(thread_id)
                 .filter(|(active_turn_id, _)| active_turn_id == turn_id)
                 .map(|(_, token)| token.clone())
@@ -856,6 +877,19 @@ pub async fn codex_v2_request(
             ensure_hook_allows(&hooks).map_err(|error| error.to_string())?;
         }
     }
+    if method == "turn/interrupt" {
+        if let (Some(thread_id), Some(turn_id)) =
+            (thread_id.as_deref(), requested_turn_id.as_deref())
+        {
+            finalize_interrupted_review(&app, &manager, thread_id, turn_id);
+        }
+    } else if matches!(method.as_str(), "thread/archive" | "thread/delete") {
+        if let Some(thread_id) = thread_id.as_deref() {
+            if let Ok(Some(turn_id)) = manager.active_turn_id(thread_id) {
+                finalize_interrupted_review(&app, &manager, thread_id, &turn_id);
+            }
+        }
+    }
     let output = manager.dispatch(&connection_id, request);
     if method == "turn/steer" && output.response.get("error").is_none() {
         if let (Some(thread_id), Some(turn_id)) =
@@ -902,6 +936,20 @@ pub async fn codex_v2_request(
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         ) {
+            launch_turn_executor(&app, &state, manager, thread_id, turn_id);
+        }
+    } else if method == "review/start" && output.response.get("error").is_none() {
+        let review_thread_id = output
+            .response
+            .pointer("/result/reviewThreadId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let turn_id = output
+            .response
+            .pointer("/result/turn/id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if let (Some(thread_id), Some(turn_id)) = (review_thread_id, turn_id) {
             launch_turn_executor(&app, &state, manager, thread_id, turn_id);
         }
     } else if method == "thread/compact/start" && output.response.get("error").is_none() {
@@ -3228,6 +3276,7 @@ fn launch_turn_executor(
         .await;
         if let Err(error) = &result {
             if !cancel.is_cancelled() {
+                finalize_interrupted_review(&app, &manager, &thread_id, &turn_id);
                 fail_turn(
                     &app,
                     &manager,
@@ -3239,10 +3288,9 @@ fn launch_turn_executor(
         }
         let state = app.state::<AppState>();
         let collaboration_identity = manager.collaboration_identity(&thread_id).ok();
-        if collaboration_identity
-            .as_ref()
-            .is_some_and(|identity| identity.parent_thread_id.is_some())
-        {
+        if collaboration_identity.as_ref().is_some_and(|identity| {
+            identity.parent_thread_id.is_some() && identity.agent_path.is_some()
+        }) {
             if let Ok(runtime) = collaboration_runtime(&app, &state) {
                 let status = if cancel.is_cancelled() {
                     CollabAgentStatus::interrupted()
@@ -3337,7 +3385,32 @@ fn launch_turn_executor(
                 activity.remove(&thread_id);
             }
         };
+        if let Ok(mut guardian) = state.codex_guardian.lock() {
+            guardian.clear(&turn_id);
+        };
     });
+}
+
+fn finalize_interrupted_review(
+    app: &AppHandle,
+    manager: &ThreadManager,
+    thread_id: &str,
+    turn_id: &str,
+) {
+    let is_review = manager
+        .turn_execution_snapshot(thread_id, turn_id)
+        .ok()
+        .is_some_and(|snapshot| snapshot.review.is_some());
+    if !is_review {
+        return;
+    }
+    if let Ok(notifications) = manager.review_mode_completed(
+        thread_id,
+        turn_id,
+        "Review was interrupted. Please re-run the review and wait for it to complete.",
+    ) {
+        let _ = emit_notifications(app, &notifications);
+    }
 }
 
 async fn run_turn_executor(
@@ -3354,7 +3427,9 @@ async fn run_turn_executor(
     let collaboration_identity = manager
         .collaboration_identity(&thread_id)
         .map_err(core_model_error)?;
-    if collaboration_identity.parent_thread_id.is_some() {
+    if collaboration_identity.parent_thread_id.is_some()
+        && collaboration_identity.agent_path.is_some()
+    {
         let dispatch = run_hooks(
             &app,
             &manager,
@@ -3416,8 +3491,11 @@ async fn run_turn_executor(
         initial.model_context_window,
         initial.cwd.clone(),
     );
+    if initial.review.is_some() {
+        projection.suppress_agent_messages = true;
+    }
     let mut can_drain_steered = false;
-    let mut output_schema = None;
+    let mut output_schema = initial.review.as_ref().map(|_| review_output_schema());
     let mut auth_refresh_attempted = false;
     let (tool_runtime, base_tool_specs) = turn_tool_runtime(&app, &manager, &initial).await?;
     let mut loaded_tool_specs = Vec::new();
@@ -3485,7 +3563,10 @@ async fn run_turn_executor(
         let context_snapshot = manager
             .turn_execution_snapshot(&thread_id, &turn_id)
             .map_err(core_model_error)?;
-        let tool_specs = merge_tool_specs(&base_tool_specs, &loaded_tool_specs);
+        let mut tool_specs = merge_tool_specs(&base_tool_specs, &loaded_tool_specs);
+        if initial.review.is_some() {
+            tool_specs.retain(review_tool_allowed);
+        }
         record_runtime_world_state(
             &manager,
             &context_snapshot,
@@ -3504,7 +3585,10 @@ async fn run_turn_executor(
         {
             output_schema = Some(schema);
         }
-        let request = response_request(&snapshot, output_schema.clone(), tool_specs);
+        let mut request = response_request(&snapshot, output_schema.clone(), tool_specs);
+        if initial.review.is_some() {
+            request.instructions = REVIEW_RUBRIC.to_owned();
+        }
         let stream = client.stream(&request, |event| {
             let notifications = projection.apply(&manager, &thread_id, &turn_id, event)?;
             emit_notifications(&app, &notifications).map_err(ModelError::Consumer)
@@ -3787,6 +3871,21 @@ async fn run_turn_executor(
         if stop_hooks.blocked_reason.is_some() || stop_hooks.stop_reason.is_some() {
             continue;
         }
+        if initial.review.is_some() {
+            let raw = projection.take_captured_agent_text().unwrap_or_default();
+            let rendered = match parse_review_output(&raw) {
+                Ok(output) => render_review_output(&output),
+                Err(_) if raw.trim().is_empty() => {
+                    "Review was interrupted. Please re-run the review and wait for it to complete."
+                        .into()
+                }
+                Err(_) => raw,
+            };
+            let notifications = manager
+                .review_mode_completed(&thread_id, &turn_id, &rendered)
+                .map_err(core_model_error)?;
+            emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+        }
         match manager
             .complete_turn_if_no_pending(&thread_id, &turn_id)
             .map_err(core_model_error)?
@@ -3837,6 +3936,293 @@ async fn run_permission_hooks(
     .await
     .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?;
     Ok(dispatch.permission_decision)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuardianDecision {
+    NotApplicable,
+    Allow,
+    Deny(String),
+    Abort,
+}
+
+async fn run_guardian_review(
+    app: &AppHandle,
+    manager: &ThreadManager,
+    thread_id: &str,
+    turn_id: &str,
+    target_item_id: Option<&str>,
+    action: GuardianAction,
+    cancellation: CancellationToken,
+) -> GuardianDecision {
+    let snapshot = match manager.turn_execution_snapshot(thread_id, turn_id) {
+        Ok(snapshot) => snapshot,
+        Err(_) => return GuardianDecision::Deny("automatic approval review lost its turn".into()),
+    };
+    if !matches!(
+        snapshot.approvals_reviewer.as_str(),
+        "auto_review" | "guardian_subagent"
+    ) {
+        return GuardianDecision::NotApplicable;
+    }
+    if let Ok(approvals) = manager.take_guardian_approvals(thread_id) {
+        if approvals
+            .iter()
+            .any(|event| guardian_override_matches(event, &action))
+        {
+            return GuardianDecision::Allow;
+        }
+    }
+
+    let started = guardian_started_notification(
+        thread_id,
+        turn_id,
+        target_item_id,
+        &action,
+        unix_timestamp_ms(),
+    );
+    let started_notifications = match manager.guardian_review_notification(
+        thread_id,
+        "item/autoApprovalReview/started",
+        started.clone(),
+    ) {
+        Ok(notifications) => notifications,
+        Err(error) => {
+            return GuardianDecision::Deny(format!(
+                "automatic approval review could not start: {error:?}"
+            ));
+        }
+    };
+    if emit_notifications(app, &started_notifications).is_err() {
+        return GuardianDecision::Deny(
+            "automatic approval review could not publish its state".into(),
+        );
+    }
+
+    let review_result = run_guardian_model(app, &snapshot, &action, cancellation.clone()).await;
+    let (assessment, status, decision) = match review_result {
+        Ok(assessment) => {
+            let status = match assessment.outcome {
+                GuardianAssessmentOutcome::Allow => GuardianApprovalReviewStatus::Approved,
+                GuardianAssessmentOutcome::Deny => GuardianApprovalReviewStatus::Denied,
+            };
+            let decision = match assessment.outcome {
+                GuardianAssessmentOutcome::Allow => GuardianDecision::Allow,
+                GuardianAssessmentOutcome::Deny => {
+                    GuardianDecision::Deny(assessment.rationale.clone())
+                }
+            };
+            (Some(assessment), status, decision)
+        }
+        Err(GuardianModelFailure::TimedOut) => (
+            None,
+            GuardianApprovalReviewStatus::TimedOut,
+            GuardianDecision::Deny("automatic approval review timed out".into()),
+        ),
+        Err(GuardianModelFailure::Aborted) => (
+            None,
+            GuardianApprovalReviewStatus::Aborted,
+            GuardianDecision::Abort,
+        ),
+        Err(GuardianModelFailure::Failed(message)) => (
+            None,
+            GuardianApprovalReviewStatus::Denied,
+            GuardianDecision::Deny(format!(
+                "automatic approval review could not complete: {message}"
+            )),
+        ),
+    };
+    let completed =
+        guardian_completed_notification(&started, assessment.as_ref(), status, unix_timestamp_ms());
+    if let Ok(notifications) = manager.guardian_review_notification(
+        thread_id,
+        "item/autoApprovalReview/completed",
+        completed,
+    ) {
+        let _ = emit_notifications(app, &notifications);
+    }
+
+    if matches!(decision, GuardianDecision::Deny(_)) {
+        let circuit = app
+            .state::<AppState>()
+            .codex_guardian
+            .lock()
+            .ok()
+            .map(|mut breaker| breaker.record(turn_id, true))
+            .unwrap_or(CircuitBreakerAction::Continue);
+        if let CircuitBreakerAction::Interrupt {
+            consecutive_denials,
+            recent_denials,
+        } = circuit
+        {
+            let message = format!(
+                "Guardian interrupted the turn after {consecutive_denials} consecutive denials \
+                 ({recent_denials} denials in the recent review window)."
+            );
+            if let Ok(notifications) = manager.guardian_warning(thread_id, &message) {
+                let _ = emit_notifications(app, &notifications);
+            }
+            let interrupted = manager.dispatch(
+                "guardian",
+                json!({
+                    "id":Uuid::new_v4().to_string(),
+                    "method":"turn/interrupt",
+                    "params":{"threadId":thread_id,"turnId":turn_id}
+                }),
+            );
+            let _ = emit_notifications(app, &interrupted.notifications);
+            cancel_thread(&app.state::<AppState>(), thread_id, Some(turn_id));
+            return GuardianDecision::Abort;
+        }
+    } else if matches!(decision, GuardianDecision::Allow) {
+        if let Ok(mut breaker) = app.state::<AppState>().codex_guardian.lock() {
+            let _ = breaker.record(turn_id, false);
+        }
+    }
+    decision
+}
+
+pub(crate) async fn guardian_mcp_approval(
+    app: &AppHandle,
+    thread_id: &str,
+    turn_id: &str,
+    item_id: &str,
+    server: &str,
+    tool_name: &str,
+) -> Option<&'static str> {
+    let state = app.state::<AppState>();
+    let manager = thread_manager(app, &state).ok()?;
+    let decision = run_guardian_review(
+        app,
+        &manager,
+        thread_id,
+        turn_id,
+        Some(item_id),
+        GuardianAction::McpToolCall {
+            server: server.into(),
+            tool_name: tool_name.into(),
+            connector_id: None,
+            connector_name: None,
+            tool_title: None,
+        },
+        turn_cancellation_token(app, thread_id, turn_id),
+    )
+    .await;
+    match decision {
+        GuardianDecision::NotApplicable => None,
+        GuardianDecision::Allow => Some("accept"),
+        GuardianDecision::Deny(_) => Some("decline"),
+        GuardianDecision::Abort => Some("cancel"),
+    }
+}
+
+fn guardian_override_matches(event: &Value, action: &GuardianAction) -> bool {
+    let expected = serde_json::to_value(action).ok();
+    event
+        .get("action")
+        .or_else(|| event.pointer("/params/action"))
+        .is_some_and(|candidate| Some(candidate) == expected.as_ref())
+        && event
+            .pointer("/review/status")
+            .or_else(|| event.pointer("/params/review/status"))
+            .and_then(Value::as_str)
+            .is_some_and(|status| status == "denied")
+}
+
+#[derive(Debug)]
+enum GuardianModelFailure {
+    TimedOut,
+    Aborted,
+    Failed(String),
+}
+
+async fn run_guardian_model(
+    app: &AppHandle,
+    snapshot: &TurnExecutionSnapshot,
+    action: &GuardianAction,
+    cancellation: CancellationToken,
+) -> Result<GuardianAssessment, GuardianModelFailure> {
+    let resolved = super::providers::resolve(app, &snapshot.model_provider)
+        .map_err(GuardianModelFailure::Failed)?;
+    let base_url = super::api_url(&resolved.base_url, "")
+        .trim_end_matches('/')
+        .to_owned();
+    let bearer_token = app
+        .state::<AppState>()
+        .codex_external_auth
+        .lock()
+        .map_err(|_| GuardianModelFailure::Failed("external auth state lock poisoned".into()))?
+        .get(&resolved.id)
+        .map(|tokens| tokens.access_token.clone())
+        .or(resolved.key);
+    let client = responses_client(
+        &app.state::<AppState>().http,
+        &resolved.kind,
+        &base_url,
+        bearer_token,
+    );
+    let prompt = guardian_prompt(&snapshot.history, action)
+        .map_err(|error| GuardianModelFailure::Failed(error.to_string()))?;
+    let mut request = ResponsesApiRequest::text(
+        snapshot.model.clone(),
+        vec![json!({
+            "type":"message",
+            "role":"user",
+            "content":[{"type":"input_text","text":prompt}]
+        })],
+    );
+    request.instructions = GUARDIAN_POLICY.to_owned();
+    request.prompt_cache_key = Some(format!("guardian:{}", snapshot.thread_id));
+    request.service_tier.clone_from(&snapshot.service_tier);
+    request.reasoning = snapshot.reasoning_effort.as_ref().map(|effort| Reasoning {
+        effort: Some(effort.clone()),
+        summary: Some("auto".into()),
+        context: None,
+    });
+    request.text = Some(TextControls {
+        verbosity: None,
+        format: Some(TextFormat {
+            r#type: TextFormatType::JsonSchema,
+            strict: true,
+            schema: guardian_output_schema(),
+            name: "guardian_assessment".into(),
+        }),
+    });
+    let mut output = String::new();
+    let stream = client.stream(&request, |event| {
+        match event {
+            ResponseEvent::OutputItemDone(item) => {
+                if let Some(text) = assistant_response_text(&item) {
+                    output = text;
+                }
+            }
+            ResponseEvent::OutputTextDelta(delta) => output.push_str(&delta),
+            _ => {}
+        }
+        Ok(())
+    });
+    let result = tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => return Err(GuardianModelFailure::Aborted),
+        result = tokio::time::timeout(
+            Duration::from_secs(GUARDIAN_REVIEW_TIMEOUT_SECS),
+            stream
+        ) => result,
+    };
+    match result {
+        Err(_) => Err(GuardianModelFailure::TimedOut),
+        Ok(Err(error)) => Err(GuardianModelFailure::Failed(error.to_string())),
+        Ok(Ok(())) => parse_guardian_assessment(&output)
+            .map_err(|error| GuardianModelFailure::Failed(error.to_string())),
+    }
+}
+
+fn unix_timestamp_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
 }
 
 fn tool_call_input(call: &ToolCall) -> Value {
@@ -4097,25 +4483,27 @@ async fn turn_tool_runtime(
         web_search_handler(),
         update_plan_handler(),
     ];
-    let collaboration =
-        collaboration_runtime(app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
-    ensure_collaboration_agent(
-        app,
-        manager,
-        &collaboration,
-        &snapshot.thread_id,
-        &snapshot.cwd,
-    )?;
-    handlers.extend(
-        CollaborationTools::new(
-            collaboration,
-            Arc::new(DesktopCollaborationHost {
-                app: app.clone(),
-                manager: manager.clone(),
-            }),
-        )
-        .handlers(),
-    );
+    if snapshot.review.is_none() {
+        let collaboration =
+            collaboration_runtime(app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
+        ensure_collaboration_agent(
+            app,
+            manager,
+            &collaboration,
+            &snapshot.thread_id,
+            &snapshot.cwd,
+        )?;
+        handlers.extend(
+            CollaborationTools::new(
+                collaboration,
+                Arc::new(DesktopCollaborationHost {
+                    app: app.clone(),
+                    manager: manager.clone(),
+                }),
+            )
+            .handlers(),
+        );
+    }
     let user_input_app = app.clone();
     let user_input_manager = manager.clone();
     handlers.push(request_user_input_handler(Arc::new(
@@ -4244,9 +4632,12 @@ async fn turn_tool_runtime(
             supports_original_image_detail(&snapshot.model),
         ));
     }
-    let approval_policy =
+    let approval_policy = if snapshot.review.is_some() {
+        AskForApproval::Never
+    } else {
         serde_json::from_value::<AskForApproval>(snapshot.approval_policy.clone())
-            .unwrap_or_default();
+            .unwrap_or_default()
+    };
     let mcp_manager = app.state::<AppState>().mcp.clone();
     mcp_manager
         .set_elicitation_allowed(
@@ -4319,6 +4710,41 @@ async fn turn_tool_runtime(
                             return Err(tietiezhi_agent_tools::ToolError::Handler(reason));
                         }
                         None => {}
+                    }
+                    match run_guardian_review(
+                        &app,
+                        &manager,
+                        &request.thread_id,
+                        &request.turn_id,
+                        Some(&request.item_id),
+                        GuardianAction::RequestPermissions {
+                            reason: request.reason.clone(),
+                            permissions: wire_permissions.clone(),
+                        },
+                        request.cancellation.clone(),
+                    )
+                    .await
+                    {
+                        GuardianDecision::Allow => {
+                            return Ok(tietiezhi_agent_approval::PermissionsApprovalResponse {
+                                permissions: request.permissions,
+                                scope: "turn".into(),
+                                strict_auto_review: Some(false),
+                            });
+                        }
+                        GuardianDecision::Deny(_) => {
+                            return Ok(tietiezhi_agent_approval::PermissionsApprovalResponse {
+                                permissions: json!({}),
+                                scope: "turn".into(),
+                                strict_auto_review: Some(false),
+                            });
+                        }
+                        GuardianDecision::Abort => {
+                            return Err(tietiezhi_agent_tools::ToolError::Handler(
+                                "permissions approval cancelled".into(),
+                            ));
+                        }
+                        GuardianDecision::NotApplicable => {}
                     }
                     let waiting = manager
                         .set_thread_status(
@@ -4456,7 +4882,7 @@ async fn turn_tool_runtime(
                             &manager,
                             &request.thread_id,
                             &request.turn_id,
-                            hook_cwd,
+                            hook_cwd.clone(),
                             "apply_patch",
                             json!({
                                 "tool_name":"apply_patch",
@@ -4473,6 +4899,35 @@ async fn turn_tool_runtime(
                                 return Ok(FileChangeApprovalDecision::Decline);
                             }
                             None => {}
+                        }
+                        match run_guardian_review(
+                            &app,
+                            &manager,
+                            &request.thread_id,
+                            &request.turn_id,
+                            Some(&request.item_id),
+                            GuardianAction::ApplyPatch {
+                                cwd: hook_cwd.clone(),
+                                files: request
+                                    .files
+                                    .iter()
+                                    .map(std::path::PathBuf::from)
+                                    .collect(),
+                            },
+                            request.cancellation.clone(),
+                        )
+                        .await
+                        {
+                            GuardianDecision::Allow => {
+                                return Ok(FileChangeApprovalDecision::Accept);
+                            }
+                            GuardianDecision::Deny(_) => {
+                                return Ok(FileChangeApprovalDecision::Decline);
+                            }
+                            GuardianDecision::Abort => {
+                                return Ok(FileChangeApprovalDecision::Cancel);
+                            }
+                            GuardianDecision::NotApplicable => {}
                         }
                         let waiting = manager
                             .set_thread_status(
@@ -4671,6 +5126,32 @@ async fn turn_tool_runtime(
                     return Ok(CommandExecutionApprovalDecision::Decline);
                 }
                 None => {}
+            }
+            match run_guardian_review(
+                &app,
+                &manager,
+                &request.thread_id,
+                &request.turn_id,
+                Some(&request.item_id),
+                GuardianAction::Command {
+                    source: GuardianCommandSource::UnifiedExec,
+                    command: request.command.clone(),
+                    cwd: request.cwd.clone().into(),
+                },
+                request.cancellation.clone(),
+            )
+            .await
+            {
+                GuardianDecision::Allow => {
+                    return Ok(CommandExecutionApprovalDecision::Accept);
+                }
+                GuardianDecision::Deny(_) => {
+                    return Ok(CommandExecutionApprovalDecision::Decline);
+                }
+                GuardianDecision::Abort => {
+                    return Ok(CommandExecutionApprovalDecision::Cancel);
+                }
+                GuardianDecision::NotApplicable => {}
             }
             let waiting = manager
                 .set_thread_status(
@@ -4932,6 +5413,29 @@ async fn turn_tool_runtime(
                                 return NetworkApprovalDecision::Deny;
                             }
                             Ok(None) => {}
+                        }
+                        match run_guardian_review(
+                            &app,
+                            &manager,
+                            &network.thread_id,
+                            &network.turn_id,
+                            None,
+                            GuardianAction::NetworkAccess {
+                                target: format!("{}:{}", network.host, network.port),
+                                host: network.host.clone(),
+                                protocol: protocol.into(),
+                                port: network.port,
+                            },
+                            turn_cancellation_token(&app, &network.thread_id, &network.turn_id),
+                        )
+                        .await
+                        {
+                            GuardianDecision::Allow => {
+                                return NetworkApprovalDecision::AllowOnce;
+                            }
+                            GuardianDecision::Deny(_) => return NetworkApprovalDecision::Deny,
+                            GuardianDecision::Abort => return NetworkApprovalDecision::Cancel,
+                            GuardianDecision::NotApplicable => {}
                         }
                         let recipients = match manager.thread_recipients(&network.thread_id) {
                             Ok(recipients) => recipients,
@@ -5553,6 +6057,8 @@ struct ResponseProjection {
     verification_emitted: bool,
     needs_follow_up: bool,
     model_output_seen: bool,
+    suppress_agent_messages: bool,
+    captured_agent_text: Option<String>,
     tool_calls: Vec<ToolCall>,
     cwd: std::path::PathBuf,
     patch_inputs: HashMap<String, String>,
@@ -5575,6 +6081,8 @@ impl ResponseProjection {
             verification_emitted: false,
             needs_follow_up: false,
             model_output_seen: false,
+            suppress_agent_messages: false,
+            captured_agent_text: None,
             tool_calls: Vec::new(),
             cwd,
             patch_inputs: HashMap::new(),
@@ -5599,18 +6107,28 @@ impl ResponseProjection {
             ResponseEvent::OutputItemAdded(item) => {
                 self.model_output_seen = true;
                 self.track_item(&item);
+                if self.suppress_agent_messages && is_assistant_message(&item) {
+                    return Ok(Vec::new());
+                }
                 manager
                     .model_item_started(thread_id, turn_id, item)
                     .map_err(core_model_error)
             }
             ResponseEvent::OutputItemDone(item) => {
                 self.track_completed_item(&item)?;
+                if self.suppress_agent_messages && is_assistant_message(&item) {
+                    self.captured_agent_text = assistant_response_text(&item);
+                    return Ok(Vec::new());
+                }
                 manager
                     .model_item_completed(thread_id, turn_id, item)
                     .map_err(core_model_error)
             }
             ResponseEvent::OutputTextDelta(delta) => {
                 self.model_output_seen = true;
+                if self.suppress_agent_messages {
+                    return Ok(Vec::new());
+                }
                 let item_id = self.current_agent_item.as_deref().ok_or_else(|| {
                     ModelError::Consumer("text delta arrived before agent message item".into())
                 })?;
@@ -5814,6 +6332,37 @@ impl ResponseProjection {
     fn model_output_seen(&self) -> bool {
         self.model_output_seen
     }
+
+    fn take_captured_agent_text(&mut self) -> Option<String> {
+        self.captured_agent_text.take()
+    }
+}
+
+fn is_assistant_message(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("message")
+        && item.get("role").and_then(Value::as_str) == Some("assistant")
+}
+
+fn review_tool_allowed(spec: &Value) -> bool {
+    let name = spec
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| spec.pointer("/function/name").and_then(Value::as_str))
+        .or_else(|| spec.get("type").and_then(Value::as_str));
+    !matches!(
+        name,
+        Some(
+            "web_search"
+                | "view_image"
+                | "update_plan"
+                | "spawn_agent"
+                | "send_message"
+                | "followup_task"
+                | "wait_agent"
+                | "interrupt_agent"
+                | "list_agents"
+        )
+    )
 }
 
 fn core_model_error(error: tietiezhi_agent_core::RpcError) -> ModelError {
@@ -5846,7 +6395,7 @@ mod tests {
         dispatch_windows_sandbox, empty_rate_limits, format_micro, gateway_rate_limits,
         local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type,
         parse_plugin_mcp_source, permission_profile_list, permission_profile_to_tool,
-        permission_profile_to_v2, plugin_enablement_edits, response_request,
+        permission_profile_to_v2, plugin_enablement_edits, response_request, review_tool_allowed,
         sanitize_collaboration_fork_history, ConfigPaths, ConfigRuntime, PluginMcpSource,
         ResponseEvent, ResponseProjection, SkillsPaths, SkillsRuntime,
     };
@@ -5989,6 +6538,68 @@ mod tests {
     }
 
     #[test]
+    fn review_projection_hides_structured_message_and_keeps_review_text() {
+        let temp = TempDir::new().unwrap();
+        let manager = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults::default(),
+        )
+        .unwrap();
+        let mut projection = ResponseProjection::new("gpt-test".into(), None, ".".into());
+        projection.suppress_agent_messages = true;
+        let item = json!({
+            "type":"message",
+            "id":"msg_review",
+            "role":"assistant",
+            "content":[{
+                "type":"output_text",
+                "text":"{\"findings\":[],\"overall_correctness\":\"patch is correct\",\"overall_explanation\":\"No findings.\",\"overall_confidence_score\":0.9}"
+            }]
+        });
+        assert!(projection
+            .apply(
+                &manager,
+                "unused-thread",
+                "unused-turn",
+                ResponseEvent::OutputItemAdded(item.clone()),
+            )
+            .unwrap()
+            .is_empty());
+        assert!(projection
+            .apply(
+                &manager,
+                "unused-thread",
+                "unused-turn",
+                ResponseEvent::OutputTextDelta("hidden".into()),
+            )
+            .unwrap()
+            .is_empty());
+        assert!(projection
+            .apply(
+                &manager,
+                "unused-thread",
+                "unused-turn",
+                ResponseEvent::OutputItemDone(item),
+            )
+            .unwrap()
+            .is_empty());
+        assert!(projection
+            .take_captured_agent_text()
+            .unwrap()
+            .contains("No findings."));
+        assert!(review_tool_allowed(
+            &json!({"type":"function","name":"exec_command"})
+        ));
+        assert!(!review_tool_allowed(
+            &json!({"type":"function","name":"web_search"})
+        ));
+        assert!(!review_tool_allowed(
+            &json!({"type":"function","name":"spawn_agent"})
+        ));
+    }
+
+    #[test]
     fn collaboration_metadata_projects_protocol_exact_items() {
         let call = ToolCall {
             tool_name: tietiezhi_agent_tools::ToolName::plain("spawn_agent"),
@@ -6127,6 +6738,7 @@ mod tests {
             base_instructions: Some("base".into()),
             developer_instructions: Some("developer".into()),
             approval_policy: json!("on-request"),
+            approvals_reviewer: "user".into(),
             sandbox: json!({"type":"workspaceWrite"}),
             reasoning_effort: Some("high".into()),
             reasoning_summary: None,
@@ -6140,6 +6752,7 @@ mod tests {
             model_context_window: Some(272_000),
             active_context_tokens: 100,
             auto_compact_token_limit: None,
+            review: None,
         };
         let base = vec![
             json!({"type":"function","name":"view_image"}),

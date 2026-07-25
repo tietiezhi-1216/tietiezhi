@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 44 |
+| 待实现 | 40 |
 | 实现中 | 0 |
-| 已实现 | 117 |
+| 已实现 | 121 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -65,7 +65,7 @@
 | R24 | Plugins | 已完成 | crates/agent-plugins; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md | Apps execution remains assigned to R33; hosted OpenAI Share is mapped to local auditable storage. |
 | R25 | Plan 与用户输入 | 已完成 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md | The unified Item timeline consumes these notifications in R31; the current reverse-request component is SSR-verified. |
 | R26 | Collaboration | 已完成 | crates/agent-collab; crates/agent-core/src/lib.rs CollaborationIdentity and response_history_tail; desktop/src-tauri/src/commands/codex.rs DesktopCollaborationHost and protocol-exact Item projection; docs/CODEX-COLLABORATION.md | Subagents inherit the selected execution environment; Git Worktree isolation is applied by R29 rather than duplicating directories in the collaboration control plane. |
-| R27 | Guardian 与 Review | 待开始 |  |  |
+| R27 | Guardian 与 Review | 已完成 | crates/agent-review; crates/agent-core review lifecycle and guardian audit rollout; desktop Responses executor and approval integration; docs/CODEX-REVIEW-GUARDIAN.md | Guardian is an untrusted model reviewer and never expands Sandbox or durable approval scope; failures and timeouts fail closed. Review shares the selected environment but disables Web, image, Goal/Plan and collaboration tools. |
 | R28 | Memory | 待开始 |  |  |
 | R29 | Git 与 Worktree | 待开始 |  |  |
 | R30 | 集成终端 | 待开始 |  |  |
@@ -143,7 +143,7 @@
 | `plugin/share/updateTargets` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
 | `plugin/skill/read` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
 | `plugin/uninstall` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
-| `review/start` | 待实现 | R27 |  |
+| `review/start` | 已实现 | R27 | Inline and detached source-native Review Turns use pinned rubric, restricted tools, structured output, lifecycle items, and interruption cleanup. |
 | `skills/config/write` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
 | `skills/extraRoots/set` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
 | `skills/list` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
@@ -211,12 +211,12 @@
 | `fs/changed` | 待实现 | R31 |  |
 | `fuzzyFileSearch/sessionCompleted` | 待实现 | R31 |  |
 | `fuzzyFileSearch/sessionUpdated` | 待实现 | R31 |  |
-| `guardianWarning` | 待实现 | R27 |  |
+| `guardianWarning` | 已实现 | R27 | Protocol-exact Guardian lifecycle is persisted and emitted for command, patch, permissions, network, and destructive MCP review with fail-closed timeout and denial circuit breaker. |
 | `hook/completed` | 已实现 | R23 | crates/agent-hooks command runner/output parser/trust tests；crates/agent-core HookRun 和 hookPrompt V2 lifecycle；desktop Turn/Tool/Approval/Compact/Session 接线；docs/CODEX-HOOKS.md |
 | `hook/started` | 已实现 | R23 | crates/agent-hooks command runner/output parser/trust tests；crates/agent-core HookRun 和 hookPrompt V2 lifecycle；desktop Turn/Tool/Approval/Compact/Session 接线；docs/CODEX-HOOKS.md |
 | `item/agentMessage/delta` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
-| `item/autoApprovalReview/completed` | 待实现 | R27 |  |
-| `item/autoApprovalReview/started` | 待实现 | R27 |  |
+| `item/autoApprovalReview/completed` | 已实现 | R27 | Protocol-exact Guardian lifecycle is persisted and emitted for command, patch, permissions, network, and destructive MCP review with fail-closed timeout and denial circuit breaker. |
+| `item/autoApprovalReview/started` | 已实现 | R27 | Protocol-exact Guardian lifecycle is persisted and emitted for command, patch, permissions, network, and destructive MCP review with fail-closed timeout and denial circuit breaker. |
 | `item/commandExecution/outputDelta` | 已实现 | R13 | agent-core command_execution_output_delta；core lifecycle test |
 | `item/commandExecution/terminalInteraction` | 已实现 | R13 | agent-core terminal interaction；core lifecycle test |
 | `item/completed` | 已实现 | R3 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
