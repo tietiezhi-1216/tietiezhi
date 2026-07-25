@@ -234,7 +234,10 @@ if (process.argv.includes("--write")) {
   fs.writeFileSync(documentPath, expectedDocument);
 } else if (!fs.existsSync(documentPath)) {
   errors.push("Missing docs/CODEX-PARITY.md; run check:codex-parity -- --write");
-} else if (fs.readFileSync(documentPath, "utf8") !== expectedDocument) {
+} else if (
+  fs.readFileSync(documentPath, "utf8").replaceAll("\r\n", "\n") !==
+  expectedDocument
+) {
   errors.push(
     "docs/CODEX-PARITY.md is stale; run pnpm check:codex-parity -- --write",
   );
