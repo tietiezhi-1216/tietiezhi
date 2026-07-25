@@ -30,6 +30,10 @@ import { notifyActionableGatewayError } from "@/lib/gateway-feedback";
 interface ItemBase {
   id: number;
   createdAt: number;
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  reasoningItemId?: string;
 }
 
 /** One transcript entry: a text message, a tool call, or a permission ask. */
@@ -202,9 +206,18 @@ const normalizePermissionDecision = (
   }
 };
 
-const toItems = (messages: StoredMessage[]): ChatItem[] =>
+export const restoreConversationItems = (
+  messages: StoredMessage[],
+): ChatItem[] =>
   messages.map((m): ChatItem => {
-    const base = { id: nextId++, createdAt: m.createdAt };
+    const base = {
+      id: nextId++,
+      createdAt: m.createdAt,
+      threadId: m.threadId,
+      turnId: m.turnId,
+      itemId: m.itemId,
+      reasoningItemId: m.reasoningItemId,
+    };
     if (m.kind === "context") {
       return {
         ...base,
@@ -247,7 +260,7 @@ const toItems = (messages: StoredMessage[]): ChatItem[] =>
       return {
         ...base,
         kind: "permission",
-        requestId: "",
+        requestId: m.permissionRequestId ?? "",
         tool: m.toolName ?? "",
         description: m.content ?? "",
         args: m.toolArgs,
@@ -294,10 +307,19 @@ const toItems = (messages: StoredMessage[]): ChatItem[] =>
   });
 
 /** Drop the UI-only `id`, keeping just what belongs on disk. */
-const toStored = (items: ChatItem[]): StoredMessage[] =>
+export const persistConversationItems = (
+  items: ChatItem[],
+): StoredMessage[] =>
   items.map((it): StoredMessage => {
+    const identity = {
+      threadId: it.threadId,
+      turnId: it.turnId,
+      itemId: it.itemId,
+      reasoningItemId: it.reasoningItemId,
+    };
     if (it.kind === "context") {
       return {
+        ...identity,
         kind: "context",
         createdAt: it.createdAt,
         contextAction: it.action,
@@ -311,6 +333,7 @@ const toStored = (items: ChatItem[]): StoredMessage[] =>
     }
     if (it.kind === "toolCall") {
       return {
+        ...identity,
         kind: "toolCall",
         createdAt: it.createdAt,
         toolName: it.name,
@@ -327,9 +350,11 @@ const toStored = (items: ChatItem[]): StoredMessage[] =>
     }
     if (it.kind === "permission") {
       return {
+        ...identity,
         kind: "permission",
         createdAt: it.createdAt,
         toolName: it.tool,
+        permissionRequestId: it.requestId,
         content: it.description,
         toolArgs: it.args,
         permissionScope: it.scope,
@@ -338,6 +363,7 @@ const toStored = (items: ChatItem[]): StoredMessage[] =>
     }
     if (it.kind === "error") {
       return {
+        ...identity,
         kind: "error",
         createdAt: it.createdAt,
         content: it.summary,
@@ -349,6 +375,7 @@ const toStored = (items: ChatItem[]): StoredMessage[] =>
       };
     }
     return {
+      ...identity,
       kind: "message",
       role: it.role,
       content: it.content,
@@ -572,7 +599,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
         const title =
           conversations.find((conversation) => conversation.id === activeId)?.title ??
           DEFAULT_CONVERSATION_TITLE;
-        persist(activeId, title, toStored(get().items));
+        persist(activeId, title, persistConversationItems(get().items));
       }
     }
   };
@@ -584,7 +611,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
     const title =
       conversations.find((c) => c.id === activeId)?.title ??
       DEFAULT_CONVERSATION_TITLE;
-    persist(activeId, title, toStored(items));
+    persist(activeId, title, persistConversationItems(items));
   };
 
   const runContextCommand = async (
@@ -743,7 +770,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
         const title =
           get().conversations.find((conversation) => conversation.id === activeId)?.title ??
           DEFAULT_CONVERSATION_TITLE;
-        persist(activeId, title, toStored(get().items));
+        persist(activeId, title, persistConversationItems(get().items));
       }
     }
   };
@@ -793,7 +820,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
         const conv = await loadConversation(id);
         set({
           activeId: id,
-          items: toItems(conv.messages),
+          items: restoreConversationItems(conv.messages),
           activeAgentId: conv.agentId ?? "",
           projectId: conv.projectId ?? "",
           taskMode: conv.taskMode ?? "code",
@@ -946,7 +973,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
       });
 
       // Persist the user turn right away so it survives crashes mid-stream.
-      persist(convId, title, toStored(get().items));
+      persist(convId, title, persistConversationItems(get().items));
 
       // The item currently receiving text deltas. A tool call closes it so
       // the next delta opens a fresh message (text/tool interleaving).
@@ -979,7 +1006,14 @@ export const useChatStore = create<ChatState>()((set, get) => {
         set((state) => ({ items: [...state.items, item] }));
       };
 
-      const ensureTextItem = (): number => {
+      const ensureTextItem = (
+        event?: {
+          threadId: string;
+          turnId: string;
+          itemId: string;
+        },
+        reasoning = false,
+      ): number => {
         if (textItemId == null) {
           reply = "";
           reasoningText = "";
@@ -991,10 +1025,27 @@ export const useChatStore = create<ChatState>()((set, get) => {
             createdAt: Date.now(),
             model: effectiveModel,
             providerId,
+            threadId: event?.threadId,
+            turnId: event?.turnId,
+            itemId: reasoning ? undefined : event?.itemId,
+            reasoningItemId: reasoning ? event?.itemId : undefined,
           };
           textItemId = item.id;
           lastTextItemId = item.id;
           appendItem(item);
+        } else if (event) {
+          patchItem(textItemId, (item) =>
+            item.kind === "message"
+              ? {
+                  ...item,
+                  threadId: event.threadId,
+                  turnId: event.turnId,
+                  ...(reasoning
+                    ? { reasoningItemId: event.itemId }
+                    : { itemId: event.itemId }),
+                }
+              : item,
+          );
         }
         return textItemId;
       };
@@ -1021,14 +1072,21 @@ export const useChatStore = create<ChatState>()((set, get) => {
         flushTimer = null;
       };
 
-      const fail = (failure: {
-        message: string;
-        detail: string;
-        code?: string;
-        status?: number;
-        retryable: boolean;
-        retries: number;
-      }) => {
+      const fail = (
+        failure: {
+          message: string;
+          detail: string;
+          code?: string;
+          status?: number;
+          retryable: boolean;
+          retries: number;
+        },
+        identity?: {
+          threadId: string;
+          turnId: string;
+          itemId: string;
+        },
+      ) => {
         failed = true;
         if (notifyStandaloneGatewayFailure(failure)) return;
         appendItem({
@@ -1041,6 +1099,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
           retryable: failure.retryable,
           retries: failure.retries,
           createdAt: Date.now(),
+          ...identity,
         });
       };
 
@@ -1073,7 +1132,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
                 if (get().streamRetry != null) set({ streamRetry: null });
                 if (get().streamActivity != null) set({ streamActivity: null });
                 firstTokenAt ??= Date.now();
-                ensureTextItem();
+                ensureTextItem(event, true);
                 reasoningText += event.content;
                 scheduleFlush();
                 break;
@@ -1086,7 +1145,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
                   titleAssistantText += event.content;
                 }
                 firstTokenAt ??= Date.now();
-                ensureTextItem();
+                ensureTextItem(event);
                 reply += event.content;
                 scheduleFlush();
                 break;
@@ -1113,9 +1172,12 @@ export const useChatStore = create<ChatState>()((set, get) => {
                   status: "running",
                   timeoutMs: event.timeoutMs,
                   createdAt: Date.now(),
+                  threadId: event.threadId,
+                  turnId: event.turnId,
+                  itemId: event.itemId,
                 });
                 if (get().requestId === requestId) {
-                  persist(convId, title, toStored(get().items));
+                  persist(convId, title, persistConversationItems(get().items));
                 }
                 break;
               }
@@ -1159,7 +1221,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
                   ),
                 }));
                 if (get().requestId === requestId) {
-                  persist(convId, title, toStored(get().items));
+                  persist(convId, title, persistConversationItems(get().items));
                 }
                 break;
               }
@@ -1177,6 +1239,9 @@ export const useChatStore = create<ChatState>()((set, get) => {
                   args: event.args,
                   scope: event.scope,
                   createdAt: Date.now(),
+                  threadId: event.threadId,
+                  turnId: event.turnId,
+                  itemId: event.itemId,
                 });
                 break;
               }
@@ -1208,6 +1273,9 @@ export const useChatStore = create<ChatState>()((set, get) => {
                     tokensAfter: event.estimatedTokensAfter,
                     contextWindow: event.contextWindow,
                     createdAt: Date.now(),
+                    threadId: event.threadId,
+                    turnId: event.turnId,
+                    itemId: event.itemId,
                   };
                   if (event.duringTurn) {
                     return {
@@ -1275,7 +1343,11 @@ export const useChatStore = create<ChatState>()((set, get) => {
                       : it,
                   ),
                 }));
-                fail(event);
+                fail(event, {
+                  threadId: event.threadId,
+                  turnId: event.turnId,
+                  itemId: event.itemId,
+                });
                 break;
               }
             }
@@ -1350,7 +1422,11 @@ export const useChatStore = create<ChatState>()((set, get) => {
             streamActivity: null,
             requestId: null,
           });
-          const saved = persist(convId, title, toStored(get().items));
+          const saved = persist(
+            convId,
+            title,
+            persistConversationItems(get().items),
+          );
           if (title === DEFAULT_CONVERSATION_TITLE) {
             generateTitle(
               convId,
@@ -1389,7 +1465,11 @@ export const useChatStore = create<ChatState>()((set, get) => {
       const kept = items.slice(0, index);
       const convId = crypto.randomUUID();
       set({ activeId: convId, items: kept });
-      persist(convId, DEFAULT_CONVERSATION_TITLE, toStored(kept));
+      persist(
+        convId,
+        DEFAULT_CONVERSATION_TITLE,
+        persistConversationItems(kept),
+      );
     },
 
     async editAndResend(itemId, text, providerId, model) {

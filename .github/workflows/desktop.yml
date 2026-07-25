@@ -67,6 +67,7 @@ jobs:
             desktop/src-tauri
             crates/agent-protocol
             crates/agent-events
+            crates/agent-state
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -86,11 +87,17 @@ jobs:
       - name: Check chat event migration
         run: pnpm test:chat-event-migration
 
+      - name: Check conversation persistence migration
+        run: pnpm test:conversation-migration
+
       - name: Codex protocol Rust tests
         run: cargo test --manifest-path ../crates/agent-protocol/Cargo.toml
 
       - name: Codex event Rust tests
         run: cargo test --manifest-path ../crates/agent-events/Cargo.toml
+
+      - name: Codex state and crash recovery tests
+        run: cargo test --manifest-path ../crates/agent-state/Cargo.toml
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

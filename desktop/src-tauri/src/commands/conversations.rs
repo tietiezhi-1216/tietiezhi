@@ -1,11 +1,15 @@
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use tietiezhi_agent_state::{
+    atomic_write, RolloutAppender, RolloutRecovery, StateStore, ThreadMetadata,
+};
 
 use super::workspace::TaskMode;
+use crate::agent::events::{ChatEvent, ScopedChatEvent};
 
 pub const DEFAULT_CONVERSATION_TITLE: &str = "新会话";
 
@@ -31,7 +35,7 @@ pub struct StoredAttachment {
 
 /// One persisted transcript item. Legacy assistant failures used `error`;
 /// current files store them as a dedicated `kind: "error"` item.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredMessage {
     /// "message" (default, legacy files omit it) | "toolCall" | "permission" | "error".
@@ -54,9 +58,19 @@ pub struct StoredMessage {
     #[serde(default)]
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_args: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,6 +103,8 @@ pub struct StoredMessage {
     pub completion_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub usage_estimated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -155,6 +171,8 @@ pub struct Conversation {
     pub id: String,
     pub title: String,
     #[serde(default)]
+    pub created_at: u64,
+    #[serde(default)]
     pub updated_at: u64,
     #[serde(default)]
     pub messages: Vec<StoredMessage>,
@@ -182,6 +200,7 @@ pub struct Conversation {
 pub struct ConversationMeta {
     pub id: String,
     pub title: String,
+    pub created_at: u64,
     pub updated_at: u64,
     pub project_id: String,
     pub task_mode: TaskMode,
@@ -269,21 +288,94 @@ fn conversation_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     Ok(task_root(app, id)?.join("task.json"))
 }
 
-fn write_conversation(path: &PathBuf, conversation: &Conversation) -> Result<(), String> {
-    let parent = path.parent().ok_or_else(|| "任务路径无效".to_string())?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("创建任务目录失败：{e}"))?;
+fn rollout_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    Ok(task_root(app, id)?.join("rollout.jsonl"))
+}
+
+fn state_store(app: &AppHandle) -> Result<StateStore, String> {
+    StateStore::open(app_data_dir(app)?.join("agent-runtime"))
+        .map_err(|error| format!("初始化任务状态库失败：{error}"))
+}
+
+pub(crate) fn event_rollout_appender(app: &AppHandle, id: &str) -> Result<RolloutAppender, String> {
+    validate_id(id)?;
+    let path = rollout_path(app, id)?;
+    let appender = state_store(app)?
+        .rollout_appender(&path)
+        .map_err(|error| format!("打开任务 rollout 失败：{error}"))?;
+    appender
+        .ensure_session_meta(id, now_ms(), &path)
+        .map_err(|error| format!("初始化任务 rollout 失败：{error}"))?;
+    Ok(appender)
+}
+
+fn write_conversation(path: &Path, conversation: &Conversation) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(conversation).map_err(|e| e.to_string())?;
-    let temp = path.with_extension("json.tmp");
-    std::fs::write(&temp, raw).map_err(|e| format!("写入任务失败：{e}"))?;
-    if let Err(first) = std::fs::rename(&temp, path) {
-        if cfg!(windows) && path.exists() {
-            std::fs::remove_file(path).map_err(|e| format!("替换任务记录失败：{e}"))?;
-            std::fs::rename(&temp, path).map_err(|e| format!("替换任务记录失败：{e}"))?;
-        } else {
-            return Err(format!("保存任务失败：{first}"));
-        }
+    atomic_write(path, raw.as_bytes()).map_err(|error| format!("原子写入任务失败：{error}"))
+}
+
+fn conversation_created_at(conversation: &Conversation) -> u64 {
+    if conversation.created_at > 0 {
+        return conversation.created_at;
     }
-    Ok(())
+    conversation
+        .messages
+        .iter()
+        .filter_map(|message| (message.created_at > 0).then_some(message.created_at))
+        .min()
+        .unwrap_or(conversation.updated_at)
+}
+
+fn conversation_preview(conversation: &Conversation) -> String {
+    conversation
+        .messages
+        .iter()
+        .find(|message| {
+            message.kind == "message"
+                && message.role == "user"
+                && !message.content.trim().is_empty()
+        })
+        .map(|message| compact_excerpt(&message.content, 180))
+        .unwrap_or_default()
+}
+
+fn metadata_for(
+    conversation: &Conversation,
+    path: PathBuf,
+    revision: u64,
+    last_complete_ordinal: u64,
+    recovery_status: &str,
+) -> ThreadMetadata {
+    ThreadMetadata {
+        id: conversation.id.clone(),
+        rollout_path: path,
+        created_at_ms: conversation_created_at(conversation),
+        updated_at_ms: conversation.updated_at,
+        title: conversation.title.clone(),
+        project_id: conversation.project_id.clone(),
+        task_mode: conversation.task_mode.as_str().into(),
+        archived_at_ms: conversation.archived_at,
+        pinned_at_ms: conversation.pinned_at,
+        agent_id: conversation.agent_id.clone(),
+        preview: conversation_preview(conversation),
+        revision,
+        last_complete_ordinal,
+        recovery_status: recovery_status.into(),
+    }
+}
+
+fn persist_conversation(
+    app: &AppHandle,
+    store: &StateStore,
+    conversation: &Conversation,
+) -> Result<(), String> {
+    let path = rollout_path(app, &conversation.id)?;
+    let payload = serde_json::to_value(conversation)
+        .map_err(|error| format!("序列化任务 checkpoint 失败：{error}"))?;
+    store
+        .upsert_checkpoint(metadata_for(conversation, path, 0, 0, "clean"), &payload)
+        .map_err(|error| format!("写入任务 rollout 失败：{error}"))?;
+    write_conversation(&conversation_path(app, &conversation.id)?, conversation)
 }
 
 /// Move legacy `conversations/{id}.json` + `workspaces/{id}` into the task
@@ -344,52 +436,471 @@ fn migrate_legacy(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn task_mode_from_store(value: &str) -> Result<TaskMode, String> {
+    match value {
+        "work" => Ok(TaskMode::Work),
+        "code" => Ok(TaskMode::Code),
+        _ => Err(format!("任务索引包含非法模式：{value}")),
+    }
+}
+
+fn read_task_json(path: &Path) -> Option<Conversation> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+}
+
+fn conversation_from_recovery(
+    recovery: &RolloutRecovery,
+    expected_id: &str,
+) -> Option<Conversation> {
+    let checkpoint = recovery
+        .checkpoint
+        .as_ref()
+        .filter(|checkpoint| checkpoint.thread_id == expected_id)?;
+    let conversation: Conversation = serde_json::from_value(checkpoint.payload.clone()).ok()?;
+    (conversation.id == expected_id).then_some(conversation)
+}
+
+fn set_event_identity(message: &mut StoredMessage, event: &ScopedChatEvent, reasoning: bool) {
+    message.thread_id = Some(event.thread_id.clone());
+    message.turn_id = Some(event.turn_id.clone());
+    if reasoning {
+        message.reasoning_item_id = Some(event.item_id.clone());
+    } else {
+        message.item_id = Some(event.item_id.clone());
+    }
+}
+
+fn assistant_message_index(
+    conversation: &Conversation,
+    event: &ScopedChatEvent,
+    reasoning: bool,
+) -> Option<usize> {
+    conversation
+        .messages
+        .iter()
+        .position(|message| {
+            let identity = if reasoning {
+                message.reasoning_item_id.as_deref()
+            } else {
+                message.item_id.as_deref()
+            };
+            message.kind == "message"
+                && message.role == "assistant"
+                && identity == Some(event.item_id.as_str())
+        })
+        .or_else(|| {
+            conversation.messages.iter().rposition(|message| {
+                message.kind == "message"
+                    && message.role == "assistant"
+                    && message.turn_id.as_deref() == Some(event.turn_id.as_str())
+                    && if reasoning {
+                        message.reasoning_item_id.is_none()
+                    } else {
+                        message.item_id.is_none()
+                    }
+            })
+        })
+}
+
+fn ensure_assistant_message(
+    conversation: &mut Conversation,
+    event: &ScopedChatEvent,
+    reasoning: bool,
+) -> usize {
+    if let Some(index) = assistant_message_index(conversation, event, reasoning) {
+        return index;
+    }
+    let mut message = StoredMessage {
+        kind: "message".into(),
+        role: "assistant".into(),
+        created_at: event.emitted_at_ms,
+        ..StoredMessage::default()
+    };
+    set_event_identity(&mut message, event, reasoning);
+    conversation.messages.push(message);
+    conversation.messages.len() - 1
+}
+
+fn apply_rollout_event(conversation: &mut Conversation, event: &ScopedChatEvent) {
+    if event.thread_id != conversation.id {
+        return;
+    }
+    conversation.updated_at = conversation.updated_at.max(event.emitted_at_ms);
+    match &event.payload {
+        ChatEvent::Started { .. }
+        | ChatEvent::Retrying { .. }
+        | ChatEvent::ContextCompactionStarted { .. }
+        | ChatEvent::ContextUsage { .. } => {}
+        ChatEvent::Delta { content } => {
+            let index = ensure_assistant_message(conversation, event, false);
+            let message = &mut conversation.messages[index];
+            set_event_identity(message, event, false);
+            message.content.push_str(content);
+        }
+        ChatEvent::Reasoning { content } => {
+            let index = ensure_assistant_message(conversation, event, true);
+            let message = &mut conversation.messages[index];
+            set_event_identity(message, event, true);
+            message.reasoning.push_str(content);
+        }
+        ChatEvent::Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+        } => {
+            let index = ensure_assistant_message(conversation, event, false);
+            let message = &mut conversation.messages[index];
+            message.prompt_tokens = Some(*prompt_tokens);
+            message.completion_tokens = Some(*completion_tokens);
+            message.total_tokens = Some(*total_tokens);
+            message.cached_tokens = Some(*cached_tokens);
+            message.usage_estimated = false;
+        }
+        ChatEvent::ToolCallStart { id, name, args, .. } => {
+            if conversation.messages.iter().any(|message| {
+                message.kind == "toolCall"
+                    && (message.item_id.as_deref() == Some(event.item_id.as_str())
+                        || message.tool_call_id.as_deref() == Some(id.as_str()))
+            }) {
+                return;
+            }
+            let mut message = StoredMessage {
+                kind: "toolCall".into(),
+                created_at: event.emitted_at_ms,
+                tool_name: Some(name.clone()),
+                tool_call_id: Some(id.clone()),
+                tool_args: Some(args.clone()),
+                tool_status: Some("running".into()),
+                ..StoredMessage::default()
+            };
+            set_event_identity(&mut message, event, false);
+            conversation.messages.push(message);
+        }
+        ChatEvent::ToolProgress {
+            id,
+            output,
+            elapsed_ms,
+            truncated,
+        } => {
+            if let Some(message) = conversation.messages.iter_mut().find(|message| {
+                message.kind == "toolCall"
+                    && (message.item_id.as_deref() == Some(event.item_id.as_str())
+                        || message.tool_call_id.as_deref() == Some(id.as_str()))
+            }) {
+                set_event_identity(message, event, false);
+                message.tool_output = Some(output.clone());
+                message.tool_duration_ms = Some(*elapsed_ms);
+                message.tool_truncated = *truncated;
+            }
+        }
+        ChatEvent::ToolResult {
+            id,
+            output,
+            is_error,
+            duration_ms,
+            exit_code,
+            timed_out,
+            cancelled,
+            truncated,
+        } => {
+            if let Some(message) = conversation.messages.iter_mut().find(|message| {
+                message.kind == "toolCall"
+                    && (message.item_id.as_deref() == Some(event.item_id.as_str())
+                        || message.tool_call_id.as_deref() == Some(id.as_str()))
+            }) {
+                set_event_identity(message, event, false);
+                message.tool_output = Some(output.clone());
+                message.tool_status = Some(
+                    if *cancelled {
+                        "cancelled"
+                    } else if *is_error {
+                        "error"
+                    } else {
+                        "success"
+                    }
+                    .into(),
+                );
+                message.tool_duration_ms = Some(*duration_ms);
+                message.tool_exit_code = *exit_code;
+                message.tool_timed_out = *timed_out;
+                message.tool_truncated = *truncated;
+                message.error = *is_error;
+            }
+        }
+        ChatEvent::PermissionRequest {
+            id,
+            tool,
+            description,
+            scope,
+            args,
+        } => {
+            if conversation.messages.iter().any(|message| {
+                message.kind == "permission"
+                    && message.permission_request_id.as_deref() == Some(id.as_str())
+            }) {
+                return;
+            }
+            let mut message = StoredMessage {
+                kind: "permission".into(),
+                content: description.clone(),
+                created_at: event.emitted_at_ms,
+                tool_name: Some(tool.clone()),
+                permission_request_id: Some(id.clone()),
+                tool_args: Some(args.clone()),
+                permission_scope: Some(scope.clone()),
+                ..StoredMessage::default()
+            };
+            set_event_identity(&mut message, event, false);
+            conversation.messages.push(message);
+        }
+        ChatEvent::ContextCompacted {
+            automatic,
+            during_turn,
+            summary,
+            estimated_tokens_before,
+            estimated_tokens_after,
+            context_window,
+        } => {
+            if conversation.messages.iter().any(|message| {
+                message.kind == "context"
+                    && message.item_id.as_deref() == Some(event.item_id.as_str())
+            }) {
+                return;
+            }
+            let mut message = StoredMessage {
+                kind: "context".into(),
+                created_at: event.emitted_at_ms,
+                context_action: Some("compaction".into()),
+                context_summary: Some(summary.clone()),
+                context_automatic: Some(*automatic),
+                context_during_turn: *during_turn,
+                context_tokens_before: Some(*estimated_tokens_before),
+                context_tokens_after: Some(*estimated_tokens_after),
+                context_window: Some(*context_window),
+                ..StoredMessage::default()
+            };
+            set_event_identity(&mut message, event, false);
+            conversation.messages.push(message);
+        }
+        ChatEvent::Done { cancelled } => {
+            if *cancelled {
+                for message in &mut conversation.messages {
+                    if message.kind == "toolCall"
+                        && message.tool_status.as_deref() == Some("running")
+                    {
+                        message.tool_status = Some("cancelled".into());
+                    }
+                }
+            }
+        }
+        ChatEvent::Error {
+            message,
+            detail,
+            code,
+            status,
+            retryable,
+            retries,
+        } => {
+            for tool in &mut conversation.messages {
+                if tool.kind == "toolCall" && tool.tool_status.as_deref() == Some("running") {
+                    tool.tool_status = Some("error".into());
+                    tool.error = true;
+                }
+            }
+            if conversation.messages.iter().any(|message| {
+                message.kind == "error"
+                    && message.item_id.as_deref() == Some(event.item_id.as_str())
+            }) {
+                return;
+            }
+            let mut stored = StoredMessage {
+                kind: "error".into(),
+                content: message.clone(),
+                created_at: event.emitted_at_ms,
+                error: true,
+                error_detail: Some(detail.clone()),
+                error_code: code.clone(),
+                error_status: *status,
+                error_retryable: *retryable,
+                error_retries: *retries,
+                ..StoredMessage::default()
+            };
+            set_event_identity(&mut stored, event, false);
+            conversation.messages.push(stored);
+        }
+    }
+}
+
+fn replay_trailing_events(conversation: &mut Conversation, recovery: &RolloutRecovery) {
+    for value in &recovery.trailing_events {
+        if let Ok(event) = serde_json::from_value::<ScopedChatEvent>(value.clone()) {
+            apply_rollout_event(conversation, &event);
+        }
+    }
+}
+
+fn load_runtime_conversation(
+    app: &AppHandle,
+    store: &StateStore,
+    id: &str,
+    repair: bool,
+) -> Result<Conversation, String> {
+    validate_id(id)?;
+    let task_path = conversation_path(app, id)?;
+    let expected_rollout_path = rollout_path(app, id)?;
+    let indexed = store
+        .thread(id)
+        .map_err(|error| format!("读取任务索引失败：{error}"))?;
+    let path = indexed
+        .as_ref()
+        .filter(|thread| thread.rollout_path == expected_rollout_path)
+        .map(|thread| thread.rollout_path.clone())
+        .unwrap_or(expected_rollout_path);
+    let recovery = store
+        .recover_rollout(&path)
+        .map_err(|error| format!("恢复任务 rollout 失败：{error}"))?;
+    let mut rollout_conversation = conversation_from_recovery(&recovery, id);
+    if let Some(conversation) = &mut rollout_conversation {
+        replay_trailing_events(conversation, &recovery);
+    }
+    let disk_conversation = read_task_json(&task_path).filter(|conversation| conversation.id == id);
+    let disk_is_newer = match (&disk_conversation, &rollout_conversation) {
+        (Some(disk), Some(rollout)) => disk.updated_at > rollout.updated_at,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    let mut conversation = if disk_is_newer {
+        disk_conversation
+    } else {
+        rollout_conversation.or(disk_conversation)
+    }
+    .ok_or_else(|| "任务记录不存在或已损坏".to_string())?;
+    if conversation.updated_at == 0 {
+        conversation.updated_at = now_ms();
+    }
+    if conversation.created_at == 0 {
+        conversation.created_at = conversation_created_at(&conversation);
+    }
+
+    if repair {
+        let needs_checkpoint = disk_is_newer
+            || recovery.checkpoint.is_none()
+            || !recovery.trailing_events.is_empty()
+            || recovery.truncated_bytes > 0;
+        if needs_checkpoint {
+            persist_conversation(app, store, &conversation)?;
+        } else {
+            let checkpoint = recovery
+                .checkpoint
+                .as_ref()
+                .expect("checkpoint checked above");
+            store
+                .upsert_metadata(&metadata_for(
+                    &conversation,
+                    path,
+                    checkpoint.revision,
+                    recovery.last_ordinal,
+                    "clean",
+                ))
+                .map_err(|error| format!("修复任务索引失败：{error}"))?;
+            if read_task_json(&task_path)
+                .is_none_or(|disk| disk.updated_at < conversation.updated_at)
+            {
+                write_conversation(&task_path, &conversation)?;
+            }
+        }
+    }
+    Ok(conversation)
+}
+
+fn reconcile_runtime_store(app: &AppHandle, store: &StateStore) -> Result<(), String> {
+    let task_directory = tasks_dir(app)?;
+    for entry in
+        std::fs::read_dir(&task_directory).map_err(|error| format!("读取任务目录失败：{error}"))?
+    {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Some(id) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if validate_id(&id).is_err() || !entry.path().is_dir() {
+            continue;
+        }
+        let indexed = store
+            .thread(&id)
+            .map_err(|error| format!("读取任务索引失败：{error}"))?;
+        let expected_rollout_path = entry.path().join("rollout.jsonl");
+        let indexed_rollout_exists = indexed.as_ref().is_some_and(|thread| {
+            thread.rollout_path == expected_rollout_path && thread.rollout_path.is_file()
+        });
+        if indexed.is_some() && indexed_rollout_exists {
+            continue;
+        }
+        if entry.path().join("task.json").is_file() || entry.path().join("rollout.jsonl").is_file()
+        {
+            if let Err(error) = load_runtime_conversation(app, store, &id, true) {
+                if error.contains("不存在或已损坏") {
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
+
+    for thread in store
+        .list_threads(false)
+        .and_then(|mut active| {
+            active.extend(store.list_threads(true)?);
+            Ok(active)
+        })
+        .map_err(|error| format!("检查任务索引失败：{error}"))?
+    {
+        let task_path = conversation_path(app, &thread.id)?;
+        if !task_path.exists() && !thread.rollout_path.exists() {
+            store
+                .delete_thread(&thread.id)
+                .map_err(|error| format!("清理失效任务索引失败：{error}"))?;
+        }
+    }
+    Ok(())
+}
+
 fn with_store<T>(
     app: &AppHandle,
-    operation: impl FnOnce() -> Result<T, String>,
+    operation: impl FnOnce(&StateStore) -> Result<T, String>,
 ) -> Result<T, String> {
     let _guard = store_lock().lock().map_err(|_| "任务存储锁已损坏")?;
     migrate_legacy(app)?;
-    operation()
+    let store = state_store(app)?;
+    reconcile_runtime_store(app, &store)?;
+    operation(&store)
 }
 
 fn list_conversation_metas(
-    app: &AppHandle,
+    store: &StateStore,
     archived: bool,
 ) -> Result<Vec<ConversationMeta>, String> {
-    let entries =
-        std::fs::read_dir(tasks_dir(app)?).map_err(|e| format!("读取任务目录失败：{e}"))?;
-    let mut metas = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path().join("task.json");
-        if !path.is_file() {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let Ok(conversation) = serde_json::from_str::<Conversation>(&raw) else {
-            continue;
-        };
-        if (conversation.archived_at != 0) != archived {
-            continue;
-        }
-        metas.push(ConversationMeta {
-            id: conversation.id,
-            title: conversation.title,
-            updated_at: conversation.updated_at,
-            project_id: conversation.project_id,
-            task_mode: conversation.task_mode,
-            archived_at: conversation.archived_at,
-            pinned_at: conversation.pinned_at,
-        });
-    }
-    if archived {
-        metas.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
-    } else {
-        metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    }
-    Ok(metas)
+    store
+        .list_threads(archived)
+        .map_err(|error| format!("读取任务索引失败：{error}"))?
+        .into_iter()
+        .map(|thread| {
+            Ok(ConversationMeta {
+                id: thread.id,
+                title: thread.title,
+                created_at: thread.created_at_ms,
+                updated_at: thread.updated_at_ms,
+                project_id: thread.project_id,
+                task_mode: task_mode_from_store(&thread.task_mode)?,
+                archived_at: thread.archived_at_ms,
+                pinned_at: thread.pinned_at_ms,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn suggestion_history(
@@ -398,23 +909,24 @@ pub(crate) fn suggestion_history(
     task_mode: TaskMode,
     limit: usize,
 ) -> Result<SuggestionHistory, String> {
-    with_store(app, || {
+    with_store(app, |store| {
         let expected_project_id = project_id.unwrap_or("");
-        let entries =
-            std::fs::read_dir(tasks_dir(app)?).map_err(|e| format!("读取任务目录失败：{e}"))?;
+        let mut indexed = store
+            .list_threads(false)
+            .map_err(|error| format!("读取任务索引失败：{error}"))?;
+        indexed.extend(
+            store
+                .list_threads(true)
+                .map_err(|error| format!("读取归档任务索引失败：{error}"))?,
+        );
         let mut tasks = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path().join("task.json");
-            let Ok(raw) = std::fs::read_to_string(path) else {
-                continue;
-            };
-            let Ok(conversation) = serde_json::from_str::<Conversation>(&raw) else {
-                continue;
-            };
-            if conversation.project_id != expected_project_id || conversation.task_mode != task_mode
-            {
+        for thread in indexed {
+            if thread.project_id != expected_project_id || thread.task_mode != task_mode.as_str() {
                 continue;
             }
+            let Ok(conversation) = load_runtime_conversation(app, store, &thread.id, true) else {
+                continue;
+            };
             let opening_request = conversation
                 .messages
                 .iter()
@@ -467,20 +979,18 @@ fn sensitive_value_pattern() -> &'static regex::Regex {
 
 #[tauri::command]
 pub fn list_conversations(app: AppHandle) -> Result<Vec<ConversationMeta>, String> {
-    with_store(&app, || list_conversation_metas(&app, false))
+    with_store(&app, |store| list_conversation_metas(store, false))
 }
 
 #[tauri::command]
 pub fn list_archived_conversations(app: AppHandle) -> Result<Vec<ConversationMeta>, String> {
-    with_store(&app, || list_conversation_metas(&app, true))
+    with_store(&app, |store| list_conversation_metas(store, true))
 }
 
 #[tauri::command]
 pub fn load_conversation(app: AppHandle, id: String) -> Result<Conversation, String> {
-    with_store(&app, || {
-        let raw = std::fs::read_to_string(conversation_path(&app, &id)?)
-            .map_err(|e| format!("读取任务失败：{e}"))?;
-        serde_json::from_str(&raw).map_err(|e| format!("任务文件损坏：{e}"))
+    with_store(&app, |store| {
+        load_runtime_conversation(&app, store, &id, true)
     })
 }
 
@@ -489,8 +999,8 @@ pub fn save_conversation(
     app: AppHandle,
     mut conversation: Conversation,
 ) -> Result<SaveConversationResult, String> {
-    with_store(&app, || {
-        let path = conversation_path(&app, &conversation.id)?;
+    with_store(&app, |store| {
+        validate_id(&conversation.id)?;
         if conversation.title.trim().is_empty() {
             conversation.title = DEFAULT_CONVERSATION_TITLE.into();
         }
@@ -499,16 +1009,26 @@ pub fn save_conversation(
         {
             return Err("任务关联的项目不存在".into());
         }
-        if let Ok(raw) = std::fs::read_to_string(&path) {
-            if let Ok(existing) = serde_json::from_str::<Conversation>(&raw) {
+        match load_runtime_conversation(&app, store, &conversation.id, true) {
+            Ok(existing) => {
+                conversation.created_at = conversation_created_at(&existing);
                 conversation.archived_at = existing.archived_at;
                 conversation.pinned_at = existing.pinned_at;
                 preserve_generated_title(&mut conversation.title, &existing.title);
             }
+            Err(error) if error.contains("不存在或已损坏") => {
+                conversation.created_at = conversation
+                    .messages
+                    .iter()
+                    .filter_map(|message| (message.created_at > 0).then_some(message.created_at))
+                    .min()
+                    .unwrap_or_else(now_ms);
+            }
+            Err(error) => return Err(error),
         }
         conversation.workspace.clear();
         conversation.updated_at = now_ms();
-        write_conversation(&path, &conversation)?;
+        persist_conversation(&app, store, &conversation)?;
         Ok(SaveConversationResult {
             updated_at: conversation.updated_at,
             title: conversation.title,
@@ -525,82 +1045,73 @@ pub(crate) fn set_generated_title(
     if title.is_empty() || title == DEFAULT_CONVERSATION_TITLE {
         return Ok(None);
     }
-    with_store(app, || {
-        let path = conversation_path(app, id)?;
-        let raw = match std::fs::read_to_string(&path) {
-            Ok(raw) => raw,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("读取任务失败：{error}")),
+    with_store(app, |store| {
+        let mut conversation = match load_runtime_conversation(app, store, id, true) {
+            Ok(conversation) => conversation,
+            Err(error) if error.contains("不存在") => return Ok(None),
+            Err(error) => return Err(error),
         };
-        let mut conversation: Conversation =
-            serde_json::from_str(&raw).map_err(|error| format!("任务文件损坏：{error}"))?;
         if conversation.title != DEFAULT_CONVERSATION_TITLE || conversation.archived_at != 0 {
             return Ok(None);
         }
         conversation.title = title.into();
-        write_conversation(&path, &conversation)?;
+        persist_conversation(app, store, &conversation)?;
         Ok(Some(conversation.title))
     })
 }
 
-fn set_archived_at(app: &AppHandle, id: &str, archived_at: u64) -> Result<(), String> {
-    let path = conversation_path(app, id)?;
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取任务失败：{e}"))?;
-    let mut conversation: Conversation =
-        serde_json::from_str(&raw).map_err(|e| format!("任务文件损坏：{e}"))?;
+fn set_archived_at(
+    app: &AppHandle,
+    store: &StateStore,
+    id: &str,
+    archived_at: u64,
+) -> Result<(), String> {
+    let mut conversation = load_runtime_conversation(app, store, id, true)?;
     conversation.archived_at = archived_at;
     if archived_at == 0 {
         conversation.updated_at = now_ms();
     }
-    write_conversation(&path, &conversation)
+    persist_conversation(app, store, &conversation)
 }
 
 #[tauri::command]
 pub fn archive_conversation(app: AppHandle, id: String) -> Result<(), String> {
-    with_store(&app, || set_archived_at(&app, &id, now_ms()))
+    with_store(&app, |store| set_archived_at(&app, store, &id, now_ms()))
 }
 
 #[tauri::command]
 pub fn restore_conversation(app: AppHandle, id: String) -> Result<(), String> {
-    with_store(&app, || set_archived_at(&app, &id, 0))
+    with_store(&app, |store| set_archived_at(&app, store, &id, 0))
 }
 
 #[tauri::command]
 pub fn set_conversation_pinned(app: AppHandle, id: String, pinned: bool) -> Result<u64, String> {
-    with_store(&app, || {
-        let path = conversation_path(&app, &id)?;
-        let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取任务失败：{e}"))?;
-        let mut conversation: Conversation =
-            serde_json::from_str(&raw).map_err(|e| format!("任务文件损坏：{e}"))?;
+    with_store(&app, |store| {
+        let mut conversation = load_runtime_conversation(&app, store, &id, true)?;
         conversation.pinned_at = if pinned { now_ms() } else { 0 };
-        write_conversation(&path, &conversation)?;
+        persist_conversation(&app, store, &conversation)?;
         Ok(conversation.pinned_at)
     })
 }
 
 #[tauri::command]
 pub fn archive_project_conversations(app: AppHandle, project_id: String) -> Result<u64, String> {
-    with_store(&app, || {
-        let entries =
-            std::fs::read_dir(tasks_dir(&app)?).map_err(|e| format!("读取任务目录失败：{e}"))?;
+    with_store(&app, |store| {
         let archived_at = now_ms();
         let mut count = 0;
-        for entry in entries.flatten() {
-            let path = entry.path().join("task.json");
-            if !path.is_file() {
+        let active = store
+            .list_threads(false)
+            .map_err(|error| format!("读取任务索引失败：{error}"))?;
+        for thread in active {
+            if thread.project_id != project_id {
                 continue;
             }
-            let Ok(raw) = std::fs::read_to_string(&path) else {
+            let Ok(mut conversation) = load_runtime_conversation(&app, store, &thread.id, true)
+            else {
                 continue;
             };
-            let Ok(mut conversation) = serde_json::from_str::<Conversation>(&raw) else {
-                continue;
-            };
-            if conversation.project_id != project_id || conversation.archived_at != 0 {
-                continue;
-            }
             conversation.archived_at = archived_at;
-            write_conversation(&path, &conversation)?;
+            persist_conversation(&app, store, &conversation)?;
             count += 1;
         }
         Ok(count)
@@ -609,18 +1120,23 @@ pub fn archive_project_conversations(app: AppHandle, project_id: String) -> Resu
 
 #[tauri::command]
 pub fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
-    with_store(&app, || {
+    with_store(&app, |store| {
         let root = task_root(&app, &id)?;
         if !root.exists() {
+            store
+                .delete_thread(&id)
+                .map_err(|error| format!("删除任务索引失败：{error}"))?;
             return Ok(());
         }
-        let project_id = std::fs::read_to_string(root.join("task.json"))
+        let project_id = load_runtime_conversation(&app, store, &id, true)
             .ok()
-            .and_then(|raw| serde_json::from_str::<Conversation>(&raw).ok())
             .map(|conversation| conversation.project_id)
             .unwrap_or_default();
         super::workspace::cleanup_task_workspaces(&app, &project_id, &root);
-        std::fs::remove_dir_all(root).map_err(|e| format!("删除任务失败：{e}"))
+        std::fs::remove_dir_all(root).map_err(|e| format!("删除任务失败：{e}"))?;
+        store
+            .delete_thread(&id)
+            .map_err(|error| format!("删除任务索引失败：{error}"))
     })
 }
 
@@ -647,10 +1163,70 @@ mod tests {
         let msg: StoredMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.created_at, 0);
         assert_eq!(msg.kind, "message");
+        assert_eq!(msg.thread_id, None);
+        assert_eq!(msg.turn_id, None);
+        assert_eq!(msg.item_id, None);
 
         let json = r#"{"role":"user","content":"你好","createdAt":1784110000000}"#;
         let msg: StoredMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.created_at, 1_784_110_000_000);
+    }
+
+    #[test]
+    fn rollout_events_restore_partial_assistant_and_unfinished_tool() {
+        let mut conversation: Conversation = serde_json::from_str(
+            r#"{"id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","title":"恢复","messages":[]}"#,
+        )
+        .unwrap();
+        let reasoning = tietiezhi_agent_events::EventEnvelope {
+            thread_id: conversation.id.clone(),
+            turn_id: "turn-1".into(),
+            item_id: "reasoning-1".into(),
+            sequence: 1,
+            emitted_at_ms: 100,
+            payload: ChatEvent::Reasoning {
+                content: "分析".into(),
+            },
+        };
+        let delta = tietiezhi_agent_events::EventEnvelope {
+            thread_id: conversation.id.clone(),
+            turn_id: "turn-1".into(),
+            item_id: "message-1".into(),
+            sequence: 2,
+            emitted_at_ms: 101,
+            payload: ChatEvent::Delta {
+                content: "结果".into(),
+            },
+        };
+        let tool = tietiezhi_agent_events::EventEnvelope {
+            thread_id: conversation.id.clone(),
+            turn_id: "turn-1".into(),
+            item_id: "call-1".into(),
+            sequence: 3,
+            emitted_at_ms: 102,
+            payload: ChatEvent::ToolCallStart {
+                id: "call-1".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"command":"sleep 30"}),
+                timeout_ms: None,
+            },
+        };
+
+        apply_rollout_event(&mut conversation, &reasoning);
+        apply_rollout_event(&mut conversation, &delta);
+        apply_rollout_event(&mut conversation, &tool);
+
+        assert_eq!(conversation.messages.len(), 2);
+        let assistant = &conversation.messages[0];
+        assert_eq!(assistant.reasoning, "分析");
+        assert_eq!(assistant.content, "结果");
+        assert_eq!(assistant.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(assistant.reasoning_item_id.as_deref(), Some("reasoning-1"));
+        assert_eq!(assistant.item_id.as_deref(), Some("message-1"));
+        let tool = &conversation.messages[1];
+        assert_eq!(tool.tool_status.as_deref(), Some("running"));
+        assert_eq!(tool.item_id.as_deref(), Some("call-1"));
+        assert_eq!(conversation.updated_at, 102);
     }
 
     #[test]

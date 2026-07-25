@@ -41,8 +41,8 @@
 | R0 | 基线治理 | 已完成 | shared/codex/v2/upstream-baseline.json；desktop/scripts/check-codex-parity.mjs；pnpm check:codex-parity；pnpm typecheck；pnpm build；cargo test（130 项） | 官方 V2 方法仍全部待实现；R1 起逐项推进 |
 | R1 | 旧运行时止血 | 已完成 | desktop/src-tauri/src/permission/mod.rs；desktop/src-tauri/src/agent/loop_.rs；commands::conversations 旧决策迁移测试；scripts/check-permission-prompt.mjs；pnpm test:permission-ui；pnpm typecheck；pnpm build；cargo test | 尚未具备 Codex OS 沙箱、ExecPolicy 和独立 Approval 状态机；这些能力由 R14-R18 实现 |
 | R2 | 协议层 | 已完成 | crates/agent-protocol；shared/codex/v2/schema；shared/codex/v2/typescript；desktop/scripts/check-codex-schema.mjs；Rust 双向 fixture 与反向 Schema 测试；pnpm test:codex-protocol-ts | 本阶段只实现协议类型与生成门禁，170 个方法的运行时行为仍由 R3-R39 逐项实现 |
-| R3 | 事件模型 | 已完成 | crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build | 事件身份尚未写入 rollout/SQLite，正式 App Server 通知仍待 R4-R6 接入；LegacyChatEvent 兼容层在 R38 删除 |
-| R4 | 持久化 | 待开始 |  |  |
+| R3 | 事件模型 | 已完成 | crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build | 事件身份已由 R4 写入 rollout 和任务项；正式 App Server 通知仍待 R5-R6 接入，LegacyChatEvent 在 R38 删除 |
+| R4 | 持久化 | 已完成 | crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build | 现有会话仍以 legacy_checkpoint 迁移格式写入 rollout；R5-R6 改为 canonical Thread/Turn/Item，task.json 镜像在 R38 删除 |
 | R5 | Thread 生命周期 | 待开始 |  |  |
 | R6 | Turn 生命周期 | 待开始 |  |  |
 | R7 | Responses 模型层 | 待开始 |  |  |

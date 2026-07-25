@@ -51,7 +51,7 @@
 | Plan 与用户输入 | `core/src/tools/handlers/plan.rs`、`request_user_input.rs` | `crates/agent-tools` | R25 |
 | 子智能体 | `core/src/tools/handlers/multi_agents*` | `crates/agent-collab` | R26 |
 | Guardian 与 Review | `codex-rs/core/src/guardian`、`tasks/review.rs` | `crates/agent-collab` | R27 |
-| Rollout 持久化 | `codex-rs/rollout`、`thread-store`、`state` | `crates/agent-state` | R4 |
+| Rollout 持久化 | `codex-rs/rollout`、`thread-store`、`state` | `crates/agent-state`、`desktop/src-tauri/src/commands/conversations.rs` | R4 |
 | Git 与 Worktree | `codex-rs/git-utils`、桌面 Worktree 行为 | `crates/agent-git` | R29 |
 | 运维与追踪 | `codex-rs/otel`、`feedback`、Doctor 行为 | `crates/agent-observability` | R36 |
 
@@ -73,4 +73,6 @@ R2 已引入固定上游生成的 273 个 JSON Schema、617 个 TypeScript 类�
 
 R3 已增加独立的 `crates/agent-events` 事件总线和旧 `ChatEvent` 双端迁移适配。当前所有 Agent 增量事件都带有非空 `threadId`、`turnId`、`itemId`、Turn 内单调 `sequence` 和时间戳；同一消息、推理、工具与压缩生命周期使用稳定 Item ID。具体映射和删除兼容层的条件见 `docs/CODEX-EVENTS.md`。
 
-当前仍未接入正式 App Server 服务端通知传输，也未持久化事件身份，因此 R3 目标的通知方法继续保持 `pending`，由 R4-R6 在 rollout、Thread 和 Turn 状态机落地后再按行为证据转为 `implemented`。R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R4 已增加 `crates/agent-state`：SQLite 元数据索引、追加式 JSONL rollout、原子兼容快照、Schema 迁移、数据库损坏备份和崩溃尾部恢复。R3 事件身份会随流式事件和任务项持久化，独立子进程 `abort` 测试覆盖 checkpoint、未完成工具和半条 JSON 的恢复。详细写入顺序和迁移边界见 `docs/CODEX-STATE.md`。
+
+当前仍未接入正式 App Server 服务端通知传输，rollout 中的完整会话 checkpoint 也是迁移期格式。R5、R6 完成 Thread/Turn 状态机和 canonical Item 后，R3 目标的通知方法才能按行为证据转为 `implemented`。R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

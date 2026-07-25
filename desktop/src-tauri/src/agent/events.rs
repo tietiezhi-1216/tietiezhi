@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Channel;
 use tietiezhi_agent_events::{EventEnvelope, EventSequencer};
+use tietiezhi_agent_state::RolloutAppender;
 
 /// Events streamed to the frontend over the tauri IPC channel. Tag values are
 /// camelCase, which keeps the original lowercase `delta`/`done`/`error`
@@ -194,20 +195,53 @@ fn new_item_id() -> String {
 pub struct ChatEventEmitter {
     channel: Channel<ScopedChatEvent>,
     state: Arc<Mutex<AdapterState>>,
+    rollout: Option<RolloutAppender>,
 }
 
 impl ChatEventEmitter {
     pub fn new(channel: Channel<ScopedChatEvent>, thread_id: String) -> Result<Self, String> {
+        Self::build(channel, thread_id, None)
+    }
+
+    pub fn with_rollout(
+        channel: Channel<ScopedChatEvent>,
+        thread_id: String,
+        rollout: RolloutAppender,
+    ) -> Result<Self, String> {
+        Self::build(channel, thread_id, Some(rollout))
+    }
+
+    fn build(
+        channel: Channel<ScopedChatEvent>,
+        thread_id: String,
+        rollout: Option<RolloutAppender>,
+    ) -> Result<Self, String> {
         Ok(Self {
             channel,
             state: Arc::new(Mutex::new(AdapterState::new(thread_id)?)),
+            rollout,
         })
     }
 
     pub fn send(&self, event: ChatEvent) -> tauri::Result<()> {
         let event = self.state.lock().unwrap().wrap(event);
+        if let Some(rollout) = &self.rollout {
+            let terminal = matches!(
+                &event.payload,
+                ChatEvent::Done { .. } | ChatEvent::Error { .. }
+            );
+            let value = serde_json::to_value(&event).map_err(persistence_error)?;
+            rollout.append_event(value).map_err(persistence_error)?;
+            if terminal {
+                rollout.sync_data().map_err(persistence_error)?;
+            }
+        }
         self.channel.send(event)
     }
+}
+
+fn persistence_error(error: impl std::fmt::Display) -> tauri::Error {
+    tauri::Error::Io(std::io::Error::other(error.to_string()))
 }
 
 #[cfg(test)]

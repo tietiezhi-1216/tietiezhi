@@ -1102,15 +1102,15 @@
       "id": "R3",
       "name": "事件模型",
       "status": "completed",
-      "risk": "事件身份尚未写入 rollout/SQLite，正式 App Server 通知仍待 R4-R6 接入；LegacyChatEvent 兼容层在 R38 删除",
+      "risk": "事件身份已由 R4 写入 rollout 和任务项；正式 App Server 通知仍待 R5-R6 接入，LegacyChatEvent 在 R38 删除",
       "evidence": "crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build"
     },
     {
       "id": "R4",
       "name": "持久化",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "现有会话仍以 legacy_checkpoint 迁移格式写入 rollout；R5-R6 改为 canonical Thread/Turn/Item，task.json 镜像在 R38 删除",
+      "evidence": "crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build"
     },
     {
       "id": "R5",

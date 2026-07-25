@@ -113,7 +113,15 @@ pub async fn chat_stream(
         .clone()
         .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| format!("chat_{request_id}"));
-    let on_event = ChatEventEmitter::new(on_event, thread_id)?;
+    let rollout = conversation_id
+        .as_deref()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| super::conversations::event_rollout_appender(&app, id))
+        .transpose()?;
+    let on_event = match rollout {
+        Some(rollout) => ChatEventEmitter::with_rollout(on_event, thread_id, rollout)?,
+        None => ChatEventEmitter::new(on_event, thread_id)?,
+    };
     let context_action = ContextAction::from_wire(context_action.as_deref())?;
     let cancel = CancellationToken::new();
     if let Some(previous) = state

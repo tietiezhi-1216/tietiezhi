@@ -498,8 +498,13 @@ export interface StoredMessage {
   error?: boolean;
   /** ms since epoch; 0 for conversations saved before messages had timestamps. */
   createdAt: number;
+  threadId?: string;
+  turnId?: string;
+  itemId?: string;
+  reasoningItemId?: string;
   toolName?: string;
   toolCallId?: string;
+  permissionRequestId?: string;
   toolArgs?: unknown;
   toolOutput?: string;
   toolStatus?: "running" | "success" | "error" | "cancelled";
@@ -536,6 +541,7 @@ export interface StoredMessage {
 export interface Conversation {
   id: string;
   title: string;
+  createdAt?: number;
   updatedAt: number;
   messages: StoredMessage[];
   /** Agent profile bound to this conversation; empty = default assistant. */
@@ -553,6 +559,7 @@ export interface Conversation {
 export interface ConversationMeta {
   id: string;
   title: string;
+  createdAt?: number;
   updatedAt: number;
   projectId: string;
   taskMode: TaskMode;
