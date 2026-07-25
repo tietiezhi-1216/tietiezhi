@@ -17,8 +17,8 @@ use tietiezhi_agent_approval::{
     PersistentApprovalRule, PersistentApprovalStore, RoutedServerRequest as ApprovalServerRequest,
 };
 use tietiezhi_agent_config::{
-    build_world_state, load_project_instructions, strip_internal_world_state_metadata,
-    ProjectInstructionConfig, WorldStateInput,
+    build_world_state, load_project_instructions, strip_internal_world_state_metadata, ConfigPaths,
+    ConfigRuntime, ProjectInstructionConfig, WorldStateInput,
 };
 use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
@@ -274,6 +274,12 @@ pub async fn codex_v2_request(
         .codex_account
         .register_connection(&connection_id)
         .map_err(account_rpc_error)?;
+    if ConfigRuntime::handles(&method) {
+        let output =
+            dispatch_config_request(&app, &state, &connection_id, &request, &method).await?;
+        emit_notifications(&app, &output.notifications)?;
+        return Ok(output);
+    }
     if tietiezhi_agent_account::AccountRuntime::handles(&method) {
         let output =
             dispatch_account_request(&app, &state, &connection_id, &request, &method).await?;
@@ -1881,6 +1887,96 @@ fn account_notifications(notifications: Vec<AccountNotification>) -> Vec<RoutedN
             params: notification.params,
         })
         .collect()
+}
+
+async fn dispatch_config_request(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .map_err(|error| format!("无效 JSON-RPC 请求：{error}"))?;
+    serde_json::from_value::<ClientRequest>(request.clone())
+        .map_err(|error| format!("无效 Codex 配置请求：{error}"))?;
+    let config_root = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法定位配置目录：{error}"))?
+        .join("codex");
+    let runtime = ConfigRuntime::new(ConfigPaths {
+        user_config: config_root.join("config.toml"),
+        system_config: system_codex_config_path(),
+        requirements: system_codex_requirements_path(),
+    });
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    match runtime.dispatch(method, &params) {
+        Ok(dispatch) => {
+            if method == "config/mcpServer/reload" {
+                let settings = super::settings::read_settings(app)?;
+                for server in settings.mcp_servers {
+                    state.mcp.stop(&server.id).await;
+                }
+            }
+            let notifications = dispatch
+                .warnings
+                .into_iter()
+                .map(|warning| {
+                    let mut params = json!({
+                        "summary":warning.summary,
+                        "details":warning.details
+                    });
+                    if let Some(path) = warning.path {
+                        params["path"] = json!(path);
+                    }
+                    RoutedNotification {
+                        recipients: vec![connection_id.into()],
+                        method: "configWarning".into(),
+                        params,
+                    }
+                })
+                .collect::<Vec<_>>();
+            for notification in &notifications {
+                serde_json::from_value::<ServerNotification>(notification.wire_message())
+                    .map_err(|error| format!("无效 configWarning 通知：{error}"))?;
+            }
+            Ok(DispatchOutput {
+                response: json!({"id":id,"result":dispatch.result}),
+                notifications,
+            })
+        }
+        Err(error) => Ok(DispatchOutput {
+            response: json!({
+                "id":id,
+                "error":{"code":-32602,"message":error.to_string()}
+            }),
+            notifications: Vec::new(),
+        }),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn system_codex_root() -> std::path::PathBuf {
+    std::env::var_os("PROGRAMDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"))
+        .join("OpenAI")
+        .join("Codex")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_codex_root() -> std::path::PathBuf {
+    std::path::PathBuf::from("/etc/codex")
+}
+
+fn system_codex_config_path() -> std::path::PathBuf {
+    system_codex_root().join("config.toml")
+}
+
+fn system_codex_requirements_path() -> std::path::PathBuf {
+    system_codex_root().join("requirements.toml")
 }
 
 fn launch_compaction_executor(
@@ -4039,8 +4135,8 @@ mod tests {
         assistant_response_text, compaction_response_request, dispatch_windows_sandbox,
         empty_rate_limits, format_micro, gateway_rate_limits, local_tool_timeline_item,
         merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, permission_profile_list,
-        permission_profile_to_tool, permission_profile_to_v2, response_request, ResponseEvent,
-        ResponseProjection,
+        permission_profile_to_tool, permission_profile_to_v2, response_request, ConfigPaths,
+        ConfigRuntime, ResponseEvent, ResponseProjection,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
     use serde_json::json;
@@ -4055,6 +4151,63 @@ mod tests {
         assert_eq!(nonempty_or_unconfigured(String::new()), "unconfigured");
         assert_eq!(nonempty_or_unconfigured("  ".into()), "unconfigured");
         assert_eq!(nonempty_or_unconfigured("gpt-test".into()), "gpt-test");
+    }
+
+    #[test]
+    fn config_runtime_results_match_app_server_v2_wire_types() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = ConfigRuntime::new(ConfigPaths {
+            user_config: temp.path().join("config.toml"),
+            system_config: temp.path().join("system.toml"),
+            requirements: temp.path().join("requirements.toml"),
+        });
+        let write = runtime
+            .dispatch(
+                "config/value/write",
+                &json!({
+                    "keyPath":"model",
+                    "value":"gpt-5.6-sol",
+                    "mergeStrategy":"replace"
+                }),
+            )
+            .unwrap();
+        assert!(
+            serde_json::from_value::<tietiezhi_agent_protocol::ConfigWriteResponse>(write.result)
+                .is_ok()
+        );
+        let read = runtime.dispatch("config/read", &json!({})).unwrap();
+        assert!(
+            serde_json::from_value::<tietiezhi_agent_protocol::ConfigReadResponse>(read.result)
+                .is_ok()
+        );
+        let requirements = runtime
+            .dispatch("configRequirements/read", &json!({}))
+            .unwrap();
+        assert!(
+            serde_json::from_value::<tietiezhi_agent_protocol::ConfigRequirementsReadResponse>(
+                requirements.result
+            )
+            .is_ok()
+        );
+        let features = runtime
+            .dispatch("experimentalFeature/list", &json!({}))
+            .unwrap();
+        assert!(
+            serde_json::from_value::<tietiezhi_agent_protocol::ExperimentalFeatureListResponse>(
+                features.result
+            )
+            .is_ok()
+        );
+        let enabled = runtime
+            .dispatch(
+                "experimentalFeature/enablement/set",
+                &json!({"enablement":{"hooks":true}}),
+            )
+            .unwrap();
+        assert!(serde_json::from_value::<
+            tietiezhi_agent_protocol::ExperimentalFeatureEnablementSetResponse,
+        >(enabled.result)
+        .is_ok());
     }
 
     #[test]

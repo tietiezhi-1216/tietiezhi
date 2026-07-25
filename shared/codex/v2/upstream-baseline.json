@@ -112,45 +112,45 @@
       },
       {
         "method": "config/batchWrite",
-        "status": "pending",
+        "status": "implemented",
         "target": "R21",
-        "note": ""
+        "note": "crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md"
       },
       {
         "method": "config/mcpServer/reload",
-        "status": "pending",
+        "status": "implemented",
         "target": "R21",
-        "note": ""
+        "note": "crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md"
       },
       {
         "method": "config/read",
-        "status": "pending",
+        "status": "implemented",
         "target": "R21",
-        "note": ""
+        "note": "crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md"
       },
       {
         "method": "config/value/write",
-        "status": "pending",
+        "status": "implemented",
         "target": "R21",
-        "note": ""
+        "note": "crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md"
       },
       {
         "method": "configRequirements/read",
-        "status": "pending",
+        "status": "implemented",
         "target": "R21",
-        "note": ""
+        "note": "crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md"
       },
       {
         "method": "experimentalFeature/enablement/set",
-        "status": "pending",
+        "status": "implemented",
         "target": "R21",
-        "note": ""
+        "note": "crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md"
       },
       {
         "method": "experimentalFeature/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R21",
-        "note": ""
+        "note": "crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md"
       },
       {
         "method": "externalAgentConfig/detect",
@@ -654,9 +654,9 @@
       },
       {
         "method": "configWarning",
-        "status": "pending",
+        "status": "implemented",
         "target": "R21",
-        "note": ""
+        "note": "crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md"
       },
       {
         "method": "deprecationNotice",
@@ -1231,9 +1231,9 @@
     {
       "id": "R21",
       "name": "配置体系",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "企业云配置和 MDM 由 system/requirements 层映射；R23-R24 将 Hooks 与 Plugins 的 managed-only 细粒度要求接入。",
+      "evidence": "crates/agent-config 配置层/来源/CAS/Requirements/实验功能测试；desktop App Server V2 生成类型验证与 MCP reload；docs/CODEX-CONFIG.md"
     },
     {
       "id": "R22",

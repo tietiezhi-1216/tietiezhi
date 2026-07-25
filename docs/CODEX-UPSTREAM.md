@@ -105,4 +105,6 @@ R19 已增加 `crates/agent-mcp`，实现 stdio、Streamable HTTP、Keychain/Cre
 
 R20 已增加 `crates/agent-config`，实现从项目根到当前目录的 `AGENTS.md`、`AGENTS.override.md` 与 fallback 分层发现、共享 32 KiB 预算、World State 全量/差分模型上下文、环境/权限/工具变化和压缩后重建。上下文片段先于 World State rollout 写入并在模型请求前移除内部恢复标记。详细行为见 `docs/CODEX-INSTRUCTIONS.md`。
 
-R21 负责完整分层配置目录与 Requirements；R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R21 已在 `crates/agent-config` 实现 system、user、Profile、项目目录和 session-ready 的配置合并、逐字段来源、TOML 原子写入与 CAS 版本、Requirements 收紧、实验功能分页/启停和 MCP 连接重载。详细行为见 `docs/CODEX-CONFIG.md`。
+
+R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

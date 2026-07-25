@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 80 |
+| 待实现 | 72 |
 | 实现中 | 0 |
-| 已实现 | 81 |
+| 已实现 | 89 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -59,7 +59,7 @@
 | R18 | ExecPolicy | 已完成 | crates/agent-absolute-path; crates/agent-shell-command; crates/agent-execpolicy; crates/agent-tools dynamic pre-spawn policy; desktop persisted rules/default.rules; docs/CODEX-EXECPOLICY.md; 26 absolute-path, 141 shell, 13 execpolicy and 23 tool tests | R21 still needs layered project/profile policy discovery and Requirements enforcement; R17 Windows elevated/WFP network isolation remains a release blocker. |
 | R19 | MCP 完整实现 | 已完成 | crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md | OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, R35 still needs remote approval routing, and R17 Windows WFP isolation remains a release blocker. |
 | R20 | 指令层 | 已完成 | crates/agent-config 分层 AGENTS/override/fallback 与 World State 测试；crates/agent-core canonical context/world_state 顺序、索引重建和指令恢复测试；desktop Responses/Compaction 指令接线；docs/CODEX-INSTRUCTIONS.md | R21 继续实现完整配置来源、Profile、Requirements 与来源追踪；R22-R24 再把 Skills、Hooks、Plugins 目录加入 World State。 |
-| R21 | 配置体系 | 待开始 |  |  |
+| R21 | 配置体系 | 已完成 | crates/agent-config 配置层/来源/CAS/Requirements/实验功能测试；desktop App Server V2 生成类型验证与 MCP reload；docs/CODEX-CONFIG.md | 企业云配置和 MDM 由 system/requirements 层映射；R23-R24 将 Hooks 与 Plugins 的 managed-only 细粒度要求接入。 |
 | R22 | Skills | 待开始 |  |  |
 | R23 | Hooks | 待开始 |  |  |
 | R24 | Plugins | 待开始 |  |  |
@@ -99,13 +99,13 @@
 | `command/exec/resize` | 已实现 | R13 | desktop codex.rs；agent-exec PTY resize test |
 | `command/exec/terminate` | 已实现 | R13 | desktop codex.rs；agent-exec process-group cleanup test |
 | `command/exec/write` | 已实现 | R13 | desktop codex.rs；agent-exec stdin roundtrip test |
-| `config/batchWrite` | 待实现 | R21 |  |
-| `config/mcpServer/reload` | 待实现 | R21 |  |
-| `config/read` | 待实现 | R21 |  |
-| `config/value/write` | 待实现 | R21 |  |
-| `configRequirements/read` | 待实现 | R21 |  |
-| `experimentalFeature/enablement/set` | 待实现 | R21 |  |
-| `experimentalFeature/list` | 待实现 | R21 |  |
+| `config/batchWrite` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
+| `config/mcpServer/reload` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
+| `config/read` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
+| `config/value/write` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
+| `configRequirements/read` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
+| `experimentalFeature/enablement/set` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
+| `experimentalFeature/list` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
 | `externalAgentConfig/detect` | 待实现 | R38 |  |
 | `externalAgentConfig/import` | 待实现 | R38 |  |
 | `externalAgentConfig/import/readHistories` | 待实现 | R38 |  |
@@ -203,7 +203,7 @@
 | `account/updated` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
 | `app/list/updated` | 待实现 | R33 |  |
 | `command/exec/outputDelta` | 已实现 | R13 | desktop wait_streamed_command_exec；V2 notification validation |
-| `configWarning` | 待实现 | R21 |  |
+| `configWarning` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
 | `deprecationNotice` | 待实现 | R3 |  |
 | `error` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `externalAgentConfig/import/completed` | 待实现 | R38 |  |

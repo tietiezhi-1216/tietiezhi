@@ -3,12 +3,14 @@
 //! This is a source-level adaptation of OpenAI Codex `rust-v0.145.0`.
 //! It neither invokes nor embeds the upstream executable.
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 pub const DEFAULT_AGENTS_MD_FILENAME: &str = "AGENTS.md";
 pub const LOCAL_AGENTS_MD_FILENAME: &str = "AGENTS.override.md";
@@ -130,7 +132,7 @@ pub fn load_project_instructions(
         };
         let mut file = fs::File::open(&path)?;
         let mut data = Vec::new();
-        file.by_ref()
+        Read::by_ref(&mut file)
             .take(u64::try_from(remaining).unwrap_or(u64::MAX))
             .read_to_end(&mut data)?;
         remaining = remaining.saturating_sub(data.len());
@@ -478,6 +480,653 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+#[derive(Debug, Clone)]
+pub struct ConfigPaths {
+    pub user_config: PathBuf,
+    pub system_config: PathBuf,
+    pub requirements: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigRuntime {
+    paths: ConfigPaths,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigDispatch {
+    pub result: Value,
+    pub warnings: Vec<ConfigWarning>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigWarning {
+    pub summary: String,
+    pub details: Option<String>,
+    pub path: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+pub enum ConfigError {
+    Io(io::Error),
+    Invalid(String),
+    Conflict { expected: String, actual: String },
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => error.fmt(formatter),
+            Self::Invalid(message) => formatter.write_str(message),
+            Self::Conflict { expected, actual } => write!(
+                formatter,
+                "config version conflict: expected {expected}, actual {actual}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+impl From<io::Error> for ConfigError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl ConfigRuntime {
+    pub fn new(paths: ConfigPaths) -> Self {
+        Self { paths }
+    }
+
+    pub fn handles(method: &str) -> bool {
+        matches!(
+            method,
+            "config/read"
+                | "config/value/write"
+                | "config/batchWrite"
+                | "configRequirements/read"
+                | "config/mcpServer/reload"
+                | "experimentalFeature/list"
+                | "experimentalFeature/enablement/set"
+        )
+    }
+
+    pub fn dispatch(&self, method: &str, params: &Value) -> Result<ConfigDispatch, ConfigError> {
+        match method {
+            "config/read" => self.read(params),
+            "config/value/write" => {
+                let edit = json!({
+                    "keyPath": required_config_string(params, "keyPath")?,
+                    "value": params.get("value").cloned().unwrap_or(Value::Null),
+                    "mergeStrategy": required_config_string(params, "mergeStrategy")?
+                });
+                self.write(
+                    &[edit],
+                    params.get("filePath").and_then(Value::as_str),
+                    params.get("expectedVersion").and_then(Value::as_str),
+                )
+            }
+            "config/batchWrite" => {
+                let edits = params
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| ConfigError::Invalid("edits must be an array".into()))?;
+                self.write(
+                    edits,
+                    params.get("filePath").and_then(Value::as_str),
+                    params.get("expectedVersion").and_then(Value::as_str),
+                )
+            }
+            "configRequirements/read" => Ok(ConfigDispatch {
+                result: json!({"requirements": self.read_requirements()?.map(|value| normalize_requirements(&value))}),
+                warnings: Vec::new(),
+            }),
+            "config/mcpServer/reload" => Ok(ConfigDispatch {
+                result: json!({}),
+                warnings: Vec::new(),
+            }),
+            "experimentalFeature/list" => self.experimental_features(params),
+            "experimentalFeature/enablement/set" => self.set_experimental_features(params),
+            _ => Err(ConfigError::Invalid(format!(
+                "unsupported config method: {method}"
+            ))),
+        }
+    }
+
+    fn read(&self, params: &Value) -> Result<ConfigDispatch, ConfigError> {
+        let cwd = params.get("cwd").and_then(Value::as_str).map(PathBuf::from);
+        if cwd.as_ref().is_some_and(|path| !path.is_absolute()) {
+            return Err(ConfigError::Invalid("cwd must be absolute".into()));
+        }
+        let include_layers = params
+            .get("includeLayers")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let mut layers = Vec::new();
+        self.push_file_layer(
+            &mut layers,
+            &self.paths.system_config,
+            json!({"type":"system","file":self.paths.system_config}),
+        )?;
+        self.push_file_layer(
+            &mut layers,
+            &self.paths.user_config,
+            json!({"type":"user","file":self.paths.user_config,"profile":null}),
+        )?;
+        if let Some(profile) = layers
+            .last()
+            .and_then(|layer: &Value| layer.pointer("/config/profile"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        {
+            if let Some(config) = layers
+                .last()
+                .and_then(|layer| layer.pointer(&format!("/config/profiles/{profile}")))
+                .cloned()
+            {
+                layers.push(config_layer(
+                    json!({"type":"user","file":self.paths.user_config,"profile":profile}),
+                    config,
+                    "profile",
+                ));
+            }
+        }
+        if let Some(cwd) = cwd.as_deref() {
+            for folder in project_codex_folders(cwd)? {
+                self.push_file_layer(
+                    &mut layers,
+                    &folder.join("config.toml"),
+                    json!({"type":"project","dotCodexFolder":folder}),
+                )?;
+            }
+        }
+
+        let mut effective = Value::Object(Default::default());
+        let mut origins = BTreeMap::new();
+        for layer in &layers {
+            let config = layer.get("config").cloned().unwrap_or(Value::Null);
+            merge_json(&mut effective, &config);
+            if let (Some(source), Some(version)) = (
+                layer.get("name"),
+                layer.get("version").and_then(Value::as_str),
+            ) {
+                record_origins(
+                    &config,
+                    "",
+                    &json!({"name":source,"version":version}),
+                    &mut origins,
+                );
+            }
+        }
+        let requirements = self.read_requirements()?;
+        let mut warnings = Vec::new();
+        if let Some(requirements) = requirements.as_ref() {
+            enforce_requirements(
+                &mut effective,
+                requirements,
+                &self.paths.requirements,
+                &mut warnings,
+            );
+        }
+        Ok(ConfigDispatch {
+            result: json!({
+                "config": normalize_config(&effective),
+                "origins": origins,
+                "layers": include_layers.then_some(layers)
+            }),
+            warnings,
+        })
+    }
+
+    fn write(
+        &self,
+        edits: &[Value],
+        file_path: Option<&str>,
+        expected_version: Option<&str>,
+    ) -> Result<ConfigDispatch, ConfigError> {
+        let path = file_path
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.paths.user_config.clone());
+        if !path.is_absolute() {
+            return Err(ConfigError::Invalid(
+                "config file path must be absolute".into(),
+            ));
+        }
+        let bytes = fs::read(&path).unwrap_or_default();
+        let current_version = fingerprint(&bytes);
+        if let Some(expected) = expected_version {
+            if expected != current_version {
+                return Err(ConfigError::Conflict {
+                    expected: expected.into(),
+                    actual: current_version,
+                });
+            }
+        }
+        let mut config = parse_toml_bytes(&bytes, &path)?;
+        for edit in edits {
+            let key_path = required_config_string(edit, "keyPath")?;
+            let strategy = required_config_string(edit, "mergeStrategy")?;
+            if !matches!(strategy.as_str(), "replace" | "upsert") {
+                return Err(ConfigError::Invalid(format!(
+                    "invalid merge strategy: {strategy}"
+                )));
+            }
+            set_key_path(
+                &mut config,
+                &key_path,
+                edit.get("value").cloned().unwrap_or(Value::Null),
+                strategy == "upsert",
+            )?;
+        }
+        let toml = json_to_toml_string(&config)?;
+        atomic_write(&path, toml.as_bytes())?;
+        let version = fingerprint(toml.as_bytes());
+        Ok(ConfigDispatch {
+            result: json!({
+                "status":"ok",
+                "version":version,
+                "filePath":path,
+                "overriddenMetadata":null
+            }),
+            warnings: Vec::new(),
+        })
+    }
+
+    fn push_file_layer(
+        &self,
+        layers: &mut Vec<Value>,
+        path: &Path,
+        source: Value,
+    ) -> Result<(), ConfigError> {
+        if !path.is_file() {
+            return Ok(());
+        }
+        let bytes = fs::read(path)?;
+        let config = parse_toml_bytes(&bytes, path)?;
+        layers.push(config_layer(source, config, &fingerprint(&bytes)));
+        Ok(())
+    }
+
+    fn read_requirements(&self) -> Result<Option<Value>, ConfigError> {
+        if !self.paths.requirements.is_file() {
+            return Ok(None);
+        }
+        let bytes = fs::read(&self.paths.requirements)?;
+        parse_toml_bytes(&bytes, &self.paths.requirements).map(Some)
+    }
+
+    fn experimental_features(&self, params: &Value) -> Result<ConfigDispatch, ConfigError> {
+        let read = self.read(&json!({}))?;
+        let config = &read.result["config"];
+        let mut features = experimental_catalog()
+            .into_iter()
+            .map(
+                |(name, stage, default_enabled, display_name, description)| {
+                    let enabled = config
+                        .pointer(&format!("/features/{name}"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(default_enabled);
+                    json!({
+                        "name":name,
+                        "stage":stage,
+                        "displayName":display_name,
+                        "description":description,
+                        "announcement":null,
+                        "enabled":enabled,
+                        "defaultEnabled":default_enabled
+                    })
+                },
+            )
+            .collect::<Vec<_>>();
+        let offset = params
+            .get("cursor")
+            .and_then(Value::as_str)
+            .map(|cursor| {
+                cursor
+                    .parse::<usize>()
+                    .map_err(|_| ConfigError::Invalid("invalid feature cursor".into()))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let limit = params
+            .get("limit")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(25)
+            .clamp(1, 100);
+        let next = (offset + limit < features.len()).then(|| (offset + limit).to_string());
+        features = features.into_iter().skip(offset).take(limit).collect();
+        Ok(ConfigDispatch {
+            result: json!({"data":features,"nextCursor":next}),
+            warnings: read.warnings,
+        })
+    }
+
+    fn set_experimental_features(&self, params: &Value) -> Result<ConfigDispatch, ConfigError> {
+        let enablement = params
+            .get("enablement")
+            .and_then(Value::as_object)
+            .ok_or_else(|| ConfigError::Invalid("enablement must be an object".into()))?;
+        let known = experimental_catalog()
+            .into_iter()
+            .map(|feature| feature.0)
+            .collect::<Vec<_>>();
+        let mut edits = Vec::new();
+        for (name, value) in enablement {
+            if !known.contains(&name.as_str()) {
+                return Err(ConfigError::Invalid(format!(
+                    "unknown experimental feature: {name}"
+                )));
+            }
+            let enabled = value.as_bool().ok_or_else(|| {
+                ConfigError::Invalid(format!("feature {name} enablement must be boolean"))
+            })?;
+            edits.push(json!({
+                "keyPath":format!("features.{name}"),
+                "value":enabled,
+                "mergeStrategy":"replace"
+            }));
+        }
+        if !edits.is_empty() {
+            self.write(&edits, None, None)?;
+        }
+        Ok(ConfigDispatch {
+            result: json!({"enablement":enablement}),
+            warnings: Vec::new(),
+        })
+    }
+}
+
+fn config_layer(source: Value, config: Value, version: &str) -> Value {
+    json!({
+        "name":source,
+        "version":version,
+        "config":config,
+        "disabledReason":null
+    })
+}
+
+fn parse_toml_bytes(bytes: &[u8], path: &Path) -> Result<Value, ConfigError> {
+    if bytes.is_empty() {
+        return Ok(json!({}));
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| ConfigError::Invalid(format!("{}: {error}", path.display())))?;
+    let value = toml::from_str::<toml::Value>(text)
+        .map_err(|error| ConfigError::Invalid(format!("{}: {error}", path.display())))?;
+    serde_json::to_value(value)
+        .map_err(|error| ConfigError::Invalid(format!("{}: {error}", path.display())))
+}
+
+fn json_to_toml_string(value: &Value) -> Result<String, ConfigError> {
+    let value = serde_json::from_value::<toml::Value>(value.clone())
+        .map_err(|error| ConfigError::Invalid(format!("config is not TOML-compatible: {error}")))?;
+    toml::to_string_pretty(&value)
+        .map_err(|error| ConfigError::Invalid(format!("serialize config: {error}")))
+}
+
+fn project_codex_folders(cwd: &Path) -> io::Result<Vec<PathBuf>> {
+    let root = discover_project_root(cwd, &[".git".into()])?;
+    let mut directories = cwd
+        .ancestors()
+        .take_while(|path| *path != root)
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
+    directories.push(root);
+    directories.reverse();
+    Ok(directories
+        .into_iter()
+        .map(|directory| directory.join(".codex"))
+        .collect())
+}
+
+fn merge_json(base: &mut Value, overlay: &Value) {
+    match (base, overlay) {
+        (Value::Object(base), Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                merge_json(base.entry(key.clone()).or_insert(Value::Null), value);
+            }
+        }
+        (base, overlay) => base.clone_from(overlay),
+    }
+}
+
+fn set_key_path(
+    root: &mut Value,
+    key_path: &str,
+    value: Value,
+    upsert: bool,
+) -> Result<(), ConfigError> {
+    let keys = key_path.split('.').collect::<Vec<_>>();
+    if keys.is_empty()
+        || keys
+            .iter()
+            .any(|key| key.is_empty() || *key == "__proto__" || *key == "constructor")
+    {
+        return Err(ConfigError::Invalid(format!(
+            "invalid key path: {key_path}"
+        )));
+    }
+    let mut cursor = root;
+    for key in &keys[..keys.len() - 1] {
+        if !cursor.is_object() {
+            *cursor = json!({});
+        }
+        cursor = cursor
+            .as_object_mut()
+            .expect("cursor was normalized to object")
+            .entry(*key)
+            .or_insert_with(|| json!({}));
+    }
+    let key = keys[keys.len() - 1];
+    let object = cursor
+        .as_object_mut()
+        .ok_or_else(|| ConfigError::Invalid(format!("parent is not an object: {key_path}")))?;
+    if value.is_null() {
+        object.remove(key);
+        return Ok(());
+    }
+    if upsert {
+        if let Some(current) = object.get_mut(key) {
+            merge_json(current, &value);
+        } else {
+            object.insert(key.into(), value);
+        }
+    } else {
+        object.insert(key.into(), value);
+    }
+    Ok(())
+}
+
+fn record_origins(
+    value: &Value,
+    prefix: &str,
+    source: &Value,
+    origins: &mut BTreeMap<String, Value>,
+) {
+    if let Value::Object(object) = value {
+        for (key, value) in object {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            record_origins(value, &path, source, origins);
+        }
+    } else if !prefix.is_empty() {
+        origins.insert(prefix.into(), source.clone());
+    }
+}
+
+fn normalize_config(value: &Value) -> Value {
+    let mut config = value.as_object().cloned().unwrap_or_default();
+    for key in [
+        "model",
+        "review_model",
+        "model_context_window",
+        "model_auto_compact_token_limit",
+        "model_auto_compact_token_limit_scope",
+        "model_provider",
+        "approval_policy",
+        "approvals_reviewer",
+        "sandbox_mode",
+        "sandbox_workspace_write",
+        "forced_chatgpt_workspace_id",
+        "forced_login_method",
+        "web_search",
+        "tools",
+        "instructions",
+        "developer_instructions",
+        "compact_prompt",
+        "model_reasoning_effort",
+        "model_reasoning_summary",
+        "model_verbosity",
+        "service_tier",
+        "analytics",
+        "desktop",
+    ] {
+        config.entry(key).or_insert(Value::Null);
+    }
+    Value::Object(config)
+}
+
+fn normalize_requirements(value: &Value) -> Value {
+    let mut requirements = value.as_object().cloned().unwrap_or_default();
+    for key in [
+        "allowedApprovalPolicies",
+        "allowedSandboxModes",
+        "allowedWindowsSandboxImplementations",
+        "allowedPermissionProfiles",
+        "defaultPermissions",
+        "allowedWebSearchModes",
+        "allowManagedHooksOnly",
+        "allowAppshots",
+        "allowRemoteControl",
+        "computerUse",
+        "featureRequirements",
+        "enforceResidency",
+        "models",
+    ] {
+        requirements.entry(key).or_insert(Value::Null);
+    }
+    Value::Object(requirements)
+}
+
+fn enforce_requirements(
+    config: &mut Value,
+    requirements: &Value,
+    path: &Path,
+    warnings: &mut Vec<ConfigWarning>,
+) {
+    for (config_key, requirement_key) in [
+        ("approval_policy", "allowedApprovalPolicies"),
+        ("sandbox_mode", "allowedSandboxModes"),
+        ("web_search", "allowedWebSearchModes"),
+    ] {
+        let allowed = requirements
+            .get(requirement_key)
+            .and_then(Value::as_array)
+            .filter(|values| !values.is_empty());
+        let Some(allowed) = allowed else {
+            continue;
+        };
+        let current = config.get(config_key).cloned().unwrap_or(Value::Null);
+        if !allowed.contains(&current) {
+            let replacement = allowed[0].clone();
+            config[config_key] = replacement.clone();
+            warnings.push(ConfigWarning {
+                summary: format!("{config_key} was constrained by requirements"),
+                details: Some(format!(
+                    "requested {current}; effective value is {replacement}"
+                )),
+                path: Some(path.to_path_buf()),
+            });
+        }
+    }
+    if let Some(required) = requirements
+        .get("featureRequirements")
+        .and_then(Value::as_object)
+    {
+        for (name, enabled) in required {
+            config["features"][name] = enabled.clone();
+        }
+    }
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "config path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let mut temporary = tempfile_path(path);
+    let mut suffix = 0_u32;
+    while temporary.exists() {
+        suffix = suffix.saturating_add(1);
+        temporary = path.with_extension(format!("tmp-{}-{suffix}", std::process::id()));
+    }
+    let result = (|| {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn tempfile_path(path: &Path) -> PathBuf {
+    path.with_extension(format!("tmp-{}", std::process::id()))
+}
+
+fn fingerprint(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn required_config_string(value: &Value, key: &str) -> Result<String, ConfigError> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| ConfigError::Invalid(format!("{key} must be a non-empty string")))
+}
+
+fn experimental_catalog() -> Vec<(&'static str, &'static str, bool, Value, Value)> {
+    vec![
+        (
+            "multi_agent",
+            "beta",
+            false,
+            json!("Multi-agent"),
+            json!("Run bounded subagents inside the same thread graph."),
+        ),
+        (
+            "hooks",
+            "beta",
+            false,
+            json!("Hooks"),
+            json!("Run managed lifecycle hooks."),
+        ),
+        (
+            "plugins",
+            "beta",
+            false,
+            json!("Plugins"),
+            json!("Load locally installed Codex plugins."),
+        ),
+        (
+            "remote_control",
+            "underDevelopment",
+            false,
+            Value::Null,
+            Value::Null,
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,5 +1334,117 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some("turn-1"), Some("turn-1"), None, None]
         );
+    }
+
+    #[test]
+    fn config_layers_track_origins_profiles_and_project_precedence() {
+        let root = tempdir().unwrap();
+        let system = root.path().join("system.toml");
+        let user = root.path().join("home/config.toml");
+        let requirements = root.path().join("requirements.toml");
+        fs::write(&system, "model = \"system\"\napproval_policy = \"never\"\n").unwrap();
+        fs::create_dir_all(user.parent().unwrap()).unwrap();
+        fs::write(
+            &user,
+            "model = \"user\"\nprofile = \"work\"\n[profiles.work]\nmodel = \"profile\"\n",
+        )
+        .unwrap();
+        let project = root.path().join("project");
+        let nested = project.join("nested");
+        fs::create_dir_all(nested.join(".codex")).unwrap();
+        fs::create_dir(project.join(".git")).unwrap();
+        fs::create_dir(project.join(".codex")).unwrap();
+        fs::write(project.join(".codex/config.toml"), "model = \"project\"\n").unwrap();
+        fs::write(nested.join(".codex/config.toml"), "model = \"nested\"\n").unwrap();
+        fs::write(&requirements, "allowedApprovalPolicies = [\"untrusted\"]\n").unwrap();
+        let runtime = ConfigRuntime::new(ConfigPaths {
+            user_config: user,
+            system_config: system,
+            requirements,
+        });
+        let output = runtime
+            .dispatch("config/read", &json!({"cwd":nested,"includeLayers":true}))
+            .unwrap();
+        assert_eq!(output.result["config"]["model"], "nested");
+        assert_eq!(output.result["config"]["approval_policy"], "untrusted");
+        assert_eq!(output.result["origins"]["model"]["name"]["type"], "project");
+        assert_eq!(output.result["layers"].as_array().unwrap().len(), 5);
+        assert_eq!(output.warnings.len(), 1);
+    }
+
+    #[test]
+    fn config_writes_are_atomic_versioned_and_cas_guarded() {
+        let root = tempdir().unwrap();
+        let user = root.path().join("config.toml");
+        let runtime = ConfigRuntime::new(ConfigPaths {
+            user_config: user.clone(),
+            system_config: root.path().join("system.toml"),
+            requirements: root.path().join("requirements.toml"),
+        });
+        let written = runtime
+            .dispatch(
+                "config/batchWrite",
+                &json!({
+                    "edits":[
+                        {"keyPath":"model","value":"gpt","mergeStrategy":"replace"},
+                        {"keyPath":"tools.web_search","value":true,"mergeStrategy":"upsert"}
+                    ]
+                }),
+            )
+            .unwrap();
+        assert_eq!(written.result["status"], "ok");
+        let version = written.result["version"].as_str().unwrap();
+        assert!(fs::read_to_string(&user).unwrap().contains("web_search"));
+        let conflict = runtime.dispatch(
+            "config/value/write",
+            &json!({
+                "keyPath":"model",
+                "value":"other",
+                "mergeStrategy":"replace",
+                "expectedVersion":"stale"
+            }),
+        );
+        assert!(matches!(conflict, Err(ConfigError::Conflict { .. })));
+        let updated = runtime
+            .dispatch(
+                "config/value/write",
+                &json!({
+                    "keyPath":"model",
+                    "value":"other",
+                    "mergeStrategy":"replace",
+                    "expectedVersion":version
+                }),
+            )
+            .unwrap();
+        assert_ne!(updated.result["version"], version);
+    }
+
+    #[test]
+    fn experimental_features_are_paginated_and_persisted() {
+        let root = tempdir().unwrap();
+        let runtime = ConfigRuntime::new(ConfigPaths {
+            user_config: root.path().join("config.toml"),
+            system_config: root.path().join("system.toml"),
+            requirements: root.path().join("requirements.toml"),
+        });
+        runtime
+            .dispatch(
+                "experimentalFeature/enablement/set",
+                &json!({"enablement":{"hooks":true}}),
+            )
+            .unwrap();
+        let first = runtime
+            .dispatch("experimentalFeature/list", &json!({"limit":2}))
+            .unwrap();
+        assert_eq!(first.result["data"].as_array().unwrap().len(), 2);
+        assert_eq!(first.result["nextCursor"], "2");
+        let all = runtime
+            .dispatch("experimentalFeature/list", &json!({}))
+            .unwrap();
+        assert!(all.result["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature["name"] == "hooks" && feature["enabled"] == true));
     }
 }

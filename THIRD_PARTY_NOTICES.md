@@ -249,3 +249,17 @@ R20 的分层项目指令发现、AGENTS World State 替换/移除语义和模�
 - `codex-rs/protocol/src/protocol.rs`
 
 本地实现位于 `crates/agent-config`，并通过 `crates/agent-core` 的 canonical rollout 与桌面 Responses 执行器接入；上游二进制不参与运行。
+
+R21 的 TOML 配置分层、来源追踪、原子编辑、Requirements 约束与实验功能目录参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/config/src/loader`
+- `codex-rs/config/src/merge.rs`
+- `codex-rs/config/src/config_requirements.rs`
+- `codex-rs/config/src/constraint.rs`
+- `codex-rs/config/src/profile_toml.rs`
+- `codex-rs/config/src/project_root_markers.rs`
+- `codex-rs/config/src/state.rs`
+- `codex-rs/core/src/config`
+- `codex-rs/app-server/src/request_processors/config_processor.rs`
+
+本地配置写入使用同目录临时文件、`fsync` 和原子重命名，并通过内容 SHA-256 版本实现乐观并发控制。
