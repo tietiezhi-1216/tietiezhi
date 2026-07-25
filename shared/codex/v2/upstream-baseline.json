@@ -268,27 +268,27 @@
       },
       {
         "method": "mcpServer/oauth/login",
-        "status": "pending",
+        "status": "implemented",
         "target": "R19",
-        "note": ""
+        "note": "crates/agent-mcp OAuth PKCE/DCR/secure credential store/AuthClient refresh; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-MCP.md"
       },
       {
         "method": "mcpServer/resource/read",
-        "status": "pending",
+        "status": "implemented",
         "target": "R19",
-        "note": ""
+        "note": "crates/agent-mcp::read_resource; source-built stdio fixture; desktop V2 response validation"
       },
       {
         "method": "mcpServer/tool/call",
-        "status": "pending",
+        "status": "implemented",
         "target": "R19",
-        "note": ""
+        "note": "crates/agent-mcp rich call results and tool filters; desktop V2 dispatch; agent-core mcpToolCall restart/fork test"
       },
       {
         "method": "mcpServerStatus/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R19",
-        "note": ""
+        "note": "crates/agent-mcp inventory/auth status; desktop stable cursor/detail projection and V2 response validation"
       },
       {
         "method": "model/list",
@@ -616,9 +616,9 @@
       },
       {
         "method": "mcpServer/elicitation/request",
-        "status": "pending",
+        "status": "implemented",
         "target": "R19",
-        "note": ""
+        "note": "crates/agent-mcp ElicitationBroker/ClientHandler; desktop DesktopMcpHost; codex-approval-prompt SSR V2 response test"
       }
     ],
     "serverNotifications": [
@@ -768,9 +768,9 @@
       },
       {
         "method": "item/mcpToolCall/progress",
-        "status": "pending",
+        "status": "implemented",
         "target": "R19",
-        "note": ""
+        "note": "crates/agent-mcp exact progress token attribution and stdio fixture; DesktopMcpHost V2 validation"
       },
       {
         "method": "item/plan/delta",
@@ -804,15 +804,15 @@
       },
       {
         "method": "mcpServer/oauthLogin/completed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R19",
-        "note": ""
+        "note": "crates/agent-mcp async OAuth completion; DesktopMcpHost V2 validation"
       },
       {
         "method": "mcpServer/startupStatus/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R19",
-        "note": ""
+        "note": "crates/agent-mcp required/optional startup lifecycle; DesktopMcpHost V2 validation"
       },
       {
         "method": "model/rerouted",
@@ -1217,9 +1217,9 @@
     {
       "id": "R19",
       "name": "MCP 完整实现",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, R35 still needs remote approval routing, and R17 Windows WFP isolation remains a release blocker.",
+      "evidence": "crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md"
     },
     {
       "id": "R20",

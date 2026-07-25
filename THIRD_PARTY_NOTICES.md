@@ -220,3 +220,20 @@ R18 的绝对路径、Shell/PowerShell 解析、安全命令分类和 Starlark E
 - `codex-rs/core/src/exec_policy_windows_tests.rs`
 
 移植目标分别为 `crates/agent-absolute-path`、`crates/agent-shell-command` 和 `crates/agent-execpolicy`；本地适配层将策略结果接入 Unified Exec、App Server 审批和 R14 持久规则。
+
+R19 的 MCP 客户端、OAuth、工具/资源、Elicitation、进度、状态目录和 App Server 映射行为参考以下 Apache-2.0 上游源码重新实现，没有链接、调用或打包上游 Codex 二进制：
+
+- `codex-rs/rmcp-client/src/lib.rs`
+- `codex-rs/rmcp-client/src/auth.rs`
+- `codex-rs/rmcp-client/src/oauth.rs`
+- `codex-rs/rmcp-client/src/perform_oauth_login.rs`
+- `codex-rs/rmcp-client/src/bin/test_stdio_server.rs`
+- `codex-rs/core/src/mcp.rs`
+- `codex-rs/core/src/mcp_connection_manager.rs`
+- `codex-rs/core/src/mcp_tool_call.rs`
+- `codex-rs/core/src/tools/handlers/mcp.rs`
+- `codex-rs/app-server/src/request_processors/mcp_processor.rs`
+- `codex-rs/app-server/src/mcp_server_request_handler.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/mcp_server.rs`
+
+本地 source-built fixture 仅保留协议测试所需的最小工具、资源和富内容，不分发上游测试服务器二进制。MCP 线协议由 Apache-2.0 `rmcp` crate 实现；其依赖许可证随 Cargo 供应链清单发布。

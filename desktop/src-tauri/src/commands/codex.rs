@@ -33,8 +33,9 @@ use tietiezhi_agent_network::{
     NetworkPolicy, NetworkPolicyAmendment,
 };
 use tietiezhi_agent_protocol::{
-    ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse,
-    PermissionProfileListResponse, ServerNotification,
+    ClientRequest, JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusResponse,
+    McpResourceReadResponse, McpServerOauthLoginResponse, McpServerToolCallResponse,
+    ModelListResponse, PermissionProfileListResponse, ServerNotification,
 };
 use tietiezhi_agent_tools::builtins::{
     apply_patch_handler, context_remaining_handler, current_time_handler,
@@ -198,6 +199,9 @@ pub fn codex_v2_server_response(
     {
         return Ok(true);
     }
+    if state.codex_mcp_requests.resolve(&response)? {
+        return Ok(true);
+    }
     state
         .codex_approval_requests
         .resolve(&response)
@@ -278,6 +282,15 @@ pub async fn codex_v2_request(
     }
     if method == "permissionProfile/list" {
         return permission_profile_list(&request);
+    }
+    if matches!(
+        method.as_str(),
+        "mcpServer/oauth/login"
+            | "mcpServer/resource/read"
+            | "mcpServer/tool/call"
+            | "mcpServerStatus/list"
+    ) {
+        return dispatch_mcp_request(&app, &state, &request, &method).await;
     }
     if matches!(
         method.as_str(),
@@ -555,6 +568,289 @@ fn dispatch_success(request: &Value, result: Value) -> Result<DispatchOutput, St
         response,
         notifications: Vec::new(),
     })
+}
+
+async fn dispatch_mcp_request(
+    app: &AppHandle,
+    state: &AppState,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("{method} 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let settings = super::settings::read_settings(app)?;
+    let resolve_server = |name: &str| -> Result<crate::mcp::McpServerConfig, String> {
+        let config = settings
+            .mcp_servers
+            .iter()
+            .find(|config| config.enabled && config.id == name)
+            .ok_or_else(|| format!("No MCP server named '{name}' found."))?;
+        super::tietiezhi::resolve_mcp_config_secrets(app, config)
+    };
+    match method {
+        "mcpServer/oauth/login" => {
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let config = match resolve_server(name) {
+                Ok(config) => config,
+                Err(error) => return Ok(dispatch_error(request, -32602, error)),
+            };
+            let thread_id = params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let scopes = params
+                .get("scopes")
+                .and_then(Value::as_array)
+                .map(|scopes| {
+                    scopes
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let timeout = params
+                .get("timeoutSecs")
+                .and_then(Value::as_u64)
+                .map(Duration::from_secs);
+            let login = match state
+                .mcp
+                .begin_oauth_login(config, thread_id, scopes, timeout)
+                .await
+            {
+                Ok(login) => login,
+                Err(error) => return Ok(dispatch_error(request, -32603, error)),
+            };
+            let result = json!({"authorizationUrl":login.authorization_url});
+            serde_json::from_value::<McpServerOauthLoginResponse>(result.clone())
+                .map_err(|error| format!("MCP OAuth 响应不符合 App Server V2：{error}"))?;
+            dispatch_success(request, result)
+        }
+        "mcpServer/resource/read" => {
+            let server = params
+                .get("server")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let uri = params
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let config = match resolve_server(server) {
+                Ok(config) => config,
+                Err(error) => return Ok(dispatch_error(request, -32602, error)),
+            };
+            let contents = match state.mcp.read_resource(&config, uri).await {
+                Ok(contents) => contents,
+                Err(error) => return Ok(dispatch_error(request, -32603, error)),
+            };
+            let result = json!({"contents":contents});
+            serde_json::from_value::<McpResourceReadResponse>(result.clone())
+                .map_err(|error| format!("MCP 资源响应不符合 App Server V2：{error}"))?;
+            dispatch_success(request, result)
+        }
+        "mcpServer/tool/call" => {
+            let thread_id = params
+                .get("threadId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let server = params
+                .get("server")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let tool = params
+                .get("tool")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let arguments = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let config = match resolve_server(server) {
+                Ok(config) => config,
+                Err(error) => return Ok(dispatch_error(request, -32602, error)),
+            };
+            let manager = thread_manager(app, &app.state::<AppState>())?;
+            let turn_id = match manager.active_turn_id(thread_id) {
+                Ok(turn_id) => turn_id,
+                Err(error) => {
+                    return Ok(dispatch_error(
+                        request,
+                        -32602,
+                        format!("MCP thread 无效：{error:?}"),
+                    ));
+                }
+            };
+            let item_id = format!("mcp-rpc-{}", uuid::Uuid::new_v4());
+            let context = turn_id
+                .as_ref()
+                .map(|turn_id| tietiezhi_agent_mcp::McpCallContext {
+                    thread_id: thread_id.into(),
+                    turn_id: turn_id.clone(),
+                    item_id: item_id.clone(),
+                });
+            if let Some(context) = &context {
+                let notifications = manager
+                    .local_tool_item_started(
+                        &context.thread_id,
+                        &context.turn_id,
+                        json!({
+                            "type":"mcpToolCall",
+                            "id":context.item_id,
+                            "server":server,
+                            "tool":tool,
+                            "status":"inProgress",
+                            "arguments":arguments,
+                            "appContext":null,
+                            "pluginId":null,
+                            "result":null,
+                            "error":null,
+                            "durationMs":null
+                        }),
+                    )
+                    .map_err(|error| format!("记录 MCP 工具调用失败：{error:?}"))?;
+                emit_notifications(app, &notifications)?;
+            }
+            let started = std::time::Instant::now();
+            let called = state
+                .mcp
+                .call_tool_rich(
+                    &config,
+                    tool,
+                    &arguments,
+                    context.clone(),
+                    params.get("_meta").cloned(),
+                )
+                .await;
+            let duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+            if let Some(context) = &context {
+                let item = match &called {
+                    Ok(result) => json!({
+                        "type":"mcpToolCall",
+                        "id":context.item_id,
+                        "server":server,
+                        "tool":tool,
+                        "status":if result.is_error { "failed" } else { "completed" },
+                        "arguments":arguments,
+                        "appContext":null,
+                        "pluginId":null,
+                        "result":{
+                            "content":result.content,
+                            "structuredContent":result.structured_content,
+                            "_meta":result.meta
+                        },
+                        "error":if result.is_error {
+                            json!({"message":result.model_text()})
+                        } else {
+                            Value::Null
+                        },
+                        "durationMs":duration_ms
+                    }),
+                    Err(error) => json!({
+                        "type":"mcpToolCall",
+                        "id":context.item_id,
+                        "server":server,
+                        "tool":tool,
+                        "status":"failed",
+                        "arguments":arguments,
+                        "appContext":null,
+                        "pluginId":null,
+                        "result":null,
+                        "error":{"message":error},
+                        "durationMs":duration_ms
+                    }),
+                };
+                let notifications = manager
+                    .local_tool_item_completed(&context.thread_id, &context.turn_id, item)
+                    .map_err(|error| format!("记录 MCP 工具结果失败：{error:?}"))?;
+                emit_notifications(app, &notifications)?;
+            }
+            let result = match called {
+                Ok(result) => serde_json::to_value(result)
+                    .map_err(|error| format!("序列化 MCP 工具响应失败：{error}"))?,
+                Err(error) => return Ok(dispatch_error(request, -32603, error)),
+            };
+            serde_json::from_value::<McpServerToolCallResponse>(result.clone())
+                .map_err(|error| format!("MCP 工具响应不符合 App Server V2：{error}"))?;
+            dispatch_success(request, result)
+        }
+        "mcpServerStatus/list" => {
+            let mut configs = settings
+                .mcp_servers
+                .iter()
+                .filter(|config| config.enabled)
+                .map(|config| super::tietiezhi::resolve_mcp_config_secrets(app, config))
+                .collect::<Result<Vec<_>, _>>()?;
+            configs.sort_by(|left, right| left.id.cmp(&right.id));
+            let total = configs.len();
+            let start = match params.get("cursor").filter(|value| !value.is_null()) {
+                Some(cursor) => match cursor
+                    .as_str()
+                    .and_then(|cursor| cursor.parse::<usize>().ok())
+                {
+                    Some(start) if start <= total => start,
+                    _ => return Ok(dispatch_error(request, -32602, "invalid MCP cursor")),
+                },
+                None => 0,
+            };
+            let limit = params
+                .get("limit")
+                .and_then(Value::as_u64)
+                .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
+                .unwrap_or(total)
+                .max(1);
+            let end = start.saturating_add(limit).min(total);
+            let tools_only =
+                params.get("detail").and_then(Value::as_str) == Some("toolsAndAuthOnly");
+            let mut data = Vec::new();
+            for config in &configs[start..end] {
+                let auth_status = state.mcp.auth_status(config).await;
+                let inventory = state.mcp.inventory(config).await.ok();
+                let mut tools = serde_json::Map::new();
+                if let Some(inventory) = &inventory {
+                    for tool in &inventory.tools {
+                        if let Some(name) = tool.get("name").and_then(Value::as_str) {
+                            tools.insert(name.into(), tool.clone());
+                        }
+                    }
+                }
+                data.push(json!({
+                    "name":config.id,
+                    "serverInfo":inventory.as_ref().and_then(|item| item.server_info.clone()),
+                    "tools":tools,
+                    "resources":if tools_only {
+                        Vec::<Value>::new()
+                    } else {
+                        inventory.as_ref().map(|item| item.resources.clone()).unwrap_or_default()
+                    },
+                    "resourceTemplates":if tools_only {
+                        Vec::<Value>::new()
+                    } else {
+                        inventory.as_ref().map(|item| item.resource_templates.clone()).unwrap_or_default()
+                    },
+                    "authStatus":auth_status
+                }));
+            }
+            let result = json!({
+                "data":data,
+                "nextCursor":(end < total).then(|| end.to_string())
+            });
+            serde_json::from_value::<ListMcpServerStatusResponse>(result.clone())
+                .map_err(|error| format!("MCP 状态响应不符合 App Server V2：{error}"))?;
+            dispatch_success(request, result)
+        }
+        _ => Ok(dispatch_error(request, -32601, "unknown MCP method")),
+    }
 }
 
 async fn dispatch_command_exec(
@@ -1885,7 +2181,7 @@ async fn run_turn_executor(
     let mut can_drain_steered = false;
     let mut output_schema = None;
     let mut auth_refresh_attempted = false;
-    let (tool_runtime, base_tool_specs) = turn_tool_runtime(&app, &manager, &initial)?;
+    let (tool_runtime, base_tool_specs) = turn_tool_runtime(&app, &manager, &initial).await?;
     let mut loaded_tool_specs = Vec::new();
 
     loop {
@@ -2249,7 +2545,7 @@ fn response_request(
     request
 }
 
-fn turn_tool_runtime(
+async fn turn_tool_runtime(
     app: &AppHandle,
     manager: &ThreadManager,
     snapshot: &TurnExecutionSnapshot,
@@ -2291,6 +2587,13 @@ fn turn_tool_runtime(
     let approval_policy =
         serde_json::from_value::<AskForApproval>(snapshot.approval_policy.clone())
             .unwrap_or_default();
+    let mcp_manager = app.state::<AppState>().mcp.clone();
+    mcp_manager
+        .set_elicitation_allowed(
+            snapshot.thread_id.clone(),
+            approval_policy.allows(ApprovalCategory::McpElicitation),
+        )
+        .map_err(ModelError::Consumer)?;
     // macOS uses R15 Seatbelt and Windows uses the R16 Restricted Token/ACL wrapper.
     let sandbox_policy =
         tietiezhi_agent_sandbox::SandboxPolicy::from_value(snapshot.sandbox.clone())
@@ -2968,6 +3271,138 @@ fn turn_tool_runtime(
         Some(network_preparer),
         Some(policy_evaluator),
     ));
+    let mcp_observer_app = app.clone();
+    let mcp_observer_manager = manager.clone();
+    let mcp_observer = Arc::new(move |event: tietiezhi_agent_mcp::McpToolRuntimeEvent| {
+        let (thread_id, notifications) = match event {
+            tietiezhi_agent_mcp::McpToolRuntimeEvent::Started {
+                context,
+                server,
+                tool,
+                arguments,
+            } => {
+                let thread_id = context.thread_id.clone();
+                let notifications = mcp_observer_manager.local_tool_item_started(
+                    &context.thread_id,
+                    &context.turn_id,
+                    json!({
+                        "type":"mcpToolCall",
+                        "id":context.item_id,
+                        "server":server,
+                        "tool":tool,
+                        "status":"inProgress",
+                        "arguments":arguments,
+                        "appContext":null,
+                        "pluginId":null,
+                        "result":null,
+                        "error":null,
+                        "durationMs":null
+                    }),
+                );
+                (thread_id, notifications)
+            }
+            tietiezhi_agent_mcp::McpToolRuntimeEvent::Completed {
+                context,
+                server,
+                tool,
+                arguments,
+                result,
+                duration_ms,
+            } => {
+                let thread_id = context.thread_id.clone();
+                let status = if result.is_error {
+                    "failed"
+                } else {
+                    "completed"
+                };
+                let error = result
+                    .is_error
+                    .then(|| json!({"message":result.model_text()}))
+                    .unwrap_or(Value::Null);
+                let result_value = json!({
+                    "content":result.content,
+                    "structuredContent":result.structured_content,
+                    "_meta":result.meta
+                });
+                let notifications = mcp_observer_manager.local_tool_item_completed(
+                    &context.thread_id,
+                    &context.turn_id,
+                    json!({
+                        "type":"mcpToolCall",
+                        "id":context.item_id,
+                        "server":server,
+                        "tool":tool,
+                        "status":status,
+                        "arguments":arguments,
+                        "appContext":null,
+                        "pluginId":null,
+                        "result":result_value,
+                        "error":error,
+                        "durationMs":i64::try_from(duration_ms).unwrap_or(i64::MAX)
+                    }),
+                );
+                (thread_id, notifications)
+            }
+            tietiezhi_agent_mcp::McpToolRuntimeEvent::Failed {
+                context,
+                server,
+                tool,
+                arguments,
+                error,
+                duration_ms,
+            } => {
+                let thread_id = context.thread_id.clone();
+                let notifications = mcp_observer_manager.local_tool_item_completed(
+                    &context.thread_id,
+                    &context.turn_id,
+                    json!({
+                        "type":"mcpToolCall",
+                        "id":context.item_id,
+                        "server":server,
+                        "tool":tool,
+                        "status":"failed",
+                        "arguments":arguments,
+                        "appContext":null,
+                        "pluginId":null,
+                        "result":null,
+                        "error":{"message":error},
+                        "durationMs":i64::try_from(duration_ms).unwrap_or(i64::MAX)
+                    }),
+                );
+                (thread_id, notifications)
+            }
+        };
+        let notifications = notifications.map_err(|error| {
+            tietiezhi_agent_tools::ToolError::Handler(format!(
+                "project MCP tool event for {thread_id}: {error:?}"
+            ))
+        })?;
+        emit_notifications(&mcp_observer_app, &notifications)
+            .map_err(tietiezhi_agent_tools::ToolError::Handler)
+    }) as tietiezhi_agent_mcp::McpToolObserver;
+    for config in settings.mcp_servers.iter().filter(|config| config.enabled) {
+        let config = super::tietiezhi::resolve_mcp_config_secrets(app, config)
+            .map_err(ModelError::Consumer)?;
+        match mcp_manager.list_tools(&config).await {
+            Ok(tools) => {
+                handlers.extend(tools.into_iter().map(|info| {
+                    tietiezhi_agent_mcp::McpToolHandler::new(
+                        mcp_manager.clone(),
+                        config.clone(),
+                        info,
+                        Some(mcp_observer.clone()),
+                    ) as Arc<dyn tietiezhi_agent_tools::ToolHandler>
+                }));
+            }
+            Err(error) if config.required => {
+                return Err(ModelError::Consumer(format!(
+                    "必需的 MCP 服务器 `{}` 启动失败：{error}",
+                    config.id
+                )));
+            }
+            Err(_) => {}
+        }
+    }
     let registry = ToolRegistry::new(handlers, Vec::new())
         .map_err(|error| ModelError::Consumer(format!("初始化 Codex 基础工具失败：{error}")))?;
     let router = Arc::new(ToolRouter::new(registry));

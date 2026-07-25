@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 88 |
+| 待实现 | 80 |
 | 实现中 | 0 |
-| 已实现 | 73 |
+| 已实现 | 81 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -57,7 +57,7 @@
 | R16 | Windows 沙箱 | 已完成 | crates/agent-sandbox Windows Restricted Token/ACL/Job/wrapper；crates/agent-exec/tests/windows_sandbox.rs；desktop commands/codex.rs；docs/CODEX-SANDBOX-WINDOWS.md；Windows CI | Windows ACL 准备失败时 fail-closed；每次发布由 Windows runner 重跑真实逃逸测试。 |
 | R17 | 网络策略 | 进行中 | crates/agent-network；agent-tools restricted network integration；macOS Seatbelt proxy-only tests；desktop command approval adapter；docs/CODEX-NETWORK.md | Windows managed network currently fails closed; source-built elevated sandbox identity and Firewall/WFP proxy allowlist remain required before R39 release. |
 | R18 | ExecPolicy | 已完成 | crates/agent-absolute-path; crates/agent-shell-command; crates/agent-execpolicy; crates/agent-tools dynamic pre-spawn policy; desktop persisted rules/default.rules; docs/CODEX-EXECPOLICY.md; 26 absolute-path, 141 shell, 13 execpolicy and 23 tool tests | R21 still needs layered project/profile policy discovery and Requirements enforcement; R17 Windows elevated/WFP network isolation remains a release blocker. |
-| R19 | MCP 完整实现 | 待开始 |  |  |
+| R19 | MCP 完整实现 | 已完成 | crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md | OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, R35 still needs remote approval routing, and R17 Windows WFP isolation remains a release blocker. |
 | R20 | 指令层 | 待开始 |  |  |
 | R21 | 配置体系 | 待开始 |  |  |
 | R22 | Skills | 待开始 |  |  |
@@ -125,10 +125,10 @@
 | `marketplace/add` | 待实现 | R24 |  |
 | `marketplace/remove` | 待实现 | R24 |  |
 | `marketplace/upgrade` | 待实现 | R24 |  |
-| `mcpServer/oauth/login` | 待实现 | R19 |  |
-| `mcpServer/resource/read` | 待实现 | R19 |  |
-| `mcpServer/tool/call` | 待实现 | R19 |  |
-| `mcpServerStatus/list` | 待实现 | R19 |  |
+| `mcpServer/oauth/login` | 已实现 | R19 | crates/agent-mcp OAuth PKCE/DCR/secure credential store/AuthClient refresh; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-MCP.md |
+| `mcpServer/resource/read` | 已实现 | R19 | crates/agent-mcp::read_resource; source-built stdio fixture; desktop V2 response validation |
+| `mcpServer/tool/call` | 已实现 | R19 | crates/agent-mcp rich call results and tool filters; desktop V2 dispatch; agent-core mcpToolCall restart/fork test |
+| `mcpServerStatus/list` | 已实现 | R19 | crates/agent-mcp inventory/auth status; desktop stable cursor/detail projection and V2 response validation |
 | `model/list` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、固定与在线模型目录测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md；docs/CODEX-GATEWAY.md |
 | `modelProvider/capabilities/read` | 待实现 | R36 |  |
 | `permissionProfile/list` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
@@ -192,7 +192,7 @@
 | `item/permissions/requestApproval` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
 | `item/tool/call` | 已实现 | R10 | crates/agent-tools 生成并校验精确 App Server V2 Dynamic Tool ServerRequest/Response，保持 thread/turn/call/namespace/tool/arguments；docs/CODEX-TOOLS.md |
 | `item/tool/requestUserInput` | 待实现 | R25 |  |
-| `mcpServer/elicitation/request` | 待实现 | R19 |  |
+| `mcpServer/elicitation/request` | 已实现 | R19 | crates/agent-mcp ElicitationBroker/ClientHandler; desktop DesktopMcpHost; codex-approval-prompt SSR V2 response test |
 
 ## Server Notifications
 
@@ -222,14 +222,14 @@
 | `item/completed` | 已实现 | R3 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `item/fileChange/outputDelta` | 已实现 | R12 | crates/agent-core 兼容发布器与 V2 载荷测试；正常执行按 Codex 0.145.0 不发送废弃通知 |
 | `item/fileChange/patchUpdated` | 已实现 | R12 | crates/agent-core FileChange 增量投影；desktop Responses delta/最终预览；FileChange 生命周期测试 |
-| `item/mcpToolCall/progress` | 待实现 | R19 |  |
+| `item/mcpToolCall/progress` | 已实现 | R19 | crates/agent-mcp exact progress token attribution and stdio fixture; DesktopMcpHost V2 validation |
 | `item/plan/delta` | 待实现 | R25 |  |
 | `item/reasoning/summaryPartAdded` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `item/reasoning/summaryTextDelta` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `item/reasoning/textDelta` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `item/started` | 已实现 | R3 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
-| `mcpServer/oauthLogin/completed` | 待实现 | R19 |  |
-| `mcpServer/startupStatus/updated` | 待实现 | R19 |  |
+| `mcpServer/oauthLogin/completed` | 已实现 | R19 | crates/agent-mcp async OAuth completion; DesktopMcpHost V2 validation |
+| `mcpServer/startupStatus/updated` | 已实现 | R19 | crates/agent-mcp required/optional startup lifecycle; DesktopMcpHost V2 validation |
 | `model/rerouted` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `model/safetyBuffering/updated` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `model/verification` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |

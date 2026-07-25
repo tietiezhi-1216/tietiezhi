@@ -2286,6 +2286,25 @@ impl ThreadManager {
         Ok(recipients)
     }
 
+    pub fn connection_recipients(&self) -> RpcResult<Vec<String>> {
+        let state = self.state()?;
+        Ok(sorted_connections(&state.connections))
+    }
+
+    pub fn active_turn_id(&self, thread_id: &str) -> RpcResult<Option<String>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        Ok(loaded
+            .turns
+            .iter()
+            .rev()
+            .find(|turn| turn.get("status").and_then(Value::as_str) == Some("inProgress"))
+            .and_then(|turn| turn.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned))
+    }
+
     pub fn thread_shell_context(
         &self,
         connection_id: &str,
@@ -4058,6 +4077,20 @@ fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
             "duration_ms": item.get("durationMs").cloned().unwrap_or(Value::Null),
             "source": item.get("source").cloned().unwrap_or_else(|| json!("agent"))
         })),
+        Some("mcpToolCall") => Ok(json!({
+            "type": "McpToolCall",
+            "id": required_item_string(item, "id", "mcpToolCall item")?,
+            "server": item.get("server").cloned().unwrap_or_else(|| json!("")),
+            "tool": item.get("tool").cloned().unwrap_or_else(|| json!("")),
+            "status": item.get("status").cloned().unwrap_or_else(|| json!("inProgress")),
+            "arguments": item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+            "app_context": item.get("appContext").cloned().unwrap_or(Value::Null),
+            "mcp_app_resource_uri": item.get("mcpAppResourceUri").cloned().unwrap_or(Value::Null),
+            "plugin_id": item.get("pluginId").cloned().unwrap_or(Value::Null),
+            "result": item.get("result").cloned().unwrap_or(Value::Null),
+            "error": item.get("error").cloned().unwrap_or(Value::Null),
+            "duration_ms": item.get("durationMs").cloned().unwrap_or(Value::Null)
+        })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported ThreadItem conversion to core: {other}"
         ))),
@@ -4133,6 +4166,20 @@ fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
             "exitCode": item.get("exit_code").cloned().unwrap_or(Value::Null),
             "durationMs": item.get("duration_ms").cloned().unwrap_or(Value::Null),
             "source": item.get("source").cloned().unwrap_or_else(|| json!("agent"))
+        })),
+        Some("McpToolCall") => Ok(json!({
+            "type": "mcpToolCall",
+            "id": required_item_string(item, "id", "McpToolCall item")?,
+            "server": item.get("server").cloned().unwrap_or_else(|| json!("")),
+            "tool": item.get("tool").cloned().unwrap_or_else(|| json!("")),
+            "status": item.get("status").cloned().unwrap_or_else(|| json!("inProgress")),
+            "arguments": item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+            "appContext": item.get("app_context").cloned().unwrap_or(Value::Null),
+            "mcpAppResourceUri": item.get("mcp_app_resource_uri").cloned().unwrap_or(Value::Null),
+            "pluginId": item.get("plugin_id").cloned().unwrap_or(Value::Null),
+            "result": item.get("result").cloned().unwrap_or(Value::Null),
+            "error": item.get("error").cloned().unwrap_or(Value::Null),
+            "durationMs": item.get("duration_ms").cloned().unwrap_or(Value::Null)
         })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported core TurnItem conversion: {other}"
@@ -6776,5 +6823,132 @@ mod tests {
             .clone();
         assert_eq!(command["aggregatedOutput"], "hello");
         assert_eq!(command["exitCode"], 0);
+    }
+
+    #[test]
+    fn mcp_tool_call_lifecycle_survives_restart_and_fork_with_rich_result() {
+        let (temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"call MCP","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_owned();
+        let started = manager
+            .local_tool_item_started(
+                &thread_id,
+                &turn_id,
+                json!({
+                    "type":"mcpToolCall",
+                    "id":"mcp_1",
+                    "server":"fixture",
+                    "tool":"rich",
+                    "status":"inProgress",
+                    "arguments":{"message":"hello"},
+                    "appContext":null,
+                    "pluginId":null,
+                    "result":null,
+                    "error":null,
+                    "durationMs":null
+                }),
+            )
+            .unwrap();
+        assert_eq!(started[0].method, "item/started");
+        let completed = manager
+            .local_tool_item_completed(
+                &thread_id,
+                &turn_id,
+                json!({
+                    "type":"mcpToolCall",
+                    "id":"mcp_1",
+                    "server":"fixture",
+                    "tool":"rich",
+                    "status":"completed",
+                    "arguments":{"message":"hello"},
+                    "appContext":null,
+                    "pluginId":null,
+                    "result":{
+                        "content":[
+                            {"type":"text","text":"echo:hello"},
+                            {"type":"image","data":"AA==","mimeType":"image/png"},
+                            {"type":"audio","data":"AA==","mimeType":"audio/wav"}
+                        ],
+                        "structuredContent":{"echo":"hello"},
+                        "_meta":{"fixture/result":"preserved"}
+                    },
+                    "error":null,
+                    "durationMs":7
+                }),
+            )
+            .unwrap();
+        assert_eq!(completed[0].method, "item/completed");
+        manager.complete_turn(&thread_id, &turn_id, None).unwrap();
+        drop(manager);
+
+        let reopened = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "gpt-test".into(),
+                model_provider: "test-provider".into(),
+                cwd: temp.path().join("workspace"),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        reopened.dispatch(
+            "desktop",
+            request(3, "thread/resume", json!({"threadId":thread_id})),
+        );
+        let read = reopened.dispatch(
+            "desktop",
+            request(
+                4,
+                "thread/read",
+                json!({"threadId":thread_id,"includeTurns":true}),
+            ),
+        );
+        let mcp = result(&read)["thread"]["turns"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "mcpToolCall")
+            .unwrap();
+        assert_eq!(mcp["status"], "completed");
+        assert_eq!(mcp["result"]["content"][1]["type"], "image");
+        assert_eq!(mcp["result"]["structuredContent"], json!({"echo":"hello"}));
+        assert_eq!(mcp["result"]["_meta"]["fixture/result"], "preserved");
+
+        let fork = reopened.dispatch(
+            "desktop",
+            request(5, "thread/fork", json!({"threadId":thread_id})),
+        );
+        let forked_id = result(&fork)["thread"]["id"].as_str().unwrap();
+        let forked = reopened.dispatch(
+            "desktop",
+            request(
+                6,
+                "thread/read",
+                json!({"threadId":forked_id,"includeTurns":true}),
+            ),
+        );
+        let forked_mcp = result(&forked)["thread"]["turns"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "mcpToolCall")
+            .unwrap();
+        assert_eq!(forked_mcp, mcp);
     }
 }

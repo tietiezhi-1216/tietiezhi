@@ -9,6 +9,7 @@ mod skills;
 mod tools;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -25,6 +26,8 @@ pub struct AppState {
     pub(crate) permissions: permission::PermissionBroker,
     /// App-global MCP server connections (lazy-started).
     pub(crate) mcp: mcp::McpManager,
+    /// Reverse JSON-RPC requests initiated by MCP server elicitation.
+    pub(crate) codex_mcp_requests: Arc<mcp::ElicitationBroker>,
     /// Persistent connections that expose this install as a device node to
     /// every configured remote Core.
     pub(crate) device_fabric: commands::devices::DeviceFabric,
@@ -93,6 +96,7 @@ pub fn run() {
             create_cancels: Mutex::new(HashMap::new()),
             permissions: permission::PermissionBroker::default(),
             mcp: mcp::McpManager::default(),
+            codex_mcp_requests: Arc::new(mcp::ElicitationBroker::default()),
             device_fabric: commands::devices::DeviceFabric::default(),
             codex_core: Mutex::new(None),
             codex_cancels: Mutex::new(HashMap::new()),
@@ -112,6 +116,7 @@ pub fn run() {
         .manage(commands::hotkey::HotkeyState::default())
         .setup(|app| {
             let handle = app.handle().clone();
+            mcp::DesktopMcpHost::install(&handle)?;
             // Build the capsule up-front (hidden, non-focusing) so a hotkey press
             // shows it instantly, and bind the stored dictation trigger.
             if let Err(e) = commands::capsule::ensure_capsule(&handle) {

@@ -99,4 +99,8 @@ R14 已实现四种 Approval Policy、granular 分类、精确 Thread 会话缓�
 
 R15 已增加 `crates/agent-sandbox`，实现 macOS Seatbelt 的 read-only、workspace-write、danger-full-access、external sandbox、可写根、受保护元数据、临时目录和网络开关，并在 Pipe/PTY 上执行真实内核隔离测试。详细行为见 `docs/CODEX-SANDBOX-MACOS.md`。
 
-R18 已移植 Starlark ExecPolicy、Bash/PowerShell 解析、安全命令分类、host executable 和规则修订，并在 Unified Exec 创建进程前执行。R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责完整分层规则目录与 Requirements；R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R18 已移植 Starlark ExecPolicy、Bash/PowerShell 解析、安全命令分类、host executable 和规则修订，并在 Unified Exec 创建进程前执行。
+
+R19 已增加 `crates/agent-mcp`，实现 stdio、Streamable HTTP、Keychain/Credential Manager OAuth、PKCE、动态注册、Token 刷新、resources、templates、Elicitation、progress、annotations、工具过滤、required server 和富媒体结果，并接入正式 `mcpToolCall` Item。详细行为见 `docs/CODEX-MCP.md`。
+
+R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责完整分层规则目录与 Requirements；R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
