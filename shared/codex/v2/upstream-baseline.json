@@ -868,9 +868,9 @@
       },
       {
         "method": "remoteControl/status/changed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "serverRequest/resolved",
@@ -940,51 +940,51 @@
       },
       {
         "method": "thread/realtime/closed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "thread/realtime/error",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "thread/realtime/itemAdded",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "thread/realtime/outputAudio/delta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "thread/realtime/sdp",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "thread/realtime/started",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "thread/realtime/transcript/delta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "thread/realtime/transcript/done",
-        "status": "pending",
+        "status": "implemented",
         "target": "R35",
-        "note": ""
+        "note": "crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx"
       },
       {
         "method": "thread/settings/updated",
@@ -1240,7 +1240,7 @@
       "id": "R19",
       "name": "MCP 完整实现",
       "status": "completed",
-      "risk": "OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, R35 still needs remote approval routing, and R17 Windows WFP isolation remains a release blocker.",
+      "risk": "OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, and R17 Windows WFP isolation remains a release blocker.",
       "evidence": "crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md"
     },
     {
@@ -1351,9 +1351,9 @@
     {
       "id": "R35",
       "name": "远程与实时",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Remote transport uses Tietiezhi Device Fabric because the upstream OpenAI remote service is proprietary; protocol lifecycle, authorization, routing and notifications remain source-compatible. Realtime availability depends on the selected provider exposing the pinned WebSocket/WebRTC endpoints.",
+      "evidence": "crates/agent-remote; crates/agent-realtime; desktop Device Fabric remote bridge; App Server remote/realtime dispatch; Remote & Realtime UI; docs/CODEX-REMOTE-REALTIME.md"
     },
     {
       "id": "R36",

@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 23 |
+| 待实现 | 14 |
 | 实现中 | 0 |
-| 已实现 | 138 |
+| 已实现 | 147 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -57,7 +57,7 @@
 | R16 | Windows 沙箱 | 已完成 | crates/agent-sandbox Windows Restricted Token/ACL/Job/wrapper；crates/agent-exec/tests/windows_sandbox.rs；desktop commands/codex.rs；docs/CODEX-SANDBOX-WINDOWS.md；Windows CI | Windows ACL 准备失败时 fail-closed；每次发布由 Windows runner 重跑真实逃逸测试。 |
 | R17 | 网络策略 | 进行中 | crates/agent-network；agent-tools restricted network integration；macOS Seatbelt proxy-only tests；desktop command approval adapter；docs/CODEX-NETWORK.md | Windows managed network currently fails closed; source-built elevated sandbox identity and Firewall/WFP proxy allowlist remain required before R39 release. |
 | R18 | ExecPolicy | 已完成 | crates/agent-absolute-path; crates/agent-shell-command; crates/agent-execpolicy; crates/agent-tools dynamic pre-spawn policy; desktop persisted rules/default.rules; docs/CODEX-EXECPOLICY.md; 26 absolute-path, 141 shell, 13 execpolicy and 23 tool tests | R21 still needs layered project/profile policy discovery and Requirements enforcement; R17 Windows elevated/WFP network isolation remains a release blocker. |
-| R19 | MCP 完整实现 | 已完成 | crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md | OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, R35 still needs remote approval routing, and R17 Windows WFP isolation remains a release blocker. |
+| R19 | MCP 完整实现 | 已完成 | crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md | OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, and R17 Windows WFP isolation remains a release blocker. |
 | R20 | 指令层 | 已完成 | crates/agent-config 分层 AGENTS/override/fallback 与 World State 测试；crates/agent-core canonical context/world_state 顺序、索引重建和指令恢复测试；desktop Responses/Compaction 指令接线；docs/CODEX-INSTRUCTIONS.md | R21 继续实现完整配置来源、Profile、Requirements 与来源追踪；R22-R24 再把 Skills、Hooks、Plugins 目录加入 World State。 |
 | R21 | 配置体系 | 已完成 | crates/agent-config 配置层/来源/CAS/Requirements/实验功能测试；desktop App Server V2 生成类型验证与 MCP reload；docs/CODEX-CONFIG.md | 企业云配置和 MDM 由 system/requirements 层映射；R23-R24 将 Hooks 与 Plugins 的 managed-only 细粒度要求接入。 |
 | R22 | Skills | 已完成 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md | R24 将已安装插件的 Skills 根作为带 plugin provenance 的根注入；远程执行环境技能在 R35 映射。 |
@@ -73,7 +73,7 @@
 | R32 | Diff 与 Git UI | 已完成 | crates/agent-git Diff/Stage/Unstage/Discard/Commit/Push/PR；desktop WorkspaceGitPanel；7 项 Git 测试；pnpm test:workspace-git-ui/typecheck/build；docs/CODEX-DIFF-GIT-UI.md | PR 链接当前仅支持 GitHub remote；Push 永不 force，Discard 仅操作显式选择路径。 |
 | R33 | Apps 与连接器 | 已完成 | crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-apps-panel.tsx; docs/CODEX-APPS.md | 插件 App 工具只有在其 MCP/宿主运行时存在时才可调用；目录不会把 synthetic 或隐藏工具误报为 callable。 |
 | R34 | Automations | 已完成 | desktop/src-tauri/src/automation/runtime.rs; desktop/src-tauri/src/automation/store.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/automations/automation-list.tsx; docs/CODEX-AUTOMATIONS.md | 无人值守运行固定 approvalPolicy=never；交互审批节点禁止发布，必须审批的副作用会失败。指定项目必须是 Git 工作树，每个 Run 使用独立 Worktree。 |
-| R35 | 远程与实时 | 待开始 |  |  |
+| R35 | 远程与实时 | 已完成 | crates/agent-remote; crates/agent-realtime; desktop Device Fabric remote bridge; App Server remote/realtime dispatch; Remote & Realtime UI; docs/CODEX-REMOTE-REALTIME.md | Remote transport uses Tietiezhi Device Fabric because the upstream OpenAI remote service is proprietary; protocol lifecycle, authorization, routing and notifications remain source-compatible. Realtime availability depends on the selected provider exposing the pinned WebSocket/WebRTC endpoints. |
 | R36 | 运维能力 | 待开始 |  |  |
 | R37 | 稳定性工程 | 待开始 |  |  |
 | R38 | 迁移切换 | 待开始 |  |  |
@@ -235,7 +235,7 @@
 | `model/verification` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `process/exited` | 已实现 | R13 | desktop thread shell executor；V2 notification validation |
 | `process/outputDelta` | 已实现 | R13 | desktop thread shell executor；V2 notification validation |
-| `remoteControl/status/changed` | 待实现 | R35 |  |
+| `remoteControl/status/changed` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
 | `serverRequest/resolved` | 待实现 | R36 |  |
 | `skills/changed` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
 | `thread/archived` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
@@ -247,14 +247,14 @@
 | `thread/goal/cleared` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
 | `thread/goal/updated` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
 | `thread/name/updated` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
-| `thread/realtime/closed` | 待实现 | R35 |  |
-| `thread/realtime/error` | 待实现 | R35 |  |
-| `thread/realtime/itemAdded` | 待实现 | R35 |  |
-| `thread/realtime/outputAudio/delta` | 待实现 | R35 |  |
-| `thread/realtime/sdp` | 待实现 | R35 |  |
-| `thread/realtime/started` | 待实现 | R35 |  |
-| `thread/realtime/transcript/delta` | 待实现 | R35 |  |
-| `thread/realtime/transcript/done` | 待实现 | R35 |  |
+| `thread/realtime/closed` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
+| `thread/realtime/error` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
+| `thread/realtime/itemAdded` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
+| `thread/realtime/outputAudio/delta` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
+| `thread/realtime/sdp` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
+| `thread/realtime/started` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
+| `thread/realtime/transcript/delta` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
+| `thread/realtime/transcript/done` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
 | `thread/settings/updated` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/started` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/status/changed` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |

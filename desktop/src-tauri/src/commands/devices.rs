@@ -8,6 +8,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
+use tokio::sync::broadcast;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
@@ -22,9 +23,28 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const INVOKE_TIMEOUT: Duration = Duration::from_secs(20);
 const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 
-#[derive(Default)]
 pub struct DeviceFabric {
     connections: Mutex<HashMap<String, CancellationToken>>,
+    routes: Mutex<HashMap<String, String>>,
+    outbound: broadcast::Sender<RemoteFabricMessage>,
+}
+
+#[derive(Debug, Clone)]
+struct RemoteFabricMessage {
+    core_id: String,
+    client_id: String,
+    payload: Value,
+}
+
+impl Default for DeviceFabric {
+    fn default() -> Self {
+        let (outbound, _) = broadcast::channel(512);
+        Self {
+            connections: Mutex::new(HashMap::new()),
+            routes: Mutex::new(HashMap::new()),
+            outbound,
+        }
+    }
 }
 
 impl DeviceFabric {
@@ -58,7 +78,41 @@ impl DeviceFabric {
         if let Some(cancel) = cancel {
             cancel.cancel();
         }
+        self.routes
+            .lock()
+            .map_err(|_| "设备路由状态锁已损坏")?
+            .retain(|_, route_core| route_core != core_id);
         Ok(())
+    }
+
+    fn register_route(&self, client_id: &str, core_id: &str) {
+        if let Ok(mut routes) = self.routes.lock() {
+            routes.insert(client_id.to_owned(), core_id.to_owned());
+        }
+    }
+
+    fn clear_routes(&self, core_id: &str) {
+        if let Ok(mut routes) = self.routes.lock() {
+            routes.retain(|_, route_core| route_core != core_id);
+        }
+    }
+
+    pub(crate) fn send_remote(&self, client_id: &str, payload: Value) -> Result<(), String> {
+        let core_id = self
+            .routes
+            .lock()
+            .map_err(|_| "设备路由状态锁已损坏")?
+            .get(client_id)
+            .cloned()
+            .ok_or_else(|| "远程客户端当前不在线".to_string())?;
+        self.outbound
+            .send(RemoteFabricMessage {
+                core_id,
+                client_id: client_id.to_owned(),
+                payload,
+            })
+            .map(|_| ())
+            .map_err(|_| "设备 Fabric 没有活动连接".to_string())
     }
 }
 
@@ -759,9 +813,17 @@ async fn run_device_node(app: AppHandle, core: DeviceCore, cancel: CancellationT
         if cancel.is_cancelled() {
             return;
         }
+        super::codex::update_remote_transport_status(&app, &app.state::<AppState>(), false, None);
         if let Err(error) = device_node_session(&app, &core, &cancel).await {
+            app.state::<AppState>().device_fabric.clear_routes(&core.id);
             if !cancel.is_cancelled() {
                 eprintln!("[device] {}: {error}", core.name);
+                super::codex::update_remote_transport_status(
+                    &app,
+                    &app.state::<AppState>(),
+                    false,
+                    Some(error),
+                );
             }
         }
         tokio::select! {
@@ -814,12 +876,41 @@ async fn device_node_session(
         ))
         .await
         .map_err(|error| format!("发送设备注册失败：{error}"))?;
+    super::codex::update_remote_transport_status(app, &app.state::<AppState>(), true, None);
+    let mut remote_outbound = app.state::<AppState>().device_fabric.outbound.subscribe();
 
     loop {
         let message = tokio::select! {
             _ = cancel.cancelled() => {
                 let _ = socket.close(None).await;
                 return Ok(());
+            }
+            outbound = remote_outbound.recv() => {
+                match outbound {
+                    Ok(outbound) if outbound.core_id == core.id => {
+                        let envelope = InterconnectEnvelope {
+                            kind: "message".into(),
+                            from: String::new(),
+                            to: outbound.client_id,
+                            name: String::new(),
+                            platform: String::new(),
+                            payload: Some(outbound.payload),
+                        };
+                        socket
+                            .send(Message::Text(
+                                serde_json::to_string(&envelope)
+                                    .map_err(|error| error.to_string())?
+                                    .into(),
+                            ))
+                            .await
+                            .map_err(|error| format!("发送远程 Codex 事件失败：{error}"))?;
+                        continue;
+                    }
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Err("设备 Fabric 出站通道已关闭".into());
+                    }
+                }
             }
             message = socket.next() => message,
         };
@@ -842,44 +933,74 @@ async fn device_node_session(
                 if envelope.kind != "message" || envelope.from.is_empty() {
                     continue;
                 }
+                app.state::<AppState>()
+                    .device_fabric
+                    .register_route(&envelope.from, &core.id);
                 let Some(payload) = envelope.payload else {
                     continue;
                 };
-                if payload.get("type").and_then(Value::as_str) != Some("capability.invoke") {
-                    continue;
-                }
                 let request_id = payload
                     .get("requestId")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let capability = payload
-                    .get("capability")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                if request_id.is_empty() || capability.is_empty() {
+                if request_id.is_empty() {
                     continue;
                 }
-                let started = Instant::now();
-                let result = match capability {
-                    "system.ping" | "system.status" => {
-                        local_result(app, request_id.clone(), capability, started)
+                let payload_type = payload
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let response_type = if payload_type.starts_with("codex.remote.") {
+                    "codex.remote.result"
+                } else {
+                    "capability.result"
+                };
+                let result = match payload_type {
+                    "codex.remote.pair" => super::codex::claim_remote_pairing(
+                        app,
+                        &app.state::<AppState>(),
+                        &envelope.from,
+                        &payload,
+                    ),
+                    "codex.remote.request" | "codex.remote.serverResponse" => {
+                        super::codex::dispatch_remote_transport_request(
+                            app,
+                            &app.state::<AppState>(),
+                            &envelope.from,
+                            &payload,
+                        )
+                        .await
                     }
-                    _ => Err(format!(
-                        "远程调用 {capability} 需要在目标设备上获得用户批准，当前节点未授权"
-                    )),
+                    "capability.invoke" => {
+                        let capability = payload
+                            .get("capability")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        let started = Instant::now();
+                        match capability {
+                            "system.ping" | "system.status" => {
+                                local_result(app, request_id.clone(), capability, started)
+                                    .map(|result| result.output)
+                            }
+                            _ => Err(format!(
+                                "远程调用 {capability} 需要在目标设备上获得用户批准，当前节点未授权"
+                            )),
+                        }
+                    }
+                    _ => continue,
                 };
                 let payload = match result {
-                    Ok(result) => json!({
-                        "type": "capability.result",
+                    Ok(output) => json!({
+                        "type": response_type,
                         "version": 1,
                         "requestId": request_id,
                         "ok": true,
-                        "output": result.output,
-                        "message": result.message,
+                        "output": output,
+                        "message": "",
                     }),
                     Err(message) => json!({
-                        "type": "capability.result",
+                        "type": response_type,
                         "version": 1,
                         "requestId": request_id,
                         "ok": false,

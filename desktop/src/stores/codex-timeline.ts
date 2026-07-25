@@ -38,6 +38,15 @@ export interface CodexThreadTimeline {
   };
   notices: CodexTimelineNotice[];
   pendingRequestIds: string[];
+  realtime?: {
+    active: boolean;
+    version?: string;
+    sessionId?: string | null;
+    inputTranscript: string;
+    outputTranscript: string;
+    lastError?: string;
+    audioChunks: number;
+  };
 }
 
 export interface CodexTimelineState {
@@ -278,6 +287,104 @@ export function reduceCodexTimeline(
         ),
       };
       break;
+    case "thread/realtime/started":
+      next = {
+        ...timeline,
+        realtime: {
+          active: true,
+          version: notification.params.version,
+          sessionId: notification.params.realtimeSessionId,
+          inputTranscript: "",
+          outputTranscript: "",
+          audioChunks: 0,
+        },
+      };
+      break;
+    case "thread/realtime/transcript/delta": {
+      const realtime = timeline.realtime ?? {
+        active: true,
+        inputTranscript: "",
+        outputTranscript: "",
+        audioChunks: 0,
+      };
+      next = {
+        ...timeline,
+        realtime: {
+          ...realtime,
+          [notification.params.role === "user"
+            ? "inputTranscript"
+            : "outputTranscript"]: `${
+            notification.params.role === "user"
+              ? realtime.inputTranscript
+              : realtime.outputTranscript
+          }${notification.params.delta}`,
+        },
+      };
+      break;
+    }
+    case "thread/realtime/transcript/done": {
+      const realtime = timeline.realtime ?? {
+        active: true,
+        inputTranscript: "",
+        outputTranscript: "",
+        audioChunks: 0,
+      };
+      next = {
+        ...timeline,
+        realtime: {
+          ...realtime,
+          [notification.params.role === "user"
+            ? "inputTranscript"
+            : "outputTranscript"]: notification.params.text,
+        },
+      };
+      break;
+    }
+    case "thread/realtime/outputAudio/delta": {
+      const realtime = timeline.realtime ?? {
+        active: true,
+        inputTranscript: "",
+        outputTranscript: "",
+        audioChunks: 0,
+      };
+      next = {
+        ...timeline,
+        realtime: { ...realtime, audioChunks: realtime.audioChunks + 1 },
+      };
+      break;
+    }
+    case "thread/realtime/error": {
+      const realtime = timeline.realtime ?? {
+        active: false,
+        inputTranscript: "",
+        outputTranscript: "",
+        audioChunks: 0,
+      };
+      next = {
+        ...timeline,
+        realtime: { ...realtime, lastError: notification.params.message },
+      };
+      break;
+    }
+    case "thread/realtime/closed": {
+      const realtime = timeline.realtime ?? {
+        active: false,
+        inputTranscript: "",
+        outputTranscript: "",
+        audioChunks: 0,
+      };
+      next = {
+        ...timeline,
+        realtime: {
+          ...realtime,
+          active: false,
+          ...(notification.params.reason
+            ? { lastError: notification.params.reason }
+            : {}),
+        },
+      };
+      break;
+    }
     default: {
       const notice = noticeMessage(notification);
       if (notice) {

@@ -5937,6 +5937,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-realtime"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "tietiezhi-agent-remote"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "tietiezhi-agent-review"
 version = "0.1.0"
 dependencies = [
@@ -6066,6 +6094,8 @@ dependencies = [
  "tietiezhi-agent-patch",
  "tietiezhi-agent-plugins",
  "tietiezhi-agent-protocol",
+ "tietiezhi-agent-realtime",
+ "tietiezhi-agent-remote",
  "tietiezhi-agent-review",
  "tietiezhi-agent-sandbox",
  "tietiezhi-agent-skills",

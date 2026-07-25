@@ -480,7 +480,11 @@ enum ApprovalSender {
     UserInput(oneshot::Sender<Result<Value, ApprovalError>>),
     Legacy(oneshot::Sender<Result<Value, ApprovalError>>),
 }
-type PendingMap = HashMap<String, ApprovalSender>;
+struct PendingApproval {
+    thread_id: Option<String>,
+    sender: ApprovalSender,
+}
+type PendingMap = HashMap<String, PendingApproval>;
 
 impl ServerRequestBroker {
     pub fn begin_file_change(
@@ -511,7 +515,13 @@ impl ServerRequestBroker {
         self.pending
             .lock()
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
-            .insert(id, ApprovalSender::FileChange(sender));
+            .insert(
+                id,
+                PendingApproval {
+                    thread_id: Some(params.thread_id),
+                    sender: ApprovalSender::FileChange(sender),
+                },
+            );
         Ok(PendingFileChangeApproval { request, receiver })
     }
 
@@ -550,7 +560,13 @@ impl ServerRequestBroker {
         self.pending
             .lock()
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
-            .insert(id, ApprovalSender::CommandExecution(sender));
+            .insert(
+                id,
+                PendingApproval {
+                    thread_id: Some(params.thread_id),
+                    sender: ApprovalSender::CommandExecution(sender),
+                },
+            );
         Ok(PendingCommandExecutionApproval { request, receiver })
     }
 
@@ -584,7 +600,13 @@ impl ServerRequestBroker {
         self.pending
             .lock()
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
-            .insert(id, ApprovalSender::Permissions(sender));
+            .insert(
+                id,
+                PendingApproval {
+                    thread_id: Some(params.thread_id),
+                    sender: ApprovalSender::Permissions(sender),
+                },
+            );
         Ok(PendingPermissionsApproval { request, receiver })
     }
 
@@ -615,7 +637,13 @@ impl ServerRequestBroker {
         self.pending
             .lock()
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
-            .insert(id, ApprovalSender::UserInput(sender));
+            .insert(
+                id,
+                PendingApproval {
+                    thread_id: Some(params.thread_id),
+                    sender: ApprovalSender::UserInput(sender),
+                },
+            );
         Ok(PendingUserInput { request, receiver })
     }
 
@@ -632,6 +660,10 @@ impl ServerRequestBroker {
             "approval-{}",
             self.next_id.fetch_add(1, Ordering::Relaxed) + 1
         );
+        let thread_id = params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let request = RoutedServerRequest {
             recipients,
             id: json!(id),
@@ -644,7 +676,13 @@ impl ServerRequestBroker {
         self.pending
             .lock()
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
-            .insert(id, ApprovalSender::Legacy(sender));
+            .insert(
+                id,
+                PendingApproval {
+                    thread_id,
+                    sender: ApprovalSender::Legacy(sender),
+                },
+            );
         Ok(PendingLegacyApproval { request, receiver })
     }
 
@@ -660,10 +698,10 @@ impl ServerRequestBroker {
             .lock()
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
             .remove(&id);
-        let Some(sender) = sender else {
+        let Some(pending) = sender else {
             return Ok(false);
         };
-        match sender {
+        match pending.sender {
             ApprovalSender::FileChange(sender) => {
                 let result = parse_result::<FileChangeApprovalResponse>(
                     response,
@@ -725,6 +763,18 @@ impl ServerRequestBroker {
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
             .remove(&request_id_key(id))
             .is_some())
+    }
+
+    /// Returns the exact Thread scope for a pending reverse request without
+    /// consuming it. Remote-control transports use this to prevent a paired
+    /// client from answering an approval belonging to another Thread.
+    pub fn pending_thread_id(&self, id: &Value) -> Result<Option<String>, ApprovalError> {
+        Ok(self
+            .pending
+            .lock()
+            .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
+            .get(&request_id_key(id))
+            .and_then(|pending| pending.thread_id.clone()))
     }
 }
 
@@ -899,6 +949,39 @@ mod tests {
             );
             pending.receiver.await.unwrap().unwrap();
         }
+    }
+
+    #[test]
+    fn pending_approval_exposes_exact_thread_scope_without_consuming_request() {
+        let broker = ServerRequestBroker::default();
+        let pending = broker
+            .begin_command_execution(
+                vec!["desktop".into()],
+                CommandExecutionApprovalParams {
+                    thread_id: "thread-a".into(),
+                    turn_id: "turn-a".into(),
+                    item_id: "item-a".into(),
+                    approval_id: None,
+                    started_at_ms: 1,
+                    command: Some("git status".into()),
+                    cwd: Some("/tmp".into()),
+                    command_actions: Some(Vec::new()),
+                    environment_id: None,
+                    network_approval_context: None,
+                    proposed_execpolicy_amendment: None,
+                    proposed_network_policy_amendments: None,
+                    reason: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            broker.pending_thread_id(&pending.request.id).unwrap(),
+            Some("thread-a".into())
+        );
+        assert_eq!(
+            broker.pending_thread_id(&pending.request.id).unwrap(),
+            Some("thread-a".into())
+        );
     }
 
     #[test]

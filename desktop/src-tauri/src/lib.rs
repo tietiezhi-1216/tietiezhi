@@ -73,6 +73,11 @@ pub struct AppState {
     pub(crate) codex_guardian: Mutex<tietiezhi_agent_review::GuardianCircuitBreaker>,
     /// Source-native Chronicle, citation and memory pipeline state.
     pub(crate) codex_memory: Mutex<Option<tietiezhi_agent_memory::MemoryRuntime>>,
+    /// Persistent pairing, client revocation, Thread grants and request
+    /// idempotency for source-native Remote Control.
+    pub(crate) codex_remote: Mutex<Option<tietiezhi_agent_remote::RemoteControlRuntime>>,
+    /// Thread-scoped Realtime WebSocket/WebRTC sessions.
+    pub(crate) codex_realtime: tietiezhi_agent_realtime::RealtimeRuntime,
     /// Unstable externally supplied ChatGPT tokens are intentionally memory-only.
     pub(crate) codex_external_auth: Mutex<HashMap<String, commands::codex::ExternalAuthTokens>>,
     /// Connection-scoped desktop filesystem watch cancellation handles.
@@ -136,6 +141,8 @@ pub fn run() {
             codex_network: tietiezhi_agent_network::NetworkRuntime::default(),
             codex_guardian: Mutex::new(tietiezhi_agent_review::GuardianCircuitBreaker::default()),
             codex_memory: Mutex::new(None),
+            codex_remote: Mutex::new(None),
+            codex_realtime: tietiezhi_agent_realtime::RealtimeRuntime::default(),
             codex_external_auth: Mutex::new(HashMap::new()),
             codex_fs_watches: Mutex::new(HashMap::new()),
             codex_fuzzy_sessions: Mutex::new(HashMap::new()),
@@ -194,6 +201,9 @@ pub fn run() {
             commands::chat::tietiezhi_stream,
             commands::codex::codex_v2_request,
             commands::codex::codex_v2_server_response,
+            commands::codex::codex_remote_grant_thread,
+            commands::codex::codex_remote_revoke_thread,
+            commands::codex::codex_remote_thread_grants,
             commands::tietiezhi::get_tietiezhi_config,
             commands::tietiezhi::save_tietiezhi_config,
             commands::tietiezhi::list_tietiezhi_files,

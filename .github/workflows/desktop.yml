@@ -87,6 +87,8 @@ jobs:
             crates/agent-shell-command
             crates/agent-execpolicy
             crates/agent-mcp
+            crates/agent-remote
+            crates/agent-realtime
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -129,6 +131,9 @@ jobs:
 
       - name: Check Codex Automations UI
         run: pnpm test:codex-automations-ui
+
+      - name: Check Codex Remote Control and Realtime UI
+        run: pnpm test:codex-remote-realtime-ui
 
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
@@ -210,6 +215,12 @@ jobs:
 
       - name: Codex account and Gateway mapping tests
         run: cargo test --manifest-path ../crates/agent-account/Cargo.toml
+
+      - name: Codex Remote Control authorization tests
+        run: cargo test --manifest-path ../crates/agent-remote/Cargo.toml
+
+      - name: Codex Realtime transport and reconnect tests
+        run: cargo test --manifest-path ../crates/agent-realtime/Cargo.toml
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

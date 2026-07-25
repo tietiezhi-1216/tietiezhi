@@ -55,6 +55,155 @@ export async function codexV2ServerResponse(response: CodexV2Response): Promise<
   return invoke<boolean>("codex_v2_server_response", { response });
 }
 
+let codexExperimentalRequestId = 0;
+
+export async function codexExperimentalRequest<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  codexExperimentalRequestId += 1;
+  const output = await codexV2Request("desktop", {
+    id: `experimental-${codexExperimentalRequestId}`,
+    method,
+    params,
+  } as CodexClientRequest);
+  if (output.response.error) {
+    throw new Error(output.response.error.message);
+  }
+  return output.response.result as T;
+}
+
+export type RemoteControlConnectionStatus =
+  | "disabled"
+  | "connecting"
+  | "connected"
+  | "errored";
+
+export interface RemoteControlStatus {
+  status: RemoteControlConnectionStatus;
+  serverName: string;
+  installationId: string;
+  environmentId: string | null;
+}
+
+export interface RemoteControlPairing {
+  pairingCode: string;
+  manualPairingCode: string | null;
+  environmentId: string;
+  expiresAt: number;
+}
+
+export interface RemoteControlClient {
+  clientId: string;
+  displayName: string | null;
+  deviceType: string | null;
+  platform: string | null;
+  osVersion: string | null;
+  deviceModel: string | null;
+  appVersion: string | null;
+  lastSeenAt: number | null;
+}
+
+export function readRemoteControlStatus(): Promise<RemoteControlStatus> {
+  return codexExperimentalRequest("remoteControl/status/read");
+}
+
+export function setRemoteControlEnabled(
+  enabled: boolean,
+): Promise<RemoteControlStatus> {
+  return codexExperimentalRequest(
+    enabled ? "remoteControl/enable" : "remoteControl/disable",
+    { ephemeral: false },
+  );
+}
+
+export function startRemoteControlPairing(): Promise<RemoteControlPairing> {
+  return codexExperimentalRequest("remoteControl/pairing/start", {
+    manualCode: true,
+  });
+}
+
+export function listRemoteControlClients(
+  environmentId: string,
+): Promise<{ data: RemoteControlClient[]; nextCursor: string | null }> {
+  return codexExperimentalRequest("remoteControl/clients/list", {
+    environmentId,
+    cursor: null,
+    limit: 100,
+    order: "desc",
+  });
+}
+
+export function revokeRemoteControlClient(
+  environmentId: string,
+  clientId: string,
+): Promise<void> {
+  return codexExperimentalRequest("remoteControl/clients/revoke", {
+    environmentId,
+    clientId,
+  });
+}
+
+export function grantRemoteThread(clientId: string, threadId: string): Promise<string[]> {
+  return invoke<string[]>("codex_remote_grant_thread", { clientId, threadId });
+}
+
+export function revokeRemoteThread(clientId: string, threadId: string): Promise<string[]> {
+  return invoke<string[]>("codex_remote_revoke_thread", { clientId, threadId });
+}
+
+export function remoteThreadGrants(clientId: string): Promise<string[]> {
+  return invoke<string[]>("codex_remote_thread_grants", { clientId });
+}
+
+export interface RealtimeAudioChunk {
+  data: string;
+  sampleRate: number;
+  numChannels: number;
+  samplesPerChannel: number | null;
+  itemId: string | null;
+}
+
+export function startThreadRealtime(
+  threadId: string,
+  outputModality: "text" | "audio" = "audio",
+): Promise<void> {
+  return codexExperimentalRequest("thread/realtime/start", {
+    threadId,
+    outputModality,
+    includeStartupContext: true,
+    transport: { type: "websocket" },
+    version: "v2",
+    voice: "marin",
+  });
+}
+
+export function appendThreadRealtimeAudio(
+  threadId: string,
+  audio: RealtimeAudioChunk,
+): Promise<void> {
+  return codexExperimentalRequest("thread/realtime/appendAudio", {
+    threadId,
+    audio,
+  });
+}
+
+export function appendThreadRealtimeText(
+  threadId: string,
+  text: string,
+  role: "user" | "developer" | "assistant" = "user",
+): Promise<void> {
+  return codexExperimentalRequest("thread/realtime/appendText", {
+    threadId,
+    text,
+    role,
+  });
+}
+
+export function stopThreadRealtime(threadId: string): Promise<void> {
+  return codexExperimentalRequest("thread/realtime/stop", { threadId });
+}
+
 let codexAppsRequestId = 0;
 
 async function codexAppsRequest<T>(

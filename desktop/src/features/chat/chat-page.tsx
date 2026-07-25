@@ -48,6 +48,7 @@ import { ProjectSelect } from "@/features/chat/project-select";
 import { StarterSuggestions } from "@/features/chat/starter-suggestions";
 import { ToolCallCard } from "@/features/chat/tool-call-card";
 import { IntegratedTerminalPanel } from "@/features/chat/integrated-terminal-panel";
+import { RemoteRealtimePanel } from "@/features/chat/remote-realtime-panel";
 import { WorkspaceModePanel } from "@/features/chat/workspace-mode-panel";
 import { GIT_REVIEW_PROMPT_EVENT } from "@/features/chat/workspace-git-panel";
 import {
@@ -942,6 +943,9 @@ export function ChatPage() {
         )}
 
         {activeId != null && <WorkspaceModePanel />}
+        {activeId != null && taskMode === "code" && (
+          <RemoteRealtimePanel threadId={activeId} />
+        )}
         {activeId != null && taskMode === "code" && (
           <IntegratedTerminalPanel taskId={activeId} />
         )}

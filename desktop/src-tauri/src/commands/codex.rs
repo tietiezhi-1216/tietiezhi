@@ -70,6 +70,11 @@ use tietiezhi_agent_protocol::{
     PluginShareListResponse, PluginShareSaveResponse, PluginShareUpdateTargetsResponse,
     PluginSkillReadResponse, PluginUninstallResponse, ServerNotification,
 };
+use tietiezhi_agent_realtime::{
+    AudioChunk as RealtimeAudioChunk, NotificationSink, RealtimeProvider,
+    StartParams as RealtimeStartParams,
+};
+use tietiezhi_agent_remote::{RemoteClientMetadata, RemoteControlRuntime, RemoteRequestAdmission};
 use tietiezhi_agent_review::{
     guardian_completed_notification, guardian_output_schema, guardian_prompt,
     guardian_started_notification, parse_guardian_assessment, parse_review_output,
@@ -766,8 +771,543 @@ fn persistent_approval_store(
     Ok(store)
 }
 
+pub(crate) fn remote_control_runtime(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<RemoteControlRuntime, String> {
+    let mut slot = state
+        .codex_remote
+        .lock()
+        .map_err(|_| "Codex Remote Control 状态锁已损坏".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Ok(runtime.clone());
+    }
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?
+        .join("agent-runtime")
+        .join("remote-control");
+    let runtime = RemoteControlRuntime::open(root)
+        .map_err(|error| format!("初始化 Codex Remote Control 失败：{error}"))?;
+    *slot = Some(runtime.clone());
+    Ok(runtime)
+}
+
+fn remote_control_method(method: &str) -> bool {
+    matches!(
+        method,
+        "remoteControl/enable"
+            | "remoteControl/disable"
+            | "remoteControl/status/read"
+            | "remoteControl/pairing/start"
+            | "remoteControl/pairing/status"
+            | "remoteControl/clients/list"
+            | "remoteControl/clients/revoke"
+    )
+}
+
+fn routed_wire_notification(
+    recipients: Vec<String>,
+    wire: Value,
+) -> Result<RoutedNotification, String> {
+    let method = wire
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Codex 通知缺少 method".to_string())?
+        .to_owned();
+    let params = wire
+        .get("params")
+        .cloned()
+        .ok_or_else(|| "Codex 通知缺少 params".to_string())?;
+    serde_json::from_value::<ServerNotification>(wire)
+        .map_err(|error| format!("Codex 通知不符合 App Server V2：{error}"))?;
+    Ok(RoutedNotification {
+        recipients,
+        method,
+        params,
+    })
+}
+
+fn dispatch_remote_control_request(
+    app: &AppHandle,
+    state: &AppState,
+    manager: &ThreadManager,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    let runtime = remote_control_runtime(app, state)?;
+    let params = request
+        .get("params")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let result = match method {
+        "remoteControl/enable" => {
+            if params
+                .get("ephemeral")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                runtime.enable_ephemeral()
+            } else {
+                runtime.enable()
+            }
+        }
+        "remoteControl/disable" => {
+            if params
+                .get("ephemeral")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                runtime.disable_ephemeral()
+            } else {
+                runtime.disable()
+            }
+        }
+        "remoteControl/status/read" => runtime.status(),
+        "remoteControl/pairing/start" => runtime.start_pairing(
+            params
+                .get("manualCode")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
+        "remoteControl/pairing/status" => runtime.pairing_status(
+            params.get("pairingCode").and_then(Value::as_str),
+            params.get("manualPairingCode").and_then(Value::as_str),
+        ),
+        "remoteControl/clients/list" => runtime.list_clients(
+            params
+                .get("environmentId")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            params.get("cursor").and_then(Value::as_str),
+            params
+                .get("limit")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok()),
+            params.get("order").and_then(Value::as_str) == Some("desc"),
+        ),
+        "remoteControl/clients/revoke" => runtime.revoke_client(
+            params
+                .get("environmentId")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            params
+                .get("clientId")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        ),
+        _ => unreachable!(),
+    };
+    match result {
+        Ok(result) => {
+            let mut output = dispatch_success(request, result)?;
+            if matches!(method, "remoteControl/enable" | "remoteControl/disable") {
+                output.notifications.push(routed_wire_notification(
+                    manager
+                        .connection_recipients()
+                        .map_err(|error| error.message)?,
+                    runtime
+                        .status_notification()
+                        .map_err(|error| error.to_string())?,
+                )?);
+            }
+            Ok(output)
+        }
+        Err(error) => Ok(dispatch_error(request, -32602, error.to_string())),
+    }
+}
+
+fn realtime_method(method: &str) -> bool {
+    matches!(
+        method,
+        "thread/realtime/start"
+            | "thread/realtime/appendAudio"
+            | "thread/realtime/appendText"
+            | "thread/realtime/appendSpeech"
+            | "thread/realtime/stop"
+            | "thread/realtime/listVoices"
+    )
+}
+
+fn request_id_string(request: &Value) -> String {
+    request
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            request
+                .get("id")
+                .map(Value::to_string)
+                .unwrap_or_else(|| Uuid::new_v4().to_string())
+        })
+}
+
+async fn dispatch_realtime_request(
+    app: &AppHandle,
+    state: &AppState,
+    manager: &ThreadManager,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    let params = request
+        .get("params")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if method == "thread/realtime/listVoices" {
+        return dispatch_success(request, tietiezhi_agent_realtime::RealtimeRuntime::voices());
+    }
+    let thread_id = params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if thread_id.is_empty() {
+        return Ok(dispatch_error(request, -32602, "threadId 不能为空"));
+    }
+    let result = match method {
+        "thread/realtime/start" => {
+            let thread = manager
+                .realtime_thread_config(&thread_id)
+                .map_err(|error| error.message)?;
+            let resolved = super::providers::resolve(app, &thread.model_provider)
+                .map_err(|error| format!("无法解析 Realtime 模型供应商：{error}"))?;
+            let base_url = super::api_url(&resolved.base_url, "")
+                .trim_end_matches('/')
+                .to_owned();
+            let bearer_token = state
+                .codex_external_auth
+                .lock()
+                .map_err(|_| "Codex 外部账号状态锁已损坏".to_string())?
+                .get(&resolved.id)
+                .map(|tokens| tokens.access_token.clone())
+                .or(resolved.key);
+            let mut start = serde_json::from_value::<RealtimeStartParams>(params.clone())
+                .map_err(|error| format!("Realtime start 参数无效：{error}"))?;
+            if start.model.is_none() {
+                start.model = Some(thread.model);
+            }
+            if start.prompt.is_none() && !thread.instructions.is_empty() {
+                start.prompt = Some(Some(thread.instructions));
+            }
+            let app = app.clone();
+            let manager = manager.clone();
+            let sink: NotificationSink = Arc::new(move |wire| {
+                let thread_id = wire
+                    .pointer("/params/threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let recipients = manager.thread_recipients(thread_id).unwrap_or_default();
+                if let Ok(notification) = routed_wire_notification(recipients, wire) {
+                    let _ = emit_notifications(&app, &[notification]);
+                }
+            });
+            state
+                .codex_realtime
+                .start(
+                    start,
+                    RealtimeProvider::openai_compatible(base_url, bearer_token),
+                    sink,
+                )
+                .await
+        }
+        "thread/realtime/appendAudio" => {
+            let audio = serde_json::from_value::<RealtimeAudioChunk>(
+                params.get("audio").cloned().unwrap_or(Value::Null),
+            )
+            .map_err(|error| format!("Realtime audio 参数无效：{error}"))?;
+            state
+                .codex_realtime
+                .append_audio(&thread_id, &request_id_string(request), audio)
+                .await
+        }
+        "thread/realtime/appendText" => {
+            state
+                .codex_realtime
+                .append_text(
+                    &thread_id,
+                    &request_id_string(request),
+                    params
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    params
+                        .get("role")
+                        .and_then(Value::as_str)
+                        .unwrap_or("user")
+                        .to_owned(),
+                )
+                .await
+        }
+        "thread/realtime/appendSpeech" => {
+            state
+                .codex_realtime
+                .append_speech(
+                    &thread_id,
+                    &request_id_string(request),
+                    params
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                )
+                .await
+        }
+        "thread/realtime/stop" => state.codex_realtime.stop(&thread_id),
+        _ => unreachable!(),
+    };
+    match result {
+        Ok(result) => dispatch_success(request, result),
+        Err(error) => Ok(dispatch_error(request, -32602, error.to_string())),
+    }
+}
+
+#[tauri::command]
+pub fn codex_remote_grant_thread(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    client_id: String,
+    thread_id: String,
+) -> Result<Vec<String>, String> {
+    let manager = thread_manager(&app, &state)?;
+    manager
+        .thread_recipients(&thread_id)
+        .map_err(|error| error.message)?;
+    let runtime = remote_control_runtime(&app, &state)?;
+    runtime
+        .grant_thread(&client_id, &thread_id)
+        .map_err(|error| error.to_string())?;
+    runtime
+        .thread_grants(&client_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn codex_remote_revoke_thread(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    client_id: String,
+    thread_id: String,
+) -> Result<Vec<String>, String> {
+    let runtime = remote_control_runtime(&app, &state)?;
+    runtime
+        .revoke_thread(&client_id, &thread_id)
+        .map_err(|error| error.to_string())?;
+    runtime
+        .thread_grants(&client_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn codex_remote_thread_grants(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    client_id: String,
+) -> Result<Vec<String>, String> {
+    remote_control_runtime(&app, &state)?
+        .thread_grants(&client_id)
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn update_remote_transport_status(
+    app: &AppHandle,
+    state: &AppState,
+    connected: bool,
+    error: Option<String>,
+) {
+    let Ok(runtime) = remote_control_runtime(app, state) else {
+        return;
+    };
+    let Ok(wire) = runtime.set_transport_state(connected, error) else {
+        return;
+    };
+    let recipients = thread_manager(app, state)
+        .and_then(|manager| {
+            manager
+                .connection_recipients()
+                .map_err(|error| error.message)
+        })
+        .unwrap_or_default();
+    if let Ok(notification) = routed_wire_notification(recipients, wire) {
+        let _ = emit_notifications(app, &[notification]);
+    }
+}
+
+pub(crate) fn claim_remote_pairing(
+    app: &AppHandle,
+    state: &AppState,
+    client_id: &str,
+    payload: &Value,
+) -> Result<Value, String> {
+    let metadata = serde_json::from_value::<RemoteClientMetadata>(
+        payload.get("client").cloned().unwrap_or_else(|| json!({})),
+    )
+    .map_err(|error| format!("远程客户端信息无效：{error}"))?;
+    let client = remote_control_runtime(app, state)?
+        .claim_pairing(
+            payload.get("pairingCode").and_then(Value::as_str),
+            payload.get("manualPairingCode").and_then(Value::as_str),
+            client_id,
+            metadata,
+        )
+        .map_err(|error| error.to_string())?;
+    serde_json::to_value(client).map_err(|error| error.to_string())
+}
+
+pub(crate) async fn dispatch_remote_transport_request(
+    app: &AppHandle,
+    state: &AppState,
+    client_id: &str,
+    payload: &Value,
+) -> Result<Value, String> {
+    let request_id = payload
+        .get("requestId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "远程 requestId 不能为空".to_string())?;
+    let request_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if request_type == "codex.remote.serverResponse" {
+        let response = payload
+            .get("response")
+            .cloned()
+            .ok_or_else(|| "远程审批缺少 response".to_string())?;
+        let approval_id = response
+            .get("id")
+            .cloned()
+            .ok_or_else(|| "远程审批缺少 JSON-RPC id".to_string())?;
+        let thread_id = state
+            .codex_approval_requests
+            .pending_thread_id(&approval_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "审批请求不存在或没有 Thread 作用域".to_string())?;
+        let runtime = remote_control_runtime(app, state)?;
+        match runtime
+            .admit_request(client_id, &thread_id, request_id)
+            .map_err(|error| error.to_string())?
+        {
+            RemoteRequestAdmission::Cached(value) => return Ok(value),
+            RemoteRequestAdmission::Execute => {}
+        }
+        let result = state
+            .codex_approval_requests
+            .resolve(&response)
+            .map_err(|error| error.to_string())
+            .and_then(|resolved| {
+                if resolved {
+                    Ok(json!({"resolved":true}))
+                } else {
+                    Err("审批请求不存在或已经处理".into())
+                }
+            });
+        match result {
+            Ok(value) => {
+                runtime
+                    .complete_request(client_id, &thread_id, request_id, value.clone())
+                    .map_err(|error| error.to_string())?;
+                return Ok(value);
+            }
+            Err(error) => {
+                let _ = runtime.fail_request(request_id);
+                return Err(error);
+            }
+        }
+    }
+
+    let request = payload
+        .get("request")
+        .cloned()
+        .ok_or_else(|| "远程请求缺少 request".to_string())?;
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !matches!(
+        method,
+        "thread/read"
+            | "turn/steer"
+            | "turn/interrupt"
+            | "thread/realtime/start"
+            | "thread/realtime/appendAudio"
+            | "thread/realtime/appendText"
+            | "thread/realtime/appendSpeech"
+            | "thread/realtime/stop"
+            | "thread/realtime/listVoices"
+    ) {
+        return Err(format!("远程方法 `{method}` 不在授权控制面内"));
+    }
+    let thread_id = payload
+        .get("threadId")
+        .and_then(Value::as_str)
+        .or_else(|| request.pointer("/params/threadId").and_then(Value::as_str))
+        .ok_or_else(|| "远程请求缺少 threadId".to_string())?
+        .to_owned();
+    if method != "thread/realtime/listVoices"
+        && request.pointer("/params/threadId").and_then(Value::as_str) != Some(thread_id.as_str())
+    {
+        return Err("远程请求的 Thread 作用域不一致".into());
+    }
+    let runtime = remote_control_runtime(app, state)?;
+    match runtime
+        .admit_request(client_id, &thread_id, request_id)
+        .map_err(|error| error.to_string())?
+    {
+        RemoteRequestAdmission::Cached(value) => Ok(value),
+        RemoteRequestAdmission::Execute => {
+            let remote_connection = format!("remote:{client_id}");
+            let manager = thread_manager(app, state)?;
+            let subscription = manager.dispatch(
+                &remote_connection,
+                json!({
+                    "id":format!("remote-subscribe:{request_id}"),
+                    "method":"thread/resume",
+                    "params":{"threadId":thread_id}
+                }),
+            );
+            if let Some(message) = subscription
+                .response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+            {
+                let _ = runtime.fail_request(request_id);
+                return Err(message.to_owned());
+            }
+            emit_notifications(app, &subscription.notifications)?;
+            let result = codex_v2_request_inner(app, state, remote_connection, request)
+                .await
+                .and_then(|output| serde_json::to_value(output).map_err(|error| error.to_string()));
+            match result {
+                Ok(value) => {
+                    runtime
+                        .complete_request(client_id, &thread_id, request_id, value.clone())
+                        .map_err(|error| error.to_string())?;
+                    Ok(value)
+                }
+                Err(error) => {
+                    let _ = runtime.fail_request(request_id);
+                    Err(error)
+                }
+            }
+        }
+    }
+}
+
 fn emit_notifications(app: &AppHandle, notifications: &[RoutedNotification]) -> Result<(), String> {
     for notification in notifications {
+        forward_remote_payload(
+            app,
+            &notification.recipients,
+            json!({
+                "type":"codex.remote.notification",
+                "version":1,
+                "notification":notification.wire_message()
+            }),
+        );
         app.emit(CODEX_NOTIFICATION_EVENT, notification)
             .map_err(|error| format!("发送 Codex 通知失败：{error}"))?;
     }
@@ -775,6 +1315,15 @@ fn emit_notifications(app: &AppHandle, notifications: &[RoutedNotification]) -> 
 }
 
 fn emit_server_request(app: &AppHandle, request: &AccountServerRequest) -> Result<(), String> {
+    forward_remote_payload(
+        app,
+        &request.recipients,
+        json!({
+            "type":"codex.remote.serverRequest",
+            "version":1,
+            "request":request.wire_message()
+        }),
+    );
     app.emit(CODEX_SERVER_REQUEST_EVENT, request)
         .map_err(|error| format!("发送 Codex Server Request 失败：{error}"))
 }
@@ -783,8 +1332,27 @@ fn emit_approval_server_request(
     app: &AppHandle,
     request: &ApprovalServerRequest,
 ) -> Result<(), String> {
+    forward_remote_payload(
+        app,
+        &request.recipients,
+        json!({
+            "type":"codex.remote.serverRequest",
+            "version":1,
+            "request":request.wire_message()
+        }),
+    );
     app.emit(CODEX_SERVER_REQUEST_EVENT, request)
         .map_err(|error| format!("发送 Codex 审批请求失败：{error}"))
+}
+
+fn forward_remote_payload(app: &AppHandle, recipients: &[String], payload: Value) {
+    let state = app.state::<AppState>();
+    for client_id in recipients
+        .iter()
+        .filter_map(|recipient| recipient.strip_prefix("remote:"))
+    {
+        let _ = state.device_fabric.send_remote(client_id, payload.clone());
+    }
 }
 
 #[tauri::command]
@@ -1220,6 +1788,15 @@ pub async fn codex_v2_request(
     connection_id: String,
     request: Value,
 ) -> Result<DispatchOutput, String> {
+    codex_v2_request_inner(&app, &state, connection_id, request).await
+}
+
+pub(crate) async fn codex_v2_request_inner(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: String,
+    request: Value,
+) -> Result<DispatchOutput, String> {
     if connection_id.trim().is_empty() {
         return Err("connectionId 不能为空".into());
     }
@@ -1232,6 +1809,18 @@ pub async fn codex_v2_request(
         .codex_account
         .register_connection(&connection_id)
         .map_err(account_rpc_error)?;
+    if remote_control_method(&method) {
+        let manager = thread_manager(app, state)?;
+        let output = dispatch_remote_control_request(app, state, &manager, &request, &method)?;
+        emit_notifications(app, &output.notifications)?;
+        return Ok(output);
+    }
+    if realtime_method(&method) {
+        let manager = thread_manager(app, state)?;
+        let output = dispatch_realtime_request(app, state, &manager, &request, &method).await?;
+        emit_notifications(app, &output.notifications)?;
+        return Ok(output);
+    }
     if method == "memory/reset" {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         let valid_shape = request.get("method").and_then(Value::as_str) == Some("memory/reset")
@@ -1246,7 +1835,7 @@ pub async fn codex_v2_request(
                 "memory/reset 参数不符合 App Server V2",
             ));
         }
-        let runtime = memory_runtime(&app, &state)?;
+        let runtime = memory_runtime(app, state)?;
         return match runtime.reset() {
             Ok(()) => dispatch_success(&request, json!({})),
             Err(error) => Ok(dispatch_error(
@@ -1257,9 +1846,8 @@ pub async fn codex_v2_request(
         };
     }
     if ConfigRuntime::handles(&method) {
-        let output =
-            dispatch_config_request(&app, &state, &connection_id, &request, &method).await?;
-        emit_notifications(&app, &output.notifications)?;
+        let output = dispatch_config_request(app, state, &connection_id, &request, &method).await?;
+        emit_notifications(app, &output.notifications)?;
         return Ok(output);
     }
     if SkillsRuntime::handles(&method) {
@@ -1428,6 +2016,7 @@ pub async fn codex_v2_request(
                 .flatten();
             cancel_thread(&state, thread_id, expected_turn_id);
             if matches!(method.as_str(), "thread/archive" | "thread/delete") {
+                let _ = state.codex_realtime.stop(thread_id);
                 state
                     .codex_session_approvals
                     .clear_session(thread_id)

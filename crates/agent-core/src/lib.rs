@@ -213,6 +213,14 @@ pub struct TurnExecutionSnapshot {
     pub memory_mode: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RealtimeThreadConfig {
+    pub model: String,
+    pub model_provider: String,
+    pub instructions: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionExecutionSnapshot {
@@ -2898,6 +2906,26 @@ impl ThreadManager {
             .unwrap_or_default();
         recipients.sort();
         Ok(recipients)
+    }
+
+    pub fn realtime_thread_config(&self, thread_id: &str) -> RpcResult<RealtimeThreadConfig> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        let instructions = [
+            loaded.record.base_instructions.as_deref(),
+            loaded.record.developer_instructions.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+        Ok(RealtimeThreadConfig {
+            model: loaded.record.model.clone(),
+            model_provider: loaded.record.model_provider.clone(),
+            instructions,
+        })
     }
 
     pub fn collaboration_identity(&self, thread_id: &str) -> RpcResult<CollaborationIdentity> {

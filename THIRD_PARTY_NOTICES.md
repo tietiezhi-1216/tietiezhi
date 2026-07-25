@@ -406,3 +406,16 @@ R34 的 Automation Thread 来源、无人值守 Turn 和生命周期行为参考
 - `codex-rs/app-server-protocol/src/protocol/v2/turn.rs`
 
 调度器、发布快照、运行记录和桌面编排器是 Tietiezhi 自有实现，并复用本仓库的 Thread、Turn、Worktree、Sandbox 和 Approval Runtime；不调用、链接或分发上游 Codex 二进制。
+
+R35 的 Remote Control 与 Realtime 协议、请求处理、事件映射和传输行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/app-server/src/request_processors/remote_control_processor.rs`
+- `codex-rs/app-server/src/request_processors/turn_processor.rs`
+- `codex-rs/app-server/src/bespoke_event_handling.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/remote_control.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/realtime.rs`
+- `codex-rs/codex-api/src/endpoint/realtime_call.rs`
+- `codex-rs/codex-api/src/endpoint/realtime_websocket`
+- `codex-rs/core/src/realtime_conversation.rs`
+
+本地实现在 `crates/agent-remote` 与 `crates/agent-realtime`。OpenAI 专有远程控制服务未被复制；服务传输映射到 Tietiezhi 自有 Device Fabric，同时保留 App Server 生命周期与强类型通知。不调用、链接或分发上游 Codex 二进制。

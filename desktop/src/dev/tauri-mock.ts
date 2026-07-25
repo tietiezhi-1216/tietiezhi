@@ -434,6 +434,20 @@ export function installTauriMock(): void {
         "# GitHub Token\n\n- 引用：`${secret:github_token}`\n\n用于发布代码和访问私有仓库\n",
       ],
     ]),
+    remoteControlEnabled: false,
+    remoteControlClients: [
+      {
+        clientId: "mock-phone",
+        displayName: "Tietiezhi Mobile",
+        deviceType: "phone",
+        platform: "iOS",
+        osVersion: "19",
+        deviceModel: "iPhone",
+        appVersion: "2026.7",
+        lastSeenAt: Date.now(),
+      },
+    ],
+    remoteThreadGrants: new Map<string, string[]>(),
     tietiezhiSecrets: new Map<
       string,
       { meta: TietiezhiSecret; value: string }
@@ -1342,6 +1356,49 @@ export function installTauriMock(): void {
         method: string;
         params?: Record<string, unknown>;
       };
+      if (request.method.startsWith("remoteControl/")) {
+        const environmentId = state.remoteControlEnabled ? "mock-environment" : null;
+        const result =
+          request.method === "remoteControl/enable"
+            ? ((state.remoteControlEnabled = true), {
+                status: "connected",
+                serverName: "Tietiezhi Device Fabric",
+                installationId: "mock-installation",
+                environmentId: "mock-environment",
+              })
+            : request.method === "remoteControl/disable"
+              ? ((state.remoteControlEnabled = false), {
+                  status: "disabled",
+                  serverName: "Tietiezhi Device Fabric",
+                  installationId: "mock-installation",
+                  environmentId: null,
+                })
+              : request.method === "remoteControl/status/read"
+                ? {
+                    status: state.remoteControlEnabled ? "connected" : "disabled",
+                    serverName: "Tietiezhi Device Fabric",
+                    installationId: "mock-installation",
+                    environmentId,
+                  }
+                : request.method === "remoteControl/pairing/start"
+                  ? {
+                      pairingCode: crypto.randomUUID(),
+                      manualPairingCode: "72819403",
+                      environmentId: "mock-environment",
+                      expiresAt: Math.floor(Date.now() / 1000) + 600,
+                    }
+                  : request.method === "remoteControl/clients/list"
+                    ? { data: structuredClone(state.remoteControlClients), nextCursor: null }
+                    : request.method === "remoteControl/clients/revoke"
+                      ? (state.remoteControlClients = state.remoteControlClients.filter(
+                          (client) => client.clientId !== request.params?.clientId,
+                        ), {})
+                      : { claimed: true };
+        return { response: { id: request.id, result }, notifications: [] };
+      }
+      if (request.method.startsWith("thread/realtime/")) {
+        return { response: { id: request.id, result: {} }, notifications: [] };
+      }
       const app = {
         id: "tietiezhi.devices",
         name: "Tietiezhi Device Fabric",
@@ -1424,6 +1481,26 @@ export function installTauriMock(): void {
       };
     },
     codex_v2_server_response: () => true,
+    codex_remote_grant_thread: (a) => {
+      const clientId = String(a.clientId);
+      const threadId = String(a.threadId);
+      const grants = new Set(state.remoteThreadGrants.get(clientId) ?? []);
+      grants.add(threadId);
+      const next = [...grants];
+      state.remoteThreadGrants.set(clientId, next);
+      return next;
+    },
+    codex_remote_revoke_thread: (a) => {
+      const clientId = String(a.clientId);
+      const threadId = String(a.threadId);
+      const next = (state.remoteThreadGrants.get(clientId) ?? []).filter(
+        (candidate) => candidate !== threadId,
+      );
+      state.remoteThreadGrants.set(clientId, next);
+      return next;
+    },
+    codex_remote_thread_grants: (a) =>
+      structuredClone(state.remoteThreadGrants.get(String(a.clientId)) ?? []),
     default_system_prompt: () => "你是铁铁汁（Tietiezhi），一个运行在用户桌面上的智能体助手。……",
 
     // --- Tietiezhi device fabric ---
