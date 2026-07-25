@@ -8,9 +8,10 @@ import type { ChatItem } from "@/stores/chat";
 type PermissionItem = Extract<ChatItem, { kind: "permission" }>;
 
 const decisionLabel: Record<PermissionDecision, string> = {
-  allow: "已允许",
-  allowAlways: "已允许（本会话不再询问）",
-  deny: "已拒绝",
+  accept: "已允许一次",
+  acceptForSession: "已允许此作用域",
+  decline: "已拒绝并继续",
+  cancel: "已停止任务",
 };
 
 /** Inline approval card for a tool call awaiting user permission. */
@@ -25,7 +26,7 @@ export const PermissionPrompt = memo(function PermissionPrompt({
   if (item.decision) {
     return (
       <p className="text-muted-foreground text-xs">
-        {item.description} — {decisionLabel[item.decision]}
+        {item.description}：{decisionLabel[item.decision]}
       </p>
     );
   }
@@ -45,25 +46,38 @@ export const PermissionPrompt = memo(function PermissionPrompt({
         </span>
       </div>
       <p className="text-sm break-all select-text">{item.description}</p>
-      <div className="flex items-center gap-2">
-        <Button size="sm" className="h-7" onClick={() => answer("allow")}>
+      {item.scope ? (
+        <p className="text-muted-foreground rounded-md bg-black/5 px-2 py-1.5 font-mono text-xs break-all select-text dark:bg-white/5">
+          {item.scope}
+        </p>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" className="h-7" onClick={() => answer("accept")}>
           允许一次
         </Button>
         <Button
           size="sm"
           variant="outline"
           className="h-7"
-          onClick={() => answer("allowAlways")}
+          onClick={() => answer("acceptForSession")}
         >
-          本会话始终允许
+          本作用域允许
         </Button>
         <Button
           size="sm"
           variant="outline"
           className="text-destructive hover:text-destructive h-7"
-          onClick={() => answer("deny")}
+          onClick={() => answer("decline")}
         >
-          拒绝
+          拒绝并继续
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7"
+          onClick={() => answer("cancel")}
+        >
+          停止任务
         </Button>
       </div>
     </div>

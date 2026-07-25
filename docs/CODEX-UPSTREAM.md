@@ -26,6 +26,7 @@
 
 | 能力 | Codex 0.145.0 源码 | Tietiezhi 目标模块 | 阶段 |
 | --- | --- | --- | --- |
+| 旧运行时审批止血 | `codex-rs/core/src/tools/approvals.rs` | `desktop/src-tauri/src/permission` | R1 |
 | App Server V2 协议 | `codex-rs/app-server-protocol` | `crates/agent-protocol` | R2 |
 | Thread/Turn/Item 映射 | `codex-rs/app-server-protocol/src/protocol` | `crates/agent-protocol` | R2-R3 |
 | Thread 管理 | `codex-rs/core/src/codex_thread.rs`、`thread_manager.rs` | `crates/agent-core` | R5-R6 |
@@ -68,4 +69,6 @@
 
 ## 当前差异
 
-R0 只建立治理基线，V2 方法尚未声明为已实现。现有功能即使名称相似，也必须在目标协议、状态恢复、测试和 UI 行为全部符合后，才能把 ledger 状态改为 `implemented`。
+R1 已收紧旧运行时：Bash 和 Fetch 在没有 OS 沙箱时必须审批，临时授权按完整命令、路径、网络来源或完整工具参数隔离，拒绝与取消采用 Codex 决策语义，并移除了固定重复调用硬终止。
+
+这仍是新运行时落地前的止血层，不代表 Codex Approval、Sandbox 或 App Server V2 方法已经实现。R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能把 ledger 方法状态改为 `implemented`。

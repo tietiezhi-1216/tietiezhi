@@ -39,7 +39,7 @@
 | 阶段 | 名称 | 状态 | 证据 | 剩余风险 |
 | --- | --- | --- | --- | --- |
 | R0 | 基线治理 | 已完成 | shared/codex/v2/upstream-baseline.json；desktop/scripts/check-codex-parity.mjs；pnpm check:codex-parity；pnpm typecheck；pnpm build；cargo test（130 项） | 官方 V2 方法仍全部待实现；R1 起逐项推进 |
-| R1 | 旧运行时止血 | 待开始 |  |  |
+| R1 | 旧运行时止血 | 已完成 | desktop/src-tauri/src/permission/mod.rs；desktop/src-tauri/src/agent/loop_.rs；commands::conversations 旧决策迁移测试；scripts/check-permission-prompt.mjs；pnpm test:permission-ui；pnpm typecheck；pnpm build；cargo test | 尚未具备 Codex OS 沙箱、ExecPolicy 和独立 Approval 状态机；这些能力由 R14-R18 实现 |
 | R2 | 协议层 | 待开始 |  |  |
 | R3 | 事件模型 | 待开始 |  |  |
 | R4 | 持久化 | 待开始 |  |  |

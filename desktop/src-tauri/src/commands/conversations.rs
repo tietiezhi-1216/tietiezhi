@@ -71,8 +71,14 @@ pub struct StoredMessage {
     pub tool_timed_out: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tool_truncated: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_permission_decision"
+    )]
     pub decision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,6 +121,19 @@ pub struct StoredMessage {
     pub context_tokens_after: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+}
+
+fn deserialize_permission_decision<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let decision = Option::<String>::deserialize(deserializer)?;
+    Ok(decision.map(|value| match value.as_str() {
+        "allow" => "accept".to_string(),
+        "allowAlways" => "acceptForSession".to_string(),
+        "deny" => "decline".to_string(),
+        _ => value,
+    }))
 }
 
 fn default_kind() -> String {
@@ -675,6 +694,35 @@ mod tests {
             serde_json::from_str(r#"{"role":"user","content":"hi"}"#).unwrap();
         let out = serde_json::to_string(&plain).unwrap();
         assert!(!out.contains("toolName"));
+    }
+
+    #[test]
+    fn legacy_permission_decisions_migrate_to_codex_semantics() {
+        let cases = [
+            ("allow", "accept"),
+            ("allowAlways", "acceptForSession"),
+            ("deny", "decline"),
+        ];
+        for (legacy, expected) in cases {
+            let json = format!(r#"{{"kind":"permission","decision":"{legacy}","content":"test"}}"#);
+            let message: StoredMessage = serde_json::from_str(&json).unwrap();
+            assert_eq!(message.decision.as_deref(), Some(expected));
+            assert_eq!(message.permission_scope, None);
+        }
+    }
+
+    #[test]
+    fn permission_scope_and_new_decisions_roundtrip() {
+        let json = r#"{"kind":"permission","decision":"cancel","permissionScope":"命令：cargo test","content":"test"}"#;
+        let message: StoredMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(message.decision.as_deref(), Some("cancel"));
+        assert_eq!(
+            message.permission_scope.as_deref(),
+            Some("命令：cargo test")
+        );
+        let output = serde_json::to_string(&message).unwrap();
+        assert!(output.contains("\"decision\":\"cancel\""));
+        assert!(output.contains("\"permissionScope\":\"命令：cargo test\""));
     }
 
     #[test]

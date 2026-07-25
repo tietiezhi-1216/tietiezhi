@@ -27,7 +27,6 @@ use crate::tools::{self, ToolCtx};
 
 const MODEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-const MAX_IDENTICAL_TOOL_CALLS: u8 = 3;
 
 /// The fully-resolved execution environment for one agent chat turn.
 pub struct AgentEnv {
@@ -453,6 +452,11 @@ fn permission_description(name: &str, args: &Value) -> String {
             .and_then(Value::as_str)
             .map(|p| format!("编辑文件：{p}"))
             .unwrap_or_else(|| "编辑文件".into()),
+        "fetch" => args
+            .get("url")
+            .and_then(Value::as_str)
+            .map(|url| format!("访问网络：{url}"))
+            .unwrap_or_else(|| "访问网络".into()),
         "device_call" => {
             let device = args
                 .get("device_id")
@@ -721,9 +725,6 @@ pub async fn run_agent_loop(
             .map_err(|error| ChatFailure::channel(format!("推送上下文压缩结果失败：{error}")))?;
     }
 
-    let mut last_tool_signature = String::new();
-    let mut identical_tool_calls = 0_u8;
-
     loop {
         if context_action == ContextAction::Chat {
             let estimated_tokens = estimate_payload_tokens(&transcript, &tool_specs);
@@ -803,13 +804,6 @@ pub async fn run_agent_loop(
                 return Ok(true);
             }
             let args = call.parsed_args();
-            let signature = format!("{}\0{}", call.name, args);
-            if signature == last_tool_signature {
-                identical_tool_calls = identical_tool_calls.saturating_add(1);
-            } else {
-                last_tool_signature = signature;
-                identical_tool_calls = 1;
-            }
             let timeout_ms =
                 (call.name == "bash").then(|| tools::bash::effective_timeout_ms(&args));
             on_event
@@ -820,26 +814,6 @@ pub async fn run_agent_loop(
                     timeout_ms,
                 })
                 .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
-
-            if identical_tool_calls >= MAX_IDENTICAL_TOOL_CALLS {
-                let output = format!(
-                    "重复调用保护：工具 {} 使用相同参数连续调用了 {} 次，任务已停止。请检查前一次结果或改用其他方法",
-                    call.name, identical_tool_calls
-                );
-                on_event
-                    .send(ChatEvent::ToolResult {
-                        id: call.id.clone(),
-                        output: output.clone(),
-                        is_error: true,
-                        duration_ms: 0,
-                        exit_code: None,
-                        timed_out: false,
-                        cancelled: false,
-                        truncated: false,
-                    })
-                    .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
-                return Err(ChatFailure::message(output));
-            }
 
             // Tool specs are a capability hint to the model, not a security
             // boundary. Reject hallucinated or adversarial builtin calls again
@@ -870,8 +844,9 @@ pub async fn run_agent_loop(
 
             // Permission gate.
             let mut allowed = true;
-            if !broker.is_session_allowed(request_id, &call.name)
-                && needs_approval(env.permission_mode, &call.name, &args, &env.workspace)
+            let scope = crate::permission::approval_scope(&call.name, &args);
+            if !broker.is_session_allowed(request_id, &scope.key)
+                && needs_approval(env.permission_mode, &call.name)
             {
                 let perm_id = uuid::Uuid::new_v4().to_string();
                 let rx = broker.register(&perm_id);
@@ -880,13 +855,15 @@ pub async fn run_agent_loop(
                         id: perm_id.clone(),
                         tool: call.name.clone(),
                         description: permission_description(&call.name, &args),
+                        scope: scope.label.clone(),
                         args: args.clone(),
                     })
                     .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
                 match broker.wait(&perm_id, rx, cancel).await {
-                    Decision::Allow => {}
-                    Decision::AllowAlways => broker.allow_for_session(request_id, &call.name),
-                    Decision::Deny => allowed = false,
+                    Decision::Accept => {}
+                    Decision::AcceptForSession => broker.allow_for_session(request_id, &scope.key),
+                    Decision::Decline => allowed = false,
+                    Decision::Cancel => return Ok(true),
                 }
                 if cancel.is_cancelled() {
                     return Ok(true);

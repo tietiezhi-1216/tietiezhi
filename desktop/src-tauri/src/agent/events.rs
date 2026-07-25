@@ -58,6 +58,7 @@ pub enum ChatEvent {
         id: String,
         tool: String,
         description: String,
+        scope: String,
         args: Value,
     },
     Retrying {

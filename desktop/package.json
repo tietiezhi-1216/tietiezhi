@@ -12,6 +12,7 @@
     "build:store": "tsc --noEmit && vite build --mode store",
     "preview": "vite preview",
     "check:codex-parity": "node scripts/check-codex-parity.mjs",
+    "test:permission-ui": "node scripts/check-permission-prompt.mjs",
     "typecheck": "tsc --noEmit",
     "version:timestamp": "node scripts/set-release-version.mjs",
     "tauri": "tauri"

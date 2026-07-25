@@ -14,6 +14,7 @@ import type {
   ChatAttachment,
   DeviceCore,
   ModelInfo,
+  PermissionDecision,
   Provider,
   TietiezhiConfig,
   TietiezhiDevice,
@@ -659,6 +660,7 @@ export function installTauriMock(): void {
       tool: "bash",
       description: "执行命令：ls -la",
       args: { command: "ls -la" },
+      scope: "命令：ls -la",
     });
     // Wait for permission_respond (or cancel).
     pendingPermission = null;
@@ -666,15 +668,29 @@ export function installTauriMock(): void {
       if (pendingPermission != null || state.cancelled.has(requestId)) break;
       await sleep(100);
     }
-    const decision = pendingPermission ?? "deny";
+    const decision =
+      (pendingPermission as PermissionDecision | null) ?? "decline";
     emit({ type: "toolCallStart", id: "call_2", name: "bash", args: { command: "ls -la" } });
     await sleep(400);
+    if (decision === "cancel") {
+      emit({
+        type: "toolResult",
+        id: "call_2",
+        output: "用户停止了此操作",
+        isError: true,
+        cancelled: true,
+      });
+      emit({ type: "done", cancelled: true });
+      push(channel, i, { end: true });
+      state.cancelled.delete(requestId);
+      return;
+    }
     emit(
-      decision === "deny"
+      decision === "decline"
         ? { type: "toolResult", id: "call_2", output: "用户拒绝了此操作", isError: true }
         : { type: "toolResult", id: "call_2", output: "total 8\ndrwxr-xr-x  demo", isError: false },
     );
-    for (const ch of "已完成：文件读取成功" + (decision === "deny" ? "，命令被拒绝。" : "，命令执行完毕。")) {
+    for (const ch of "已完成：文件读取成功" + (decision === "decline" ? "，命令被拒绝。" : "，命令执行完毕。")) {
       emit({ type: "delta", content: ch });
       await sleep(20);
     }

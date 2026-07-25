@@ -45,6 +45,7 @@ import type {
   ChatContentPart,
   ChatEvent,
   ChatMessage,
+  PermissionDecision,
   TietiezhiTimelineMessage,
 } from "@/lib/api";
 import { notifyActionableGatewayError } from "@/lib/gateway-feedback";
@@ -366,11 +367,11 @@ export function TietiezhiPage() {
     if (requestIdRef.current != null) void chatCancel(requestIdRef.current);
   };
 
-  const answerPermission = (decision: "allow" | "deny") => {
+  const answerPermission = (decision: PermissionDecision) => {
     if (!permission) return;
     void permissionRespond(permission.id, decision);
     setPermission(null);
-    setStatus(decision === "allow" ? "正在执行操作…" : "已取消操作");
+    setStatus(decision === "accept" ? "正在执行操作…" : "已拒绝操作");
   };
 
   const composer = (
@@ -451,10 +452,10 @@ export function TietiezhiPage() {
               {permission && (
                 <div className="mb-2 flex items-center gap-3 rounded-lg border px-3 py-2 text-sm">
                   <span className="min-w-0 flex-1 truncate">{permission.description}</span>
-                  <Button variant="ghost" size="sm" onClick={() => answerPermission("deny")}>
+                  <Button variant="ghost" size="sm" onClick={() => answerPermission("decline")}>
                     取消
                   </Button>
-                  <Button size="sm" onClick={() => answerPermission("allow")}>
+                  <Button size="sm" onClick={() => answerPermission("accept")}>
                     允许
                   </Button>
                 </div>

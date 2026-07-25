@@ -105,10 +105,7 @@ pub const ALL_TOOLS: &[&str] = &[
 
 /// Read-only tools are auto-allowed in the "auto" permission mode.
 pub fn is_read_only(name: &str) -> bool {
-    matches!(
-        name,
-        "read_file" | "list_dir" | "glob" | "grep" | "fetch" | "skill"
-    )
+    matches!(name, "read_file" | "list_dir" | "glob" | "grep" | "skill")
 }
 
 fn spec(name: &str, description: &str, parameters: Value) -> Value {

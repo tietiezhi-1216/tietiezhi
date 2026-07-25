@@ -51,7 +51,7 @@ pub fn compose(
     prompt.push_str(
         "\n\n# 工具执行规则\n\
 - 优先使用最专用的工具：读写和修改文本用 read_file、write_file、edit_file，检索用 glob、grep；不要为了简单文件操作绕到 shell。\n\
-- 调用工具后必须检查实际结果。失败后先根据错误换方法，不要用完全相同的参数连续重试；相同调用连续 3 次会触发循环保护并停止任务。\n\
+- 调用工具后必须检查实际结果。失败后先根据错误换方法，不要无视前一次结果机械重复；运行时不会按固定工具次数终止复杂任务。\n\
 - bash 只运行非交互、会自行结束的前台命令。不要运行等待键盘输入、打开 GUI、watch、开发服务器或常驻守护进程的命令；确需较长时间时显式设置合理的 timeout_ms。\n\
 - 使用外部程序前先确认工作区和依赖是否存在。缺少 Python、Excel 等能力时，改用现有工具可真实生成的格式或如实说明，不要反复尝试不存在的命令。\n\
 - 不得通过修改扩展名伪造二进制文件。无法真正生成 XLSX 时应生成 Markdown 或 UTF-8 CSV，并明确其真实格式；不得把 HTML 命名为 .xls/.xlsx。\n\
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn execution_rules_survive_custom_prompts() {
         let p = compose("", "自定义智能体", "/ws", &[], TaskMode::Code);
-        assert!(p.contains("相同调用连续 3 次"));
+        assert!(p.contains("不会按固定工具次数终止"));
         assert!(p.contains("不得通过修改扩展名伪造二进制文件"));
         assert!(p.contains("/compact"));
     }

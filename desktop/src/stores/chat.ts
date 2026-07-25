@@ -72,6 +72,7 @@ export type ChatItem =
       tool: string;
       description: string;
       args: unknown;
+      scope: string;
       decision?: PermissionDecision;
     })
   | (ItemBase & {
@@ -181,6 +182,26 @@ const contextCommand = (
   }
 };
 
+const normalizePermissionDecision = (
+  decision: StoredMessage["decision"],
+): PermissionDecision | undefined => {
+  switch (decision) {
+    case "accept":
+    case "acceptForSession":
+    case "decline":
+    case "cancel":
+      return decision;
+    case "allow":
+      return "accept";
+    case "allowAlways":
+      return "acceptForSession";
+    case "deny":
+      return "decline";
+    default:
+      return undefined;
+  }
+};
+
 const toItems = (messages: StoredMessage[]): ChatItem[] =>
   messages.map((m): ChatItem => {
     const base = { id: nextId++, createdAt: m.createdAt };
@@ -230,7 +251,8 @@ const toItems = (messages: StoredMessage[]): ChatItem[] =>
         tool: m.toolName ?? "",
         description: m.content ?? "",
         args: m.toolArgs,
-        decision: m.decision,
+        scope: m.permissionScope ?? "",
+        decision: normalizePermissionDecision(m.decision),
       };
     }
     if (m.kind === "error" || m.error) {
@@ -310,6 +332,7 @@ const toStored = (items: ChatItem[]): StoredMessage[] =>
         toolName: it.tool,
         content: it.description,
         toolArgs: it.args,
+        permissionScope: it.scope,
         decision: it.decision,
       };
     }
@@ -1152,6 +1175,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
                   tool: event.tool,
                   description: event.description,
                   args: event.args,
+                  scope: event.scope,
                   createdAt: Date.now(),
                 });
                 break;

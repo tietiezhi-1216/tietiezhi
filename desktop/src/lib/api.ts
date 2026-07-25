@@ -500,7 +500,8 @@ export interface StoredMessage {
   toolExitCode?: number;
   toolTimedOut?: boolean;
   toolTruncated?: boolean;
-  decision?: PermissionDecision;
+  decision?: PermissionDecision | LegacyPermissionDecision;
+  permissionScope?: string;
   model?: string;
   providerId?: string;
   promptTokens?: number;
@@ -593,7 +594,13 @@ export interface SaveConversationResult {
   title: string;
 }
 
-export type PermissionDecision = "allow" | "allowAlways" | "deny";
+export type PermissionDecision =
+  | "accept"
+  | "acceptForSession"
+  | "decline"
+  | "cancel";
+
+export type LegacyPermissionDecision = "allow" | "allowAlways" | "deny";
 
 export type ChatEvent =
   | { type: "started"; model: string }
@@ -637,6 +644,7 @@ export type ChatEvent =
       tool: string;
       description: string;
       args: unknown;
+      scope: string;
     }
   | {
       type: "retrying";
