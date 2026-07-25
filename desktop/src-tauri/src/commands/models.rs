@@ -16,10 +16,11 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub use crate::agent::context::DEFAULT_CONTEXT_WINDOW_TOKENS;
 
 /// What a model can be used for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelKind {
     /// Text / multimodal chat completions.
+    #[default]
     Chat,
     /// Speech-to-text.
     Asr,
@@ -34,12 +35,6 @@ pub enum ModelKind {
     Embedding,
     /// Recognised but not usable by this app (rerank, moderation, …).
     Other,
-}
-
-impl Default for ModelKind {
-    fn default() -> Self {
-        Self::Chat
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -422,7 +417,7 @@ where
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Stored {
-        Info(ModelInfo),
+        Info(Box<ModelInfo>),
         Id(String),
     }
 
@@ -430,7 +425,7 @@ where
     Ok(raw
         .into_iter()
         .map(|m| match m {
-            Stored::Info(info) => info,
+            Stored::Info(info) => *info,
             Stored::Id(id) => ModelInfo::new(id),
         })
         .collect())

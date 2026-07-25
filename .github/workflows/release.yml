@@ -58,9 +58,68 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
 
+  quality:
+    name: Codex GA release gate
+    needs: prepare
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: desktop/package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: desktop/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            desktop/src-tauri
+            crates/agent-state
+            crates/agent-core
+            crates/agent-stability
+          key: codex-ga
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate Codex release invariants
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          pnpm test:codex-release
+          pnpm check:codex-parity
+          pnpm check:codex-schema
+          pnpm test:codex-runtime-switch
+
+      - name: Audit JavaScript dependencies
+        run: pnpm audit --audit-level low
+
+      - name: Audit Rust dependencies
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit --file src-tauri/Cargo.lock
+
+      - name: Verify migration rollback and fault recovery
+        run: |
+          cargo test --manifest-path ../crates/agent-state/Cargo.toml
+          cargo test --manifest-path ../crates/agent-core/Cargo.toml legacy_import_preserves_the_rollback_snapshot_byte_for_byte
+          cargo test --manifest-path ../crates/agent-stability/Cargo.toml -- --test-threads=1
+
   build:
     name: Build (${{ matrix.platform }})
-    needs: prepare
+    needs: [prepare, quality]
     strategy:
       fail-fast: false
       matrix:
@@ -109,6 +168,27 @@ jobs:
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Validate release signing configuration
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "缺少 Tauri updater 签名私钥"; exit 1; }
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ] || { echo "缺少 Tauri updater 签名密码"; exit 1; }
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              [ -n "${!name}" ] || { echo "缺少 macOS 签名/公证配置：$name"; exit 1; }
+            done
+          fi
 
       - name: Build signed bundles
         env:

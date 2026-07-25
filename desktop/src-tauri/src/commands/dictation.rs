@@ -238,6 +238,7 @@ pub struct PolishOptions {
 /// (task-boundary guard + output language + generic ASR-correction guide) and
 /// reuses the chat streaming path. Deltas/outcome arrive on `on_event`.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn polish_stream(
     app: AppHandle,
     state: State<'_, AppState>,

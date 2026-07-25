@@ -143,6 +143,9 @@ jobs:
       - name: Check Workspace Codex Runtime switch
         run: pnpm test:codex-runtime-switch
 
+      - name: Check Codex GA release invariants
+        run: pnpm test:codex-release
+
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
 

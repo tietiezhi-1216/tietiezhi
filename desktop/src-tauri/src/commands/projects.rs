@@ -205,7 +205,7 @@ pub(crate) fn mark_used(app: &AppHandle, id: &str) -> Result<Project, String> {
 pub fn list_projects(app: AppHandle) -> Result<Vec<Project>, String> {
     let _guard = store_lock().lock().map_err(|_| "项目列表锁已损坏")?;
     let mut projects = read_unlocked(&app)?;
-    projects.sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
+    projects.sort_by_key(|project| std::cmp::Reverse(project.last_opened_at));
     Ok(projects)
 }
 

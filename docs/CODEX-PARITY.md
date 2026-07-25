@@ -77,7 +77,7 @@
 | R36 | 运维能力 | 已完成 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md | OpenAI proprietary Sentry, Statsig and attestation issuers are service-mapped rather than copied; telemetry and feedback networking remain opt-in through explicit Tietiezhi endpoints. |
 | R37 | 稳定性工程 | 已完成 | crates/agent-stability; crates/agent-exec/src/manager.rs; .github/workflows/codex-soak.yml; docs/CODEX-STABILITY.md | 定时 Soak 由 GitHub macOS/Windows runner 持续验证，常规 CI 使用有界快速矩阵。 |
 | R38 | 迁移切换 | 已完成 | desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md | 旧 task.json/legacy_checkpoint 保留为兼容镜像与回滚锚点；LegacyChatEvent 只用于 UI 投影、旧持久记录和独立铁铁汁 Companion，不是 Workspace 执行协议。 |
-| R39 | 正式发布 | 待开始 |  |  |
+| R39 | 正式发布 | 已完成 | desktop/scripts/check-codex-release.mjs; docs/CODEX-RELEASE.md; crates/agent-core legacy rollback test; desktop/src-tauri/tauri.conf.json CSP; .github/workflows/release.yml GA/signing/audit gates; cargo/pnpm audit; macOS/Windows release workflow | 实际 macOS 签名/公证、Windows 安装包与 Updater 资产由版本 Tag 的 release.yml 在真实平台完成，发布成功后才对外宣布。 |
 
 ## Client Requests
 

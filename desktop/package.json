@@ -27,6 +27,7 @@
     "test:codex-remote-realtime-ui": "node scripts/check-remote-realtime-ui.mjs",
     "test:codex-runtime-diagnostics-ui": "node scripts/check-runtime-diagnostics-ui.mjs",
     "test:codex-runtime-switch": "node scripts/check-codex-runtime-switch.mjs",
+    "test:codex-release": "node scripts/check-codex-release.mjs",
     "test:codex-protocol-ts": "tsc -p ../shared/codex/v2/tsconfig.json",
     "typecheck": "tsc --noEmit",
     "version:timestamp": "node scripts/set-release-version.mjs",
@@ -54,7 +55,6 @@
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
-    "shadcn": "^4.13.0",
     "tailwind-merge": "^3.6.0",
     "zustand": "^5.0.14"
   },

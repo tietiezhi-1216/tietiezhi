@@ -45,7 +45,7 @@ pub fn glob_tool(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
             }
         }
     }
-    hits.sort_by(|a, b| b.0.cmp(&a.0));
+    hits.sort_by_key(|hit| std::cmp::Reverse(hit.0));
     hits.truncate(MAX_GLOB_RESULTS);
     if hits.is_empty() {
         return Ok("[无匹配文件]".into());

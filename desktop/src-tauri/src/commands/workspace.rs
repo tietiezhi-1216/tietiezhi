@@ -470,7 +470,7 @@ fn summarize_workspace(
                 .unwrap_or(0),
         });
     }
-    files.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
+    files.sort_by_key(|file| std::cmp::Reverse(file.modified_at));
     let deliverables = files
         .iter()
         .filter(|file| {

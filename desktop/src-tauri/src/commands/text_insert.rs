@@ -75,10 +75,10 @@ pub fn deliver_text(text: String) -> Result<DeliverResult, String> {
                 needs_accessibility: false,
             });
         }
-        return Ok(DeliverResult {
+        Ok(DeliverResult {
             inserted: false,
             needs_accessibility: false,
-        });
+        })
     }
 
     #[cfg(target_os = "windows")]

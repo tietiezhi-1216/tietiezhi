@@ -9313,4 +9313,76 @@ mod tests {
         assert_eq!(result(&resumed)["thread"]["id"], id);
         assert_eq!(result(&resumed)["thread"]["name"], "Existing task");
     }
+
+    #[test]
+    fn legacy_import_preserves_the_rollback_snapshot_byte_for_byte() {
+        let (temp, manager) = manager();
+        let id = Uuid::now_v7().to_string();
+        let thread_root = temp.path().join("threads").join(&id);
+        fs::create_dir_all(&thread_root).unwrap();
+        let task_path = thread_root.join("task.json");
+        let legacy_task = br#"{
+  "schemaVersion": 4,
+  "id": "rollback-source",
+  "title": "Rollback source",
+  "messages": [{"kind":"message","role":"user","content":"keep me"}]
+}
+"#;
+        fs::write(&task_path, legacy_task).unwrap();
+        let rollout_path = thread_root.join("rollout.jsonl");
+        let appender = RolloutAppender::open(&rollout_path).unwrap();
+        appender
+            .ensure_session_meta(&id, 10, &rollout_path)
+            .unwrap();
+        appender
+            .append_checkpoint(
+                &id,
+                20,
+                1,
+                &json!({
+                    "id":id,
+                    "title":"Rollback source",
+                    "messages":[{"kind":"message","role":"user","content":"keep me"}]
+                }),
+            )
+            .unwrap();
+        appender.sync_data().unwrap();
+
+        manager
+            .import_legacy_thread(LegacyThreadImport {
+                id: id.clone(),
+                title: "Rollback source".into(),
+                cwd: temp.path().join("workspace"),
+                created_at_ms: 10,
+                updated_at_ms: 20,
+                model: Some("gpt-test".into()),
+                model_provider: Some("test-provider".into()),
+                task_mode: "code".into(),
+                messages: vec![json!({
+                    "kind":"message",
+                    "role":"user",
+                    "content":"keep me"
+                })],
+            })
+            .unwrap();
+
+        assert_eq!(fs::read(&task_path).unwrap(), legacy_task);
+        let recovered = StateStore::open(temp.path().join("state"))
+            .unwrap()
+            .recover_rollout(&rollout_path)
+            .unwrap();
+        assert_eq!(
+            recovered
+                .checkpoint
+                .as_ref()
+                .and_then(|checkpoint| checkpoint.payload["messages"][0]["content"].as_str()),
+            Some("keep me")
+        );
+        assert!(
+            recovered
+                .session_meta
+                .as_ref()
+                .is_some_and(|canonical| canonical["model"] == "gpt-test")
+        );
+    }
 }

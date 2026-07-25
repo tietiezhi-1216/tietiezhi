@@ -1388,9 +1388,9 @@
     {
       "id": "R39",
       "name": "正式发布",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "实际 macOS 签名/公证、Windows 安装包与 Updater 资产由版本 Tag 的 release.yml 在真实平台完成，发布成功后才对外宣布。",
+      "evidence": "desktop/scripts/check-codex-release.mjs; docs/CODEX-RELEASE.md; crates/agent-core legacy rollback test; desktop/src-tauri/tauri.conf.json CSP; .github/workflows/release.yml GA/signing/audit gates; cargo/pnpm audit; macOS/Windows release workflow"
     }
   ]
 }

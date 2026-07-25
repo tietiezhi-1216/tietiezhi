@@ -453,3 +453,29 @@ R38 的 App Server 初始化、连接能力协商和外部 Agent 配置迁移行
 - `codex-rs/app-server-protocol/src/protocol/v2`
 
 本地实现位于 `desktop/src-tauri/src/commands/codex.rs`、`crates/agent-core` 和 `crates/agent-state`。外部 Claude/Cursor 数据只按固定协议转换为本地 Codex 配置与 canonical rollout，不运行、链接或分发外部 Agent 或上游 Codex 二进制。
+
+## shadcn Tailwind CSS
+
+`desktop/src/styles/shadcn-tailwind.css` 固定自 `shadcn` 4.15.0 的 `dist/tailwind.css`。为避免发布工具 CLI 的 Node 依赖进入桌面供应链，本仓库只保留构建所需的静态 CSS。
+
+MIT License
+
+Copyright (c) 2023 shadcn
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

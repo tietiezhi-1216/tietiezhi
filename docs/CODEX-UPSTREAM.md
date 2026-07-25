@@ -151,3 +151,5 @@ R35 已源码实现 Remote Control 生命周期、配对/撤销、精确 Thread 
 R17 已补齐 Windows elevated Offline/Online identity、DPAPI、Firewall 代理端口补集规则和持久 WFP filters；真实 Windows runner 验证代理唯一出口。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
 
 R38 已完成 App Server `initialize`/`initialized` 协商、Claude/Cursor 外部配置迁移、旧任务原地 canonical 导入与 Workspace 执行切换。Work/Code 只通过 Thread、Turn、Item 和 Responses Runtime 执行；旧 `chat_stream` 与 `run_agent_loop` 已删除，独立铁铁汁 Companion 的兼容流不进入 Workspace。详细迁移、回滚和安全边界见 `docs/CODEX-MIGRATION.md`。
+
+R39 已建立 GA 发布门禁：完整协议账本、依赖与密钥审计、CSP、版本一致性、旧运行时禁止、旧任务字节级回滚测试、签名/公证配置校验，以及 macOS/Windows Tag 构建和 Updater 资产验证。详细流程见 `docs/CODEX-RELEASE.md`。
