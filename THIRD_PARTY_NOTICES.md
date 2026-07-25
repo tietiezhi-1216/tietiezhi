@@ -209,3 +209,14 @@ R17 的域名规则、私网目标拒绝、代理归因、HTTP/SOCKS5 出口和�
 - `codex-rs/sandboxing/src/seatbelt.rs`
 
 本地实现增加与现有 `PersistentApprovalStore`、Unified Exec 和 App Server `command/exec` 的适配；模型 API、Hosted Web Search 和用户 shell 不通过命令代理。
+
+R18 的绝对路径、Shell/PowerShell 解析、安全命令分类和 Starlark ExecPolicy 从以下 Apache-2.0 上游源码移植，没有链接、调用或打包上游二进制：
+
+- `codex-rs/utils/absolute-path/src`
+- `codex-rs/shell-command/src`
+- `codex-rs/execpolicy/src`
+- `codex-rs/core/src/exec_policy.rs`
+- `codex-rs/core/src/exec_policy_tests.rs`
+- `codex-rs/core/src/exec_policy_windows_tests.rs`
+
+移植目标分别为 `crates/agent-absolute-path`、`crates/agent-shell-command` 和 `crates/agent-execpolicy`；本地适配层将策略结果接入 Unified Exec、App Server 审批和 R14 持久规则。

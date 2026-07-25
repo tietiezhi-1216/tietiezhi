@@ -59,6 +59,8 @@ pub type CommandApprovalFuture = Pin<
 >;
 pub type CommandApprover =
     Arc<dyn Fn(CommandApprovalRequest) -> CommandApprovalFuture + Send + Sync + 'static>;
+pub type CommandPolicyEvaluator =
+    Arc<dyn Fn(CommandPolicyRequest) -> CommandPolicyOutcome + Send + Sync + 'static>;
 pub type PermissionsApprovalFuture =
     Pin<Box<dyn Future<Output = Result<PermissionsApprovalResponse, ToolError>> + Send + 'static>>;
 pub type PermissionsApprover =
@@ -110,6 +112,28 @@ pub struct CommandApprovalRequest {
     pub additional_permissions: Option<Value>,
     pub prefix_rule: Option<Vec<String>>,
     pub cancellation: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandPolicyRequest {
+    pub command: Vec<String>,
+    pub sandbox_restricted: bool,
+    pub requests_sandbox_override: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandPolicyOutcome {
+    Allow {
+        bypass_sandbox: bool,
+        proposed_amendment: Option<Vec<String>>,
+    },
+    Prompt {
+        reason: String,
+        proposed_amendment: Option<Vec<String>>,
+    },
+    Forbidden {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +223,10 @@ pub fn apply_patch_handler(
     }))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the Codex unified exec integration keeps independent runtime policy adapters explicit"
+)]
 pub fn unified_exec_handlers(
     manager: ExecManager,
     cwd: PathBuf,
@@ -207,6 +235,7 @@ pub fn unified_exec_handlers(
     approver: Option<CommandApprover>,
     observer: CommandObserver,
     network_preparer: Option<NetworkPreparer>,
+    policy_evaluator: Option<CommandPolicyEvaluator>,
 ) -> Vec<Arc<dyn ToolHandler>> {
     let sessions = Arc::new(Mutex::new(HashMap::new()));
     vec![
@@ -217,6 +246,7 @@ pub fn unified_exec_handlers(
             requires_approval,
             approver,
             network_preparer,
+            policy_evaluator,
             observer: observer.clone(),
             sessions: sessions.clone(),
         }),
@@ -344,6 +374,7 @@ struct ExecCommandHandler {
     requires_approval: bool,
     approver: Option<CommandApprover>,
     network_preparer: Option<NetworkPreparer>,
+    policy_evaluator: Option<CommandPolicyEvaluator>,
     observer: CommandObserver,
     sessions: Arc<Mutex<HashMap<String, CommandSession>>>,
 }
@@ -438,6 +469,7 @@ impl ToolHandler for ExecCommandHandler {
         let requires_approval = self.requires_approval;
         let approver = self.approver.clone();
         let network_preparer = self.network_preparer.clone();
+        let policy_evaluator = self.policy_evaluator.clone();
         let observer = self.observer.clone();
         let sessions = self.sessions.clone();
         Box::pin(async move {
@@ -483,20 +515,53 @@ impl ToolHandler for ExecCommandHandler {
                     "prefix_rule is only valid with require_escalated".into(),
                 ));
             }
+            let cwd = resolve_exec_cwd(&base_cwd, args.workdir.as_deref())?;
+            let cwd_display = cwd.to_string_lossy().into_owned();
+            let command = shell_argv(&args.cmd, args.shell.as_deref(), args.login);
+            let policy_outcome = policy_evaluator.as_ref().map(|evaluate| {
+                evaluate(CommandPolicyRequest {
+                    command: command.clone(),
+                    sandbox_restricted: base_sandbox_policy.is_restricted(),
+                    requests_sandbox_override: args.sandbox_permissions != "use_default",
+                })
+            });
+            if let Some(CommandPolicyOutcome::Forbidden { reason }) = &policy_outcome {
+                return Ok(command_failure_output(
+                    &invocation.call.call_id,
+                    &args.cmd,
+                    &cwd_display,
+                    reason,
+                ));
+            }
+            let policy_prompt = match &policy_outcome {
+                Some(CommandPolicyOutcome::Prompt {
+                    reason,
+                    proposed_amendment,
+                }) => Some((reason.clone(), proposed_amendment.clone())),
+                _ => None,
+            };
+            let should_prompt =
+                policy_prompt.is_some() || (policy_outcome.is_none() && requires_approval);
+            let policy_bypasses_sandbox = matches!(
+                policy_outcome,
+                Some(CommandPolicyOutcome::Allow {
+                    bypass_sandbox: true,
+                    ..
+                })
+            );
             if args.sandbox_permissions != "use_default"
-                && !requires_approval
+                && !should_prompt
                 && base_sandbox_policy.is_restricted()
+                && !policy_bypasses_sandbox
             {
                 return Ok(command_failure_output(
                     &invocation.call.call_id,
                     &args.cmd,
-                    &base_cwd.to_string_lossy(),
+                    &cwd_display,
                     "approval policy does not allow permission escalation",
                 ));
             }
-            let cwd = resolve_exec_cwd(&base_cwd, args.workdir.as_deref())?;
-            let cwd_display = cwd.to_string_lossy().into_owned();
-            if requires_approval {
+            if should_prompt {
                 let Some(approver) = approver else {
                     return Ok(command_failure_output(
                         &invocation.call.call_id,
@@ -511,15 +576,18 @@ impl ToolHandler for ExecCommandHandler {
                     item_id: invocation.call.call_id.clone(),
                     command: args.cmd.clone(),
                     cwd: cwd_display.clone(),
-                    reason: args
-                        .justification
-                        .clone()
+                    reason: policy_prompt
+                        .as_ref()
+                        .map(|(reason, _)| reason.clone())
+                        .or_else(|| args.justification.clone())
                         .or_else(|| Some("execute command".into())),
                     environment_id: "local".into(),
                     tty: args.tty,
                     sandbox_permissions: args.sandbox_permissions.clone(),
                     additional_permissions: args.additional_permissions.clone(),
-                    prefix_rule: args.prefix_rule.clone(),
+                    prefix_rule: policy_prompt
+                        .and_then(|(_, amendment)| amendment)
+                        .or_else(|| args.prefix_rule.clone()),
                     cancellation: invocation.cancellation.clone(),
                 })
                 .await?;
@@ -547,7 +615,6 @@ impl ToolHandler for ExecCommandHandler {
                 exec_owner(&invocation.thread_id, &invocation.turn_id),
                 &process_id,
             );
-            let command = shell_argv(&args.cmd, args.shell.as_deref(), args.login);
             let sandbox_policy = match args.sandbox_permissions.as_str() {
                 "require_escalated" => tietiezhi_agent_sandbox::SandboxPolicy::DangerFullAccess,
                 "with_additional_permissions" => base_sandbox_policy
@@ -556,6 +623,9 @@ impl ToolHandler for ExecCommandHandler {
                         &cwd,
                     )
                     .map_err(|error| ToolError::Handler(error.to_string()))?,
+                _ if policy_bypasses_sandbox => {
+                    tietiezhi_agent_sandbox::SandboxPolicy::DangerFullAccess
+                }
                 _ => base_sandbox_policy,
             };
             let prepared_network =
@@ -1931,6 +2001,7 @@ mod tests {
                 Ok(())
             }),
             None,
+            None,
         );
         let output = handlers[0]
             .handle(invocation(
@@ -1974,6 +2045,7 @@ mod tests {
             None,
             Arc::new(|_| Ok(())),
             None,
+            None,
         );
         let output = handlers[0]
             .handle(invocation(
@@ -2011,6 +2083,7 @@ mod tests {
             Some(approver),
             Arc::new(|_| Ok(())),
             None,
+            None,
         );
         let output = handlers[0]
             .handle(invocation(
@@ -2021,6 +2094,74 @@ mod tests {
             .unwrap();
         assert!(!output.success);
         assert_eq!(output.metadata.unwrap()["item"]["status"], "declined");
+    }
+
+    #[tokio::test]
+    async fn unified_exec_policy_prompt_forwards_exact_amendment() {
+        let temp = TempDir::new().unwrap();
+        let approver: CommandApprover = Arc::new(|request| {
+            Box::pin(async move {
+                assert_eq!(
+                    request.prefix_rule,
+                    Some(vec!["cargo".into(), "build".into()])
+                );
+                assert_eq!(request.reason.as_deref(), Some("build requires approval"));
+                Ok(CommandExecutionApprovalDecision::Accept)
+            })
+        });
+        let evaluator: CommandPolicyEvaluator = Arc::new(|_| CommandPolicyOutcome::Prompt {
+            reason: "build requires approval".into(),
+            proposed_amendment: Some(vec!["cargo".into(), "build".into()]),
+        });
+        let handlers = unified_exec_handlers(
+            ExecManager::default(),
+            temp.path().to_path_buf(),
+            tietiezhi_agent_sandbox::SandboxPolicy::DangerFullAccess,
+            false,
+            Some(approver),
+            Arc::new(|_| Ok(())),
+            None,
+            Some(evaluator),
+        );
+        let output = handlers[0]
+            .handle(invocation(
+                ToolName::plain("exec_command"),
+                if cfg!(windows) {
+                    json!({"cmd":"Write-Output approved","yield_time_ms":2000})
+                } else {
+                    json!({"cmd":"printf approved","yield_time_ms":2000})
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(output.success);
+    }
+
+    #[tokio::test]
+    async fn unified_exec_policy_forbidden_never_requests_approval() {
+        let temp = TempDir::new().unwrap();
+        let evaluator: CommandPolicyEvaluator = Arc::new(|_| CommandPolicyOutcome::Forbidden {
+            reason: "blocked by rule".into(),
+        });
+        let handlers = unified_exec_handlers(
+            ExecManager::default(),
+            temp.path().to_path_buf(),
+            tietiezhi_agent_sandbox::SandboxPolicy::DangerFullAccess,
+            false,
+            None,
+            Arc::new(|_| Ok(())),
+            None,
+            Some(evaluator),
+        );
+        let output = handlers[0]
+            .handle(invocation(
+                ToolName::plain("exec_command"),
+                json!({"cmd":"this-command-must-not-run"}),
+            ))
+            .await
+            .unwrap();
+        assert!(!output.success);
+        assert!(output.content.as_str().unwrap().contains("blocked by rule"));
     }
 
     #[cfg(target_os = "macos")]
@@ -2072,6 +2213,7 @@ mod tests {
             None,
             Arc::new(|_| Ok(())),
             Some(preparer),
+            None,
         );
         let output = handlers[0]
             .handle(invocation(

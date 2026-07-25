@@ -43,7 +43,7 @@
 | macOS Seatbelt | `codex-rs/sandboxing/src/seatbelt.rs` | `crates/agent-sandbox` | R15 |
 | Windows Sandbox | `codex-rs/windows-sandbox-rs` | `crates/agent-sandbox` | R16 |
 | 网络策略 | `codex-rs/network-proxy` | `crates/agent-sandbox` | R17 |
-| ExecPolicy | `codex-rs/execpolicy`、`shell-command` | `crates/agent-approval` | R18 |
+| ExecPolicy | `codex-rs/execpolicy`、`shell-command`、`utils/absolute-path`、`core/src/exec_policy.rs` | `crates/agent-execpolicy`、`crates/agent-shell-command`、`crates/agent-absolute-path`、`crates/agent-tools` | R18 |
 | MCP 客户端 | `codex-rs/rmcp-client`、`core/src/mcp*.rs` | `crates/agent-mcp` | R19 |
 | AGENTS 与 World State 内容 | `codex-rs/core/src/context/world_state` | `crates/agent-context`、`crates/agent-config` | R20 |
 | 配置与 Requirements | `codex-rs/config`、`core/src/config` | `crates/agent-config` | R21 |
@@ -99,4 +99,4 @@ R14 已实现四种 Approval Policy、granular 分类、精确 Thread 会话缓�
 
 R15 已增加 `crates/agent-sandbox`，实现 macOS Seatbelt 的 read-only、workspace-write、danger-full-access、external sandbox、可写根、受保护元数据、临时目录和网络开关，并在 Pipe/PTY 上执行真实内核隔离测试。详细行为见 `docs/CODEX-SANDBOX-MACOS.md`。
 
-R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责把上游默认关闭的高级 TokenBudget 配置暴露到分层配置；R16 已完成 Windows 文件系统沙箱；R17 已实现归因代理和 macOS 代理唯一出口，但 Windows elevated identity/Firewall/WFP 风险仍开放；R18 仍需完成 ExecPolicy。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R18 已移植 Starlark ExecPolicy、Bash/PowerShell 解析、安全命令分类、host executable 和规则修订，并在 Unified Exec 创建进程前执行。R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责完整分层规则目录与 Requirements；R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

@@ -1210,9 +1210,9 @@
     {
       "id": "R18",
       "name": "ExecPolicy",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R21 still needs layered project/profile policy discovery and Requirements enforcement; R17 Windows elevated/WFP network isolation remains a release blocker.",
+      "evidence": "crates/agent-absolute-path; crates/agent-shell-command; crates/agent-execpolicy; crates/agent-tools dynamic pre-spawn policy; desktop persisted rules/default.rules; docs/CODEX-EXECPOLICY.md; 26 absolute-path, 141 shell, 13 execpolicy and 23 tool tests"
     },
     {
       "id": "R19",

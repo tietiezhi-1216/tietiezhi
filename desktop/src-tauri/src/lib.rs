@@ -52,6 +52,8 @@ pub struct AppState {
         Mutex<Option<tietiezhi_agent_approval::PersistentApprovalStore>>,
     /// PTY and pipe sessions shared by App Server command methods and model tools.
     pub(crate) codex_exec: tietiezhi_agent_exec::ExecManager,
+    /// Source-compatible Starlark command policy and safe-command classifier.
+    pub(crate) codex_execpolicy: tietiezhi_agent_execpolicy::ExecPolicyRuntime,
     /// Shared, execution-attributed HTTP/SOCKS network sandbox proxy.
     pub(crate) codex_network: tietiezhi_agent_network::NetworkRuntime,
     /// Unstable externally supplied ChatGPT tokens are intentionally memory-only.
@@ -103,6 +105,7 @@ pub fn run() {
             codex_session_approvals: tietiezhi_agent_approval::SessionApprovalStore::default(),
             codex_persistent_approvals: Mutex::new(None),
             codex_exec: tietiezhi_agent_exec::ExecManager::default(),
+            codex_execpolicy: tietiezhi_agent_execpolicy::ExecPolicyRuntime::default(),
             codex_network: tietiezhi_agent_network::NetworkRuntime::default(),
             codex_external_auth: Mutex::new(HashMap::new()),
         })

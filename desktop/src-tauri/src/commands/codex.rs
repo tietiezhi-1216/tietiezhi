@@ -10,16 +10,19 @@ use tietiezhi_agent_account::{
     ImmediateLogin,
 };
 use tietiezhi_agent_approval::{
-    category_approval_requirement, default_exec_approval_requirement, ApprovalCategory,
-    ApprovalKey, ApprovalRequirement, AskForApproval, CommandExecutionApprovalDecision,
-    CommandExecutionApprovalParams, FileChangeApprovalDecision, FileChangeApprovalParams,
-    PermissionsApprovalParams, PersistentApprovalRule, PersistentApprovalStore,
-    RoutedServerRequest as ApprovalServerRequest, SandboxAvailability,
+    category_approval_requirement, ApprovalCategory, ApprovalKey, ApprovalRequirement,
+    AskForApproval, CommandExecutionApprovalDecision, CommandExecutionApprovalParams,
+    FileChangeApprovalDecision, FileChangeApprovalParams, PermissionsApprovalParams,
+    PersistentApprovalRule, PersistentApprovalStore, RoutedServerRequest as ApprovalServerRequest,
 };
 use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
     CompactionExecutionSnapshot, DispatchOutput, RoutedNotification, RuntimeDefaults,
     ThreadManager, TurnExecutionSnapshot,
+};
+use tietiezhi_agent_execpolicy::{
+    ApprovalPolicy as ExecApprovalPolicy, EvaluationContext as ExecEvaluationContext,
+    ExecPolicyOutcome as RuntimeExecPolicyOutcome,
 };
 use tietiezhi_agent_model::{
     list_online_models, supports_original_image_detail, ModelError, OnlineModel, Reasoning,
@@ -36,8 +39,9 @@ use tietiezhi_agent_protocol::{
 use tietiezhi_agent_tools::builtins::{
     apply_patch_handler, context_remaining_handler, current_time_handler,
     request_permissions_handler, sleep_handler, unified_exec_handlers, view_image_handler,
-    web_search_handler, CommandApprovalRequest, CommandNetworkRequest, CommandRuntimeEvent,
-    FileChangeApprovalRequest, PermissionsApprovalRequest,
+    web_search_handler, CommandApprovalRequest, CommandNetworkRequest, CommandPolicyOutcome,
+    CommandPolicyRequest, CommandRuntimeEvent, FileChangeApprovalRequest,
+    PermissionsApprovalRequest,
 };
 use tietiezhi_agent_tools::{ToolCall, ToolCallRuntime, ToolPayload, ToolRegistry, ToolRouter};
 use tokio_util::sync::CancellationToken;
@@ -2291,12 +2295,6 @@ fn turn_tool_runtime(
     let sandbox_policy =
         tietiezhi_agent_sandbox::SandboxPolicy::from_value(snapshot.sandbox.clone())
             .map_err(|error| ModelError::Consumer(error.to_string()))?;
-    let sandbox_availability = match snapshot.sandbox.get("type").and_then(Value::as_str) {
-        Some("dangerFullAccess") => SandboxAvailability::Unrestricted,
-        Some("externalSandbox") => SandboxAvailability::External,
-        _ if cfg!(any(target_os = "macos", windows)) => SandboxAvailability::Restricted,
-        _ => SandboxAvailability::Unavailable,
-    };
     if approval_policy.allows(ApprovalCategory::RequestPermissions) {
         let permissions_app = app.clone();
         let permissions_manager = manager.clone();
@@ -2546,156 +2544,216 @@ fn turn_tool_runtime(
             ModelError::Consumer(format!("初始化 Codex apply_patch 失败：{error}"))
         })?,
     );
-    let command_approval_requirement = default_exec_approval_requirement(
-        approval_policy,
-        sandbox_availability,
-        /*trusted_read_only*/ false,
-    );
-    let requires_command_approval = !matches!(
-        command_approval_requirement,
-        ApprovalRequirement::Skip { .. }
-    );
+    let execpolicy_runtime = app.state::<AppState>().codex_execpolicy.clone();
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| ModelError::Consumer(format!("无法定位 ExecPolicy 配置目录：{error}")))?;
+    let execpolicy_rules_path = app_data
+        .join("agent-runtime")
+        .join("rules")
+        .join("default.rules");
+    if execpolicy_rules_path.exists() {
+        let loaded =
+            tietiezhi_agent_execpolicy::ExecPolicyRuntime::load_files([&execpolicy_rules_path])
+                .map_err(|error| ModelError::Consumer(format!("加载 ExecPolicy 失败：{error}")))?;
+        execpolicy_runtime.merge(&loaded.policy());
+    }
+    let persisted_rules = persistent_approval_store(app, &app.state::<AppState>())
+        .map_err(ModelError::Consumer)?
+        .snapshot()
+        .map_err(|error| ModelError::Consumer(error.to_string()))?;
+    for rule in persisted_rules.rules {
+        if let PersistentApprovalRule::ExecPolicy { amendment } = rule {
+            execpolicy_runtime
+                .add_allow_prefix(&amendment)
+                .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        }
+    }
+    let runtime_approval_policy = match approval_policy {
+        AskForApproval::UnlessTrusted => ExecApprovalPolicy::Untrusted,
+        AskForApproval::OnRequest => ExecApprovalPolicy::OnRequest,
+        AskForApproval::Never => ExecApprovalPolicy::Never,
+        AskForApproval::Granular(config) => ExecApprovalPolicy::Granular {
+            rules: config.rules,
+            sandbox_approval: config.sandbox_approval,
+        },
+    };
+    let policy_runtime = execpolicy_runtime.clone();
+    let policy_evaluator = Arc::new(move |request: CommandPolicyRequest| {
+        match policy_runtime.evaluate(
+            &request.command,
+            ExecEvaluationContext {
+                approval_policy: runtime_approval_policy,
+                sandbox_restricted: request.sandbox_restricted,
+                requests_sandbox_override: request.requests_sandbox_override,
+            },
+        ) {
+            RuntimeExecPolicyOutcome::Allow {
+                bypass_sandbox,
+                proposed_amendment,
+            } => CommandPolicyOutcome::Allow {
+                bypass_sandbox,
+                proposed_amendment,
+            },
+            RuntimeExecPolicyOutcome::Prompt {
+                reason,
+                proposed_amendment,
+            } => CommandPolicyOutcome::Prompt {
+                reason,
+                proposed_amendment,
+            },
+            RuntimeExecPolicyOutcome::Forbidden { reason } => {
+                CommandPolicyOutcome::Forbidden { reason }
+            }
+        }
+    }) as tietiezhi_agent_tools::builtins::CommandPolicyEvaluator;
     let command_approval_app = app.clone();
     let command_approval_manager = manager.clone();
-    let command_requirement = command_approval_requirement.clone();
-    let command_approver = requires_command_approval.then(|| {
-        Arc::new(move |request: CommandApprovalRequest| {
-            let app = command_approval_app.clone();
-            let manager = command_approval_manager.clone();
-            let requirement = command_requirement.clone();
-            Box::pin(async move {
-                if let ApprovalRequirement::Forbidden { .. } = requirement {
-                    return Ok(CommandExecutionApprovalDecision::Decline);
+    let command_execpolicy_runtime = execpolicy_runtime.clone();
+    let command_execpolicy_rules_path = execpolicy_rules_path.clone();
+    let command_approver = Some(Arc::new(move |request: CommandApprovalRequest| {
+        let app = command_approval_app.clone();
+        let manager = command_approval_manager.clone();
+        let execpolicy_runtime = command_execpolicy_runtime.clone();
+        let execpolicy_rules_path = command_execpolicy_rules_path.clone();
+        Box::pin(async move {
+            let keys = vec![ApprovalKey::Command {
+                environment_id: request.environment_id.clone(),
+                command: vec![request.command.clone()],
+                cwd: request.cwd.clone(),
+                tty: request.tty,
+                sandbox_permissions: request.sandbox_permissions.clone(),
+                additional_permissions: request.additional_permissions.clone(),
+            }];
+            let state = app.state::<AppState>();
+            if state
+                .codex_session_approvals
+                .contains_all_for(&request.thread_id, &keys)
+            {
+                return Ok(CommandExecutionApprovalDecision::AcceptForSession);
+            }
+            let waiting = manager
+                .set_thread_status(
+                    &request.thread_id,
+                    json!({"type":"active","activeFlags":["waitingOnApproval"]}),
+                )
+                .map_err(|error| {
+                    tietiezhi_agent_tools::ToolError::Handler(format!(
+                        "set command approval status: {error:?}"
+                    ))
+                })?;
+            emit_notifications(&app, &waiting)
+                .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+            let state = app.state::<AppState>();
+            let recipients = manager
+                .thread_recipients(&request.thread_id)
+                .map_err(|error| {
+                    tietiezhi_agent_tools::ToolError::Handler(format!(
+                        "resolve command approval recipients: {error:?}"
+                    ))
+                })?;
+            let started_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                .min(i64::MAX as u128) as i64;
+            let pending = state
+                .codex_approval_requests
+                .begin_command_execution(
+                    recipients,
+                    CommandExecutionApprovalParams {
+                        thread_id: request.thread_id.clone(),
+                        turn_id: request.turn_id.clone(),
+                        item_id: request.item_id.clone(),
+                        approval_id: None,
+                        command: Some(request.command),
+                        cwd: Some(request.cwd),
+                        command_actions: None,
+                        environment_id: Some(request.environment_id.clone()),
+                        network_approval_context: None,
+                        proposed_execpolicy_amendment: request.prefix_rule.clone(),
+                        proposed_network_policy_amendments: None,
+                        reason: request.reason,
+                        started_at_ms,
+                    },
+                )
+                .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?;
+            let request_id = pending.request.id.clone();
+            emit_approval_server_request(&app, &pending.request)
+                .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+            let decision = tokio::select! {
+                result = pending.receiver => result
+                    .map_err(|_| tietiezhi_agent_tools::ToolError::Handler(
+                        "command approval channel closed".into()
+                    ))?
+                    .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?,
+                () = request.cancellation.cancelled() => {
+                    let _ = state.codex_approval_requests.cancel(&request_id);
+                    CommandExecutionApprovalDecision::Cancel
                 }
-                let keys = vec![ApprovalKey::Command {
-                    environment_id: request.environment_id.clone(),
-                    command: vec![request.command.clone()],
-                    cwd: request.cwd.clone(),
-                    tty: request.tty,
-                    sandbox_permissions: request.sandbox_permissions.clone(),
-                    additional_permissions: request.additional_permissions.clone(),
-                }];
-                let state = app.state::<AppState>();
-                if state
+            };
+            if decision == CommandExecutionApprovalDecision::AcceptForSession {
+                state
                     .codex_session_approvals
-                    .contains_all_for(&request.thread_id, &keys)
-                {
-                    return Ok(CommandExecutionApprovalDecision::AcceptForSession);
-                }
-                let waiting = manager
-                    .set_thread_status(
-                        &request.thread_id,
-                        json!({"type":"active","activeFlags":["waitingOnApproval"]}),
-                    )
+                    .approve_for(&request.thread_id, &keys)
                     .map_err(|error| {
-                        tietiezhi_agent_tools::ToolError::Handler(format!(
-                            "set command approval status: {error:?}"
-                        ))
+                        tietiezhi_agent_tools::ToolError::Handler(error.to_string())
                     })?;
-                emit_notifications(&app, &waiting)
-                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
-                let state = app.state::<AppState>();
-                let recipients = manager
-                    .thread_recipients(&request.thread_id)
-                    .map_err(|error| {
-                        tietiezhi_agent_tools::ToolError::Handler(format!(
-                            "resolve command approval recipients: {error:?}"
-                        ))
-                    })?;
-                let started_at_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
-                    .min(i64::MAX as u128) as i64;
-                let pending = state
-                    .codex_approval_requests
-                    .begin_command_execution(
-                        recipients,
-                                CommandExecutionApprovalParams {
-                            thread_id: request.thread_id.clone(),
-                            turn_id: request.turn_id.clone(),
-                            item_id: request.item_id.clone(),
-                            approval_id: None,
-                            command: Some(request.command),
-                            cwd: Some(request.cwd),
-                                    command_actions: None,
-                                    environment_id: Some(request.environment_id.clone()),
-                                    network_approval_context: None,
-                                    proposed_execpolicy_amendment: request.prefix_rule.clone(),
-                                    proposed_network_policy_amendments: None,
-                            reason: request.reason,
-                            started_at_ms,
-                        },
+            }
+            match &decision {
+                CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
+                    execpolicy_amendment,
+                } => {
+                    execpolicy_runtime
+                        .add_allow_prefix(execpolicy_amendment)
+                        .map_err(|error| {
+                            tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                        })?;
+                    tietiezhi_agent_execpolicy::blocking_append_allow_prefix_rule(
+                        &execpolicy_rules_path,
+                        execpolicy_amendment,
                     )
                     .map_err(|error| {
                         tietiezhi_agent_tools::ToolError::Handler(error.to_string())
                     })?;
-                let request_id = pending.request.id.clone();
-                emit_approval_server_request(&app, &pending.request)
-                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
-                let decision = tokio::select! {
-                    result = pending.receiver => result
-                        .map_err(|_| tietiezhi_agent_tools::ToolError::Handler(
-                            "command approval channel closed".into()
-                        ))?
-                        .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?,
-                    () = request.cancellation.cancelled() => {
-                        let _ = state.codex_approval_requests.cancel(&request_id);
-                        CommandExecutionApprovalDecision::Cancel
-                    }
-                };
-                if decision == CommandExecutionApprovalDecision::AcceptForSession {
-                    state
-                        .codex_session_approvals
-                        .approve_for(&request.thread_id, &keys)
-                        .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(
-                            error.to_string()
-                        ))?;
+                    persistent_approval_store(&app, &state)
+                        .map_err(tietiezhi_agent_tools::ToolError::Handler)?
+                        .append(PersistentApprovalRule::ExecPolicy {
+                            amendment: execpolicy_amendment.clone(),
+                        })
+                        .map_err(|error| {
+                            tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                        })?;
                 }
-                match &decision {
-                    CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment {
-                        execpolicy_amendment,
-                    } => {
-                        persistent_approval_store(&app, &state)
-                            .map_err(tietiezhi_agent_tools::ToolError::Handler)?
-                            .append(PersistentApprovalRule::ExecPolicy {
-                                amendment: execpolicy_amendment.clone(),
-                            })
-                            .map_err(|error| {
-                                tietiezhi_agent_tools::ToolError::Handler(error.to_string())
-                            })?;
-                    }
-                    CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
-                        network_policy_amendment,
-                    } => {
-                        persistent_approval_store(&app, &state)
-                            .map_err(tietiezhi_agent_tools::ToolError::Handler)?
-                            .append(PersistentApprovalRule::NetworkPolicy {
-                                amendment: network_policy_amendment.clone(),
-                            })
-                            .map_err(|error| {
-                                tietiezhi_agent_tools::ToolError::Handler(error.to_string())
-                            })?;
-                    }
-                    _ => {}
+                CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
+                    network_policy_amendment,
+                } => {
+                    persistent_approval_store(&app, &state)
+                        .map_err(tietiezhi_agent_tools::ToolError::Handler)?
+                        .append(PersistentApprovalRule::NetworkPolicy {
+                            amendment: network_policy_amendment.clone(),
+                        })
+                        .map_err(|error| {
+                            tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                        })?;
                 }
-                let active = manager
-                    .set_thread_status(
-                        &request.thread_id,
-                        json!({"type":"active","activeFlags":[]}),
-                    )
-                    .map_err(|error| {
-                        tietiezhi_agent_tools::ToolError::Handler(format!(
-                            "restore active status: {error:?}"
-                        ))
-                    })?;
-                emit_notifications(&app, &active)
-                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
-                Ok(decision)
-            })
-                as tietiezhi_agent_tools::builtins::CommandApprovalFuture
-        }) as tietiezhi_agent_tools::builtins::CommandApprover
-    });
+                _ => {}
+            }
+            let active = manager
+                .set_thread_status(
+                    &request.thread_id,
+                    json!({"type":"active","activeFlags":[]}),
+                )
+                .map_err(|error| {
+                    tietiezhi_agent_tools::ToolError::Handler(format!(
+                        "restore active status: {error:?}"
+                    ))
+                })?;
+            emit_notifications(&app, &active).map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+            Ok(decision)
+        }) as tietiezhi_agent_tools::builtins::CommandApprovalFuture
+    }) as tietiezhi_agent_tools::builtins::CommandApprover);
     let observer_app = app.clone();
     let observer_manager = manager.clone();
     let observer = Arc::new(move |event: CommandRuntimeEvent| {
@@ -2904,10 +2962,11 @@ fn turn_tool_runtime(
         app.state::<AppState>().codex_exec.clone(),
         snapshot.cwd.clone(),
         sandbox_policy,
-        requires_command_approval,
+        false,
         command_approver,
         observer,
         Some(network_preparer),
+        Some(policy_evaluator),
     ));
     let registry = ToolRegistry::new(handlers, Vec::new())
         .map_err(|error| ModelError::Consumer(format!("初始化 Codex 基础工具失败：{error}")))?;

@@ -74,6 +74,9 @@ jobs:
             crates/agent-patch
             crates/agent-exec
             crates/agent-sandbox
+            crates/agent-absolute-path
+            crates/agent-shell-command
+            crates/agent-execpolicy
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -134,6 +137,15 @@ jobs:
 
       - name: Codex attributed network proxy tests
         run: cargo test --manifest-path ../crates/agent-network/Cargo.toml
+
+      - name: Codex absolute path invariant tests
+        run: cargo test --manifest-path ../crates/agent-absolute-path/Cargo.toml
+
+      - name: Codex shell parsing and safety tests
+        run: cargo test --manifest-path ../crates/agent-shell-command/Cargo.toml
+
+      - name: Codex ExecPolicy tests
+        run: cargo test --manifest-path ../crates/agent-execpolicy/Cargo.toml
 
       - name: Codex Responses model tests
         run: cargo test --manifest-path ../crates/agent-model/Cargo.toml
