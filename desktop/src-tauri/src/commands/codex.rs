@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
+use chrono::Local;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tietiezhi_agent_account::{
@@ -14,6 +15,10 @@ use tietiezhi_agent_approval::{
     AskForApproval, CommandExecutionApprovalDecision, CommandExecutionApprovalParams,
     FileChangeApprovalDecision, FileChangeApprovalParams, PermissionsApprovalParams,
     PersistentApprovalRule, PersistentApprovalStore, RoutedServerRequest as ApprovalServerRequest,
+};
+use tietiezhi_agent_config::{
+    build_world_state, load_project_instructions, strip_internal_world_state_metadata,
+    ProjectInstructionConfig, WorldStateInput,
 };
 use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
@@ -2183,6 +2188,10 @@ async fn run_turn_executor(
     let mut auth_refresh_attempted = false;
     let (tool_runtime, base_tool_specs) = turn_tool_runtime(&app, &manager, &initial).await?;
     let mut loaded_tool_specs = Vec::new();
+    let project_instructions =
+        load_project_instructions(&initial.cwd, &ProjectInstructionConfig::default())
+            .ok()
+            .flatten();
 
     loop {
         let drained = manager
@@ -2207,6 +2216,16 @@ async fn run_turn_executor(
             )
             .await?;
         }
+        let context_snapshot = manager
+            .turn_execution_snapshot(&thread_id, &turn_id)
+            .map_err(core_model_error)?;
+        let tool_specs = merge_tool_specs(&base_tool_specs, &loaded_tool_specs);
+        record_runtime_world_state(
+            &manager,
+            &context_snapshot,
+            &tool_specs,
+            project_instructions.clone(),
+        )?;
         let snapshot = manager
             .turn_execution_snapshot(&thread_id, &turn_id)
             .map_err(core_model_error)?;
@@ -2218,11 +2237,7 @@ async fn run_turn_executor(
         {
             output_schema = Some(schema);
         }
-        let request = response_request(
-            &snapshot,
-            output_schema.clone(),
-            merge_tool_specs(&base_tool_specs, &loaded_tool_specs),
-        );
+        let request = response_request(&snapshot, output_schema.clone(), tool_specs);
         let stream = client.stream(&request, |event| {
             let notifications = projection.apply(&manager, &thread_id, &turn_id, event)?;
             emit_notifications(&app, &notifications).map_err(ModelError::Consumer)
@@ -2519,7 +2534,11 @@ fn response_request(
     output_schema: Option<Value>,
     tools: Vec<Value>,
 ) -> ResponsesApiRequest {
-    let mut request = ResponsesApiRequest::text(snapshot.model.clone(), snapshot.history.clone());
+    let mut request = ResponsesApiRequest::text(
+        snapshot.model.clone(),
+        strip_internal_world_state_metadata(&snapshot.history),
+    );
+    request.instructions = snapshot.base_instructions.clone().unwrap_or_default();
     request.tools = (!tools.is_empty()).then_some(tools);
     request.reasoning = snapshot.reasoning_effort.as_ref().map(|effort| Reasoning {
         effort: Some(effort.clone()),
@@ -2543,6 +2562,56 @@ fn response_request(
         }),
     });
     request
+}
+
+fn record_runtime_world_state(
+    manager: &ThreadManager,
+    snapshot: &TurnExecutionSnapshot,
+    tool_specs: &[Value],
+    project_instructions: Option<tietiezhi_agent_config::LoadedProjectInstructions>,
+) -> Result<(), ModelError> {
+    let previous = manager
+        .world_state_baseline(&snapshot.thread_id, &snapshot.turn_id)
+        .map_err(core_model_error)?;
+    let now = Local::now();
+    let timezone = iana_time_zone::get_timezone().unwrap_or_else(|_| now.offset().to_string());
+    let tool_names = tool_specs
+        .iter()
+        .filter_map(|spec| {
+            spec.get("name")
+                .and_then(Value::as_str)
+                .or_else(|| spec.get("type").and_then(Value::as_str))
+                .map(str::to_owned)
+        })
+        .collect();
+    let update = build_world_state(
+        &snapshot.turn_id,
+        WorldStateInput {
+            cwd: snapshot.cwd.clone(),
+            shell: std::env::var("SHELL")
+                .or_else(|_| std::env::var("COMSPEC"))
+                .ok(),
+            current_date: now.format("%Y-%m-%d").to_string(),
+            timezone,
+            approval_policy: snapshot.approval_policy.clone(),
+            sandbox_policy: snapshot.sandbox.clone(),
+            tool_names,
+            collaboration_mode: "default".into(),
+            collaboration_mode_instructions: None,
+            developer_instructions: snapshot.developer_instructions.clone(),
+            project_instructions,
+        },
+        previous.as_ref(),
+    );
+    manager
+        .record_step_context(
+            &snapshot.thread_id,
+            &snapshot.turn_id,
+            update.response_items,
+            update.snapshot,
+        )
+        .map_err(core_model_error)?;
+    Ok(())
 }
 
 async fn turn_tool_runtime(
@@ -3625,7 +3694,11 @@ fn compaction_response_request(
     snapshot: &CompactionExecutionSnapshot,
     history: Vec<Value>,
 ) -> ResponsesApiRequest {
-    let mut request = ResponsesApiRequest::text(snapshot.model.clone(), history);
+    let mut request = ResponsesApiRequest::text(
+        snapshot.model.clone(),
+        strip_internal_world_state_metadata(&history),
+    );
+    request.instructions = snapshot.base_instructions.clone().unwrap_or_default();
     request.reasoning = snapshot.reasoning_effort.as_ref().map(|effort| Reasoning {
         effort: Some(effort.clone()),
         summary: snapshot
@@ -4077,12 +4150,19 @@ mod tests {
             cwd: std::path::PathBuf::from("/tmp/project"),
             model: "gpt-5.6-sol".into(),
             model_provider: "gateway".into(),
+            base_instructions: Some("base".into()),
+            developer_instructions: Some("developer".into()),
             approval_policy: json!("on-request"),
             sandbox: json!({"type":"workspaceWrite"}),
             reasoning_effort: Some("high".into()),
             reasoning_summary: None,
             service_tier: Some("priority".into()),
-            history: vec![json!({"type":"message","role":"user","content":[]})],
+            history: vec![json!({
+                "type":"message",
+                "role":"user",
+                "content":[],
+                "_tietiezhiWorldState":{"turnId":"turn"}
+            })],
             model_context_window: Some(272_000),
             active_context_tokens: 100,
             auto_compact_token_limit: None,
@@ -4099,6 +4179,10 @@ mod tests {
         let request = response_request(&snapshot, None, tools.clone());
         assert_eq!(tools.len(), 3);
         assert_eq!(request.tools, Some(tools));
+        assert_eq!(request.instructions, "base");
+        assert!(request.input[0]
+            .get(tietiezhi_agent_config::WORLD_STATE_METADATA_KEY)
+            .is_none());
         assert!(request.parallel_tool_calls);
         let sleep = local_tool_timeline_item(
             &snapshot,
@@ -4141,6 +4225,7 @@ mod tests {
             item_id: "item-compact".into(),
             model: "gpt-5.6-sol".into(),
             model_provider: "gateway".into(),
+            base_instructions: Some("base".into()),
             reasoning_effort: Some("high".into()),
             reasoning_summary: None,
             service_tier: Some("priority".into()),
@@ -4150,6 +4235,7 @@ mod tests {
         };
         let request = compaction_response_request(&snapshot, history.clone());
         assert_eq!(request.input, history);
+        assert_eq!(request.instructions, "base");
         assert_eq!(
             request.prompt_cache_key.as_deref(),
             Some(snapshot.thread_id.as_str())

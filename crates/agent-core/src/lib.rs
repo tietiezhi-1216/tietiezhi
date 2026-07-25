@@ -13,6 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tietiezhi_agent_config::normalize_world_state_history;
 use tietiezhi_agent_context::{
     CompactWindow, ContextRecord, complete_compaction, context_window_status,
     estimate_history_tokens, model_context_window, reconstruct, world_state_rollout,
@@ -98,6 +99,10 @@ struct ThreadRecord {
     model_provider: String,
     model: String,
     #[serde(default)]
+    base_instructions: Option<String>,
+    #[serde(default)]
+    developer_instructions: Option<String>,
+    #[serde(default)]
     model_context_window: Option<i64>,
     cwd: PathBuf,
     cli_version: String,
@@ -149,6 +154,8 @@ pub struct TurnExecutionSnapshot {
     pub cwd: PathBuf,
     pub model: String,
     pub model_provider: String,
+    pub base_instructions: Option<String>,
+    pub developer_instructions: Option<String>,
     pub approval_policy: Value,
     pub sandbox: Value,
     pub reasoning_effort: Option<String>,
@@ -168,6 +175,7 @@ pub struct CompactionExecutionSnapshot {
     pub item_id: String,
     pub model: String,
     pub model_provider: String,
+    pub base_instructions: Option<String>,
     pub reasoning_effort: Option<String>,
     pub reasoning_summary: Option<Value>,
     pub service_tier: Option<String>,
@@ -541,6 +549,8 @@ impl ThreadManager {
                 &model,
             ),
             model,
+            base_instructions: optional_string(params, "baseInstructions"),
+            developer_instructions: optional_string(params, "developerInstructions"),
             cwd,
             cli_version: self.inner.defaults.cli_version.clone(),
             source: json!("appServer"),
@@ -1669,6 +1679,8 @@ impl ThreadManager {
             cwd: loaded.record.cwd,
             model: loaded.record.model,
             model_provider: loaded.record.model_provider,
+            base_instructions: loaded.record.base_instructions,
+            developer_instructions: loaded.record.developer_instructions,
             approval_policy: loaded.record.approval_policy,
             sandbox: loaded.record.sandbox,
             reasoning_effort: loaded.record.reasoning_effort,
@@ -1894,6 +1906,53 @@ impl ThreadManager {
             appender.sync_data().map_err(state_error)?;
         }
         loaded.world_state_baseline = Some(current);
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(true)
+    }
+
+    pub fn world_state_baseline(&self, thread_id: &str, turn_id: &str) -> RpcResult<Option<Value>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        Ok(loaded.world_state_baseline)
+    }
+
+    /// Persist model-visible context fragments before the matching World State
+    /// snapshot/patch, then normalize them before the active user message.
+    pub fn record_step_context(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        response_items: Vec<Value>,
+        current_world_state: Value,
+    ) -> RpcResult<bool> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        let world_state =
+            world_state_rollout(loaded.world_state_baseline.as_ref(), &current_world_state);
+        if response_items.is_empty() && world_state.is_none() {
+            return Ok(false);
+        }
+        if let Some(appender) = rollout_appender(&loaded)? {
+            for item in &response_items {
+                appender
+                    .append_response_item(item.clone())
+                    .map_err(state_error)?;
+            }
+            if let Some(item) = world_state.clone() {
+                appender.append_world_state(item).map_err(state_error)?;
+            }
+            appender.sync_data().map_err(state_error)?;
+        }
+        extend_model_history(&mut loaded, response_items);
+        normalize_world_state_history(&mut loaded.injected_items);
+        loaded.active_context_tokens = estimate_history_tokens(&loaded.injected_items);
+        if world_state.is_some() {
+            loaded.world_state_baseline = Some(current_world_state);
+        }
         state.loaded.insert(thread_id.into(), loaded);
         Ok(true)
     }
@@ -3284,11 +3343,18 @@ impl ThreadManager {
             .store
             .recover_rollout(&metadata.rollout_path)
             .map_err(state_error)?;
+        apply_latest_turn_context(&mut record, &recovery.rollout_items);
         let mut projection = project_turns(&recovery.rollout_items)?;
         if projection.turns.is_empty() && !record.turns.is_empty() {
             projection.turns = std::mem::take(&mut record.turns);
         }
         let context = reconstruct_context(&recovery.rollout_items);
+        if let Some(world_state) = context.world_state_baseline.as_ref() {
+            record.developer_instructions = world_state
+                .pointer("/developer_instructions/text")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
         let injected_items = context.history;
         let mut loaded = LoadedThread {
             record,
@@ -3404,11 +3470,19 @@ impl ThreadManager {
             if self.inner.store.thread(id)?.is_some() {
                 continue;
             }
-            let record = self.record_from_session_meta(
+            let mut record = self.record_from_session_meta(
                 id,
                 meta,
                 recovery.session_created_at_ms.unwrap_or_else(now_ms),
             )?;
+            apply_latest_turn_context(&mut record, &recovery.rollout_items);
+            let context = reconstruct_context(&recovery.rollout_items);
+            if let Some(world_state) = context.world_state_baseline.as_ref() {
+                record.developer_instructions = world_state
+                    .pointer("/developer_instructions/text")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+            }
             let metadata = metadata_from_record(&record, rollout_path)
                 .map_err(|error| StateError::Invalid(error.message))?;
             self.inner.store.upsert_metadata(&metadata)?;
@@ -3467,6 +3541,11 @@ impl ThreadManager {
                 .unwrap_or(&self.inner.defaults.model_provider)
                 .into(),
             model: self.inner.defaults.model.clone(),
+            base_instructions: meta
+                .pointer("/base_instructions/text")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            developer_instructions: None,
             model_context_window: resolve_model_context_window(
                 &self.inner.defaults.model_context_windows,
                 &self.inner.defaults.model,
@@ -3533,6 +3612,8 @@ impl ThreadManager {
             history_mode: "legacy".into(),
             model_provider: self.inner.defaults.model_provider.clone(),
             model: self.inner.defaults.model.clone(),
+            base_instructions: None,
+            developer_instructions: None,
             model_context_window: resolve_model_context_window(
                 &self.inner.defaults.model_context_windows,
                 &self.inner.defaults.model,
@@ -3563,6 +3644,12 @@ impl ThreadManager {
         }
         if let Some(provider) = optional_string(params, "modelProvider") {
             record.model_provider = provider;
+        }
+        if let Some(instructions) = optional_string(params, "baseInstructions") {
+            record.base_instructions = Some(instructions);
+        }
+        if let Some(instructions) = optional_string(params, "developerInstructions") {
+            record.developer_instructions = Some(instructions);
         }
         if params.get("serviceTier").is_some() {
             record.service_tier = optional_nullable_string(params, "serviceTier").unwrap_or(None);
@@ -3879,6 +3966,7 @@ fn compaction_snapshot(
         item_id,
         model: loaded.record.model.clone(),
         model_provider: loaded.record.model_provider.clone(),
+        base_instructions: loaded.record.base_instructions.clone(),
         reasoning_effort: loaded.record.reasoning_effort.clone(),
         reasoning_summary: loaded.record.reasoning_summary.clone(),
         service_tier: loaded.record.service_tier.clone(),
@@ -4661,7 +4749,7 @@ fn response_items_from_rollout(items: &[RecoveredRolloutItem]) -> Vec<Value> {
 fn reconstruct_context(
     items: &[RecoveredRolloutItem],
 ) -> tietiezhi_agent_context::ContextReconstruction {
-    reconstruct(items.iter().filter_map(|recovered| match &recovered.item {
+    let mut context = reconstruct(items.iter().filter_map(|recovered| match &recovered.item {
         RecoveredRolloutItemKind::SessionMeta(item) => {
             Some(ContextRecord::SessionMeta(item.clone()))
         }
@@ -4671,7 +4759,43 @@ fn reconstruct_context(
         RecoveredRolloutItemKind::Compacted(item) => Some(ContextRecord::Compacted(item.clone())),
         RecoveredRolloutItemKind::WorldState(item) => Some(ContextRecord::WorldState(item.clone())),
         RecoveredRolloutItemKind::TurnContext(_) | RecoveredRolloutItemKind::EventMsg(_) => None,
-    }))
+    }));
+    normalize_world_state_history(&mut context.history);
+    context.active_context_tokens = estimate_history_tokens(&context.history);
+    context
+}
+
+fn apply_latest_turn_context(record: &mut ThreadRecord, items: &[RecoveredRolloutItem]) {
+    let Some(context) = items.iter().rev().find_map(|item| match &item.item {
+        RecoveredRolloutItemKind::TurnContext(context) => Some(context),
+        _ => None,
+    }) else {
+        return;
+    };
+    if let Some(cwd) = context
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        record.cwd = cwd;
+    }
+    if let Some(model) = context.get("model").and_then(Value::as_str) {
+        record.model = model.into();
+    }
+    if let Some(policy) = context.get("approval_policy") {
+        record.approval_policy = policy.clone();
+    }
+    if let Some(reviewer) = context.get("approvals_reviewer").and_then(Value::as_str) {
+        record.approvals_reviewer = reviewer.into();
+    }
+    if let Some(policy) = context.get("sandbox_policy") {
+        record.sandbox = policy.clone();
+    }
+    record.reasoning_effort = context
+        .get("effort")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
 }
 
 fn response_item_to_v2(item: &Value) -> RpcResult<Option<Value>> {
@@ -4968,6 +5092,9 @@ fn canonical_session_meta(record: &ThreadRecord, compact_window: &CompactWindow)
     }
     if let Some(value) = &record.thread_source {
         meta.insert("thread_source".into(), value.clone());
+    }
+    if let Some(instructions) = &record.base_instructions {
+        meta.insert("base_instructions".into(), json!({"text": instructions}));
     }
     if let Some(git) = &record.git_info {
         meta.insert(
@@ -6646,6 +6773,140 @@ mod tests {
             request(2, "thread/resume", json!({"threadId":thread_id})),
         );
         assert!(!reopened.record_world_state(&thread_id, second).unwrap());
+    }
+
+    #[test]
+    fn step_context_precedes_user_and_instructions_survive_index_rebuild() {
+        let (temp, manager) = manager();
+        let started = manager.dispatch(
+            "desktop",
+            request(
+                1,
+                "thread/start",
+                json!({
+                    "baseInstructions":"base",
+                    "developerInstructions":"developer"
+                }),
+            ),
+        );
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"goal","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_owned();
+        let context_item = json!({
+            "type":"message",
+            "role":"developer",
+            "content":[{"type":"input_text","text":"context"}],
+            "_tietiezhiWorldState":{"turnId":turn_id}
+        });
+        let world_state = json!({
+            "developer_instructions":{"text":"developer"},
+            "environment":{"cwd":temp.path().join("workspace")}
+        });
+        assert!(
+            manager
+                .record_step_context(
+                    &thread_id,
+                    &turn_id,
+                    vec![context_item],
+                    world_state.clone(),
+                )
+                .unwrap()
+        );
+        let snapshot = manager
+            .turn_execution_snapshot(&thread_id, &turn_id)
+            .unwrap();
+        assert_eq!(snapshot.base_instructions.as_deref(), Some("base"));
+        assert_eq!(
+            snapshot.developer_instructions.as_deref(),
+            Some("developer")
+        );
+        assert!(snapshot.history[0].get("_tietiezhiWorldState").is_some());
+        assert_eq!(snapshot.history[1]["role"], "user");
+
+        let metadata = manager.inner.store.thread(&thread_id).unwrap().unwrap();
+        let recovery = manager
+            .inner
+            .store
+            .recover_rollout(&metadata.rollout_path)
+            .unwrap();
+        let context_ordinal = recovery
+            .rollout_items
+            .iter()
+            .find(|item| {
+                matches!(
+                    &item.item,
+                    RecoveredRolloutItemKind::ResponseItem(value)
+                        if value.get("_tietiezhiWorldState").is_some()
+                )
+            })
+            .unwrap()
+            .ordinal;
+        let world_state_ordinal = recovery
+            .rollout_items
+            .iter()
+            .find(|item| matches!(&item.item, RecoveredRolloutItemKind::WorldState(_)))
+            .unwrap()
+            .ordinal;
+        assert!(context_ordinal < world_state_ordinal);
+        manager.complete_turn(&thread_id, &turn_id, None).unwrap();
+        drop(manager);
+
+        let database = temp.path().join("state").join("state.sqlite3");
+        let _ = fs::remove_file(database.with_extension("sqlite3-wal"));
+        let _ = fs::remove_file(database.with_extension("sqlite3-shm"));
+        fs::write(&database, b"not a sqlite database").unwrap();
+        let reopened = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "fallback".into(),
+                model_provider: "fallback".into(),
+                cwd: temp.path().join("workspace"),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        reopened.dispatch(
+            "desktop",
+            request(3, "thread/resume", json!({"threadId":thread_id})),
+        );
+        let turn = reopened.dispatch(
+            "desktop",
+            request(
+                4,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"continue","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap();
+        let snapshot = reopened
+            .turn_execution_snapshot(&thread_id, turn_id)
+            .unwrap();
+        assert_eq!(snapshot.base_instructions.as_deref(), Some("base"));
+        assert_eq!(
+            snapshot.developer_instructions.as_deref(),
+            Some("developer")
+        );
+        assert_eq!(
+            reopened.world_state_baseline(&thread_id, turn_id).unwrap(),
+            Some(world_state)
+        );
     }
 
     #[test]

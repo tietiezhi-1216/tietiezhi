@@ -1145,6 +1145,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tietiezhi-agent-context"
 version = "0.1.0"
 dependencies = [
@@ -1161,6 +1169,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tietiezhi-agent-config",
  "tietiezhi-agent-context",
  "tietiezhi-agent-model",
  "tietiezhi-agent-protocol",

@@ -5678,6 +5678,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tietiezhi-agent-context"
 version = "0.1.0"
 dependencies = [
@@ -5693,6 +5701,7 @@ dependencies = [
  "base64 0.22.1",
  "serde",
  "serde_json",
+ "tietiezhi-agent-config",
  "tietiezhi-agent-context",
  "tietiezhi-agent-model",
  "tietiezhi-agent-protocol",
@@ -5878,12 +5887,14 @@ version = "2026.7.25-t195650"
 dependencies = [
  "arboard",
  "base64 0.22.1",
+ "chrono",
  "core-foundation 0.10.1",
  "core-graphics",
  "dirs",
  "dunce",
  "futures-util",
  "globset",
+ "iana-time-zone",
  "keyring",
  "libc",
  "mime_guess",
@@ -5902,6 +5913,7 @@ dependencies = [
  "tempfile",
  "tietiezhi-agent-account",
  "tietiezhi-agent-approval",
+ "tietiezhi-agent-config",
  "tietiezhi-agent-context",
  "tietiezhi-agent-core",
  "tietiezhi-agent-events",

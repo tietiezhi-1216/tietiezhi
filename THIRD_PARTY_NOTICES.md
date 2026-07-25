@@ -237,3 +237,15 @@ R19 的 MCP 客户端、OAuth、工具/资源、Elicitation、进度、状态目
 - `codex-rs/app-server-protocol/src/protocol/v2/mcp_server.rs`
 
 本地 source-built fixture 仅保留协议测试所需的最小工具、资源和富内容，不分发上游测试服务器二进制。MCP 线协议由 Apache-2.0 `rmcp` crate 实现；其依赖许可证随 Cargo 供应链清单发布。
+
+R20 的分层项目指令发现、AGENTS World State 替换/移除语义和模型上下文写入顺序参考以下 Apache-2.0 上游源码重新实现，没有链接、调用或打包上游 Codex 二进制：
+
+- `codex-rs/core/src/agents_md.rs`
+- `codex-rs/core/src/context/world_state/agents_md.rs`
+- `codex-rs/core/src/context_manager/history.rs`
+- `codex-rs/core/src/context_manager/updates.rs`
+- `codex-rs/core/src/session/world_state.rs`
+- `codex-rs/core/src/session/mod.rs`
+- `codex-rs/protocol/src/protocol.rs`
+
+本地实现位于 `crates/agent-config`，并通过 `crates/agent-core` 的 canonical rollout 与桌面 Responses 执行器接入；上游二进制不参与运行。

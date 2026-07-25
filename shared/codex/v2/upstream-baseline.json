@@ -1224,9 +1224,9 @@
     {
       "id": "R20",
       "name": "指令层",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R21 继续实现完整配置来源、Profile、Requirements 与来源追踪；R22-R24 再把 Skills、Hooks、Plugins 目录加入 World State。",
+      "evidence": "crates/agent-config 分层 AGENTS/override/fallback 与 World State 测试；crates/agent-core canonical context/world_state 顺序、索引重建和指令恢复测试；desktop Responses/Compaction 指令接线；docs/CODEX-INSTRUCTIONS.md"
     },
     {
       "id": "R21",

@@ -103,4 +103,6 @@ R18 已移植 Starlark ExecPolicy、Bash/PowerShell 解析、安全命令分类�
 
 R19 已增加 `crates/agent-mcp`，实现 stdio、Streamable HTTP、Keychain/Credential Manager OAuth、PKCE、动态注册、Token 刷新、resources、templates、Elicitation、progress、annotations、工具过滤、required server 和富媒体结果，并接入正式 `mcpToolCall` Item。详细行为见 `docs/CODEX-MCP.md`。
 
-R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责完整分层规则目录与 Requirements；R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R20 已增加 `crates/agent-config`，实现从项目根到当前目录的 `AGENTS.md`、`AGENTS.override.md` 与 fallback 分层发现、共享 32 KiB 预算、World State 全量/差分模型上下文、环境/权限/工具变化和压缩后重建。上下文片段先于 World State rollout 写入并在模型请求前移除内部恢复标记。详细行为见 `docs/CODEX-INSTRUCTIONS.md`。
+
+R21 负责完整分层配置目录与 Requirements；R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tietiezhi-agent-account = { path = "../../crates/agent-account" }
 tietiezhi-agent-approval = { path = "../../crates/agent-approval" }
+tietiezhi-agent-config = { path = "../../crates/agent-config" }
 tietiezhi-agent-context = { path = "../../crates/agent-context" }
 tietiezhi-agent-core = { path = "../../crates/agent-core" }
 tietiezhi-agent-events = { path = "../../crates/agent-events" }
@@ -55,6 +56,8 @@ mime_guess = "2"
 arboard = "3.6.1"
 tauri-plugin-window-state = "2.4.1"
 dirs = "6.0.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+iana-time-zone = "0.1"
 tauri-plugin-global-shortcut = "2.3.2"
 
 [target.'cfg(unix)'.dependencies]

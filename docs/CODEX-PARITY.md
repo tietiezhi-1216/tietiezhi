@@ -58,7 +58,7 @@
 | R17 | 网络策略 | 进行中 | crates/agent-network；agent-tools restricted network integration；macOS Seatbelt proxy-only tests；desktop command approval adapter；docs/CODEX-NETWORK.md | Windows managed network currently fails closed; source-built elevated sandbox identity and Firewall/WFP proxy allowlist remain required before R39 release. |
 | R18 | ExecPolicy | 已完成 | crates/agent-absolute-path; crates/agent-shell-command; crates/agent-execpolicy; crates/agent-tools dynamic pre-spawn policy; desktop persisted rules/default.rules; docs/CODEX-EXECPOLICY.md; 26 absolute-path, 141 shell, 13 execpolicy and 23 tool tests | R21 still needs layered project/profile policy discovery and Requirements enforcement; R17 Windows elevated/WFP network isolation remains a release blocker. |
 | R19 | MCP 完整实现 | 已完成 | crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md | OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, R35 still needs remote approval routing, and R17 Windows WFP isolation remains a release blocker. |
-| R20 | 指令层 | 待开始 |  |  |
+| R20 | 指令层 | 已完成 | crates/agent-config 分层 AGENTS/override/fallback 与 World State 测试；crates/agent-core canonical context/world_state 顺序、索引重建和指令恢复测试；desktop Responses/Compaction 指令接线；docs/CODEX-INSTRUCTIONS.md | R21 继续实现完整配置来源、Profile、Requirements 与来源追踪；R22-R24 再把 Skills、Hooks、Plugins 目录加入 World State。 |
 | R21 | 配置体系 | 待开始 |  |  |
 | R22 | Skills | 待开始 |  |  |
 | R23 | Hooks | 待开始 |  |  |
