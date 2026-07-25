@@ -708,15 +708,15 @@
       },
       {
         "method": "hook/completed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R23",
-        "note": ""
+        "note": "crates/agent-hooks command runner/output parser/trust tests；crates/agent-core HookRun 和 hookPrompt V2 lifecycle；desktop Turn/Tool/Approval/Compact/Session 接线；docs/CODEX-HOOKS.md"
       },
       {
         "method": "hook/started",
-        "status": "pending",
+        "status": "implemented",
         "target": "R23",
-        "note": ""
+        "note": "crates/agent-hooks command runner/output parser/trust tests；crates/agent-core HookRun 和 hookPrompt V2 lifecycle；desktop Turn/Tool/Approval/Compact/Session 接线；docs/CODEX-HOOKS.md"
       },
       {
         "method": "item/agentMessage/delta",
@@ -1245,9 +1245,9 @@
     {
       "id": "R23",
       "name": "Hooks",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "prompt/agent handler declarations are retained as typed failed runs until the R26 model-backed collaboration runner is available；R24 injects plugin hook sources and provenance；project hook execution requires an exact trusted SHA-256 hash.",
+      "evidence": "crates/agent-hooks 发现/信任/命令/超时/输出解析测试；crates/agent-core hook notification 与 hookPrompt canonical persistence；desktop Session/Prompt/Tool/Permission/Compact/Stop 生命周期接线；docs/CODEX-HOOKS.md"
     },
     {
       "id": "R24",

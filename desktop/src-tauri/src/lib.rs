@@ -44,6 +44,8 @@ pub struct AppState {
     pub(crate) codex_account: tietiezhi_agent_account::AccountRuntime,
     /// Source-native layered Skills catalog and runtime extra roots.
     pub(crate) codex_skills: Mutex<Option<tietiezhi_agent_skills::SkillsRuntime>>,
+    /// Source-native Hook discovery, trust, and command lifecycle runtime.
+    pub(crate) codex_hooks: Mutex<Option<tietiezhi_agent_hooks::HookEngine>>,
     /// Active browser login callbacks, keyed by App Server login id.
     pub(crate) codex_login_cancels: Mutex<HashMap<String, CancellationToken>>,
     /// Reverse JSON-RPC requests sent by the runtime to the host client.
@@ -106,6 +108,7 @@ pub fn run() {
             codex_wire_capabilities: Mutex::new(HashMap::new()),
             codex_account: tietiezhi_agent_account::AccountRuntime::default(),
             codex_skills: Mutex::new(None),
+            codex_hooks: Mutex::new(None),
             codex_login_cancels: Mutex::new(HashMap::new()),
             codex_account_requests: tietiezhi_agent_account::AccountServerRequestBroker::default(),
             codex_approval_requests: tietiezhi_agent_approval::ServerRequestBroker::default(),

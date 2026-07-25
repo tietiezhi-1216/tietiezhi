@@ -2806,6 +2806,96 @@ impl ThreadManager {
         )?])
     }
 
+    pub fn hook_started_notification(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        run: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.hook_notification(thread_id, turn_id, "hook/started", run)
+    }
+
+    pub fn hook_completed_notification(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        run: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.hook_notification(thread_id, turn_id, "hook/completed", run)
+    }
+
+    fn hook_notification(
+        &self,
+        thread_id: &str,
+        turn_id: Option<&str>,
+        method: &str,
+        run: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        if let Some(turn_id) = turn_id {
+            require_active_turn(&loaded, turn_id)?;
+        }
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            method,
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "run": run
+            }),
+        )?])
+    }
+
+    /// Persist additional Hook context as the public `hookPrompt` timeline
+    /// item and as a developer Responses message. The latter keeps the context
+    /// active after resume and compaction without exposing an internal marker
+    /// to clients.
+    pub fn record_hook_context(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        run_id: &str,
+        text: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        if run_id.trim().is_empty() {
+            return Err(RpcError::invalid("hook run id must not be empty"));
+        }
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let item = json!({
+            "type": "hookPrompt",
+            "id": Uuid::now_v7().to_string(),
+            "fragments": [{
+                "text": text,
+                "hookRunId": run_id
+            }]
+        });
+        let mut notifications = self.local_tool_item_completed(thread_id, turn_id, item)?;
+        let hook_prompt = format!(
+            "<hook_prompt hook_run_id=\"{}\">{}</hook_prompt>",
+            xml_escape(run_id),
+            xml_escape(text)
+        );
+        notifications.extend(self.model_item_completed(
+            thread_id,
+            turn_id,
+            json!({
+                "type": "message",
+                "id": Uuid::now_v7().to_string(),
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": hook_prompt
+                }]
+            }),
+        )?);
+        Ok(notifications)
+    }
+
     pub fn record_token_usage(
         &self,
         thread_id: &str,
@@ -4118,6 +4208,20 @@ fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
             "phase": item.get("phase").cloned().unwrap_or(Value::Null),
             "memory_citation": item.get("memoryCitation").cloned().unwrap_or(Value::Null)
         })),
+        Some("hookPrompt") => Ok(json!({
+            "type": "HookPrompt",
+            "id": required_item_string(item, "id", "hookPrompt item")?,
+            "fragments": item
+                .get("fragments")
+                .and_then(Value::as_array)
+                .ok_or_else(|| RpcError::invalid("hookPrompt fragments are required"))?
+                .iter()
+                .map(|fragment| json!({
+                    "text": fragment.get("text").cloned().unwrap_or_else(|| json!("")),
+                    "hook_run_id": fragment.get("hookRunId").cloned().unwrap_or_else(|| json!(""))
+                }))
+                .collect::<Vec<_>>()
+        })),
         Some("reasoning") => Ok(json!({
             "type": "Reasoning",
             "id": required_item_string(item, "id", "reasoning item")?,
@@ -4207,6 +4311,20 @@ fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
             "phase": item.get("phase").cloned().unwrap_or(Value::Null),
             "memoryCitation": item.get("memory_citation").cloned().unwrap_or(Value::Null)
         })),
+        Some("HookPrompt") => Ok(json!({
+            "type": "hookPrompt",
+            "id": required_item_string(item, "id", "HookPrompt item")?,
+            "fragments": item
+                .get("fragments")
+                .and_then(Value::as_array)
+                .ok_or_else(|| RpcError::internal("persisted HookPrompt fragments are missing"))?
+                .iter()
+                .map(|fragment| json!({
+                    "text": fragment.get("text").cloned().unwrap_or_else(|| json!("")),
+                    "hookRunId": fragment.get("hook_run_id").cloned().unwrap_or_else(|| json!(""))
+                }))
+                .collect::<Vec<_>>()
+        })),
         Some("Reasoning") => Ok(json!({
             "type": "reasoning",
             "id": required_item_string(item, "id", "Reasoning item")?,
@@ -4282,6 +4400,15 @@ fn required_item_string<'a>(value: &'a Value, key: &str, kind: &str) -> RpcResul
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| RpcError::invalid(format!("{kind} {key} is required")))
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn v2_input_to_core(input: &Value) -> RpcResult<Value> {
@@ -7084,6 +7211,79 @@ mod tests {
             .clone();
         assert_eq!(command["aggregatedOutput"], "hello");
         assert_eq!(command["exitCode"], 0);
+    }
+
+    #[test]
+    fn hook_lifecycle_and_context_use_v2_wire_items() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"].as_str().unwrap();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"run hooks","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap();
+        let running = json!({
+            "id":"hook_1",
+            "eventName":"preToolUse",
+            "handlerType":"command",
+            "executionMode":"sync",
+            "scope":"turn",
+            "sourcePath":"/tmp/hooks.json",
+            "source":"user",
+            "displayOrder":0,
+            "status":"running",
+            "statusMessage":null,
+            "startedAt":1,
+            "completedAt":null,
+            "durationMs":null,
+            "entries":[]
+        });
+        let started_hook = manager
+            .hook_started_notification(thread_id, Some(turn_id), running.clone())
+            .unwrap();
+        assert_eq!(started_hook[0].method, "hook/started");
+        let mut completed = running;
+        completed["status"] = json!("completed");
+        completed["completedAt"] = json!(2);
+        completed["durationMs"] = json!(1);
+        let completed_hook = manager
+            .hook_completed_notification(thread_id, Some(turn_id), completed)
+            .unwrap();
+        assert_eq!(completed_hook[0].method, "hook/completed");
+        let context = manager
+            .record_hook_context(thread_id, turn_id, "hook_1", "context from hook")
+            .unwrap();
+        assert_eq!(
+            context
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            ["item/started", "item/completed"]
+        );
+        let read = manager.dispatch(
+            "desktop",
+            request(
+                3,
+                "thread/read",
+                json!({"threadId":thread_id,"includeTurns":true}),
+            ),
+        );
+        let item = result(&read)["thread"]["turns"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "hookPrompt")
+            .unwrap();
+        assert_eq!(item["fragments"][0]["hookRunId"], "hook_1");
+        assert_eq!(item["fragments"][0]["text"], "context from hook");
     }
 
     #[test]

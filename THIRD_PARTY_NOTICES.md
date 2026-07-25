@@ -272,3 +272,13 @@ R22 的技能根发现、元数据解析、配置规则、缓存失效与 App Se
 - `codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`
 
 本地实现只在目录扫描时读取 `SKILL.md` frontmatter 和 `SKILL.json`；技能正文直到模型显式调用 `skill` 工具才读取。
+
+R23 的 Hook 配置、发现、命令执行、输出解析、事件生命周期和 App Server 投影参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/hooks/src`
+- `codex-rs/config/src/hook_config.rs`
+- `codex-rs/protocol/src/items.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/notification.rs`
+
+本地实现位于 `crates/agent-hooks`，命令 Handler 由当前 Tauri 进程直接创建并受超时、输出上限和项目哈希信任约束；不调用或分发上游 Codex 二进制。

@@ -109,4 +109,6 @@ R21 已在 `crates/agent-config` 实现 system、user、Profile、项目目录�
 
 R22 已增加 `crates/agent-skills`，实现 system、admin、user、repo、plugin/extra root 的技能发现，YAML/JSON 元数据预加载、正文延迟读取、按名称/路径启停、磁盘变化失效通知和 Responses `skill` 工具。详细行为见 `docs/CODEX-SKILLS.md`。
 
+R23 已增加 `crates/agent-hooks`，实现 system、user、project 与 plugin-ready Hook 发现、项目精确哈希信任、命令 Handler、超时、结构化输出、阻断/参数改写/审批决策/上下文注入，以及 Session、Prompt、Tool、Permission、Compact、Stop 和 SessionEnd 生命周期。Hook 运行通过 `hook/started`、`hook/completed` 和 canonical `hookPrompt` Item 投影，详细行为见 `docs/CODEX-HOOKS.md`。
+
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

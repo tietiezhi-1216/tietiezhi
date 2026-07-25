@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 68 |
+| 待实现 | 66 |
 | 实现中 | 0 |
-| 已实现 | 93 |
+| 已实现 | 95 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -61,7 +61,7 @@
 | R20 | 指令层 | 已完成 | crates/agent-config 分层 AGENTS/override/fallback 与 World State 测试；crates/agent-core canonical context/world_state 顺序、索引重建和指令恢复测试；desktop Responses/Compaction 指令接线；docs/CODEX-INSTRUCTIONS.md | R21 继续实现完整配置来源、Profile、Requirements 与来源追踪；R22-R24 再把 Skills、Hooks、Plugins 目录加入 World State。 |
 | R21 | 配置体系 | 已完成 | crates/agent-config 配置层/来源/CAS/Requirements/实验功能测试；desktop App Server V2 生成类型验证与 MCP reload；docs/CODEX-CONFIG.md | 企业云配置和 MDM 由 system/requirements 层映射；R23-R24 将 Hooks 与 Plugins 的 managed-only 细粒度要求接入。 |
 | R22 | Skills | 已完成 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md | R24 将已安装插件的 Skills 根作为带 plugin provenance 的根注入；远程执行环境技能在 R35 映射。 |
-| R23 | Hooks | 待开始 |  |  |
+| R23 | Hooks | 已完成 | crates/agent-hooks 发现/信任/命令/超时/输出解析测试；crates/agent-core hook notification 与 hookPrompt canonical persistence；desktop Session/Prompt/Tool/Permission/Compact/Stop 生命周期接线；docs/CODEX-HOOKS.md | prompt/agent handler declarations are retained as typed failed runs until the R26 model-backed collaboration runner is available；R24 injects plugin hook sources and provenance；project hook execution requires an exact trusted SHA-256 hash. |
 | R24 | Plugins | 待开始 |  |  |
 | R25 | Plan 与用户输入 | 待开始 |  |  |
 | R26 | Collaboration | 待开始 |  |  |
@@ -212,8 +212,8 @@
 | `fuzzyFileSearch/sessionCompleted` | 待实现 | R31 |  |
 | `fuzzyFileSearch/sessionUpdated` | 待实现 | R31 |  |
 | `guardianWarning` | 待实现 | R27 |  |
-| `hook/completed` | 待实现 | R23 |  |
-| `hook/started` | 待实现 | R23 |  |
+| `hook/completed` | 已实现 | R23 | crates/agent-hooks command runner/output parser/trust tests；crates/agent-core HookRun 和 hookPrompt V2 lifecycle；desktop Turn/Tool/Approval/Compact/Session 接线；docs/CODEX-HOOKS.md |
+| `hook/started` | 已实现 | R23 | crates/agent-hooks command runner/output parser/trust tests；crates/agent-core HookRun 和 hookPrompt V2 lifecycle；desktop Turn/Tool/Approval/Compact/Session 接线；docs/CODEX-HOOKS.md |
 | `item/agentMessage/delta` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `item/autoApprovalReview/completed` | 待实现 | R27 |  |
 | `item/autoApprovalReview/started` | 待实现 | R27 |  |

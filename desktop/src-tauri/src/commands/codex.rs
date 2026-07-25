@@ -29,6 +29,10 @@ use tietiezhi_agent_execpolicy::{
     ApprovalPolicy as ExecApprovalPolicy, EvaluationContext as ExecEvaluationContext,
     ExecPolicyOutcome as RuntimeExecPolicyOutcome,
 };
+use tietiezhi_agent_hooks::{
+    HookDispatch, HookEngine, HookEventName, HookPaths, HookRequest,
+    PermissionDecision as HookPermissionDecision,
+};
 use tietiezhi_agent_model::{
     list_online_models, supports_original_image_detail, ModelError, OnlineModel, Reasoning,
     ResponseEvent, ResponsesApiRequest, ResponsesClient, TextControls, TextFormat, TextFormatType,
@@ -50,7 +54,10 @@ use tietiezhi_agent_tools::builtins::{
     CommandPolicyRequest, CommandRuntimeEvent, FileChangeApprovalRequest,
     PermissionsApprovalRequest,
 };
-use tietiezhi_agent_tools::{ToolCall, ToolCallRuntime, ToolPayload, ToolRegistry, ToolRouter};
+use tietiezhi_agent_tools::{
+    ToolCall, ToolCallRuntime, ToolModelCallResult, ToolOutput, ToolPayload, ToolRegistry,
+    ToolRouter,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::AppState;
@@ -333,6 +340,35 @@ pub async fn codex_v2_request(
         .map(str::to_owned);
 
     let manager = thread_manager(&app, &state)?;
+    if matches!(method.as_str(), "thread/archive" | "thread/delete") {
+        if let Some(thread_id) = thread_id.as_deref() {
+            let cwd = runtime_defaults(&app)?.cwd;
+            let hooks = run_hooks(
+                &app,
+                &manager,
+                HookRequest {
+                    event_name: HookEventName::SessionEnd,
+                    thread_id: thread_id.to_owned(),
+                    turn_id: None,
+                    cwd,
+                    matcher: Some(
+                        if method == "thread/archive" {
+                            "archive"
+                        } else {
+                            "delete"
+                        }
+                        .into(),
+                    ),
+                    payload: json!({
+                        "reason": if method == "thread/archive" {"archive"} else {"delete"}
+                    }),
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            ensure_hook_allows(&hooks).map_err(|error| error.to_string())?;
+        }
+    }
     let output = manager.dispatch(&connection_id, request);
     if method == "turn/steer" && output.response.get("error").is_none() {
         if let (Some(thread_id), Some(turn_id)) =
@@ -357,6 +393,9 @@ pub async fn codex_v2_request(
                     .codex_session_approvals
                     .clear_session(thread_id)
                     .map_err(|error| error.to_string())?;
+                if let Ok(runtime) = hooks_runtime(&app, &state) {
+                    runtime.end_session(thread_id);
+                }
             }
         }
     }
@@ -2009,6 +2048,76 @@ fn skills_runtime(app: &AppHandle, state: &AppState) -> Result<SkillsRuntime, St
     Ok(runtime)
 }
 
+fn hooks_runtime(app: &AppHandle, state: &AppState) -> Result<HookEngine, String> {
+    let mut slot = state
+        .codex_hooks
+        .lock()
+        .map_err(|_| "Codex Hooks 状态锁已损坏".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Ok(runtime.clone());
+    }
+    let config_root = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法定位配置目录：{error}"))?
+        .join("codex");
+    let runtime = HookEngine::new(HookPaths {
+        system: Some(system_codex_root().join("hooks.json")),
+        user: Some(config_root.join("hooks.json")),
+        trust_state: config_root.join("hooks-state.json"),
+    });
+    let config = ConfigRuntime::new(ConfigPaths {
+        user_config: config_root.join("config.toml"),
+        system_config: system_codex_config_path(),
+        requirements: system_codex_requirements_path(),
+    });
+    let managed_only = config
+        .dispatch("configRequirements/read", &json!({}))
+        .ok()
+        .and_then(|dispatch| {
+            dispatch
+                .result
+                .pointer("/requirements/allowManagedHooksOnly")
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false);
+    runtime.set_allow_managed_hooks_only(managed_only);
+    *slot = Some(runtime.clone());
+    Ok(runtime)
+}
+
+async fn run_hooks(
+    app: &AppHandle,
+    manager: &ThreadManager,
+    request: HookRequest,
+) -> Result<HookDispatch, ModelError> {
+    let runtime = hooks_runtime(app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
+    let result = runtime.dispatch(request.clone()).await;
+    for run in &result.runs {
+        let started = serde_json::to_value(&run.started)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        let notifications = manager
+            .hook_started_notification(&request.thread_id, request.turn_id.as_deref(), started)
+            .map_err(core_model_error)?;
+        emit_notifications(app, &notifications).map_err(ModelError::Consumer)?;
+        let completed = serde_json::to_value(&run.completed)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        let notifications = manager
+            .hook_completed_notification(&request.thread_id, request.turn_id.as_deref(), completed)
+            .map_err(core_model_error)?;
+        emit_notifications(app, &notifications).map_err(ModelError::Consumer)?;
+    }
+    if let Some(turn_id) = request.turn_id.as_deref() {
+        for context in &result.additional_context {
+            let notifications = manager
+                .record_hook_context(&request.thread_id, turn_id, &context.run_id, &context.text)
+                .map_err(core_model_error)?;
+            emit_notifications(app, &notifications).map_err(ModelError::Consumer)?;
+        }
+    }
+    Ok(result)
+}
+
 fn dispatch_skills_request(
     app: &AppHandle,
     state: &AppState,
@@ -2101,6 +2210,31 @@ async fn run_compaction_snapshot(
     snapshot: CompactionExecutionSnapshot,
     cancel: CancellationToken,
 ) -> Result<(), ModelError> {
+    let cwd = manager
+        .turn_execution_snapshot(&snapshot.thread_id, &snapshot.turn_id)
+        .map(|snapshot| snapshot.cwd)
+        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
+    let pre_hooks = run_hooks(
+        &app,
+        &manager,
+        HookRequest {
+            event_name: HookEventName::PreCompact,
+            thread_id: snapshot.thread_id.clone(),
+            turn_id: Some(snapshot.turn_id.clone()),
+            cwd: cwd.clone(),
+            matcher: Some(if snapshot.automatic {
+                "auto".into()
+            } else {
+                "manual".into()
+            }),
+            payload: json!({
+                "trigger": if snapshot.automatic {"auto"} else {"manual"},
+                "custom_instructions": Value::Null
+            }),
+        },
+    )
+    .await?;
+    ensure_hook_allows(&pre_hooks)?;
     let resolved =
         super::providers::resolve(&app, &snapshot.model_provider).map_err(ModelError::Transport)?;
     let base_url = super::api_url(&resolved.base_url, "")
@@ -2250,6 +2384,27 @@ async fn run_compaction_snapshot(
     if cancel.is_cancelled() {
         return Ok(());
     }
+    let post_hooks = run_hooks(
+        &app,
+        &manager,
+        HookRequest {
+            event_name: HookEventName::PostCompact,
+            thread_id: snapshot.thread_id.clone(),
+            turn_id: Some(snapshot.turn_id.clone()),
+            cwd,
+            matcher: Some(if snapshot.automatic {
+                "auto".into()
+            } else {
+                "manual".into()
+            }),
+            payload: json!({
+                "trigger": if snapshot.automatic {"auto"} else {"manual"},
+                "summary": summary_suffix
+            }),
+        },
+    )
+    .await?;
+    ensure_hook_allows(&post_hooks)?;
     let notifications = manager
         .complete_compaction(&snapshot.thread_id, &snapshot.turn_id, &summary_suffix)
         .map_err(core_model_error)?;
@@ -2327,6 +2482,24 @@ async fn run_turn_executor(
     let initial = manager
         .turn_execution_snapshot(&thread_id, &turn_id)
         .map_err(core_model_error)?;
+    let hook_runtime =
+        hooks_runtime(&app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
+    if hook_runtime.mark_session_start(&thread_id) {
+        let dispatch = run_hooks(
+            &app,
+            &manager,
+            HookRequest {
+                event_name: HookEventName::SessionStart,
+                thread_id: thread_id.clone(),
+                turn_id: Some(turn_id.clone()),
+                cwd: initial.cwd.clone(),
+                matcher: Some("startup".into()),
+                payload: json!({"source":"startup"}),
+            },
+        )
+        .await?;
+        ensure_hook_allows(&dispatch)?;
+    }
     let resolved =
         super::providers::resolve(&app, &initial.model_provider).map_err(ModelError::Transport)?;
     let base_url = super::api_url(&resolved.base_url, "")
@@ -2377,6 +2550,28 @@ async fn run_turn_executor(
             .drain_turn_inputs(&thread_id, &turn_id, can_drain_steered)
             .map_err(core_model_error)?;
         emit_notifications(&app, &drained.notifications).map_err(ModelError::Consumer)?;
+        if !drained.batches.is_empty() {
+            let dispatch = run_hooks(
+                &app,
+                &manager,
+                HookRequest {
+                    event_name: HookEventName::UserPromptSubmit,
+                    thread_id: thread_id.clone(),
+                    turn_id: Some(turn_id.clone()),
+                    cwd: initial.cwd.clone(),
+                    matcher: None,
+                    payload: json!({
+                        "input": drained
+                            .batches
+                            .iter()
+                            .flat_map(|batch| batch.input.clone())
+                            .collect::<Vec<_>>()
+                    }),
+                },
+            )
+            .await?;
+            ensure_hook_allows(&dispatch)?;
+        }
         can_drain_steered = true;
         if manager
             .should_auto_compact(&thread_id, &turn_id)
@@ -2450,14 +2645,44 @@ async fn run_turn_executor(
             {
                 input_activity.cancel();
             }
-            let calls = tool_calls
-                .into_iter()
-                .map(|call| {
-                    let timeline_item = local_tool_timeline_item(&snapshot, &call);
-                    (call, timeline_item)
-                })
-                .collect::<Vec<_>>();
-            for (_, item) in &calls {
+            let mut calls = Vec::with_capacity(tool_calls.len());
+            for mut call in tool_calls {
+                let pre_hooks = run_hooks(
+                    &app,
+                    &manager,
+                    HookRequest {
+                        event_name: HookEventName::PreToolUse,
+                        thread_id: thread_id.clone(),
+                        turn_id: Some(turn_id.clone()),
+                        cwd: initial.cwd.clone(),
+                        matcher: Some(call.tool_name.display_name()),
+                        payload: json!({
+                            "tool_name": call.tool_name.display_name(),
+                            "tool_input": tool_call_input(&call),
+                            "tool_use_id": call.call_id
+                        }),
+                    },
+                )
+                .await?;
+                if let Some(updated_input) = pre_hooks.updated_input {
+                    update_tool_call_input(&mut call, updated_input)?;
+                }
+                let timeline_item = local_tool_timeline_item(&snapshot, &call);
+                let precomputed =
+                    pre_hooks
+                        .blocked_reason
+                        .or(pre_hooks.stop_reason)
+                        .map(|reason| ToolModelCallResult {
+                            response_item: ToolOutput::failure(json!({
+                                "error": reason,
+                                "blockedBy": "PreToolUse"
+                            }))
+                            .to_response_item(&call),
+                            metadata: None,
+                        });
+                calls.push((call, timeline_item, precomputed));
+            }
+            for (_, item, _) in &calls {
                 let Some(item) = item else {
                     continue;
                 };
@@ -2482,26 +2707,59 @@ async fn run_turn_executor(
                     emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
                 }
             }
-            let executions = calls.into_iter().map(|(call, timeline_item)| {
+            let executions = calls.into_iter().map(|(call, timeline_item, precomputed)| {
                 let runtime = tool_runtime.clone();
                 let thread_id = thread_id.clone();
                 let turn_id = turn_id.clone();
                 let cancel = cancel.clone();
                 let input_activity = input_activity.clone();
                 async move {
-                    let output = runtime
-                        .handle_model_call_result_with_activity(
-                            thread_id,
-                            turn_id,
-                            call.clone(),
-                            cancel,
-                            input_activity,
-                        )
-                        .await;
+                    let output = match precomputed {
+                        Some(output) => output,
+                        None => {
+                            runtime
+                                .handle_model_call_result_with_activity(
+                                    thread_id,
+                                    turn_id,
+                                    call.clone(),
+                                    cancel,
+                                    input_activity,
+                                )
+                                .await
+                        }
+                    };
                     (call, timeline_item, output)
                 }
             });
-            for (call, timeline_item, output) in futures_util::future::join_all(executions).await {
+            for (call, timeline_item, mut output) in
+                futures_util::future::join_all(executions).await
+            {
+                let post_hooks = run_hooks(
+                    &app,
+                    &manager,
+                    HookRequest {
+                        event_name: HookEventName::PostToolUse,
+                        thread_id: thread_id.clone(),
+                        turn_id: Some(turn_id.clone()),
+                        cwd: initial.cwd.clone(),
+                        matcher: Some(call.tool_name.display_name()),
+                        payload: json!({
+                            "tool_name": call.tool_name.display_name(),
+                            "tool_input": tool_call_input(&call),
+                            "tool_use_id": call.call_id,
+                            "tool_response": output.response_item
+                        }),
+                    },
+                )
+                .await?;
+                if let Some(reason) = post_hooks.blocked_reason.or(post_hooks.stop_reason) {
+                    output.response_item = ToolOutput::failure(json!({
+                        "error": reason,
+                        "blockedBy": "PostToolUse",
+                        "toolOutput": output.response_item
+                    }))
+                    .to_response_item(&call);
+                }
                 let metadata_item = output
                     .metadata
                     .as_ref()
@@ -2570,6 +2828,22 @@ async fn run_turn_executor(
         if projection.take_needs_follow_up() {
             continue;
         }
+        let stop_hooks = run_hooks(
+            &app,
+            &manager,
+            HookRequest {
+                event_name: HookEventName::Stop,
+                thread_id: thread_id.clone(),
+                turn_id: Some(turn_id.clone()),
+                cwd: initial.cwd.clone(),
+                matcher: None,
+                payload: json!({"stopHookActive":false}),
+            },
+        )
+        .await?;
+        if stop_hooks.blocked_reason.is_some() || stop_hooks.stop_reason.is_some() {
+            continue;
+        }
         match manager
             .complete_turn_if_no_pending(&thread_id, &turn_id)
             .map_err(core_model_error)?
@@ -2581,6 +2855,72 @@ async fn run_turn_executor(
             None => continue,
         }
     }
+}
+
+fn ensure_hook_allows(dispatch: &HookDispatch) -> Result<(), ModelError> {
+    if let Some(reason) = dispatch
+        .blocked_reason
+        .as_deref()
+        .or(dispatch.stop_reason.as_deref())
+    {
+        return Err(ModelError::InvalidRequest {
+            message: reason.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+async fn run_permission_hooks(
+    app: &AppHandle,
+    manager: &ThreadManager,
+    thread_id: &str,
+    turn_id: &str,
+    cwd: std::path::PathBuf,
+    matcher: &str,
+    payload: Value,
+) -> Result<Option<HookPermissionDecision>, tietiezhi_agent_tools::ToolError> {
+    let dispatch = run_hooks(
+        app,
+        manager,
+        HookRequest {
+            event_name: HookEventName::PermissionRequest,
+            thread_id: thread_id.to_owned(),
+            turn_id: Some(turn_id.to_owned()),
+            cwd,
+            matcher: Some(matcher.to_owned()),
+            payload,
+        },
+    )
+    .await
+    .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?;
+    Ok(dispatch.permission_decision)
+}
+
+fn tool_call_input(call: &ToolCall) -> Value {
+    match &call.payload {
+        ToolPayload::Function { arguments } => {
+            serde_json::from_str(arguments).unwrap_or_else(|_| json!({"raw":arguments}))
+        }
+        ToolPayload::Custom { input } => json!(input),
+        ToolPayload::ToolSearch { arguments } => arguments.clone(),
+    }
+}
+
+fn update_tool_call_input(call: &mut ToolCall, input: Value) -> Result<(), ModelError> {
+    match &mut call.payload {
+        ToolPayload::Function { arguments } => {
+            *arguments = serde_json::to_string(&input)
+                .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        }
+        ToolPayload::Custom { input: current } => {
+            *current = input
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| input.to_string());
+        }
+        ToolPayload::ToolSearch { arguments } => *arguments = input,
+    }
+    Ok(())
 }
 
 fn responses_client(
@@ -2884,6 +3224,33 @@ async fn turn_tool_runtime(
                             strict_auto_review: None,
                         });
                     }
+                    match run_permission_hooks(
+                        &app,
+                        &manager,
+                        &request.thread_id,
+                        &request.turn_id,
+                        request.cwd.clone().into(),
+                        "request_permissions",
+                        json!({
+                            "tool_name":"request_permissions",
+                            "permissions":wire_permissions,
+                            "reason":request.reason
+                        }),
+                    )
+                    .await?
+                    {
+                        Some(HookPermissionDecision::Allow) => {
+                            return Ok(tietiezhi_agent_approval::PermissionsApprovalResponse {
+                                permissions: request.permissions,
+                                scope: "turn".into(),
+                                strict_auto_review: None,
+                            });
+                        }
+                        Some(HookPermissionDecision::Deny(reason)) => {
+                            return Err(tietiezhi_agent_tools::ToolError::Handler(reason));
+                        }
+                        None => {}
+                    }
                     let waiting = manager
                         .set_thread_status(
                             &request.thread_id,
@@ -2983,6 +3350,7 @@ async fn turn_tool_runtime(
     let approval_app = app.clone();
     let approval_manager = manager.clone();
     let patch_requirement = patch_escape_requirement.clone();
+    let patch_hook_cwd = snapshot.cwd.clone();
     handlers.push(
         apply_patch_handler(
             snapshot.cwd.clone(),
@@ -2994,6 +3362,7 @@ async fn turn_tool_runtime(
                     let app = approval_app.clone();
                     let manager = approval_manager.clone();
                     let requirement = patch_requirement.clone();
+                    let hook_cwd = patch_hook_cwd.clone();
                     Box::pin(async move {
                         if let ApprovalRequirement::Forbidden { .. } = requirement {
                             return Ok(FileChangeApprovalDecision::Decline);
@@ -3012,6 +3381,29 @@ async fn turn_tool_runtime(
                             .contains_all_for(&request.thread_id, &keys)
                         {
                             return Ok(FileChangeApprovalDecision::AcceptForSession);
+                        }
+                        match run_permission_hooks(
+                            &app,
+                            &manager,
+                            &request.thread_id,
+                            &request.turn_id,
+                            hook_cwd,
+                            "apply_patch",
+                            json!({
+                                "tool_name":"apply_patch",
+                                "files":request.files,
+                                "reason":request.reason
+                            }),
+                        )
+                        .await?
+                        {
+                            Some(HookPermissionDecision::Allow) => {
+                                return Ok(FileChangeApprovalDecision::Accept);
+                            }
+                            Some(HookPermissionDecision::Deny(_)) => {
+                                return Ok(FileChangeApprovalDecision::Decline);
+                            }
+                            None => {}
                         }
                         let waiting = manager
                             .set_thread_status(
@@ -3186,6 +3578,30 @@ async fn turn_tool_runtime(
                 .contains_all_for(&request.thread_id, &keys)
             {
                 return Ok(CommandExecutionApprovalDecision::AcceptForSession);
+            }
+            match run_permission_hooks(
+                &app,
+                &manager,
+                &request.thread_id,
+                &request.turn_id,
+                request.cwd.clone().into(),
+                "exec_command",
+                json!({
+                    "tool_name":"exec_command",
+                    "command":request.command,
+                    "cwd":request.cwd,
+                    "reason":request.reason
+                }),
+            )
+            .await?
+            {
+                Some(HookPermissionDecision::Allow) => {
+                    return Ok(CommandExecutionApprovalDecision::Accept);
+                }
+                Some(HookPermissionDecision::Deny(_)) => {
+                    return Ok(CommandExecutionApprovalDecision::Decline);
+                }
+                None => {}
             }
             let waiting = manager
                 .set_thread_status(
@@ -3371,11 +3787,13 @@ async fn turn_tool_runtime(
     let network_runtime = app.state::<AppState>().codex_network.clone();
     let network_app = app.clone();
     let network_manager = manager.clone();
+    let network_hook_cwd = snapshot.cwd.clone();
     let network_prompts_allowed = approval_policy.allows(ApprovalCategory::Rule);
     let network_preparer = Arc::new(move |request: CommandNetworkRequest| {
         let runtime = network_runtime.clone();
         let app = network_app.clone();
         let manager = network_manager.clone();
+        let hook_cwd = network_hook_cwd.clone();
         Box::pin(async move {
             let app_state = app.state::<AppState>();
             if let Ok(store) = persistent_approval_store(&app, &app_state) {
@@ -3395,11 +3813,13 @@ async fn turn_tool_runtime(
             let approval_app = app.clone();
             let approval_manager = manager.clone();
             let approval_runtime = runtime.clone();
+            let approval_hook_cwd = hook_cwd.clone();
             let approver = Arc::new(
                 move |network: tietiezhi_agent_network::NetworkApprovalRequest| {
                     let app = approval_app.clone();
                     let manager = approval_manager.clone();
                     let runtime = approval_runtime.clone();
+                    let hook_cwd = approval_hook_cwd.clone();
                     Box::pin(async move {
                         if !network_prompts_allowed {
                             return NetworkApprovalDecision::Deny;
@@ -3417,6 +3837,32 @@ async fn turn_tool_runtime(
                             .contains_all_for(&network.thread_id, std::slice::from_ref(&key))
                         {
                             return NetworkApprovalDecision::AllowOnce;
+                        }
+                        match run_permission_hooks(
+                            &app,
+                            &manager,
+                            &network.thread_id,
+                            &network.turn_id,
+                            hook_cwd,
+                            "network",
+                            json!({
+                                "tool_name":"network",
+                                "command":network.command,
+                                "host":network.host,
+                                "port":network.port,
+                                "protocol":protocol,
+                                "reason":network.reason
+                            }),
+                        )
+                        .await
+                        {
+                            Ok(Some(HookPermissionDecision::Allow)) => {
+                                return NetworkApprovalDecision::AllowOnce;
+                            }
+                            Ok(Some(HookPermissionDecision::Deny(_))) | Err(_) => {
+                                return NetworkApprovalDecision::Deny;
+                            }
+                            Ok(None) => {}
                         }
                         let recipients = match manager.thread_recipients(&network.thread_id) {
                             Ok(recipients) => recipients,
