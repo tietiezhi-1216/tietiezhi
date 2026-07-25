@@ -68,6 +68,7 @@ jobs:
             crates/agent-config
             crates/agent-skills
             crates/agent-hooks
+            crates/agent-plugins
             crates/agent-context
             crates/agent-tools
             crates/agent-model
@@ -132,6 +133,9 @@ jobs:
 
       - name: Codex Hooks discovery, trust, and command lifecycle tests
         run: cargo test --manifest-path ../crates/agent-hooks/Cargo.toml
+
+      - name: Codex Plugins, Marketplace, and activation tests
+        run: cargo test --manifest-path ../crates/agent-plugins/Cargo.toml
 
       - name: Codex tool kernel and built-in tool tests
         run: cargo test --manifest-path ../crates/agent-tools/Cargo.toml

@@ -5841,6 +5841,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-plugins"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "tietiezhi-agent-protocol"
 version = "0.1.0"
 dependencies = [
@@ -5963,6 +5974,7 @@ dependencies = [
  "tietiezhi-agent-model",
  "tietiezhi-agent-network",
  "tietiezhi-agent-patch",
+ "tietiezhi-agent-plugins",
  "tietiezhi-agent-protocol",
  "tietiezhi-agent-sandbox",
  "tietiezhi-agent-skills",

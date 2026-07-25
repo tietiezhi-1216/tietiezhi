@@ -5,6 +5,7 @@ use std::time::Duration;
 use base64::Engine;
 use chrono::Local;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tietiezhi_agent_account::{
     AccountDispatchOutput, AccountNotification, AccountRpcError, AccountServerRequest,
@@ -30,7 +31,7 @@ use tietiezhi_agent_execpolicy::{
     ExecPolicyOutcome as RuntimeExecPolicyOutcome,
 };
 use tietiezhi_agent_hooks::{
-    HookDispatch, HookEngine, HookEventName, HookPaths, HookRequest,
+    HookDispatch, HookEngine, HookEventName, HookPaths, HookRequest, HookSource,
     PermissionDecision as HookPermissionDecision,
 };
 use tietiezhi_agent_model::{
@@ -41,10 +42,16 @@ use tietiezhi_agent_network::{
     NetworkApprovalDecision, NetworkDomainPermission, NetworkExecutionRequest, NetworkMode,
     NetworkPolicy, NetworkPolicyAmendment,
 };
+use tietiezhi_agent_plugins::{PluginActivation, PluginMcpSource, PluginPaths, PluginRuntime};
 use tietiezhi_agent_protocol::{
     ClientRequest, JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusResponse,
+    MarketplaceAddResponse, MarketplaceRemoveResponse, MarketplaceUpgradeResponse,
     McpResourceReadResponse, McpServerOauthLoginResponse, McpServerToolCallResponse,
-    ModelListResponse, PermissionProfileListResponse, ServerNotification,
+    ModelListResponse, PermissionProfileListResponse, PluginInstallResponse,
+    PluginInstalledResponse, PluginListResponse, PluginReadResponse, PluginShareCheckoutResponse,
+    PluginShareDeleteResponse, PluginShareListResponse, PluginShareSaveResponse,
+    PluginShareUpdateTargetsResponse, PluginSkillReadResponse, PluginUninstallResponse,
+    ServerNotification,
 };
 use tietiezhi_agent_skills::{SkillsPaths, SkillsRuntime};
 use tietiezhi_agent_tools::builtins::{
@@ -290,6 +297,12 @@ pub async fn codex_v2_request(
     }
     if SkillsRuntime::handles(&method) {
         let output = dispatch_skills_request(&app, &state, &connection_id, &request, &method)?;
+        emit_notifications(&app, &output.notifications)?;
+        return Ok(output);
+    }
+    if PluginRuntime::handles(&method) {
+        let output =
+            dispatch_plugin_request(&app, &state, &connection_id, &request, &method).await?;
         emit_notifications(&app, &output.notifications)?;
         return Ok(output);
     }
@@ -643,13 +656,34 @@ async fn dispatch_mcp_request(
     }
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
     let settings = super::settings::read_settings(app)?;
+    let mut configs = settings
+        .mcp_servers
+        .iter()
+        .filter(|config| config.enabled)
+        .map(|config| {
+            super::tietiezhi::resolve_mcp_config_secrets(app, config).map(|config| (config, None))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    configs.extend(
+        plugin_mcp_configs(app, state)?
+            .into_iter()
+            .filter(|(config, _)| config.enabled)
+            .map(|(config, plugin_id)| (config, Some(plugin_id))),
+    );
+    let plugin_ids = configs
+        .iter()
+        .filter_map(|(config, plugin_id)| {
+            plugin_id
+                .as_ref()
+                .map(|plugin_id| (config.id.clone(), plugin_id.clone()))
+        })
+        .collect::<HashMap<_, _>>();
     let resolve_server = |name: &str| -> Result<crate::mcp::McpServerConfig, String> {
-        let config = settings
-            .mcp_servers
+        configs
             .iter()
-            .find(|config| config.enabled && config.id == name)
-            .ok_or_else(|| format!("No MCP server named '{name}' found."))?;
-        super::tietiezhi::resolve_mcp_config_secrets(app, config)
+            .find(|(config, _)| config.id == name)
+            .map(|(config, _)| config.clone())
+            .ok_or_else(|| format!("No MCP server named '{name}' found."))
     };
     match method {
         "mcpServer/oauth/login" => {
@@ -736,6 +770,7 @@ async fn dispatch_mcp_request(
                 Ok(config) => config,
                 Err(error) => return Ok(dispatch_error(request, -32602, error)),
             };
+            let plugin_id = plugin_ids.get(server).cloned();
             let manager = thread_manager(app, &app.state::<AppState>())?;
             let turn_id = match manager.active_turn_id(thread_id) {
                 Ok(turn_id) => turn_id,
@@ -768,7 +803,7 @@ async fn dispatch_mcp_request(
                             "status":"inProgress",
                             "arguments":arguments,
                             "appContext":null,
-                            "pluginId":null,
+                            "pluginId":plugin_id.clone(),
                             "result":null,
                             "error":null,
                             "durationMs":null
@@ -799,7 +834,7 @@ async fn dispatch_mcp_request(
                         "status":if result.is_error { "failed" } else { "completed" },
                         "arguments":arguments,
                         "appContext":null,
-                        "pluginId":null,
+                        "pluginId":plugin_id.clone(),
                         "result":{
                             "content":result.content,
                             "structuredContent":result.structured_content,
@@ -820,7 +855,7 @@ async fn dispatch_mcp_request(
                         "status":"failed",
                         "arguments":arguments,
                         "appContext":null,
-                        "pluginId":null,
+                        "pluginId":plugin_id.clone(),
                         "result":null,
                         "error":{"message":error},
                         "durationMs":duration_ms
@@ -841,12 +876,10 @@ async fn dispatch_mcp_request(
             dispatch_success(request, result)
         }
         "mcpServerStatus/list" => {
-            let mut configs = settings
-                .mcp_servers
+            let mut configs = configs
                 .iter()
-                .filter(|config| config.enabled)
-                .map(|config| super::tietiezhi::resolve_mcp_config_secrets(app, config))
-                .collect::<Result<Vec<_>, _>>()?;
+                .map(|(config, _)| config.clone())
+                .collect::<Vec<_>>();
             configs.sort_by(|left, right| left.id.cmp(&right.id));
             let total = configs.len();
             let start = match params.get("cursor").filter(|value| !value.is_null()) {
@@ -1964,6 +1997,17 @@ async fn dispatch_config_request(
                 for server in settings.mcp_servers {
                     state.mcp.stop(&server.id).await;
                 }
+                for (server, _) in plugin_mcp_configs(app, state)? {
+                    state.mcp.stop(&server.id).await;
+                }
+            }
+            let plugin_edits = plugin_enablement_edits(method, &params);
+            if !plugin_edits.is_empty() {
+                let plugins = plugin_runtime(app, state)?;
+                for (plugin_id, enabled) in plugin_edits {
+                    plugins.set_enabled(&plugin_id, enabled)?;
+                }
+                refresh_plugin_activation(app, state, &plugins)?;
             }
             let notifications = dispatch
                 .warnings
@@ -2000,6 +2044,29 @@ async fn dispatch_config_request(
             notifications: Vec::new(),
         }),
     }
+}
+
+fn plugin_enablement_edits(method: &str, params: &Value) -> Vec<(String, bool)> {
+    let edits = match method {
+        "config/value/write" => vec![params],
+        "config/batchWrite" => params
+            .get("edits")
+            .and_then(Value::as_array)
+            .map(|edits| edits.iter().collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    edits
+        .into_iter()
+        .filter_map(|edit| {
+            let key_path = edit.get("keyPath").and_then(Value::as_str)?;
+            let plugin_id = key_path
+                .strip_prefix("plugins.")?
+                .strip_suffix(".enabled")?;
+            let enabled = edit.get("value").and_then(Value::as_bool)?;
+            (!plugin_id.is_empty()).then(|| (plugin_id.into(), enabled))
+        })
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -2084,6 +2151,245 @@ fn hooks_runtime(app: &AppHandle, state: &AppState) -> Result<HookEngine, String
     runtime.set_allow_managed_hooks_only(managed_only);
     *slot = Some(runtime.clone());
     Ok(runtime)
+}
+
+fn plugin_runtime(app: &AppHandle, state: &AppState) -> Result<PluginRuntime, String> {
+    let mut slot = state
+        .codex_plugins
+        .lock()
+        .map_err(|_| "Codex Plugins 状态锁已损坏".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Ok(runtime.clone());
+    }
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let home = dirs::home_dir().unwrap_or_else(|| app_data.clone());
+    let runtime = PluginRuntime::new(PluginPaths {
+        root: app_data.join("agent-runtime").join("plugins"),
+        personal_marketplace: home
+            .join(".agents")
+            .join("plugins")
+            .join("marketplace.json"),
+    })?;
+    refresh_plugin_activation(app, state, &runtime)?;
+    *slot = Some(runtime.clone());
+    Ok(runtime)
+}
+
+fn refresh_plugin_activation(
+    app: &AppHandle,
+    state: &AppState,
+    runtime: &PluginRuntime,
+) -> Result<PluginActivation, String> {
+    let activation = runtime.activation()?;
+    let cwd = runtime_defaults(app)?.cwd;
+    skills_runtime(app, state)?.dispatch(
+        "skills/extraRoots/set",
+        &json!({"extraRoots":activation.skill_roots}),
+        &cwd,
+    )?;
+    hooks_runtime(app, state)?.set_extra_sources(
+        activation
+            .hook_paths
+            .iter()
+            .cloned()
+            .map(|path| (path, HookSource::Plugin, true))
+            .collect(),
+    );
+    Ok(activation)
+}
+
+async fn dispatch_plugin_request(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("{method} 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let runtime = plugin_runtime(app, state)?;
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    match runtime.dispatch(method, &params).await {
+        Ok(dispatch) => {
+            validate_plugin_response(method, &dispatch.result)?;
+            let activation_changed =
+                dispatch.changed && matches!(method, "plugin/install" | "plugin/uninstall");
+            if activation_changed {
+                refresh_plugin_activation(app, state, &runtime)?;
+            }
+            let notifications = activation_changed
+                .then(|| RoutedNotification {
+                    recipients: vec![connection_id.into()],
+                    method: "skills/changed".into(),
+                    params: json!({}),
+                })
+                .into_iter()
+                .collect();
+            Ok(DispatchOutput {
+                response: json!({
+                    "id":request.get("id").cloned().unwrap_or(Value::Null),
+                    "result":dispatch.result
+                }),
+                notifications,
+            })
+        }
+        Err(error) => Ok(dispatch_error(request, -32602, error)),
+    }
+}
+
+fn validate_plugin_response(method: &str, result: &Value) -> Result<(), String> {
+    macro_rules! validate {
+        ($ty:ty) => {
+            serde_json::from_value::<$ty>(result.clone())
+                .map(|_| ())
+                .map_err(|error| format!("{method} 返回值不符合 App Server V2：{error}"))
+        };
+    }
+    match method {
+        "marketplace/add" => validate!(MarketplaceAddResponse),
+        "marketplace/remove" => validate!(MarketplaceRemoveResponse),
+        "marketplace/upgrade" => validate!(MarketplaceUpgradeResponse),
+        "plugin/install" => validate!(PluginInstallResponse),
+        "plugin/installed" => validate!(PluginInstalledResponse),
+        "plugin/list" => validate!(PluginListResponse),
+        "plugin/read" => validate!(PluginReadResponse),
+        "plugin/share/checkout" => validate!(PluginShareCheckoutResponse),
+        "plugin/share/delete" => validate!(PluginShareDeleteResponse),
+        "plugin/share/list" => validate!(PluginShareListResponse),
+        "plugin/share/save" => validate!(PluginShareSaveResponse),
+        "plugin/share/updateTargets" => validate!(PluginShareUpdateTargetsResponse),
+        "plugin/skill/read" => validate!(PluginSkillReadResponse),
+        "plugin/uninstall" => validate!(PluginUninstallResponse),
+        _ => Err(format!("不支持的 Plugin 方法：{method}")),
+    }
+}
+
+fn plugin_mcp_configs(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<Vec<(crate::mcp::McpServerConfig, String)>, String> {
+    let runtime = plugin_runtime(app, state)?;
+    let activation = runtime.activation()?;
+    let mut configs = Vec::new();
+    for source in activation.mcp_servers {
+        configs.extend(
+            parse_plugin_mcp_source(&source)?
+                .into_iter()
+                .map(|config| (config, source.plugin_id.clone())),
+        );
+    }
+    Ok(configs)
+}
+
+fn parse_plugin_mcp_source(
+    source: &PluginMcpSource,
+) -> Result<Vec<crate::mcp::McpServerConfig>, String> {
+    let value = match (&source.path, &source.inline) {
+        (Some(path), _) => {
+            let bytes = std::fs::read(path)
+                .map_err(|error| format!("读取插件 MCP 配置 {} 失败：{error}", path.display()))?;
+            serde_json::from_slice::<Value>(&bytes)
+                .map_err(|error| format!("解析插件 MCP 配置 {} 失败：{error}", path.display()))?
+        }
+        (None, Some(value)) => value.clone(),
+        (None, None) => return Ok(Vec::new()),
+    };
+    let servers = value
+        .get("mcpServers")
+        .unwrap_or(&value)
+        .as_object()
+        .ok_or_else(|| format!("插件 {} 的 mcpServers 必须是对象", source.plugin_id))?;
+    servers
+        .iter()
+        .map(|(name, raw)| plugin_mcp_config(&source.plugin_id, name, raw))
+        .collect()
+}
+
+fn plugin_mcp_config(
+    plugin_id: &str,
+    name: &str,
+    raw: &Value,
+) -> Result<crate::mcp::McpServerConfig, String> {
+    let object = raw
+        .as_object()
+        .ok_or_else(|| format!("插件 MCP `{plugin_id}/{name}` 必须是对象"))?;
+    let server_id = format!(
+        "plugin_{}_{}",
+        stable_identifier(plugin_id),
+        stable_identifier(name)
+    );
+    let transport = if let Some(transport) = object.get("transport") {
+        transport.clone()
+    } else if let Some(command) = object.get("command").and_then(Value::as_str) {
+        json!({
+            "kind":"stdio",
+            "command":command,
+            "args":object.get("args").cloned().unwrap_or_else(||json!([])),
+            "env":object.get("env").cloned().unwrap_or_else(||json!({}))
+        })
+    } else if let Some(url) = object
+        .get("url")
+        .or_else(|| object.get("httpUrl"))
+        .and_then(Value::as_str)
+    {
+        json!({
+            "kind":"http",
+            "url":url,
+            "headers":object.get("headers").cloned().unwrap_or_else(||json!({})),
+            "oauth":object.get("oauth").and_then(Value::as_bool).unwrap_or(false)
+        })
+    } else {
+        return Err(format!(
+            "插件 MCP `{plugin_id}/{name}` 缺少 command、url 或 transport"
+        ));
+    };
+    serde_json::from_value(json!({
+        "id":server_id,
+        "name":format!("{plugin_id} / {name}"),
+        "enabled":object.get("enabled").and_then(Value::as_bool).unwrap_or(true),
+        "required":object.get("required").and_then(Value::as_bool).unwrap_or(false),
+        "enabledTools":object.get("enabledTools").cloned().unwrap_or_else(||json!([])),
+        "disabledTools":object.get("disabledTools").cloned().unwrap_or_else(||json!([])),
+        "startupTimeoutSecs":object.get("startupTimeoutSecs").cloned().unwrap_or_else(||json!(15)),
+        "toolTimeoutSecs":object.get("toolTimeoutSecs").cloned().unwrap_or_else(||json!(120)),
+        "oauthScopes":object.get("oauthScopes").cloned().unwrap_or_else(||json!([])),
+        "transport":transport
+    }))
+    .map_err(|error| format!("插件 MCP `{plugin_id}/{name}` 配置无效：{error}"))
+}
+
+fn stable_identifier(value: &str) -> String {
+    let mut output = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .take(32)
+        .collect::<String>();
+    while output.contains("__") {
+        output = output.replace("__", "_");
+    }
+    let output = output.trim_matches('_');
+    let digest = Sha256::digest(value.as_bytes());
+    let suffix = digest[..4]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{output}_{suffix}")
 }
 
 async fn run_hooks(
@@ -3976,8 +4282,35 @@ async fn turn_tool_runtime(
     {
         handlers.push(handler);
     }
+    let mut mcp_configs = settings
+        .mcp_servers
+        .iter()
+        .filter(|config| config.enabled)
+        .map(|config| {
+            super::tietiezhi::resolve_mcp_config_secrets(app, config).map(|config| (config, None))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ModelError::Consumer)?;
+    mcp_configs.extend(
+        plugin_mcp_configs(app, &app_state)
+            .map_err(ModelError::Consumer)?
+            .into_iter()
+            .filter(|(config, _)| config.enabled)
+            .map(|(config, plugin_id)| (config, Some(plugin_id))),
+    );
+    let mcp_plugin_ids = Arc::new(
+        mcp_configs
+            .iter()
+            .filter_map(|(config, plugin_id)| {
+                plugin_id
+                    .as_ref()
+                    .map(|plugin_id| (config.id.clone(), plugin_id.clone()))
+            })
+            .collect::<HashMap<_, _>>(),
+    );
     let mcp_observer_app = app.clone();
     let mcp_observer_manager = manager.clone();
+    let observer_plugin_ids = mcp_plugin_ids.clone();
     let mcp_observer = Arc::new(move |event: tietiezhi_agent_mcp::McpToolRuntimeEvent| {
         let (thread_id, notifications) = match event {
             tietiezhi_agent_mcp::McpToolRuntimeEvent::Started {
@@ -3987,6 +4320,7 @@ async fn turn_tool_runtime(
                 arguments,
             } => {
                 let thread_id = context.thread_id.clone();
+                let plugin_id = observer_plugin_ids.get(&server).cloned();
                 let notifications = mcp_observer_manager.local_tool_item_started(
                     &context.thread_id,
                     &context.turn_id,
@@ -3998,7 +4332,7 @@ async fn turn_tool_runtime(
                         "status":"inProgress",
                         "arguments":arguments,
                         "appContext":null,
-                        "pluginId":null,
+                        "pluginId":plugin_id,
                         "result":null,
                         "error":null,
                         "durationMs":null
@@ -4015,6 +4349,7 @@ async fn turn_tool_runtime(
                 duration_ms,
             } => {
                 let thread_id = context.thread_id.clone();
+                let plugin_id = observer_plugin_ids.get(&server).cloned();
                 let status = if result.is_error {
                     "failed"
                 } else {
@@ -4040,7 +4375,7 @@ async fn turn_tool_runtime(
                         "status":status,
                         "arguments":arguments,
                         "appContext":null,
-                        "pluginId":null,
+                        "pluginId":plugin_id,
                         "result":result_value,
                         "error":error,
                         "durationMs":i64::try_from(duration_ms).unwrap_or(i64::MAX)
@@ -4057,6 +4392,7 @@ async fn turn_tool_runtime(
                 duration_ms,
             } => {
                 let thread_id = context.thread_id.clone();
+                let plugin_id = observer_plugin_ids.get(&server).cloned();
                 let notifications = mcp_observer_manager.local_tool_item_completed(
                     &context.thread_id,
                     &context.turn_id,
@@ -4068,7 +4404,7 @@ async fn turn_tool_runtime(
                         "status":"failed",
                         "arguments":arguments,
                         "appContext":null,
-                        "pluginId":null,
+                        "pluginId":plugin_id,
                         "result":null,
                         "error":{"message":error},
                         "durationMs":i64::try_from(duration_ms).unwrap_or(i64::MAX)
@@ -4085,9 +4421,7 @@ async fn turn_tool_runtime(
         emit_notifications(&mcp_observer_app, &notifications)
             .map_err(tietiezhi_agent_tools::ToolError::Handler)
     }) as tietiezhi_agent_mcp::McpToolObserver;
-    for config in settings.mcp_servers.iter().filter(|config| config.enabled) {
-        let config = super::tietiezhi::resolve_mcp_config_secrets(app, config)
-            .map_err(ModelError::Consumer)?;
+    for (config, _) in mcp_configs {
         match mcp_manager.list_tools(&config).await {
             Ok(tools) => {
                 handlers.extend(tools.into_iter().map(|info| {
@@ -4674,9 +5008,10 @@ mod tests {
     use super::{
         assistant_response_text, compaction_response_request, dispatch_windows_sandbox,
         empty_rate_limits, format_micro, gateway_rate_limits, local_tool_timeline_item,
-        merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, permission_profile_list,
-        permission_profile_to_tool, permission_profile_to_v2, response_request, ConfigPaths,
-        ConfigRuntime, ResponseEvent, ResponseProjection, SkillsPaths, SkillsRuntime,
+        merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, parse_plugin_mcp_source,
+        permission_profile_list, permission_profile_to_tool, permission_profile_to_v2,
+        plugin_enablement_edits, response_request, ConfigPaths, ConfigRuntime, PluginMcpSource,
+        ResponseEvent, ResponseProjection, SkillsPaths, SkillsRuntime,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
     use serde_json::json;
@@ -5097,6 +5432,60 @@ mod tests {
         assert!(wire.get("fileSystem").is_some());
         assert!(wire.get("file_system").is_none());
         assert_eq!(permission_profile_to_tool(wire), tool);
+    }
+
+    #[test]
+    fn plugin_mcp_sources_are_namespaced_and_keep_transport_policy() {
+        let source = PluginMcpSource {
+            plugin_id: "review@example".into(),
+            path: None,
+            inline: Some(json!({
+                "review":{
+                    "type":"stdio",
+                    "command":"review-mcp",
+                    "args":["--stdio"],
+                    "required":true,
+                    "enabledTools":["review"]
+                },
+                "docs":{
+                    "url":"https://example.invalid/mcp",
+                    "oauth":true
+                }
+            })),
+        };
+        let configs = parse_plugin_mcp_source(&source).unwrap();
+        assert_eq!(configs.len(), 2);
+        let review = configs
+            .iter()
+            .find(|config| config.name.ends_with(" / review"))
+            .unwrap();
+        assert!(review.id.starts_with("plugin_review_example_"));
+        assert!(review.id.ends_with("_review_c97ace4c"));
+        assert!(review.required);
+        assert_eq!(review.enabled_tools, ["review"]);
+        assert!(matches!(
+            review.transport,
+            crate::mcp::McpTransport::Stdio { .. }
+        ));
+        let docs = configs
+            .iter()
+            .find(|config| config.name.ends_with(" / docs"))
+            .unwrap();
+        assert!(matches!(
+            docs.transport,
+            crate::mcp::McpTransport::Http { oauth: true, .. }
+        ));
+        assert_eq!(
+            plugin_enablement_edits(
+                "config/value/write",
+                &json!({
+                    "keyPath":"plugins.review@example.enabled",
+                    "value":false,
+                    "mergeStrategy":"replace"
+                })
+            ),
+            [("review@example".into(), false)]
+        );
     }
 
     #[test]

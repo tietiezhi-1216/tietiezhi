@@ -282,3 +282,13 @@ R23 的 Hook 配置、发现、命令执行、输出解析、事件生命周期�
 - `codex-rs/app-server-protocol/src/protocol/v2/notification.rs`
 
 本地实现位于 `crates/agent-hooks`，命令 Handler 由当前 Tauri 进程直接创建并受超时、输出上限和项目哈希信任约束；不调用或分发上游 Codex 二进制。
+
+R24 的 Plugin Manifest、Marketplace、安装、共享与激活行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/plugin/src`
+- `codex-rs/core-plugins/src`
+- `codex-rs/config/src/plugin_edit.rs`
+- `codex-rs/app-server/src/request_processors/plugins.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`
+
+本地实现位于 `crates/agent-plugins`，以 staging、原子重命名和 rollback 目录管理插件包；Git Marketplace 由源码级 `git` 子进程获取，不运行、链接或分发上游 Codex 二进制。

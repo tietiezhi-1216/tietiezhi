@@ -27,6 +27,7 @@ tietiezhi-agent-model = { path = "../../crates/agent-model" }
 tietiezhi-agent-mcp = { path = "../../crates/agent-mcp" }
 tietiezhi-agent-network = { path = "../../crates/agent-network" }
 tietiezhi-agent-patch = { path = "../../crates/agent-patch" }
+tietiezhi-agent-plugins = { path = "../../crates/agent-plugins" }
 tietiezhi-agent-sandbox = { path = "../../crates/agent-sandbox" }
 tietiezhi-agent-skills = { path = "../../crates/agent-skills" }
 tietiezhi-agent-protocol = { path = "../../crates/agent-protocol" }

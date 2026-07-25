@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 66 |
+| 待实现 | 52 |
 | 实现中 | 0 |
-| 已实现 | 95 |
+| 已实现 | 109 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -62,7 +62,7 @@
 | R21 | 配置体系 | 已完成 | crates/agent-config 配置层/来源/CAS/Requirements/实验功能测试；desktop App Server V2 生成类型验证与 MCP reload；docs/CODEX-CONFIG.md | 企业云配置和 MDM 由 system/requirements 层映射；R23-R24 将 Hooks 与 Plugins 的 managed-only 细粒度要求接入。 |
 | R22 | Skills | 已完成 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md | R24 将已安装插件的 Skills 根作为带 plugin provenance 的根注入；远程执行环境技能在 R35 映射。 |
 | R23 | Hooks | 已完成 | crates/agent-hooks 发现/信任/命令/超时/输出解析测试；crates/agent-core hook notification 与 hookPrompt canonical persistence；desktop Session/Prompt/Tool/Permission/Compact/Stop 生命周期接线；docs/CODEX-HOOKS.md | prompt/agent handler declarations are retained as typed failed runs until the R26 model-backed collaboration runner is available；R24 injects plugin hook sources and provenance；project hook execution requires an exact trusted SHA-256 hash. |
-| R24 | Plugins | 待开始 |  |  |
+| R24 | Plugins | 已完成 | crates/agent-plugins; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md | Apps execution remains assigned to R33; hosted OpenAI Share is mapped to local auditable storage. |
 | R25 | Plan 与用户输入 | 待开始 |  |  |
 | R26 | Collaboration | 待开始 |  |  |
 | R27 | Guardian 与 Review | 待开始 |  |  |
@@ -122,9 +122,9 @@
 | `fuzzyFileSearch` | 待实现 | R31 |  |
 | `hooks/list` | 待实现 | R36 |  |
 | `initialize` | 待实现 | R2 |  |
-| `marketplace/add` | 待实现 | R24 |  |
-| `marketplace/remove` | 待实现 | R24 |  |
-| `marketplace/upgrade` | 待实现 | R24 |  |
+| `marketplace/add` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `marketplace/remove` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `marketplace/upgrade` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
 | `mcpServer/oauth/login` | 已实现 | R19 | crates/agent-mcp OAuth PKCE/DCR/secure credential store/AuthClient refresh; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-MCP.md |
 | `mcpServer/resource/read` | 已实现 | R19 | crates/agent-mcp::read_resource; source-built stdio fixture; desktop V2 response validation |
 | `mcpServer/tool/call` | 已实现 | R19 | crates/agent-mcp rich call results and tool filters; desktop V2 dispatch; agent-core mcpToolCall restart/fork test |
@@ -132,17 +132,17 @@
 | `model/list` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、固定与在线模型目录测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md；docs/CODEX-GATEWAY.md |
 | `modelProvider/capabilities/read` | 待实现 | R36 |  |
 | `permissionProfile/list` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
-| `plugin/install` | 待实现 | R24 |  |
-| `plugin/installed` | 待实现 | R24 |  |
-| `plugin/list` | 待实现 | R24 |  |
-| `plugin/read` | 待实现 | R24 |  |
-| `plugin/share/checkout` | 待实现 | R24 |  |
-| `plugin/share/delete` | 待实现 | R24 |  |
-| `plugin/share/list` | 待实现 | R24 |  |
-| `plugin/share/save` | 待实现 | R24 |  |
-| `plugin/share/updateTargets` | 待实现 | R24 |  |
-| `plugin/skill/read` | 待实现 | R24 |  |
-| `plugin/uninstall` | 待实现 | R24 |  |
+| `plugin/install` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/installed` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/list` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/read` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/share/checkout` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/share/delete` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/share/list` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/share/save` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/share/updateTargets` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/skill/read` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
+| `plugin/uninstall` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
 | `review/start` | 待实现 | R27 |  |
 | `skills/config/write` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
 | `skills/extraRoots/set` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |

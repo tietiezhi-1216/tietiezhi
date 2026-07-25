@@ -111,4 +111,6 @@ R22 已增加 `crates/agent-skills`，实现 system、admin、user、repo、plug
 
 R23 已增加 `crates/agent-hooks`，实现 system、user、project 与 plugin-ready Hook 发现、项目精确哈希信任、命令 Handler、超时、结构化输出、阻断/参数改写/审批决策/上下文注入，以及 Session、Prompt、Tool、Permission、Compact、Stop 和 SessionEnd 生命周期。Hook 运行通过 `hook/started`、`hook/completed` 和 canonical `hookPrompt` Item 投影，详细行为见 `docs/CODEX-HOOKS.md`。
 
+R24 已增加 `crates/agent-plugins`，实现本地/Git Marketplace、原子安装与回滚、启停、卸载、目录/详情/Skill 读取、共享 checkout 和 `.codex-plugin/plugin.json`。激活后的 Skills、Hooks 与 MCP 统一进入现有运行时，MCP Item 保留 `pluginId` 来源；Apps 在 R33 接入 Dynamic Tool。详细行为见 `docs/CODEX-PLUGINS.md`。
+
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

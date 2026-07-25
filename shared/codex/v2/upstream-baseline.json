@@ -250,21 +250,24 @@
       },
       {
         "method": "marketplace/add",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "marketplace/remove",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "marketplace/upgrade",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "mcpServer/oauth/login",
@@ -310,69 +313,80 @@
       },
       {
         "method": "plugin/install",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/installed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/read",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/share/checkout",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/share/delete",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/share/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/share/save",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/share/updateTargets",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/skill/read",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "plugin/uninstall",
-        "status": "pending",
+        "status": "implemented",
         "target": "R24",
-        "note": ""
+        "note": "Source-native App Server V2 plugin runtime with atomic package lifecycle and activation.",
+        "evidence": "crates/agent-plugins/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
       },
       {
         "method": "review/start",
@@ -1252,9 +1266,9 @@
     {
       "id": "R24",
       "name": "Plugins",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Apps execution remains assigned to R33; hosted OpenAI Share is mapped to local auditable storage.",
+      "evidence": "crates/agent-plugins; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md"
     },
     {
       "id": "R25",
