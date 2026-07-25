@@ -73,6 +73,7 @@ jobs:
             crates/agent-skills
             crates/agent-hooks
             crates/agent-plugins
+            crates/agent-apps
             crates/agent-context
             crates/agent-tools
             crates/agent-model
@@ -123,6 +124,9 @@ jobs:
       - name: Check workspace Git Diff UI
         run: pnpm test:workspace-git-ui
 
+      - name: Check Codex Apps UI
+        run: pnpm test:codex-apps-ui
+
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
 
@@ -164,6 +168,9 @@ jobs:
 
       - name: Codex Plugins, Marketplace, and activation tests
         run: cargo test --manifest-path ../crates/agent-plugins/Cargo.toml
+
+      - name: Codex Apps and connector catalog tests
+        run: cargo test --manifest-path ../crates/agent-apps/Cargo.toml
 
       - name: Codex tool kernel and built-in tool tests
         run: cargo test --manifest-path ../crates/agent-tools/Cargo.toml

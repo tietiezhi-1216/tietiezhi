@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 27 |
+| 待实现 | 23 |
 | 实现中 | 0 |
-| 已实现 | 134 |
+| 已实现 | 138 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -71,7 +71,7 @@
 | R30 | 集成终端 | 已完成 | R13 crates/agent-exec PTY/ConPTY、stdin、resize、poll 和进程树测试；desktop terminal Thread 会话命令、多标签文本终端、任务删除清理与 SSR 门禁；docs/CODEX-INTEGRATED-TERMINAL.md | 集成终端使用安全的文本 VT 投影而非完整 GPU 终端模拟器；复杂全屏 TUI 的像素级呈现留给外部终端，stdin/resize/进程语义已完整。 |
 | R31 | Desktop 时间线 | 已完成 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build | Legacy ChatItem 时间线仅在 R38 迁移完成后删除；文件能力不替代模型工具的 Approval 与 Sandbox。 |
 | R32 | Diff 与 Git UI | 已完成 | crates/agent-git Diff/Stage/Unstage/Discard/Commit/Push/PR；desktop WorkspaceGitPanel；7 项 Git 测试；pnpm test:workspace-git-ui/typecheck/build；docs/CODEX-DIFF-GIT-UI.md | PR 链接当前仅支持 GitHub remote；Push 永不 force，Discard 仅操作显式选择路径。 |
-| R33 | Apps 与连接器 | 待开始 |  |  |
+| R33 | Apps 与连接器 | 已完成 | crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-apps-panel.tsx; docs/CODEX-APPS.md | 插件 App 工具只有在其 MCP/宿主运行时存在时才可调用；目录不会把 synthetic 或隐藏工具误报为 callable。 |
 | R34 | Automations | 待开始 |  |  |
 | R35 | 远程与实时 | 待开始 |  |  |
 | R36 | 运维能力 | 待开始 |  |  |
@@ -92,9 +92,9 @@
 | `account/sendAddCreditsNudgeEmail` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
 | `account/usage/read` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
 | `account/workspaceMessages/read` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
-| `app/installed` | 待实现 | R33 |  |
-| `app/list` | 待实现 | R33 |  |
-| `app/read` | 待实现 | R33 |  |
+| `app/installed` | 已实现 | R33 | 固定 V2 InstalledApp 投影；仅有效、非 synthetic、模型可见工具标记 callable。 |
+| `app/list` | 已实现 | R33 | 固定排序与游标分页；forceRefetch 发布正式目录通知。 |
+| `app/read` | 已实现 | R33 | 最多 100 ID，首次顺序去重，返回缺失 ID 与可选工具摘要。 |
 | `command/exec` | 已实现 | R13 | desktop codex.rs dispatch_command_exec；agent-exec integration tests |
 | `command/exec/resize` | 已实现 | R13 | desktop codex.rs；agent-exec PTY resize test |
 | `command/exec/terminate` | 已实现 | R13 | desktop codex.rs；agent-exec process-group cleanup test |
@@ -201,7 +201,7 @@
 | `account/login/completed` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
 | `account/rateLimits/updated` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
 | `account/updated` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
-| `app/list/updated` | 待实现 | R33 |  |
+| `app/list/updated` | 已实现 | R33 | 目录刷新及插件安装/卸载后发布完整 AppInfo 快照。 |
 | `command/exec/outputDelta` | 已实现 | R13 | desktop wait_streamed_command_exec；V2 notification validation |
 | `configWarning` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
 | `deprecationNotice` | 待实现 | R3 |  |

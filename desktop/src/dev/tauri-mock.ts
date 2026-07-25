@@ -1195,6 +1195,93 @@ export function installTauriMock(): void {
     permission_respond: (a) => {
       pendingPermission = a.decision as string;
     },
+    codex_v2_request: (a) => {
+      const request = a.request as {
+        id: string | number;
+        method: string;
+        params?: Record<string, unknown>;
+      };
+      const app = {
+        id: "tietiezhi.devices",
+        name: "Tietiezhi Device Fabric",
+        description: "调用本机与已连接设备公开的能力。",
+        logoUrl: null,
+        logoUrlDark: null,
+        iconAssets: null,
+        iconDarkAssets: null,
+        distributionChannel: "builtIn",
+        branding: {
+          category: "devices",
+          developer: "Tietiezhi",
+          website: null,
+          privacyPolicy: null,
+          termsOfService: null,
+          isDiscoverableApp: true,
+        },
+        appMetadata: null,
+        labels: null,
+        installUrl: null,
+        isAccessible: true,
+        isEnabled: true,
+        pluginDisplayNames: [],
+      };
+      const result =
+        request.method === "app/list"
+          ? { data: [app], nextCursor: null }
+          : request.method === "app/read"
+            ? {
+                apps: [
+                  {
+                    id: app.id,
+                    name: app.name,
+                    description: app.description,
+                    iconUrl: null,
+                    iconUrlDark: null,
+                    distributionChannel: "builtIn",
+                    installUrl: null,
+                    pluginDisplayNames: [],
+                    toolSummaries: [
+                      {
+                        name: "list",
+                        title: "列出设备",
+                        description: "列出设备及其公开能力。",
+                      },
+                      {
+                        name: "invoke",
+                        title: "调用设备能力",
+                        description: "通过审批生命周期调用一个明确能力。",
+                      },
+                    ],
+                  },
+                ],
+                missingAppIds: [],
+              }
+            : request.method === "app/installed"
+              ? {
+                  apps: [
+                    {
+                      id: app.id,
+                      runtimeName: app.name,
+                      enabled: true,
+                      callable: true,
+                    },
+                  ],
+                }
+              : {};
+      return {
+        response: { id: request.id, result },
+        notifications:
+          request.params?.forceRefetch === true
+            ? [
+                {
+                  recipients: [String(a.connectionId ?? "desktop")],
+                  method: "app/list/updated",
+                  params: { data: [app] },
+                },
+              ]
+            : [],
+      };
+    },
     codex_v2_server_response: () => true,
     default_system_prompt: () => "你是铁铁汁（Tietiezhi），一个运行在用户桌面上的智能体助手。……",
 

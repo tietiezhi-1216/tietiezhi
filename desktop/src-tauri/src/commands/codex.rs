@@ -19,6 +19,10 @@ use tietiezhi_agent_approval::{
     PersistentApprovalRule, PersistentApprovalStore, RoutedServerRequest as ApprovalServerRequest,
     UserInputRequestParams,
 };
+use tietiezhi_agent_apps::{
+    device_app, is_read_only_device_capability, AppCatalog, AppToolDefinition,
+    DEVICE_LIST_TOOL_NAME, DEVICE_TOOL_NAME, DEVICE_TOOL_NAMESPACE,
+};
 use tietiezhi_agent_collab::{
     AgentStatus as CollabAgentStatus, CollaborationConfig, CollaborationError, CollaborationHost,
     CollaborationRuntime, CollaborationTools, ForkTurns, HostFuture, MailboxMessage, SpawnRequest,
@@ -57,14 +61,14 @@ use tietiezhi_agent_network::{
 };
 use tietiezhi_agent_plugins::{PluginActivation, PluginMcpSource, PluginPaths, PluginRuntime};
 use tietiezhi_agent_protocol::{
-    ClientRequest, JSONRPCRequest, JSONRPCResponse, ListMcpServerStatusResponse,
-    MarketplaceAddResponse, MarketplaceRemoveResponse, MarketplaceUpgradeResponse,
-    McpResourceReadResponse, McpServerOauthLoginResponse, McpServerToolCallResponse,
-    ModelListResponse, PermissionProfileListResponse, PluginInstallResponse,
-    PluginInstalledResponse, PluginListResponse, PluginReadResponse, PluginShareCheckoutResponse,
-    PluginShareDeleteResponse, PluginShareListResponse, PluginShareSaveResponse,
-    PluginShareUpdateTargetsResponse, PluginSkillReadResponse, PluginUninstallResponse,
-    ServerNotification,
+    AppsInstalledResponse, AppsListResponse, AppsReadResponse, ClientRequest, JSONRPCRequest,
+    JSONRPCResponse, ListMcpServerStatusResponse, MarketplaceAddResponse,
+    MarketplaceRemoveResponse, MarketplaceUpgradeResponse, McpResourceReadResponse,
+    McpServerOauthLoginResponse, McpServerToolCallResponse, ModelListResponse,
+    PermissionProfileListResponse, PluginInstallResponse, PluginInstalledResponse,
+    PluginListResponse, PluginReadResponse, PluginShareCheckoutResponse, PluginShareDeleteResponse,
+    PluginShareListResponse, PluginShareSaveResponse, PluginShareUpdateTargetsResponse,
+    PluginSkillReadResponse, PluginUninstallResponse, ServerNotification,
 };
 use tietiezhi_agent_review::{
     guardian_completed_notification, guardian_output_schema, guardian_prompt,
@@ -1260,6 +1264,11 @@ pub async fn codex_v2_request(
     }
     if SkillsRuntime::handles(&method) {
         let output = dispatch_skills_request(&app, &state, &connection_id, &request, &method)?;
+        emit_notifications(&app, &output.notifications)?;
+        return Ok(output);
+    }
+    if matches!(method.as_str(), "app/list" | "app/read" | "app/installed") {
+        let output = dispatch_apps_request(&app, &state, &connection_id, &request, &method)?;
         emit_notifications(&app, &output.notifications)?;
         return Ok(output);
     }
@@ -3214,6 +3223,123 @@ fn hooks_runtime(app: &AppHandle, state: &AppState) -> Result<HookEngine, String
     Ok(runtime)
 }
 
+fn apps_catalog(app: &AppHandle, state: &AppState) -> Result<AppCatalog, String> {
+    let plugins = plugin_runtime(app, state)?;
+    let activation = plugins.activation()?;
+    AppCatalog::load(&activation.apps)
+}
+
+fn dispatch_apps_request(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("{method} 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let catalog = match apps_catalog(app, state) {
+        Ok(catalog) => catalog,
+        Err(error) => return Ok(dispatch_error(request, -32603, error)),
+    };
+    let (result, publish_catalog) = match method {
+        "app/list" => {
+            let page = match catalog.list(
+                params.get("cursor").and_then(Value::as_str),
+                params
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .and_then(|limit| u32::try_from(limit).ok()),
+            ) {
+                Ok(page) => page,
+                Err(error) => return Ok(dispatch_error(request, -32602, error)),
+            };
+            (
+                json!({"data":page.data,"nextCursor":page.next_cursor}),
+                params
+                    .get("forceRefetch")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+        }
+        "app/read" => {
+            let app_ids = params
+                .get("appIds")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let read = match catalog.read(
+                &app_ids,
+                params
+                    .get("includeTools")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            ) {
+                Ok(read) => read,
+                Err(error) => return Ok(dispatch_error(request, -32602, error)),
+            };
+            (
+                json!({"apps":read.apps,"missingAppIds":read.missing_app_ids}),
+                false,
+            )
+        }
+        "app/installed" => (
+            json!({"apps":catalog.installed()}),
+            params
+                .get("forceRefresh")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
+        _ => return Ok(dispatch_error(request, -32601, "method not found")),
+    };
+    if let Err(error) = validate_apps_response(method, &result) {
+        return Ok(dispatch_error(request, -32603, error));
+    }
+    let notifications = publish_catalog
+        .then(|| {
+            catalog
+                .list(None, Some(100))
+                .map(|page| RoutedNotification {
+                    recipients: vec![connection_id.into()],
+                    method: "app/list/updated".into(),
+                    params: json!({"data":page.data}),
+                })
+        })
+        .transpose()?
+        .into_iter()
+        .collect();
+    let mut output = dispatch_success(request, result)?;
+    output.notifications = notifications;
+    Ok(output)
+}
+
+fn validate_apps_response(method: &str, result: &Value) -> Result<(), String> {
+    macro_rules! validate {
+        ($ty:ty) => {
+            serde_json::from_value::<$ty>(result.clone())
+                .map(|_| ())
+                .map_err(|error| format!("{method} 返回值不符合 App Server V2：{error}"))
+        };
+    }
+    match method {
+        "app/list" => validate!(AppsListResponse),
+        "app/read" => validate!(AppsReadResponse),
+        "app/installed" => validate!(AppsInstalledResponse),
+        _ => Err(format!("不支持的 Apps 方法：{method}")),
+    }
+}
+
 fn plugin_runtime(app: &AppHandle, state: &AppState) -> Result<PluginRuntime, String> {
     let mut slot = state
         .codex_plugins
@@ -3288,14 +3414,22 @@ async fn dispatch_plugin_request(
             if activation_changed {
                 refresh_plugin_activation(app, state, &runtime)?;
             }
-            let notifications = activation_changed
+            let mut notifications = activation_changed
                 .then(|| RoutedNotification {
                     recipients: vec![connection_id.into()],
                     method: "skills/changed".into(),
                     params: json!({}),
                 })
                 .into_iter()
-                .collect();
+                .collect::<Vec<_>>();
+            if activation_changed {
+                let apps = apps_catalog(app, state)?.list(None, Some(100))?.data;
+                notifications.push(RoutedNotification {
+                    recipients: vec![connection_id.into()],
+                    method: "app/list/updated".into(),
+                    params: json!({"data":apps}),
+                });
+            }
             Ok(DispatchOutput {
                 response: json!({
                     "id":request.get("id").cloned().unwrap_or(Value::Null),
@@ -4325,7 +4459,7 @@ async fn run_turn_executor(
                     .filter(|metadata| {
                         matches!(
                             metadata.get("kind").and_then(Value::as_str),
-                            Some("fileChange" | "commandExecution")
+                            Some("fileChange" | "commandExecution" | "dynamicToolCall")
                         )
                     })
                     .and_then(|metadata| metadata.get("item"))
@@ -5049,6 +5183,336 @@ fn record_runtime_world_state(
 }
 
 #[derive(Clone)]
+struct DeviceAppToolHandler {
+    app: AppHandle,
+    manager: ThreadManager,
+    cwd: std::path::PathBuf,
+    approval_policy: AskForApproval,
+    tool: AppToolDefinition,
+}
+
+impl DeviceAppToolHandler {
+    fn handlers(
+        app: AppHandle,
+        manager: ThreadManager,
+        cwd: std::path::PathBuf,
+        approval_policy: AskForApproval,
+    ) -> Vec<Arc<dyn ToolHandler>> {
+        device_app()
+            .tools
+            .into_iter()
+            .map(|tool| {
+                Arc::new(Self {
+                    app: app.clone(),
+                    manager: manager.clone(),
+                    cwd: cwd.clone(),
+                    approval_policy,
+                    tool,
+                }) as Arc<dyn ToolHandler>
+            })
+            .collect()
+    }
+
+    fn arguments(invocation: &ToolInvocation) -> Result<Value, ToolError> {
+        let ToolPayload::Function { arguments } = &invocation.call.payload else {
+            return Err(ToolError::InvalidCall(
+                "app tools require function arguments".into(),
+            ));
+        };
+        serde_json::from_str(arguments)
+            .map_err(|error| ToolError::InvalidCall(format!("invalid app arguments: {error}")))
+    }
+
+    async fn approve_device_call(
+        &self,
+        invocation: &ToolInvocation,
+        device_id: &str,
+        capability: &str,
+        input: &Value,
+    ) -> Result<(), ToolError> {
+        if is_read_only_device_capability(capability) {
+            return Ok(());
+        }
+        if self.approval_policy == AskForApproval::Never {
+            return Err(ToolError::Handler(
+                "approval policy is never; device side effects are forbidden".into(),
+            ));
+        }
+        let command = vec!["device".into(), device_id.to_owned(), capability.to_owned()];
+        let key = ApprovalKey::Command {
+            environment_id: format!("device:{device_id}"),
+            command: command.clone(),
+            cwd: self.cwd.to_string_lossy().into_owned(),
+            tty: false,
+            sandbox_permissions: "danger-full-access".into(),
+            additional_permissions: Some(json!({
+                "appId":tietiezhi_agent_apps::DEVICE_APP_ID,
+                "deviceId":device_id,
+                "capability":capability,
+                "input":input
+            })),
+        };
+        let state = self.app.state::<AppState>();
+        if state
+            .codex_session_approvals
+            .contains_all_for(&invocation.thread_id, std::slice::from_ref(&key))
+        {
+            return Ok(());
+        }
+        match run_permission_hooks(
+            &self.app,
+            &self.manager,
+            &invocation.thread_id,
+            &invocation.turn_id,
+            self.cwd.clone(),
+            "tietiezhi_devices.invoke",
+            json!({
+                "tool_name":"tietiezhi_devices.invoke",
+                "device_id":device_id,
+                "capability":capability,
+                "input":input
+            }),
+        )
+        .await?
+        {
+            Some(HookPermissionDecision::Allow) => return Ok(()),
+            Some(HookPermissionDecision::Deny(reason)) => {
+                return Err(ToolError::Handler(reason));
+            }
+            None => {}
+        }
+        match run_guardian_review(
+            &self.app,
+            &self.manager,
+            &invocation.thread_id,
+            &invocation.turn_id,
+            Some(&invocation.call.call_id),
+            GuardianAction::McpToolCall {
+                server: "codex_apps".into(),
+                tool_name: "tietiezhi_devices.invoke".into(),
+                connector_id: Some(tietiezhi_agent_apps::DEVICE_APP_ID.into()),
+                connector_name: Some("Tietiezhi Device Fabric".into()),
+                tool_title: Some(format!("{device_id}/{capability}")),
+            },
+            invocation.cancellation.clone(),
+        )
+        .await
+        {
+            GuardianDecision::Allow => return Ok(()),
+            GuardianDecision::Deny(reason) => return Err(ToolError::Handler(reason)),
+            GuardianDecision::Abort => {
+                return Err(ToolError::Handler(
+                    "device capability approval cancelled".into(),
+                ));
+            }
+            GuardianDecision::NotApplicable => {}
+        }
+        let waiting = self
+            .manager
+            .set_thread_status(
+                &invocation.thread_id,
+                json!({"type":"active","activeFlags":["waitingOnApproval"]}),
+            )
+            .map_err(|error| {
+                ToolError::Handler(format!("set device approval status: {error:?}"))
+            })?;
+        emit_notifications(&self.app, &waiting).map_err(ToolError::Handler)?;
+        let recipients = self
+            .manager
+            .thread_recipients(&invocation.thread_id)
+            .map_err(|error| {
+                ToolError::Handler(format!("resolve device approval recipients: {error:?}"))
+            })?;
+        let started_at_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(i64::MAX as u128) as i64;
+        let pending = state
+            .codex_approval_requests
+            .begin_command_execution(
+                recipients,
+                CommandExecutionApprovalParams {
+                    thread_id: invocation.thread_id.clone(),
+                    turn_id: invocation.turn_id.clone(),
+                    item_id: invocation.call.call_id.clone(),
+                    approval_id: None,
+                    command: Some(format!("device://{device_id}/{capability}")),
+                    cwd: Some(self.cwd.to_string_lossy().into_owned()),
+                    command_actions: None,
+                    environment_id: Some(format!("device:{device_id}")),
+                    network_approval_context: Some(json!({
+                        "host":device_id,
+                        "protocol":"device"
+                    })),
+                    proposed_execpolicy_amendment: None,
+                    proposed_network_policy_amendments: None,
+                    reason: Some(format!(
+                        "Allow device capability {capability} on {device_id}"
+                    )),
+                    started_at_ms,
+                },
+            )
+            .map_err(|error| ToolError::Handler(error.to_string()))?;
+        let request_id = pending.request.id.clone();
+        emit_approval_server_request(&self.app, &pending.request).map_err(ToolError::Handler)?;
+        let decision = tokio::select! {
+            result = pending.receiver => result
+                .map_err(|_| ToolError::Handler("device approval channel closed".into()))?
+                .map_err(|error| ToolError::Handler(error.to_string()))?,
+            () = invocation.cancellation.cancelled() => {
+                let _ = state.codex_approval_requests.cancel(&request_id);
+                CommandExecutionApprovalDecision::Cancel
+            }
+        };
+        let active = self
+            .manager
+            .set_thread_status(
+                &invocation.thread_id,
+                json!({"type":"active","activeFlags":[]}),
+            )
+            .map_err(|error| {
+                ToolError::Handler(format!("restore device approval status: {error:?}"))
+            })?;
+        emit_notifications(&self.app, &active).map_err(ToolError::Handler)?;
+        match decision {
+            CommandExecutionApprovalDecision::Accept => Ok(()),
+            CommandExecutionApprovalDecision::AcceptForSession => {
+                state
+                    .codex_session_approvals
+                    .approve_for(&invocation.thread_id, &[key])
+                    .map_err(|error| ToolError::Handler(error.to_string()))?;
+                Ok(())
+            }
+            CommandExecutionApprovalDecision::Decline => {
+                Err(ToolError::Handler("device capability declined".into()))
+            }
+            CommandExecutionApprovalDecision::Cancel => {
+                Err(ToolError::Handler("device capability cancelled".into()))
+            }
+            CommandExecutionApprovalDecision::AcceptWithExecpolicyAmendment { .. }
+            | CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment { .. } => Err(
+                ToolError::Handler("unsupported approval amendment for a device capability".into()),
+            ),
+        }
+    }
+}
+
+impl ToolHandler for DeviceAppToolHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::namespaced(DEVICE_TOOL_NAMESPACE, self.tool.name.clone())
+    }
+
+    fn spec(&self) -> ToolSpec {
+        let mut spec = ToolSpec::function(
+            self.tool_name(),
+            self.tool.description.clone(),
+            self.tool.input_schema.clone(),
+        );
+        spec.output_schema.clone_from(&self.tool.output_schema);
+        spec.namespace_description = Some(
+            "Discover and invoke Tietiezhi Device Fabric capabilities through the Codex Apps lifecycle."
+                .into(),
+        );
+        spec.strict = true;
+        spec
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        self.tool.name == DEVICE_LIST_TOOL_NAME
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        Box::pin(async move {
+            let started = std::time::Instant::now();
+            let arguments = Self::arguments(&invocation)?;
+            let output = match self.tool.name.as_str() {
+                DEVICE_LIST_TOOL_NAME => serde_json::to_value(
+                    super::devices::list_connected_devices_inner(
+                        &self.app,
+                        &self.app.state::<AppState>().http,
+                    )
+                    .await
+                    .map_err(ToolError::Handler)?,
+                )
+                .map_err(|error| ToolError::Handler(error.to_string()))?,
+                DEVICE_TOOL_NAME => {
+                    let device_id = arguments
+                        .get("device_id")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| ToolError::InvalidCall("device_id is required".into()))?;
+                    let capability = arguments
+                        .get("capability")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| ToolError::InvalidCall("capability is required".into()))?;
+                    let input = arguments.get("input").cloned().unwrap_or_else(|| json!({}));
+                    let devices = super::devices::list_connected_devices_inner(
+                        &self.app,
+                        &self.app.state::<AppState>().http,
+                    )
+                    .await
+                    .map_err(ToolError::Handler)?;
+                    let device = devices
+                        .iter()
+                        .find(|device| device.id == device_id)
+                        .ok_or_else(|| {
+                            ToolError::InvalidCall(format!("unknown device id: {device_id}"))
+                        })?;
+                    if !device.capabilities.iter().any(|item| item == capability) {
+                        return Err(ToolError::InvalidCall(format!(
+                            "device {device_id} does not advertise capability {capability}"
+                        )));
+                    }
+                    self.approve_device_call(&invocation, device_id, capability, &input)
+                        .await?;
+                    serde_json::to_value(
+                        super::devices::invoke_device_inner(
+                            &self.app,
+                            &self.app.state::<AppState>().http,
+                            device_id,
+                            capability,
+                            input,
+                        )
+                        .await
+                        .map_err(ToolError::Handler)?,
+                    )
+                    .map_err(|error| ToolError::Handler(error.to_string()))?
+                }
+                _ => {
+                    return Err(ToolError::InvalidCall(format!(
+                        "unknown app tool: {}",
+                        self.tool.name
+                    )));
+                }
+            };
+            let success = output.get("ok").and_then(Value::as_bool).unwrap_or(true);
+            let content = serde_json::to_string_pretty(&output)
+                .map_err(|error| ToolError::Handler(error.to_string()))?;
+            Ok(ToolOutput {
+                content: output,
+                success,
+                metadata: Some(json!({
+                    "kind":"dynamicToolCall",
+                    "item":{
+                        "type":"dynamicToolCall",
+                        "id":invocation.call.call_id,
+                        "namespace":DEVICE_TOOL_NAMESPACE,
+                        "tool":self.tool.name,
+                        "arguments":arguments,
+                        "status":if success {"completed"} else {"failed"},
+                        "contentItems":[{"type":"inputText","text":content}],
+                        "success":success,
+                        "durationMs":started.elapsed().as_millis().min(u64::MAX as u128) as u64
+                    }
+                })),
+            })
+        })
+    }
+}
+
+#[derive(Clone)]
 struct MemoryToolHandler {
     runtime: MemoryRuntime,
     name: &'static str,
@@ -5302,6 +5766,15 @@ async fn turn_tool_runtime(
         );
     }
     if snapshot.review.is_none() {
+        let approval_policy =
+            serde_json::from_value::<AskForApproval>(snapshot.approval_policy.clone())
+                .unwrap_or_default();
+        handlers.extend(DeviceAppToolHandler::handlers(
+            app.clone(),
+            manager.clone(),
+            snapshot.cwd.clone(),
+            approval_policy,
+        ));
         let collaboration =
             collaboration_runtime(app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
         ensure_collaboration_agent(
@@ -6740,6 +7213,17 @@ fn local_tool_timeline_item(snapshot: &TurnExecutionSnapshot, call: &ToolCall) -
                 })
             })
         }
+        (Some(DEVICE_TOOL_NAMESPACE), tool) => Some(json!({
+            "type":"dynamicToolCall",
+            "id":call.call_id,
+            "namespace":DEVICE_TOOL_NAMESPACE,
+            "tool":tool,
+            "arguments":arguments,
+            "status":"inProgress",
+            "contentItems":Value::Null,
+            "success":Value::Null,
+            "durationMs":Value::Null
+        })),
         (None, "view_image") => {
             let path = std::path::PathBuf::from(arguments.get("path")?.as_str()?);
             let path = if path.is_absolute() {
@@ -7694,6 +8178,25 @@ mod tests {
         assert_eq!(command["type"], "commandExecution");
         assert_eq!(command["status"], "inProgress");
         assert_eq!(command["command"], "printf ok");
+        let device = local_tool_timeline_item(
+            &snapshot,
+            &tietiezhi_agent_tools::ToolCall {
+                tool_name: tietiezhi_agent_tools::ToolName::namespaced(
+                    tietiezhi_agent_apps::DEVICE_TOOL_NAMESPACE,
+                    tietiezhi_agent_apps::DEVICE_TOOL_NAME,
+                ),
+                call_id: "call_device".into(),
+                payload: tietiezhi_agent_tools::ToolPayload::Function {
+                    arguments:
+                        "{\"device_id\":\"local\",\"capability\":\"system.status\",\"input\":{}}"
+                            .into(),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(device["type"], "dynamicToolCall");
+        assert_eq!(device["status"], "inProgress");
+        assert!(serde_json::from_value::<tietiezhi_agent_protocol::ThreadItem>(device).is_ok());
     }
 
     #[test]

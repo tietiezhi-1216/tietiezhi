@@ -384,3 +384,15 @@ R31 的强类型时间线、文件服务和模糊搜索行为参考以下 Apache
 本地实现位于 `desktop/src-tauri/src/commands/codex_fs.rs`、`desktop/src/stores/codex-timeline.ts` 和 `desktop/src/features/chat/codex-timeline.tsx`，不调用、链接或分发上游 Codex 二进制。
 
 R32 的 Diff 与 Git UI 复用 R29 已登记的 Apache-2.0 Git 基线，并参考 `codex-rs/tui/src/chatwidget/replay.rs` 的 FileChange/Diff 展示行为。本地 Git 操作位于 `crates/agent-git`，React 界面位于 `desktop/src/features/chat/workspace-git-panel.tsx`；只调用系统 Git，不调用、链接或分发上游 Codex 二进制。
+
+R33 的 Apps 目录、已安装连接器投影和 Dynamic Tool 生命周期参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/app-server/src/request_processors/apps_processor.rs`
+- `codex-rs/app-server/src/request_processors/apps_processor/installed.rs`
+- `codex-rs/app-server/src/dynamic_tools.rs`
+- `codex-rs/app-server/src/app_info.rs`
+- `codex-rs/connectors/src`
+- `codex-rs/app-server-protocol/src/protocol/v2/apps.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+
+本地实现位于 `crates/agent-apps` 和桌面 Dynamic Tool 宿主；设备能力调用使用 Tietiezhi 自有 Device Fabric，不调用、链接或分发上游 Codex 二进制。

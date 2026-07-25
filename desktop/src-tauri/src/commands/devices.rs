@@ -485,10 +485,17 @@ pub async fn list_connected_devices(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<ConnectedDevice>, String> {
+    list_connected_devices_inner(&app, &state.http).await
+}
+
+pub(crate) async fn list_connected_devices_inner(
+    app: &AppHandle,
+    http: &reqwest::Client,
+) -> Result<Vec<ConnectedDevice>, String> {
     let mut result = vec![local_device()];
-    for core in read_cores(&app)? {
+    for core in read_cores(app)? {
         let token = secrets::get_device_core_token(&core.id).ok().flatten();
-        let remote = fetch_remote_devices(&state.http, &core, token.as_deref()).await;
+        let remote = fetch_remote_devices(http, &core, token.as_deref()).await;
         let online = remote.is_ok();
         result.push(ConnectedDevice {
             id: format!("core:{}", core.id),

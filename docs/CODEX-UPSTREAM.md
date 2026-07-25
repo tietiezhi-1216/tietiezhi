@@ -58,6 +58,7 @@
 | Thread 集成终端 | `codex-rs/utils/pty`、`core/src/unified_exec`、`app-server/src/command_exec.rs` | `crates/agent-exec`、`desktop/src-tauri/src/commands/terminal.rs` | R30 |
 | Desktop 时间线与文件服务 | `app-server-protocol/src/protocol/v2/item.rs`、`tui/src/chatwidget/replay.rs`、`exec-server-protocol/src/protocol.rs`、`file-search` | `desktop/src/stores/codex-timeline.ts`、`desktop/src/features/chat/codex-timeline.tsx`、`desktop/src-tauri/src/commands/codex_fs.rs` | R31 |
 | Diff 与 Git UI | `git-utils`、`tui/src/chatwidget/replay.rs` 的 FileChange/Diff 行为 | `crates/agent-git`、`desktop/src/features/chat/workspace-git-panel.tsx` | R32 |
+| Apps 与连接器 | `app-server/src/request_processors/apps_processor.rs`、`connectors`、`app-server/src/dynamic_tools.rs` | `crates/agent-apps`、`desktop/src-tauri/src/commands/codex.rs`、`desktop/src/features/chat/codex-apps-panel.tsx` | R33 |
 | Rollout 持久化 | `codex-rs/rollout`、`thread-store`、`state` | `crates/agent-state`、`desktop/src-tauri/src/commands/conversations.rs` | R4 |
 | 运维与追踪 | `codex-rs/otel`、`feedback`、Doctor 行为 | `crates/agent-observability` | R36 |
 
@@ -132,5 +133,7 @@ R30 已在 `crates/agent-exec` 上增加 Thread 多会话集成终端，用户�
 R31 已实现 App Server V2 桌面文件服务和强类型 `ThreadItem` 时间线。Item 开始、增量和完成事件按稳定 ID 合并，18 类 Item、Turn Plan/Diff、警告和 needs-input 状态使用正式协议渲染；Legacy 时间线只保留到 R38 迁移完成。详细行为见 `docs/CODEX-DESKTOP-TIMELINE.md`。
 
 R32 已在唯一 Local/Worktree 环境上实现文件树、逐文件 Diff、Hunk 审查意见、精确 Stage/Unstage/Discard、Commit、非强推 Push 和 GitHub PR 链接。详细行为见 `docs/CODEX-DIFF-GIT-UI.md`。
+
+R33 已增加 `crates/agent-apps`，实现 App 目录、读取、已安装状态、刷新通知和插件 Apps 激活，并将 Tietiezhi Device Fabric 注册为正式 Dynamic Tool。设备副作用按精确设备/能力/参数进入 Hook、Guardian、审批和 Item 生命周期，详细行为见 `docs/CODEX-APPS.md`。
 
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

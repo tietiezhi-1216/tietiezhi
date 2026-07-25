@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tietiezhi-agent-account = { path = "../../crates/agent-account" }
+tietiezhi-agent-apps = { path = "../../crates/agent-apps" }
 tietiezhi-agent-approval = { path = "../../crates/agent-approval" }
 tietiezhi-agent-config = { path = "../../crates/agent-config" }
 tietiezhi-agent-collab = { path = "../../crates/agent-collab" }

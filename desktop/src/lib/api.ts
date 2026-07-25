@@ -9,6 +9,9 @@ import type { ClientRequest as CodexClientRequest } from "../../../shared/codex/
 import type { RequestId as CodexRequestId } from "../../../shared/codex/v2/typescript/RequestId";
 import type { ServerNotification as CodexServerNotification } from "../../../shared/codex/v2/typescript/ServerNotification";
 import type { ServerRequest as CodexServerRequest } from "../../../shared/codex/v2/typescript/ServerRequest";
+import type { AppsInstalledResponse } from "../../../shared/codex/v2/typescript/v2/AppsInstalledResponse";
+import type { AppsListResponse } from "../../../shared/codex/v2/typescript/v2/AppsListResponse";
+import type { AppsReadResponse } from "../../../shared/codex/v2/typescript/v2/AppsReadResponse";
 
 export type { ChatEvent } from "@/lib/chat-events";
 
@@ -50,6 +53,53 @@ export async function codexV2Request(
 
 export async function codexV2ServerResponse(response: CodexV2Response): Promise<boolean> {
   return invoke<boolean>("codex_v2_server_response", { response });
+}
+
+let codexAppsRequestId = 0;
+
+async function codexAppsRequest<T>(
+  method: "app/list" | "app/read" | "app/installed",
+  params: Record<string, unknown>,
+): Promise<T> {
+  codexAppsRequestId += 1;
+  const output = await codexV2Request("desktop", {
+    id: `apps-${codexAppsRequestId}`,
+    method,
+    params,
+  } as CodexClientRequest);
+  if (output.response.error) {
+    throw new Error(output.response.error.message);
+  }
+  return output.response.result as T;
+}
+
+export function listCodexApps(
+  threadId?: string,
+  forceRefetch = false,
+): Promise<AppsListResponse> {
+  return codexAppsRequest("app/list", {
+    threadId: threadId ?? null,
+    cursor: null,
+    limit: 100,
+    forceRefetch,
+  });
+}
+
+export function readCodexApps(
+  appIds: string[],
+  includeTools = true,
+): Promise<AppsReadResponse> {
+  return codexAppsRequest("app/read", { appIds, includeTools });
+}
+
+export function installedCodexApps(
+  threadId?: string,
+  forceRefresh = false,
+): Promise<AppsInstalledResponse> {
+  return codexAppsRequest("app/installed", {
+    threadId: threadId ?? null,
+    forceRefresh,
+  });
 }
 
 export type ProviderType = "openai" | "mimo";

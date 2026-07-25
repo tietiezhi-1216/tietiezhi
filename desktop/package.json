@@ -22,6 +22,7 @@
     "test:integrated-terminal-ui": "node scripts/check-integrated-terminal-ui.mjs",
     "test:codex-timeline-ui": "node scripts/check-codex-timeline.mjs",
     "test:workspace-git-ui": "node scripts/check-workspace-git-ui.mjs",
+    "test:codex-apps-ui": "node scripts/check-codex-apps-ui.mjs",
     "test:codex-protocol-ts": "tsc -p ../shared/codex/v2/tsconfig.json",
     "typecheck": "tsc --noEmit",
     "version:timestamp": "node scripts/set-release-version.mjs",

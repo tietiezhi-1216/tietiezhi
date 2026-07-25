@@ -49,6 +49,7 @@ import type {
 import { getTaskMode } from "@/lib/task-mode";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat";
+import { CodexAppsPanel } from "@/features/chat/codex-apps-panel";
 import { WorkspaceGitPanel } from "@/features/chat/workspace-git-panel";
 
 const formatBytes = (bytes: number): string => {
@@ -350,6 +351,7 @@ export function WorkspaceModePanel() {
           {activeId && activeStatus?.isGit && (
             <WorkspaceGitPanel taskId={activeId} disabled={!canOperate} />
           )}
+          {activeId && <CodexAppsPanel threadId={activeId} disabled={streaming} />}
         </div>
 
         <div className="mt-2 flex items-center gap-1.5 overflow-hidden">

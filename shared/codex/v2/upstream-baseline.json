@@ -70,21 +70,24 @@
       },
       {
         "method": "app/installed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R33",
-        "note": ""
+        "note": "固定 V2 InstalledApp 投影；仅有效、非 synthetic、模型可见工具标记 callable。",
+        "evidence": "crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs"
       },
       {
         "method": "app/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R33",
-        "note": ""
+        "note": "固定排序与游标分页；forceRefetch 发布正式目录通知。",
+        "evidence": "crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs"
       },
       {
         "method": "app/read",
-        "status": "pending",
+        "status": "implemented",
         "target": "R33",
-        "note": ""
+        "note": "最多 100 ID，首次顺序去重，返回缺失 ID 与可选工具摘要。",
+        "evidence": "crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs"
       },
       {
         "method": "command/exec",
@@ -657,9 +660,10 @@
       },
       {
         "method": "app/list/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R33",
-        "note": ""
+        "note": "目录刷新及插件安装/卸载后发布完整 AppInfo 快照。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; crates/agent-apps/src/lib.rs"
       },
       {
         "method": "command/exec/outputDelta",
@@ -1333,9 +1337,9 @@
     {
       "id": "R33",
       "name": "Apps 与连接器",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "插件 App 工具只有在其 MCP/宿主运行时存在时才可调用；目录不会把 synthetic 或隐藏工具误报为 callable。",
+      "evidence": "crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-apps-panel.tsx; docs/CODEX-APPS.md"
     },
     {
       "id": "R34",

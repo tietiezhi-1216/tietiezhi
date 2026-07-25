@@ -5691,6 +5691,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-apps"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tietiezhi-agent-collab"
 version = "0.1.0"
 dependencies = [
@@ -6012,6 +6020,7 @@ dependencies = [
  "tempfile",
  "tietiezhi-agent-account",
  "tietiezhi-agent-approval",
+ "tietiezhi-agent-apps",
  "tietiezhi-agent-collab",
  "tietiezhi-agent-config",
  "tietiezhi-agent-context",
