@@ -24,10 +24,6 @@ on:
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
 
-concurrency:
-  group: desktop-v2-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
     name: Build (${{ matrix.platform }})
