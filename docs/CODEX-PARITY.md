@@ -75,7 +75,7 @@
 | R34 | Automations | 已完成 | desktop/src-tauri/src/automation/runtime.rs; desktop/src-tauri/src/automation/store.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/automations/automation-list.tsx; docs/CODEX-AUTOMATIONS.md | 无人值守运行固定 approvalPolicy=never；交互审批节点禁止发布，必须审批的副作用会失败。指定项目必须是 Git 工作树，每个 Run 使用独立 Worktree。 |
 | R35 | 远程与实时 | 已完成 | crates/agent-remote; crates/agent-realtime; desktop Device Fabric remote bridge; App Server remote/realtime dispatch; Remote & Realtime UI; docs/CODEX-REMOTE-REALTIME.md | Remote transport uses Tietiezhi Device Fabric because the upstream OpenAI remote service is proprietary; protocol lifecycle, authorization, routing and notifications remain source-compatible. Realtime availability depends on the selected provider exposing the pinned WebSocket/WebRTC endpoints. |
 | R36 | 运维能力 | 已完成 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md | OpenAI proprietary Sentry, Statsig and attestation issuers are service-mapped rather than copied; telemetry and feedback networking remain opt-in through explicit Tietiezhi endpoints. |
-| R37 | 稳定性工程 | 待开始 |  |  |
+| R37 | 稳定性工程 | 已完成 | crates/agent-stability; crates/agent-exec/src/manager.rs; .github/workflows/codex-soak.yml; docs/CODEX-STABILITY.md | 定时 Soak 由 GitHub macOS/Windows runner 持续验证，常规 CI 使用有界快速矩阵。 |
 | R38 | 迁移切换 | 待开始 |  |  |
 | R39 | 正式发布 | 待开始 |  |  |
 

@@ -1365,9 +1365,9 @@
     {
       "id": "R37",
       "name": "稳定性工程",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "定时 Soak 由 GitHub macOS/Windows runner 持续验证，常规 CI 使用有界快速矩阵。",
+      "evidence": "crates/agent-stability; crates/agent-exec/src/manager.rs; .github/workflows/codex-soak.yml; docs/CODEX-STABILITY.md"
     },
     {
       "id": "R38",

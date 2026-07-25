@@ -184,6 +184,31 @@ struct CapturedStream {
 }
 
 impl ExecManager {
+    /// Number of process sessions retained by the manager.
+    ///
+    /// Completed sessions remain available for polling until `remove` is called.
+    /// This is intentionally exposed for runtime diagnostics and soak-test leak checks.
+    pub fn active_session_count(&self) -> Result<usize, ExecError> {
+        Ok(self
+            .inner
+            .sessions
+            .lock()
+            .map_err(|_| ExecError::StatePoisoned)?
+            .len())
+    }
+
+    /// Number of retained process sessions owned by a Thread or connection.
+    pub fn owner_session_count(&self, owner: &str) -> Result<usize, ExecError> {
+        Ok(self
+            .inner
+            .sessions
+            .lock()
+            .map_err(|_| ExecError::StatePoisoned)?
+            .values()
+            .filter(|session| session.id.owner == owner)
+            .count())
+    }
+
     pub fn allocate_session_id(&self) -> String {
         (self.inner.next_session_id.fetch_add(1, Ordering::Relaxed) + 1).to_string()
     }

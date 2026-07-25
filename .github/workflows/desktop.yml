@@ -89,6 +89,8 @@ jobs:
             crates/agent-mcp
             crates/agent-remote
             crates/agent-realtime
+            crates/agent-observability
+            crates/agent-stability
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -231,6 +233,9 @@ jobs:
 
       - name: Codex observability, Doctor, feedback, and attestation tests
         run: cargo test --manifest-path ../crates/agent-observability/Cargo.toml
+
+      - name: Codex fault injection and runtime stability tests
+        run: cargo test --manifest-path ../crates/agent-stability/Cargo.toml -- --test-threads=1
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

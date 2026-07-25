@@ -63,6 +63,7 @@
 | Remote Control 与 Realtime | `app-server/src/request_processors/remote_control_processor.rs`、`app-server/src/request_processors/turn_processor.rs`、`app-server/src/bespoke_event_handling.rs`、`app-server-protocol/src/protocol/v2/{remote_control,realtime}.rs`、`codex-api/src/endpoint/{realtime_call,realtime_websocket}`、`core/src/realtime_conversation.rs` | `crates/agent-remote`、`crates/agent-realtime`、`desktop/src-tauri/src/commands/{codex,devices}.rs`、`desktop/src/features/chat/remote-realtime-panel.tsx` | R35 |
 | Rollout 持久化 | `codex-rs/rollout`、`thread-store`、`state` | `crates/agent-state`、`desktop/src-tauri/src/commands/conversations.rs` | R4 |
 | 运维与追踪 | `codex-rs/otel`、`feedback`、Doctor 行为 | `crates/agent-observability` | R36 |
+| 稳定性、故障注入与 Soak | `codex-rs/core/tests`、`codex-api/src/sse`、`rollout`、`rmcp-client`、`utils/pty` | `crates/agent-stability`、`.github/workflows/codex-soak.yml` | R37 |
 
 ## 升级流程
 
@@ -91,6 +92,8 @@ R6 已实现 `turn/start`、`turn/steer`、`turn/interrupt`、三类 Turn 通知
 R7 已增加 `crates/agent-model`，实现 `/v1/responses` 请求、HTTP/SSE、错误分类、请求与流重试、reasoning/agent message 增量、Thread Token Usage 累积、模型重路由/校验/safety buffering，以及固定模型目录和分页。Tauri Turn 执行器支持取消、`end_turn: false` 继续采样和 Steer 延迟入历史，详细行为见 `docs/CODEX-MODEL.md`。
 
 R36 已增加 `crates/agent-observability`，实现脱敏结构化日志、进程内指标、OTLP/HTTP JSON、Doctor、原子 Feedback Outbox/上传、Attestation Broker 和 `serverRequest/resolved`；`hooks/list` 复用真实 Hook trust projection，桌面设置提供运行诊断入口。服务端上传映射到 Tietiezhi 自有端点，详细边界见 `docs/CODEX-OPERATIONS.md`。
+
+R37 已增加 `crates/agent-stability`，用真实进程、stdio MCP、HTTP/SSE 和 JSONL 路径覆盖断流、超时、取消、损坏尾部、原子发布失败、256 次连续工具调用和资源泄漏；Proptest 覆盖任意 SSE 分块，macOS/Windows 定时 Soak 验证长时间运行。详细矩阵见 `docs/CODEX-STABILITY.md`。
 
 R8 已增加 `crates/agent-account`，把 App Server V2 的账号登录、取消、退出、读取、额度、用量、工作区消息、重置额度、加额通知和外部令牌刷新映射到 Gateway、Keyring 与客户端反向请求。官方 Provider 固定使用 Responses，自定义 Provider 显式选择或用安全空 POST 探测；Gateway `/v1/models` 元数据投影为 V2 在线目录。详细边界见 `docs/CODEX-GATEWAY.md`。
 
