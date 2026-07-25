@@ -8,12 +8,19 @@ import type { TaskMode } from "@/lib/task-mode";
 import type { ClientRequest as CodexClientRequest } from "../../../shared/codex/v2/typescript/ClientRequest";
 import type { RequestId as CodexRequestId } from "../../../shared/codex/v2/typescript/RequestId";
 import type { ServerNotification as CodexServerNotification } from "../../../shared/codex/v2/typescript/ServerNotification";
+import type { ServerRequest as CodexServerRequest } from "../../../shared/codex/v2/typescript/ServerRequest";
 
 export type { ChatEvent } from "@/lib/chat-events";
 
 export type CodexV2Notification = CodexServerNotification & {
   recipients: string[];
 };
+
+export type CodexV2ServerRequest = CodexServerRequest & {
+  recipients: string[];
+};
+
+export const CODEX_V2_SERVER_REQUEST_EVENT = "codex-v2-server-request";
 
 export interface CodexV2Response {
   id: CodexRequestId;
@@ -40,7 +47,12 @@ export async function codexV2Request(
   });
 }
 
+export async function codexV2ServerResponse(response: CodexV2Response): Promise<boolean> {
+  return invoke<boolean>("codex_v2_server_response", { response });
+}
+
 export type ProviderType = "openai" | "mimo";
+export type WireApi = "auto" | "responses" | "chatCompletions";
 
 /** What a model can be used for. Rust merges provider metadata with local fallbacks. */
 export type ModelKind =
@@ -108,6 +120,7 @@ export interface Provider {
   name: string;
   type: ProviderType;
   baseUrl: string;
+  wireApi: WireApi;
   builtIn: boolean;
   models: ModelInfo[];
 }

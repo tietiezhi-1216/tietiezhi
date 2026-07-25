@@ -70,6 +70,7 @@ jobs:
             crates/agent-state
             crates/agent-core
             crates/agent-model
+            crates/agent-account
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -109,6 +110,9 @@ jobs:
 
       - name: Codex Responses model tests
         run: cargo test --manifest-path ../crates/agent-model/Cargo.toml
+
+      - name: Codex account and Gateway mapping tests
+        run: cargo test --manifest-path ../crates/agent-account/Cargo.toml
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

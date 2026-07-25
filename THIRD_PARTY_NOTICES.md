@@ -51,3 +51,11 @@ R7 的 Responses 请求、SSE、重试、Token Usage 和模型目录行为参考
 - `codex-rs/models-manager/models.json`
 - `codex-rs/app-server/src/models.rs`
 - `codex-rs/app-server/src/bespoke_event_handling.rs`
+
+R8 的账号生命周期、额度、外部令牌刷新和服务映射行为参考以下上游源码并在本仓库重新实现，没有链接或调用上游 crate：
+
+- `codex-rs/app-server/src/request_processors/account_processor.rs`
+- `codex-rs/app-server/src/request_processors/account_processor/rate_limit_resets.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/account.rs`
+- `codex-rs/app-server-protocol/src/protocol/common.rs`
+- `codex-rs/app-server/src/message_processor.rs`

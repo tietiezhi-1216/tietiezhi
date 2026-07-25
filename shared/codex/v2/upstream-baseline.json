@@ -16,57 +16,57 @@
     "clientRequests": [
       {
         "method": "account/login/cancel",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "account/login/start",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "account/logout",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "account/rateLimitResetCredit/consume",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "account/rateLimits/read",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "account/read",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "account/sendAddCreditsNudgeEmail",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "account/usage/read",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "account/workspaceMessages/read",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "app/installed",
@@ -294,7 +294,7 @@
         "method": "model/list",
         "status": "implemented",
         "target": "R7",
-        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
+        "note": "crates/agent-model Responses HTTP/SSE、固定与在线模型目录测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md；docs/CODEX-GATEWAY.md"
       },
       {
         "method": "modelProvider/capabilities/read",
@@ -560,9 +560,9 @@
     "serverRequests": [
       {
         "method": "account/chatgptAuthTokens/refresh",
-        "status": "pending",
+        "status": "implemented",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account AccountServerRequestBroker 的 Request ID 关联、V2 响应校验、超时取消与重复响应测试；desktop codex-v2-server-request IPC"
       },
       {
         "method": "applyPatchApproval",
@@ -622,21 +622,21 @@
     "serverNotifications": [
       {
         "method": "account/login/completed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配"
       },
       {
         "method": "account/rateLimits/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配"
       },
       {
         "method": "account/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R8",
-        "note": ""
+        "note": "crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配"
       },
       {
         "method": "app/list/updated",
@@ -1136,9 +1136,9 @@
     {
       "id": "R8",
       "name": "Gateway 对齐",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Gateway 不提供 Token 日聚合、Workspace Message、reset-credit 和加额邮件时使用协议显式的空能力、noCredit 或 Invalid Request；上下文压缩与工具执行分别进入 R9-R13。",
+      "evidence": "crates/agent-account 账号与反向请求测试；crates/agent-model Responses 探测与在线目录测试；desktop Gateway/Provider/额度适配；Gateway be473f1 路由与 Discovery 测试；docs/CODEX-GATEWAY.md"
     },
     {
       "id": "R9",

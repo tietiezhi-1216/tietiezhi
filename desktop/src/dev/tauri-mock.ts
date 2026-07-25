@@ -311,6 +311,7 @@ export function installTauriMock(): void {
           name: "Tietiezhi Gateway",
           type: "openai",
           baseUrl: "https://tietiezhi.vip/v1",
+          wireApi: "responses",
           builtIn: true,
           models: setupState === "no-model" ? [] : TERLN_MODELS,
         },
@@ -1147,6 +1148,7 @@ export function installTauriMock(): void {
     permission_respond: (a) => {
       pendingPermission = a.decision as string;
     },
+    codex_v2_server_response: () => true,
     default_system_prompt: () => "你是铁铁汁（Tietiezhi），一个运行在用户桌面上的智能体助手。……",
 
     // --- Tietiezhi device fabric ---

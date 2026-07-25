@@ -226,6 +226,12 @@ pub struct GatewayAccount {
 #[derive(Deserialize)]
 struct Discovery {
     issuer: String,
+    #[serde(default)]
+    responses_api_version: Option<u32>,
+    #[serde(default)]
+    wire_apis: Vec<String>,
+    #[serde(default)]
+    responses_endpoint: Option<String>,
     authorization_endpoint: String,
     token_endpoint: String,
     session_endpoint: String,
@@ -261,6 +267,23 @@ struct TokenData {
 struct SessionData {
     expires: i64,
     account: GatewayAccount,
+}
+
+pub(crate) struct GatewayLoginAttempt {
+    provider_id: String,
+    base_url: String,
+    discovery: Discovery,
+    listener: TcpListener,
+    redirect_uri: String,
+    state_value: String,
+    verifier: String,
+    auth_url: String,
+}
+
+impl GatewayLoginAttempt {
+    pub(crate) fn auth_url(&self) -> &str {
+        &self.auth_url
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,8 +424,16 @@ pub async fn gateway_account(
     app: AppHandle,
     provider_id: String,
 ) -> Result<GatewayAccountView, String> {
-    let base_url = provider_base_url(&app, &provider_id)?;
-    let discovery = match fetch_discovery(&state.http, &base_url).await {
+    load_gateway_account(&state.http, &app, provider_id).await
+}
+
+pub(crate) async fn load_gateway_account(
+    http: &reqwest::Client,
+    app: &AppHandle,
+    provider_id: String,
+) -> Result<GatewayAccountView, String> {
+    let base_url = provider_base_url(app, &provider_id)?;
+    let discovery = match fetch_discovery(http, &base_url).await {
         Ok(value) => value,
         Err(_) => {
             return Ok(GatewayAccountView {
@@ -436,7 +467,7 @@ pub async fn gateway_account(
         });
     };
     let result: APIResponse<SessionData> = post_json(
-        &state.http,
+        http,
         &discovery.session_endpoint,
         &serde_json::json!({ "session_token": session_token }),
     )
@@ -466,8 +497,18 @@ pub async fn gateway_login(
     app: AppHandle,
     provider_id: String,
 ) -> Result<GatewayAccountView, String> {
-    let base_url = provider_base_url(&app, &provider_id)?;
-    let discovery = fetch_discovery(&state.http, &base_url).await?;
+    let attempt = prepare_gateway_login(&state.http, &app, provider_id).await?;
+    open_system_browser(attempt.auth_url())?;
+    complete_gateway_login(&state.http, app, attempt).await
+}
+
+pub(crate) async fn prepare_gateway_login(
+    http: &reqwest::Client,
+    app: &AppHandle,
+    provider_id: String,
+) -> Result<GatewayLoginAttempt, String> {
+    let base_url = provider_base_url(app, &provider_id)?;
+    let discovery = fetch_discovery(http, &base_url).await?;
     if discovery.client_id != CLIENT_ID {
         return Err("当前中转站不支持此版本的铁铁汁登录".into());
     }
@@ -483,7 +524,7 @@ pub async fn gateway_login(
     let state_value = random_urlsafe();
     let verifier = format!("{}{}", random_urlsafe(), random_urlsafe());
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let device_id = load_or_create_device_id(&app)?;
+    let device_id = load_or_create_device_id(app)?;
     let device_name = desktop_device_name();
 
     let mut authorize_url = reqwest::Url::parse(&discovery.authorization_endpoint)
@@ -497,14 +538,39 @@ pub async fn gateway_login(
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", &state_value);
-    open_system_browser(authorize_url.as_str())?;
+    Ok(GatewayLoginAttempt {
+        provider_id,
+        base_url,
+        discovery,
+        listener,
+        redirect_uri,
+        state_value,
+        verifier,
+        auth_url: authorize_url.into(),
+    })
+}
 
-    let (code, returned_state) = wait_for_callback(listener, app.clone()).await?;
+pub(crate) async fn complete_gateway_login(
+    http: &reqwest::Client,
+    app: AppHandle,
+    attempt: GatewayLoginAttempt,
+) -> Result<GatewayAccountView, String> {
+    let GatewayLoginAttempt {
+        provider_id,
+        base_url,
+        discovery,
+        listener,
+        redirect_uri,
+        state_value,
+        verifier,
+        ..
+    } = attempt;
+    let (code, returned_state) = wait_for_callback(listener, app).await?;
     if returned_state != state_value {
         return Err("登录状态校验失败，请重试".into());
     }
     let token: APIResponse<TokenData> = post_json(
-        &state.http,
+        http,
         &discovery.token_endpoint,
         &serde_json::json!({
             "client_id": CLIENT_ID,
@@ -540,20 +606,28 @@ pub async fn gateway_logout(
     app: AppHandle,
     provider_id: String,
 ) -> Result<(), String> {
-    let session = secrets::get_gateway_session(&provider_id)?;
-    let issuer = secrets::get_gateway_issuer(&provider_id)?
-        .or_else(|| provider_base_url(&app, &provider_id).ok());
+    revoke_gateway_login(&state.http, &app, &provider_id).await
+}
+
+pub(crate) async fn revoke_gateway_login(
+    http: &reqwest::Client,
+    app: &AppHandle,
+    provider_id: &str,
+) -> Result<(), String> {
+    let session = secrets::get_gateway_session(provider_id)?;
+    let issuer = secrets::get_gateway_issuer(provider_id)?
+        .or_else(|| provider_base_url(app, provider_id).ok());
     if let (Some(session_token), Some(base_url)) = (session, issuer) {
-        if let Ok(discovery) = fetch_discovery(&state.http, &base_url).await {
+        if let Ok(discovery) = fetch_discovery(http, &base_url).await {
             let _: Result<APIResponse<serde_json::Value>, String> = post_json(
-                &state.http,
+                http,
                 &discovery.revocation_endpoint,
                 &serde_json::json!({ "session_token": session_token }),
             )
             .await;
         }
     }
-    clear_gateway_secrets(&provider_id)
+    clear_gateway_secrets(provider_id)
 }
 
 #[tauri::command]
@@ -562,13 +636,20 @@ pub async fn gateway_quota(
     app: AppHandle,
     provider_id: String,
 ) -> Result<GatewayQuotaView, String> {
-    let (discovery, session_token) =
-        native_billing_context(&state.http, &app, &provider_id).await?;
+    load_gateway_quota(&state.http, &app, &provider_id).await
+}
+
+pub(crate) async fn load_gateway_quota(
+    http: &reqwest::Client,
+    app: &AppHandle,
+    provider_id: &str,
+) -> Result<GatewayQuotaView, String> {
+    let (discovery, session_token) = native_billing_context(http, app, provider_id).await?;
     let endpoint = discovery
         .quota_endpoint
         .ok_or_else(|| "当前中转站版本不支持额度中心".to_string())?;
     let result: APIResponse<GatewayQuotaView> = post_json(
-        &state.http,
+        http,
         &endpoint,
         &serde_json::json!({ "session_token": session_token }),
     )
@@ -763,6 +844,7 @@ fn validate_discovery(expected_issuer: &str, discovery: &Discovery) -> Result<()
         }
     }
     for endpoint in [
+        discovery.responses_endpoint.as_ref(),
         discovery.quota_endpoint.as_ref(),
         discovery.catalog_endpoint.as_ref(),
         discovery.order_endpoint.as_ref(),
@@ -772,7 +854,7 @@ fn validate_discovery(expected_issuer: &str, discovery: &Discovery) -> Result<()
     .flatten()
     {
         let parsed =
-            reqwest::Url::parse(endpoint).map_err(|_| "中转站返回了无效的额度地址".to_string())?;
+            reqwest::Url::parse(endpoint).map_err(|_| "中转站返回了无效的能力地址".to_string())?;
         let origin = format!(
             "{}://{}{}",
             parsed.scheme(),
@@ -785,8 +867,16 @@ fn validate_discovery(expected_issuer: &str, discovery: &Discovery) -> Result<()
                 .unwrap_or_default(),
         );
         if origin != issuer {
-            return Err("中转站额度端点必须与签发方同源".into());
+            return Err("中转站能力端点必须与签发方同源".into());
         }
+    }
+    if discovery
+        .wire_apis
+        .iter()
+        .any(|wire_api| wire_api == "responses")
+        && (discovery.responses_api_version != Some(1) || discovery.responses_endpoint.is_none())
+    {
+        return Err("中转站 Responses 能力声明不完整".into());
     }
     Ok(())
 }
@@ -1000,6 +1090,9 @@ mod tests {
     fn discovery_endpoints_must_match_the_gateway_origin() {
         let discovery = Discovery {
             issuer: "https://gateway.example.test".into(),
+            responses_api_version: Some(1),
+            wire_apis: vec!["responses".into()],
+            responses_endpoint: Some("https://gateway.example.test/v1/responses".into()),
             authorization_endpoint: "https://gateway.example.test/desktop-authorize".into(),
             token_endpoint: "https://gateway.example.test/app-api/user/auth/native/token".into(),
             session_endpoint: "https://gateway.example.test/app-api/user/auth/native/session"
@@ -1025,6 +1118,27 @@ mod tests {
         let mut foreign = discovery;
         foreign.token_endpoint = "https://other.example.test/token".into();
         assert!(validate_discovery("https://gateway.example.test", &foreign).is_err());
+    }
+
+    #[test]
+    fn responses_discovery_requires_a_same_origin_versioned_endpoint() {
+        let raw = serde_json::json!({
+            "issuer": "https://gateway.example.test",
+            "responses_api_version": 1,
+            "wire_apis": ["responses"],
+            "responses_endpoint": "https://gateway.example.test/v1/responses",
+            "authorization_endpoint": "https://gateway.example.test/desktop-authorize",
+            "token_endpoint": "https://gateway.example.test/app-api/user/auth/native/token",
+            "session_endpoint": "https://gateway.example.test/app-api/user/auth/native/session",
+            "revocation_endpoint": "https://gateway.example.test/app-api/user/auth/native/revoke",
+            "client_id": super::CLIENT_ID
+        });
+        let discovery: Discovery = serde_json::from_value(raw).unwrap();
+        assert!(validate_discovery("https://gateway.example.test", &discovery).is_ok());
+
+        let mut invalid = discovery;
+        invalid.responses_endpoint = Some("https://other.example.test/v1/responses".into());
+        assert!(validate_discovery("https://gateway.example.test", &invalid).is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@ use super::models::{
 };
 use crate::secrets;
 
-const CURRENT_SETTINGS_VERSION: u32 = 6;
+const CURRENT_SETTINGS_VERSION: u32 = 7;
 pub(crate) const BUILTIN_PROVIDER_ID: &str = "builtin-official";
 pub(crate) const BUILTIN_PROVIDER_NAME: &str = "Tietiezhi Gateway";
 pub(crate) const BUILTIN_PROVIDER_URL: &str = "https://tietiezhi.vip/v1";
@@ -14,6 +14,15 @@ const LEGACY_BUILTIN_PROVIDER_URL: &str = "https://api.terln.com/v1";
 
 /// A model provider (relay / vendor). API keys never live here — they go to the
 /// OS credential store, keyed by the provider id.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WireApi {
+    #[default]
+    Auto,
+    Responses,
+    ChatCompletions,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Provider {
@@ -23,6 +32,11 @@ pub struct Provider {
     #[serde(rename = "type")]
     pub kind: String,
     pub base_url: String,
+    /// Agent wire protocol. Ordinary chat continues to use Chat Completions;
+    /// this field only controls whether the source-native Agent may use
+    /// `/v1/responses`.
+    #[serde(default)]
+    pub wire_api: WireApi,
     /// Built-in entries provide a ready-to-configure starting point. They can
     /// be edited, but are kept in the list so the empty state stays actionable.
     #[serde(default)]
@@ -151,6 +165,16 @@ pub(crate) fn read_settings(app: &AppHandle) -> Result<AppSettings, String> {
         }
         changed = true;
     }
+    if settings.settings_version < 7 {
+        for provider in &mut settings.providers {
+            provider.wire_api = if provider.built_in {
+                WireApi::Responses
+            } else {
+                WireApi::Auto
+            };
+        }
+        changed = true;
+    }
     if normalize_known_model_capabilities(&mut settings) {
         changed = true;
     }
@@ -242,6 +266,7 @@ fn builtin_provider() -> Provider {
         name: BUILTIN_PROVIDER_NAME.into(),
         kind: "openai".into(),
         base_url: BUILTIN_PROVIDER_URL.into(),
+        wire_api: WireApi::Responses,
         built_in: true,
         models: Vec::new(),
     }
@@ -266,9 +291,11 @@ fn ensure_builtin_provider(settings: &mut AppSettings) -> bool {
         let changed = index != 0
             || !provider.built_in
             || provider.name != BUILTIN_PROVIDER_NAME
-            || migrate_legacy_url;
+            || migrate_legacy_url
+            || provider.wire_api != WireApi::Responses;
         provider.built_in = true;
         provider.name = BUILTIN_PROVIDER_NAME.into();
+        provider.wire_api = WireApi::Responses;
         if migrate_legacy_url {
             provider.base_url = BUILTIN_PROVIDER_URL.into();
         }
@@ -361,6 +388,7 @@ fn migrate_legacy(app: &AppHandle, mut settings: AppSettings) -> AppSettings {
         name: "我的中转站".into(),
         kind: "openai".into(),
         base_url: base,
+        wire_api: WireApi::Auto,
         built_in: false,
         models: if model.is_empty() {
             Vec::new()
@@ -425,10 +453,27 @@ mod tests {
         assert_eq!(settings.providers.len(), 1);
         assert!(settings.providers[0].built_in);
         assert_eq!(settings.providers[0].id, BUILTIN_PROVIDER_ID);
+        assert_eq!(settings.providers[0].wire_api, WireApi::Responses);
         assert!(settings.chat_provider_id.is_empty());
         assert!(settings.smart_suggestions_enabled);
         assert!(!settings.smart_suggestions_allow_paid_models);
         assert_eq!(settings.settings_version, CURRENT_SETTINGS_VERSION);
+    }
+
+    #[test]
+    fn legacy_provider_defaults_to_auto_wire_api() {
+        let provider: Provider = serde_json::from_value(serde_json::json!({
+            "id": "legacy",
+            "name": "Legacy",
+            "type": "openai",
+            "baseUrl": "https://example.test/v1",
+            "builtIn": false,
+            "models": []
+        }))
+        .unwrap();
+
+        assert_eq!(provider.wire_api, WireApi::Auto);
+        assert_eq!(serde_json::to_value(provider).unwrap()["wireApi"], "auto");
     }
 
     #[test]
@@ -455,6 +500,7 @@ mod tests {
                 name: "Relay".into(),
                 kind: "openai".into(),
                 base_url: "https://example.com/v1".into(),
+                wire_api: WireApi::Auto,
                 built_in: false,
                 models: vec![stale],
             }],
@@ -478,6 +524,7 @@ mod tests {
                 name: "我的渠道".into(),
                 kind: "openai".into(),
                 base_url: "https://api.terln.com/v1/".into(),
+                wire_api: WireApi::Auto,
                 built_in: false,
                 models: Vec::new(),
             }],
@@ -492,6 +539,7 @@ mod tests {
         assert_eq!(settings.providers[0].id, "existing");
         assert_eq!(settings.providers[0].name, BUILTIN_PROVIDER_NAME);
         assert_eq!(settings.providers[0].base_url, BUILTIN_PROVIDER_URL);
+        assert_eq!(settings.providers[0].wire_api, WireApi::Responses);
     }
 
     #[test]
@@ -502,6 +550,7 @@ mod tests {
                 name: "Provider".into(),
                 kind: "openai".into(),
                 base_url: "https://example.com/v1".into(),
+                wire_api: WireApi::Auto,
                 built_in: false,
                 models: vec![ModelInfo {
                     kind: ModelKind::Chat,

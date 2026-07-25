@@ -63,7 +63,14 @@ import {
   providerKey,
   upsertProvider,
 } from "@/lib/api";
-import type { ModelInfo, ModelKind, Provider, ProviderType, ProviderView } from "@/lib/api";
+import type {
+  ModelInfo,
+  ModelKind,
+  Provider,
+  ProviderType,
+  ProviderView,
+  WireApi,
+} from "@/lib/api";
 import type {
   ModelCapability,
   ModelModality,
@@ -84,6 +91,12 @@ import { notifyGatewayError } from "@/lib/gateway-feedback";
 const TYPE_LABELS: Record<ProviderType, string> = {
   openai: "OpenAI 兼容",
   mimo: "小米 MiMo",
+};
+
+const WIRE_API_LABELS: Record<WireApi, string> = {
+  auto: "自动探测",
+  responses: "Responses API",
+  chatCompletions: "仅普通聊天",
 };
 
 const KIND_LABELS: Record<ModelKind, string> = {
@@ -463,6 +476,7 @@ interface DraftState {
   name: string;
   type: ProviderType;
   baseUrl: string;
+  wireApi: WireApi;
   builtIn: boolean;
   apiKey: string;
   models: ModelInfo[];
@@ -476,6 +490,7 @@ function blankDraft(): DraftState {
     name: "",
     type: "openai",
     baseUrl: "",
+    wireApi: "auto",
     builtIn: false,
     apiKey: "",
     models: [],
@@ -490,6 +505,7 @@ function toDraft(p: ProviderView): DraftState {
     name: p.name,
     type: p.type,
     baseUrl: p.baseUrl,
+    wireApi: p.wireApi,
     builtIn: p.builtIn,
     apiKey: "",
     models: p.models,
@@ -793,6 +809,7 @@ function ProviderFormDialog({
         name: d.name.trim(),
         type: d.type,
         baseUrl: d.baseUrl.trim(),
+        wireApi: d.wireApi,
         builtIn: d.builtIn,
         models: d.models,
       };
@@ -870,6 +887,31 @@ function ProviderFormDialog({
                 autoCapitalize="off"
                 spellCheck={false}
               />
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="p-wire-api">Agent 协议</Label>
+              <Select
+                value={draft.wireApi}
+                onValueChange={(value) => patch({ wireApi: value as WireApi })}
+                disabled={draft.builtIn}
+              >
+                <SelectTrigger id="p-wire-api">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="auto">{WIRE_API_LABELS.auto}</SelectItem>
+                  <SelectItem value="responses">{WIRE_API_LABELS.responses}</SelectItem>
+                  <SelectItem value="chatCompletions">
+                    {WIRE_API_LABELS.chatCompletions}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                {draft.builtIn
+                  ? "官方 Gateway 固定使用 Responses API。"
+                  : "Agent Runtime 只使用 Responses API。选择“仅普通聊天”时，此供应商不会用于工具任务。"}
+              </p>
             </div>
 
             {!draft.builtIn && (

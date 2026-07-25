@@ -282,6 +282,8 @@ impl Provider {
 pub enum ModelError {
     #[error("request transport failed: {0}")]
     Transport(String),
+    #[error("authentication failed: {message}")]
+    Unauthorized { message: String },
     #[error("api error {status}: {message}")]
     Api { status: u16, message: String },
     #[error("stream error: {0}")]
@@ -332,6 +334,9 @@ impl ModelError {
             Self::CyberPolicy { .. } => json!("cyberPolicy"),
             Self::Consumer(_) => json!("internalServerError"),
             Self::Transport(_) => json!({"httpConnectionFailed":{"httpStatusCode":null}}),
+            Self::Unauthorized { .. } => {
+                json!({"httpConnectionFailed":{"httpStatusCode":401}})
+            }
             Self::Stream(_) => {
                 json!({"responseStreamDisconnected":{"httpStatusCode":null}})
             }
@@ -357,6 +362,41 @@ pub struct ResponsesClient {
 impl ResponsesClient {
     pub fn new(http: reqwest::Client, provider: Provider) -> Self {
         Self { http, provider }
+    }
+
+    /// Probe the Responses route without creating a model response.
+    ///
+    /// Responses endpoints are POST-only. An empty JSON object must fail
+    /// request validation before model routing, while still distinguishing a
+    /// real route from gateways that wrap `Not Found` in HTTP 200.
+    pub async fn supports_responses(&self) -> Result<bool, ModelError> {
+        let mut request = self
+            .http
+            .post(self.provider.url_for_path("responses"))
+            .header(ACCEPT, "application/json")
+            .json(&json!({}));
+        if let Some(token) = self
+            .provider
+            .bearer_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+        {
+            request = request.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        for (name, value) in &self.provider.headers {
+            request = request.header(name, value);
+        }
+        let response = request
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await
+            .map_err(|error| ModelError::Transport(error.to_string()))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if status.as_u16() == 404 || status.as_u16() == 501 || response_body_is_not_found(&body) {
+            return Ok(false);
+        }
+        Ok(true)
     }
 
     pub async fn stream<F>(
@@ -536,6 +576,25 @@ impl ResponsesClient {
     }
 }
 
+fn response_body_is_not_found(body: &str) -> bool {
+    let parsed = serde_json::from_str::<Value>(body).ok();
+    let message = parsed
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(Value::as_str)
+                .or_else(|| value.pointer("/error/message").and_then(Value::as_str))
+        })
+        .unwrap_or(body)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        message.as_str(),
+        "not found" | "route not found" | "endpoint not found"
+    )
+}
+
 fn request_backoff(base: Duration, attempt: u64) -> Duration {
     let raw = base.saturating_mul(1_u32 << attempt.saturating_sub(1).min(16));
     raw.mul_f64(jitter_factor())
@@ -583,12 +642,16 @@ fn response_error_message(body: &str) -> String {
 }
 
 fn classify_http_response(status: u16, body: &str, message: String) -> ModelError {
+    if status == 401 {
+        return ModelError::Unauthorized { message };
+    }
     let value = serde_json::from_str::<Value>(body).ok();
     let code = value
         .as_ref()
         .and_then(|value| value.pointer("/error/code"))
         .and_then(Value::as_str);
     match code {
+        Some("unauthorized") => ModelError::Unauthorized { message },
         Some("context_length_exceeded") => ModelError::ContextWindowExceeded,
         Some("insufficient_quota") => ModelError::QuotaExceeded,
         Some("usage_not_included") => ModelError::UsageNotIncluded,
@@ -861,6 +924,7 @@ fn classify_failed_response(response: Option<&Value>) -> ModelError {
         .unwrap_or_default()
         .to_owned();
     match code {
+        Some("unauthorized") => ModelError::Unauthorized { message },
         Some("context_length_exceeded") => ModelError::ContextWindowExceeded,
         Some("insufficient_quota") => ModelError::QuotaExceeded,
         Some("usage_not_included") => ModelError::UsageNotIncluded,
@@ -913,6 +977,17 @@ struct Catalog {
     models: Vec<Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnlineModel {
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
+    pub reasoning_efforts: Vec<String>,
+    pub default_reasoning_effort: String,
+    pub input_modalities: Vec<String>,
+    pub is_default: bool,
+}
+
 pub fn bundled_models(include_hidden: bool) -> Vec<Value> {
     let mut models = serde_json::from_str::<Catalog>(include_str!("../models.json"))
         .expect("pinned public model catalog must be valid")
@@ -933,6 +1008,102 @@ pub fn list_models(
     include_hidden: bool,
 ) -> Result<Value, ModelError> {
     let models = bundled_models(include_hidden);
+    paginate_models(&models, cursor, limit)
+}
+
+pub fn list_online_models(
+    models: Vec<OnlineModel>,
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Result<Value, ModelError> {
+    let bundled = bundled_models(true)
+        .into_iter()
+        .filter_map(|model| {
+            let id = model
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_ascii_lowercase)?;
+            Some((id, model))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut projected = models
+        .into_iter()
+        .filter(|model| !model.id.trim().is_empty())
+        .map(|model| {
+            let efforts = model
+                .reasoning_efforts
+                .iter()
+                .filter_map(|effort| reasoning_effort_option(effort))
+                .collect::<Vec<_>>();
+            let default_effort =
+                normalized_reasoning_effort(&model.default_reasoning_effort).unwrap_or("medium");
+            let input_modalities = model
+                .input_modalities
+                .iter()
+                .filter(|modality| matches!(modality.as_str(), "text" | "image"))
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Some(mut pinned) = bundled.get(&model.id.to_ascii_lowercase()).cloned() {
+                pinned["isDefault"] = json!(model.is_default);
+                pinned["hidden"] = json!(false);
+                if !efforts.is_empty() {
+                    pinned["supportedReasoningEfforts"] = json!(efforts);
+                    pinned["defaultReasoningEffort"] = json!(default_effort);
+                }
+                if !input_modalities.is_empty() {
+                    pinned["inputModalities"] = json!(input_modalities);
+                }
+                return pinned;
+            }
+            json!({
+                "id": model.id,
+                "model": model.id,
+                "upgrade": null,
+                "upgradeInfo": null,
+                "availabilityNux": null,
+                "displayName": model.display_name,
+                "description": model.description,
+                "hidden": false,
+                "supportedReasoningEfforts": efforts,
+                "defaultReasoningEffort": default_effort,
+                "inputModalities": if input_modalities.is_empty() {
+                    vec!["text".to_string()]
+                } else {
+                    input_modalities
+                },
+                "supportsPersonality": false,
+                "additionalSpeedTiers": [],
+                "serviceTiers": [],
+                "defaultServiceTier": null,
+                "isDefault": model.is_default
+            })
+        })
+        .collect::<Vec<_>>();
+    projected.sort_by(|left, right| {
+        right["isDefault"]
+            .as_bool()
+            .cmp(&left["isDefault"].as_bool())
+            .then_with(|| {
+                left["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["id"].as_str().unwrap_or_default())
+            })
+    });
+    projected.dedup_by(|left, right| {
+        left["id"]
+            .as_str()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case(right["id"].as_str().unwrap_or_default())
+    });
+    paginate_models(&projected, cursor, limit)
+}
+
+fn paginate_models(
+    models: &[Value],
+    cursor: Option<&str>,
+    limit: Option<u32>,
+) -> Result<Value, ModelError> {
     let total = models.len();
     if total == 0 {
         return Ok(json!({"data": [], "nextCursor": null}));
@@ -957,6 +1128,37 @@ pub fn list_models(
     Ok(json!({
         "data": models[start..end],
         "nextCursor": (end < total).then(|| end.to_string())
+    }))
+}
+
+fn normalized_reasoning_effort(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "minimal" => Some("minimal"),
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" => Some("high"),
+        "xhigh" => Some("xhigh"),
+        "max" => Some("max"),
+        "ultra" => Some("ultra"),
+        _ => None,
+    }
+}
+
+fn reasoning_effort_option(value: &str) -> Option<Value> {
+    let effort = normalized_reasoning_effort(value)?;
+    let description = match effort {
+        "minimal" => "Fastest responses with minimal reasoning",
+        "low" => "Fast responses with lighter reasoning",
+        "medium" => "Balances speed and reasoning depth for everyday tasks",
+        "high" => "Greater reasoning depth for complex problems",
+        "xhigh" => "Extra high reasoning depth for complex problems",
+        "max" => "Maximum reasoning depth for the hardest problems",
+        "ultra" => "Maximum reasoning with automatic task delegation",
+        _ => return None,
+    };
+    Some(json!({
+        "reasoningEffort": effort,
+        "description": description
     }))
 }
 
@@ -1231,6 +1433,65 @@ mod tests {
         assert!(list_models(Some("bad"), None, false).is_err());
     }
 
+    #[test]
+    fn online_catalog_preserves_pinned_models_and_projects_unknown_models() {
+        let response = list_online_models(
+            vec![
+                OnlineModel {
+                    id: "relay-model".into(),
+                    display_name: "Relay Model".into(),
+                    description: "Provider model".into(),
+                    reasoning_efforts: vec!["low".into(), "high".into(), "invalid".into()],
+                    default_reasoning_effort: "high".into(),
+                    input_modalities: vec!["text".into(), "image".into(), "audio".into()],
+                    is_default: true,
+                },
+                OnlineModel {
+                    id: "gpt-5.6-sol".into(),
+                    display_name: "ignored".into(),
+                    description: "ignored".into(),
+                    reasoning_efforts: vec!["ultra".into()],
+                    default_reasoning_effort: "ultra".into(),
+                    input_modalities: vec!["text".into(), "image".into()],
+                    is_default: false,
+                },
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(response["data"][0]["id"], "relay-model");
+        assert_eq!(response["data"][0]["isDefault"], true);
+        assert_eq!(
+            response["data"][0]["supportedReasoningEfforts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            response["data"][0]["inputModalities"],
+            json!(["text", "image"])
+        );
+        assert_eq!(response["data"][1]["id"], "gpt-5.6-sol");
+        assert_eq!(
+            response["data"][1]["description"],
+            "Latest frontier agentic coding model."
+        );
+        assert_eq!(
+            response["data"][1]["supportedReasoningEfforts"],
+            json!([{
+                "reasoningEffort": "ultra",
+                "description": "Maximum reasoning with automatic task delegation"
+            }])
+        );
+        assert_eq!(response["data"][1]["defaultReasoningEffort"], "ultra");
+        assert_eq!(
+            response["data"][1]["inputModalities"],
+            json!(["text", "image"])
+        );
+    }
+
     #[tokio::test]
     async fn http_transport_posts_responses_with_auth_and_streams() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1333,6 +1594,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn responses_probe_rejects_wrapped_not_found_and_accepts_auth_gate() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (requests_tx, mut requests_rx) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            for attempt in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 4096];
+                let size = socket.read(&mut request).await.unwrap();
+                requests_tx
+                    .send(String::from_utf8_lossy(&request[..size]).into_owned())
+                    .unwrap();
+                let (status, body) = if attempt == 0 {
+                    ("200 OK", r#"{"success":false,"message":"Not Found"}"#)
+                } else {
+                    (
+                        "401 Unauthorized",
+                        r#"{"error":{"message":"missing api key"}}"#,
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let provider = Provider::openai_compatible("test", format!("http://{address}/v1"), None);
+        let client = ResponsesClient::new(reqwest::Client::new(), provider);
+        assert!(!client.supports_responses().await.unwrap());
+        assert!(client.supports_responses().await.unwrap());
+        for _ in 0..2 {
+            let request = requests_rx.recv().await.unwrap();
+            assert!(request.starts_with("POST /v1/responses HTTP/1.1"));
+            assert!(request.ends_with("{}"));
+        }
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn disconnected_sse_stream_reconnects_with_retry_notification() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1417,6 +1718,16 @@ mod tests {
 
     #[test]
     fn http_error_bodies_preserve_codex_error_classes() {
+        assert_eq!(
+            classify_http_response(
+                401,
+                r#"{"error":{"code":"unauthorized","message":"expired"}}"#,
+                "expired".into()
+            ),
+            ModelError::Unauthorized {
+                message: "expired".into()
+            }
+        );
         assert_eq!(
             classify_http_response(
                 400,

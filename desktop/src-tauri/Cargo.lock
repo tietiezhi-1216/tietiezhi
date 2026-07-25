@@ -4391,6 +4391,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-account"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tietiezhi-agent-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "tietiezhi-agent-core"
 version = "0.1.0"
 dependencies = [
@@ -4475,9 +4485,11 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tietiezhi-agent-account",
  "tietiezhi-agent-core",
  "tietiezhi-agent-events",
  "tietiezhi-agent-model",
+ "tietiezhi-agent-protocol",
  "tietiezhi-agent-state",
  "tokio",
  "tokio-tungstenite",

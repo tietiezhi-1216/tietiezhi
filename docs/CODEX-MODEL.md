@@ -19,7 +19,7 @@ R7 在 `crates/agent-model`、`crates/agent-core` 和 Tauri `commands/codex.rs` 
 - `text.verbosity` 和严格 JSON Schema 输出
 - `client_metadata`
 
-供应商 base URL 继续使用桌面端统一 `/v1` 归一化，API Key 只从 Rust 的 provider/keyring 解析，前端不会传入或接收密钥。R8 将补齐 Gateway Responses 探测、账号错误、在线模型目录和额度通知。
+供应商 base URL 继续使用桌面端统一 `/v1` 归一化，API Key 只从 Rust 的 provider/keyring 解析，前端不会传入或接收密钥。R8 已补齐 Gateway Responses 能力、账号错误、在线模型目录和额度通知，见 `docs/CODEX-GATEWAY.md`。
 
 ## SSE 与错误
 
@@ -56,14 +56,14 @@ Tauri 在 `turn/start` 成功后创建 Turn 专属取消令牌并异步运行 Re
 
 ## 模型目录
 
-`model/list` 使用上游固定模型目录的 V2 公开投影，支持 `cursor`、`limit` 和 `includeHidden`，并保持 Codex 的数字游标规则。
+`model/list` 使用上游固定模型目录的 V2 公开投影，支持 `cursor`、`limit` 和 `includeHidden`，并保持 Codex 的数字游标规则。选中 Provider 已缓存 `/v1/models` 元数据时，R8 会以服务端声明覆盖推理等级、默认等级和输入模态，同时保留固定模型的公开名称与说明；未知模型生成完整 V2 投影。
 
 - 固定目录：`crates/agent-model/models.json`
 - 固定来源：`codex-rs/models-manager/models.json`
 - 来源与投影哈希：`shared/codex/v2/model-baseline.json`
 - CI 校验：`pnpm check:codex-models`
 
-当前固定目录包含 8 个模型、5 个可见模型，且只有 `gpt-5.6-sol` 标记为默认。R8 的在线刷新只能在 etag 和协议校验通过后替换内存目录，不能静默改写固定基线。
+当前固定目录包含 8 个模型、5 个可见模型，且只有 `gpt-5.6-sol` 标记为默认。在线目录只影响当前 Provider 的运行时投影，不改写固定基线文件。
 
 ## 验证
 

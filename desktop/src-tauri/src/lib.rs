@@ -32,6 +32,17 @@ pub struct AppState {
     pub(crate) codex_core: Mutex<Option<tietiezhi_agent_core::ThreadManager>>,
     /// In-flight Responses turns, keyed by source-native thread id.
     pub(crate) codex_cancels: Mutex<HashMap<String, (String, CancellationToken)>>,
+    /// Session-local `/v1/responses` capability probes, keyed by provider id
+    /// and normalized base URL.
+    pub(crate) codex_wire_capabilities: Mutex<HashMap<String, bool>>,
+    /// Source-native App Server V2 account state.
+    pub(crate) codex_account: tietiezhi_agent_account::AccountRuntime,
+    /// Active browser login callbacks, keyed by App Server login id.
+    pub(crate) codex_login_cancels: Mutex<HashMap<String, CancellationToken>>,
+    /// Reverse JSON-RPC requests sent by the runtime to the host client.
+    pub(crate) codex_account_requests: tietiezhi_agent_account::AccountServerRequestBroker,
+    /// Unstable externally supplied ChatGPT tokens are intentionally memory-only.
+    pub(crate) codex_external_auth: Mutex<HashMap<String, commands::codex::ExternalAuthTokens>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -70,6 +81,11 @@ pub fn run() {
             device_fabric: commands::devices::DeviceFabric::default(),
             codex_core: Mutex::new(None),
             codex_cancels: Mutex::new(HashMap::new()),
+            codex_wire_capabilities: Mutex::new(HashMap::new()),
+            codex_account: tietiezhi_agent_account::AccountRuntime::default(),
+            codex_login_cancels: Mutex::new(HashMap::new()),
+            codex_account_requests: tietiezhi_agent_account::AccountServerRequestBroker::default(),
+            codex_external_auth: Mutex::new(HashMap::new()),
         })
         .manage(commands::hotkey::HotkeyState::default())
         .setup(|app| {
@@ -117,6 +133,7 @@ pub fn run() {
             commands::chat::chat_stream,
             commands::chat::tietiezhi_stream,
             commands::codex::codex_v2_request,
+            commands::codex::codex_v2_server_response,
             commands::tietiezhi::get_tietiezhi_config,
             commands::tietiezhi::save_tietiezhi_config,
             commands::tietiezhi::list_tietiezhi_files,

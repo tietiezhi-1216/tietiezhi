@@ -29,10 +29,10 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 127 |
+| 待实现 | 114 |
 | 实现中 | 0 |
-| 已实现 | 43 |
-| 服务映射 | 0 |
+| 已实现 | 47 |
+| 服务映射 | 9 |
 
 ## 阶段进度
 
@@ -46,7 +46,7 @@
 | R5 | Thread 生命周期 | 已完成 | crates/agent-core；commands/codex.rs；docs/CODEX-THREADS.md；SQLite v2→v3 迁移与 canonical session_meta 索引重建测试；12 项 ThreadManager 测试；137 项桌面 Rust 测试；pnpm typecheck；pnpm build | Turn 列表暂存于 canonical_json 查询缓存；R6 将以 rollout 的 Turn/Item 事件重建并接入真实执行状态机，旧会话适配层在 R38 删除 |
 | R6 | Turn 生命周期 | 已完成 | crates/agent-core；crates/agent-state canonical rollout ordinal 投影；docs/CODEX-TURNS.md；19 项 TurnManager 测试；崩溃中断、分叉顺序与 R5 rollout 迁移测试；cargo clippy -D warnings；pnpm 协议/迁移/typecheck/build 门禁 | R7 尚未接入 Responses API、模型增量 Item、usage、reasoning summary 和重试；当前 exactly-once 输入队列只提供执行器边界 |
 | R7 | Responses 模型层 | 已完成 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md | Gateway Responses 能力探测、在线模型目录、账号额度和 rate-limit 服务映射进入 R8；工具调用执行进入 R10-R13。 |
-| R8 | Gateway 对齐 | 待开始 |  |  |
+| R8 | Gateway 对齐 | 已完成 | crates/agent-account 账号与反向请求测试；crates/agent-model Responses 探测与在线目录测试；desktop Gateway/Provider/额度适配；Gateway be473f1 路由与 Discovery 测试；docs/CODEX-GATEWAY.md | Gateway 不提供 Token 日聚合、Workspace Message、reset-credit 和加额邮件时使用协议显式的空能力、noCredit 或 Invalid Request；上下文压缩与工具执行分别进入 R9-R13。 |
 | R9 | 上下文系统 | 待开始 |  |  |
 | R10 | 工具内核 | 待开始 |  |  |
 | R11 | 基础工具 | 待开始 |  |  |
@@ -83,15 +83,15 @@
 
 | 方法 | 状态 | 目标阶段 | 证据或备注 |
 | --- | --- | --- | --- |
-| `account/login/cancel` | 待实现 | R8 |  |
-| `account/login/start` | 待实现 | R8 |  |
-| `account/logout` | 待实现 | R8 |  |
-| `account/rateLimitResetCredit/consume` | 待实现 | R8 |  |
-| `account/rateLimits/read` | 待实现 | R8 |  |
-| `account/read` | 待实现 | R8 |  |
-| `account/sendAddCreditsNudgeEmail` | 待实现 | R8 |  |
-| `account/usage/read` | 待实现 | R8 |  |
-| `account/workspaceMessages/read` | 待实现 | R8 |  |
+| `account/login/cancel` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
+| `account/login/start` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
+| `account/logout` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
+| `account/rateLimitResetCredit/consume` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
+| `account/rateLimits/read` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
+| `account/read` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
+| `account/sendAddCreditsNudgeEmail` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
+| `account/usage/read` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
+| `account/workspaceMessages/read` | 服务映射 | R8 | crates/agent-account 的固定 V2 校验、账号状态与服务映射测试；desktop commands/codex.rs 的 Gateway、Keyring、额度和错误适配；docs/CODEX-GATEWAY.md |
 | `app/installed` | 待实现 | R33 |  |
 | `app/list` | 待实现 | R33 |  |
 | `app/read` | 待实现 | R33 |  |
@@ -129,7 +129,7 @@
 | `mcpServer/resource/read` | 待实现 | R19 |  |
 | `mcpServer/tool/call` | 待实现 | R19 |  |
 | `mcpServerStatus/list` | 待实现 | R19 |  |
-| `model/list` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
+| `model/list` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、固定与在线模型目录测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md；docs/CODEX-GATEWAY.md |
 | `modelProvider/capabilities/read` | 待实现 | R36 |  |
 | `permissionProfile/list` | 待实现 | R14 |  |
 | `plugin/install` | 待实现 | R24 |  |
@@ -183,7 +183,7 @@
 
 | 方法 | 状态 | 目标阶段 | 证据或备注 |
 | --- | --- | --- | --- |
-| `account/chatgptAuthTokens/refresh` | 待实现 | R8 |  |
+| `account/chatgptAuthTokens/refresh` | 已实现 | R8 | crates/agent-account AccountServerRequestBroker 的 Request ID 关联、V2 响应校验、超时取消与重复响应测试；desktop codex-v2-server-request IPC |
 | `applyPatchApproval` | 待实现 | R14 |  |
 | `attestation/generate` | 待实现 | R36 |  |
 | `execCommandApproval` | 待实现 | R14 |  |
@@ -198,9 +198,9 @@
 
 | 方法 | 状态 | 目标阶段 | 证据或备注 |
 | --- | --- | --- | --- |
-| `account/login/completed` | 待实现 | R8 |  |
-| `account/rateLimits/updated` | 待实现 | R8 |  |
-| `account/updated` | 待实现 | R8 |  |
+| `account/login/completed` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
+| `account/rateLimits/updated` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
+| `account/updated` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
 | `app/list/updated` | 待实现 | R33 |  |
 | `command/exec/outputDelta` | 待实现 | R13 |  |
 | `configWarning` | 待实现 | R21 |  |

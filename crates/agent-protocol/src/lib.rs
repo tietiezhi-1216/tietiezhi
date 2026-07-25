@@ -64,6 +64,10 @@ pub mod server_request {
         "../../shared/codex/v2/schema/ChatgptAuthTokensRefreshParams.json"
     );
     import_params!(
+        auth_refresh_response,
+        "../../shared/codex/v2/schema/ChatgptAuthTokensRefreshResponse.json"
+    );
+    import_params!(
         attestation,
         "../../shared/codex/v2/schema/AttestationGenerateParams.json"
     );
@@ -86,6 +90,7 @@ pub mod server_request {
     pub use apply_patch::ApplyPatchApprovalParams;
     pub use attestation::AttestationGenerateParams;
     pub use auth_refresh::ChatgptAuthTokensRefreshParams;
+    pub use auth_refresh_response::ChatgptAuthTokensRefreshResponse;
     pub use command_execution::CommandExecutionRequestApprovalParams;
     pub use dynamic_tool::DynamicToolCallParams;
     pub use exec_command::ExecCommandApprovalParams;

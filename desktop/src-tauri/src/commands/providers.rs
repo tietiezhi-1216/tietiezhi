@@ -7,7 +7,7 @@ use super::models::{
     ModelCapability, ModelInfo, ModelModality, ReasoningEffort, ReasoningMode, ReasoningProfile,
     ReasoningTransport,
 };
-use super::settings::{read_settings, Provider};
+use super::settings::{read_settings, Provider, WireApi};
 use super::{api_url, provider_http_error, snippet};
 use crate::{secrets, AppState};
 
@@ -23,10 +23,12 @@ pub struct ProviderView {
 
 /// Resolved connection details for a provider, used by request commands.
 pub(crate) struct Resolved {
+    pub id: String,
     pub base_url: String,
     pub key: Option<String>,
     #[allow(dead_code)]
     pub kind: String,
+    pub wire_api: WireApi,
     pub models: Vec<ModelInfo>,
 }
 
@@ -106,9 +108,11 @@ pub(crate) fn resolve(app: &AppHandle, provider_id: &str) -> Result<Resolved, St
     let key = select_provider_api_key(gateway_key, stored_provider_key, provider.built_in)?;
 
     Ok(Resolved {
+        id: provider.id.clone(),
         base_url: provider.base_url.clone(),
         key,
         kind: provider.kind.clone(),
+        wire_api: provider.wire_api,
         models: provider.models.clone(),
     })
 }
@@ -159,6 +163,7 @@ pub fn upsert_provider(
             provider.built_in = existing.built_in;
             if existing.built_in {
                 provider.name = super::settings::BUILTIN_PROVIDER_NAME.into();
+                provider.wire_api = WireApi::Responses;
             }
             *existing = provider.clone();
         }

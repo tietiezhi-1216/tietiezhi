@@ -1,17 +1,32 @@
+use std::time::Duration;
+
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tietiezhi_agent_account::{
+    AccountDispatchOutput, AccountNotification, AccountRpcError, AccountServerRequest,
+    ImmediateLogin,
+};
 use tietiezhi_agent_core::{
     DispatchOutput, RoutedNotification, RuntimeDefaults, ThreadManager, TurnExecutionSnapshot,
 };
 use tietiezhi_agent_model::{
-    ModelError, Reasoning, ResponseEvent, ResponsesApiRequest, ResponsesClient, TextControls,
-    TextFormat, TextFormatType,
+    list_online_models, ModelError, OnlineModel, Reasoning, ResponseEvent, ResponsesApiRequest,
+    ResponsesClient, TextControls, TextFormat, TextFormatType,
 };
+use tietiezhi_agent_protocol::{ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse};
 use tokio_util::sync::CancellationToken;
 
 use crate::AppState;
 
 const CODEX_NOTIFICATION_EVENT: &str = "codex-v2-notification";
+const CODEX_SERVER_REQUEST_EVENT: &str = "codex-v2-server-request";
+
+#[derive(Debug, Clone)]
+pub(crate) struct ExternalAuthTokens {
+    access_token: String,
+    account_id: String,
+    plan_type: Option<String>,
+}
 
 fn runtime_defaults(app: &AppHandle) -> Result<RuntimeDefaults, String> {
     let settings = super::settings::read_settings(app)?;
@@ -89,6 +104,22 @@ fn emit_notifications(app: &AppHandle, notifications: &[RoutedNotification]) -> 
     Ok(())
 }
 
+fn emit_server_request(app: &AppHandle, request: &AccountServerRequest) -> Result<(), String> {
+    app.emit(CODEX_SERVER_REQUEST_EVENT, request)
+        .map_err(|error| format!("发送 Codex Server Request 失败：{error}"))
+}
+
+#[tauri::command]
+pub fn codex_v2_server_response(
+    state: State<'_, AppState>,
+    response: Value,
+) -> Result<bool, String> {
+    state
+        .codex_account_requests
+        .resolve(&response)
+        .map_err(account_rpc_error)
+}
+
 fn cancel_thread(state: &AppState, thread_id: &str, expected_turn_id: Option<&str>) {
     if let Ok(cancels) = state.codex_cancels.lock() {
         if let Some((turn_id, cancel)) = cancels.get(thread_id) {
@@ -105,7 +136,7 @@ fn cancel_thread(state: &AppState, thread_id: &str, expected_turn_id: Option<&st
 /// notifications preserve their order. A successful `turn/start` launches the
 /// source-native Responses executor on Tauri's async runtime.
 #[tauri::command]
-pub fn codex_v2_request(
+pub async fn codex_v2_request(
     app: AppHandle,
     state: State<'_, AppState>,
     connection_id: String,
@@ -119,6 +150,21 @@ pub fn codex_v2_request(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    state
+        .codex_account
+        .register_connection(&connection_id)
+        .map_err(account_rpc_error)?;
+    if tietiezhi_agent_account::AccountRuntime::handles(&method) {
+        let output =
+            dispatch_account_request(&app, &state, &connection_id, &request, &method).await?;
+        emit_notifications(&app, &output.notifications)?;
+        return Ok(output);
+    }
+    if method == "model/list" {
+        if let Some(output) = online_model_list(&app, &request)? {
+            return Ok(output);
+        }
+    }
     let thread_id = request
         .pointer("/params/threadId")
         .and_then(Value::as_str)
@@ -163,6 +209,610 @@ pub fn codex_v2_request(
         }
     }
     Ok(output)
+}
+
+fn online_model_list(app: &AppHandle, request: &Value) -> Result<Option<DispatchOutput>, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(Some(dispatch_error(
+            request,
+            -32602,
+            format!("model/list 参数不符合 App Server V2：{error}"),
+        )));
+    }
+    let settings = super::settings::read_settings(app)?;
+    let Some(provider) = settings
+        .providers
+        .iter()
+        .find(|provider| provider.id == settings.chat_provider_id)
+    else {
+        return Ok(None);
+    };
+    let models = provider
+        .models
+        .iter()
+        .filter(|model| {
+            model.effective_kind() == super::models::ModelKind::Chat && !model.id.trim().is_empty()
+        })
+        .map(|model| {
+            let reasoning = model.effective_reasoning();
+            let reasoning_efforts = reasoning
+                .map(|profile| {
+                    profile
+                        .supported_efforts
+                        .iter()
+                        .filter_map(|effort| effort.as_wire_value().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let default_reasoning_effort = reasoning
+                .and_then(|profile| profile.default_effort)
+                .and_then(|effort| effort.as_wire_value())
+                .unwrap_or("medium")
+                .to_owned();
+            let input_modalities = model
+                .input_modalities
+                .iter()
+                .filter_map(|modality| match modality {
+                    super::models::ModelModality::Text => Some("text".into()),
+                    super::models::ModelModality::Image => Some("image".into()),
+                    _ => None,
+                })
+                .collect();
+            OnlineModel {
+                id: model.id.clone(),
+                display_name: model.id.clone(),
+                description: format!("{} 提供的 Agent 模型", provider.name),
+                reasoning_efforts,
+                default_reasoning_effort,
+                input_modalities,
+                is_default: model.id == settings.chat_model,
+            }
+        })
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        return Ok(None);
+    }
+    let cursor = match request
+        .pointer("/params/cursor")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| "model/list cursor 必须是字符串".to_string())
+        })
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(error) => return Ok(Some(dispatch_error(request, -32602, error))),
+    };
+    let limit = match request
+        .pointer("/params/limit")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or_else(|| "model/list limit 必须是无符号 32 位整数".to_string())
+        })
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(error) => return Ok(Some(dispatch_error(request, -32602, error))),
+    };
+    let result = match list_online_models(models, cursor, limit) {
+        Ok(result) => result,
+        Err(error) => {
+            return Ok(Some(dispatch_error(
+                request,
+                -32602,
+                format!("模型目录无效：{error}"),
+            )));
+        }
+    };
+    if let Err(error) = serde_json::from_value::<ModelListResponse>(result.clone()) {
+        return Ok(Some(dispatch_error(
+            request,
+            -32603,
+            format!("在线模型目录不符合 App Server V2：{error}"),
+        )));
+    }
+    let response = json!({
+        "id": request.get("id").cloned().unwrap_or(Value::Null),
+        "result": result
+    });
+    serde_json::from_value::<JSONRPCResponse>(response.clone())
+        .map_err(|error| format!("model/list JSON-RPC 响应无效：{error}"))?;
+    Ok(Some(DispatchOutput {
+        response,
+        notifications: Vec::new(),
+    }))
+}
+
+fn dispatch_error(request: &Value, code: i64, message: impl Into<String>) -> DispatchOutput {
+    DispatchOutput {
+        response: json!({
+            "id": request.get("id").cloned().unwrap_or(Value::Null),
+            "error": {
+                "code": code,
+                "message": message.into()
+            }
+        }),
+        notifications: Vec::new(),
+    }
+}
+
+async fn dispatch_account_request(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = state.codex_account.validate_request(connection_id, request) {
+        return Ok(account_output(
+            state.codex_account.error_output(request, error),
+        ));
+    }
+    let result = match method {
+        "account/login/start" => account_login_start(app, state, connection_id, request).await,
+        "account/login/cancel" => {
+            let (output, canceled) = state.codex_account.cancel_login(connection_id, request);
+            if let Some(login_id) = canceled {
+                cancel_account_login(state, &login_id);
+            }
+            Ok(account_output(output))
+        }
+        "account/logout" => account_logout(app, state, connection_id, request).await,
+        "account/read" => match refresh_account_snapshot(app, state).await {
+            Ok(()) => cached_account_output(state, connection_id, request),
+            Err(error) => Err(error),
+        },
+        "account/rateLimits/read" => match refresh_rate_limits(app, state).await {
+            Ok(()) => cached_account_output(state, connection_id, request),
+            Err(error) => Err(error),
+        },
+        _ => cached_account_output(state, connection_id, request),
+    };
+    Ok(result.unwrap_or_else(|error| {
+        account_output(
+            state
+                .codex_account
+                .error_output(request, AccountRpcError::internal(error)),
+        )
+    }))
+}
+
+fn cached_account_output(
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+) -> Result<DispatchOutput, String> {
+    state
+        .codex_account
+        .dispatch_cached(connection_id, request)
+        .map(account_output)
+        .ok_or_else(|| {
+            format!(
+                "尚未实现的 Codex account 方法：{}",
+                request
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            )
+        })
+}
+
+async fn account_login_start(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+) -> Result<DispatchOutput, String> {
+    let provider = selected_provider(app)?;
+    match request.pointer("/params/type").and_then(Value::as_str) {
+        Some("chatgpt") => {
+            if !provider.built_in {
+                return Ok(account_output(state.codex_account.error_output(
+                    request,
+                    AccountRpcError::invalid_request(
+                        "browser account login is only available for Tietiezhi Gateway",
+                    ),
+                )));
+            }
+            cancel_all_account_logins(state);
+            let login_id = uuid::Uuid::new_v4().to_string();
+            let attempt =
+                super::gateway_auth::prepare_gateway_login(&state.http, app, provider.id.clone())
+                    .await
+                    .map_err(|error| format!("启动 Gateway 登录失败：{error}"))?;
+            let output = state.codex_account.begin_chatgpt_login(
+                connection_id,
+                request,
+                login_id.clone(),
+                attempt.auth_url().into(),
+            );
+            if output.response.get("error").is_some() {
+                return Ok(account_output(output));
+            }
+            let cancel = CancellationToken::new();
+            state
+                .codex_login_cancels
+                .lock()
+                .map_err(|_| "Codex 登录取消状态锁已损坏".to_string())?
+                .insert(login_id.clone(), cancel.clone());
+            let app = app.clone();
+            let http = state.http.clone();
+            tauri::async_runtime::spawn(async move {
+                let result = tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    result = super::gateway_auth::complete_gateway_login(&http, app.clone(), attempt) => result,
+                };
+                let state = app.state::<AppState>();
+                let completion = match result {
+                    Ok(view) => {
+                        let account = view
+                            .account
+                            .map(gateway_account_value)
+                            .ok_or_else(|| "Gateway 登录完成但没有返回账号".to_string());
+                        state
+                            .codex_account
+                            .complete_chatgpt_login(&login_id, account)
+                    }
+                    Err(error) => state
+                        .codex_account
+                        .complete_chatgpt_login(&login_id, Err(error)),
+                };
+                if let Ok(notifications) = completion {
+                    let routed = account_notifications(notifications);
+                    let _ = emit_notifications(&app, &routed);
+                }
+                if let Ok(mut cancels) = state.codex_login_cancels.lock() {
+                    cancels.remove(&login_id);
+                };
+            });
+            Ok(account_output(output))
+        }
+        Some("apiKey") => {
+            if provider.built_in {
+                return Ok(account_output(state.codex_account.error_output(
+                    request,
+                    AccountRpcError::invalid_request(
+                        "Tietiezhi Gateway credentials are managed by browser login",
+                    ),
+                )));
+            }
+            let api_key = match required_account_string(request, "/params/apiKey") {
+                Ok(value) => value,
+                Err(error) => {
+                    return Ok(account_output(
+                        state.codex_account.error_output(request, error),
+                    ));
+                }
+            };
+            crate::secrets::set_provider_key(&provider.id, &api_key)?;
+            if let Ok(mut external) = state.codex_external_auth.lock() {
+                external.remove(&provider.id);
+            }
+            Ok(account_output(
+                state.codex_account.complete_immediate_login(
+                    connection_id,
+                    request,
+                    ImmediateLogin {
+                        response_type: "apiKey",
+                        account: json!({"type": "apiKey"}),
+                        requires_openai_auth: false,
+                        auth_mode: "apikey",
+                        plan_type: None,
+                    },
+                ),
+            ))
+        }
+        Some("chatgptAuthTokens") => {
+            if provider.built_in {
+                return Ok(account_output(state.codex_account.error_output(
+                    request,
+                    AccountRpcError::invalid_request(
+                        "Tietiezhi Gateway does not use externally supplied ChatGPT tokens",
+                    ),
+                )));
+            }
+            let access_token = match required_account_string(request, "/params/accessToken") {
+                Ok(value) => value,
+                Err(error) => {
+                    return Ok(account_output(
+                        state.codex_account.error_output(request, error),
+                    ));
+                }
+            };
+            let account_id = match required_account_string(request, "/params/chatgptAccountId") {
+                Ok(value) => value,
+                Err(error) => {
+                    return Ok(account_output(
+                        state.codex_account.error_output(request, error),
+                    ));
+                }
+            };
+            let plan_type = request
+                .pointer("/params/chatgptPlanType")
+                .and_then(Value::as_str)
+                .map(normalized_plan_type)
+                .map(str::to_owned);
+            state
+                .codex_external_auth
+                .lock()
+                .map_err(|_| "Codex 外部账号状态锁已损坏".to_string())?
+                .insert(
+                    provider.id.clone(),
+                    ExternalAuthTokens {
+                        access_token,
+                        account_id,
+                        plan_type: plan_type.clone(),
+                    },
+                );
+            Ok(account_output(
+                state.codex_account.complete_immediate_login(
+                    connection_id,
+                    request,
+                    ImmediateLogin {
+                        response_type: "chatgptAuthTokens",
+                        account: json!({
+                            "type": "chatgpt",
+                            "email": null,
+                            "planType": plan_type.as_deref().unwrap_or("unknown")
+                        }),
+                        requires_openai_auth: false,
+                        auth_mode: "chatgptAuthTokens",
+                        plan_type: Some(plan_type.as_deref().unwrap_or("unknown")),
+                    },
+                ),
+            ))
+        }
+        _ => Ok(account_output(state.codex_account.error_output(
+            request,
+            AccountRpcError::invalid_request(
+                "this runtime supports apiKey, chatgpt, and chatgptAuthTokens login",
+            ),
+        ))),
+    }
+}
+
+async fn account_logout(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+) -> Result<DispatchOutput, String> {
+    let provider = selected_provider(app)?;
+    if provider.built_in {
+        super::gateway_auth::revoke_gateway_login(&state.http, app, &provider.id).await?;
+    } else {
+        crate::secrets::delete_provider_key(&provider.id)?;
+        state
+            .codex_external_auth
+            .lock()
+            .map_err(|_| "Codex 外部账号状态锁已损坏".to_string())?
+            .remove(&provider.id);
+    }
+    let (output, canceled) = state.codex_account.logout(connection_id, request);
+    if let Some(login_id) = canceled {
+        cancel_account_login(state, &login_id);
+    }
+    Ok(account_output(output))
+}
+
+async fn refresh_account_snapshot(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    let provider = selected_provider(app)?;
+    if provider.built_in {
+        let view = super::gateway_auth::load_gateway_account(&state.http, app, provider.id.clone())
+            .await?;
+        let account = view.account.map(gateway_account_value);
+        state
+            .codex_account
+            .set_account(
+                account,
+                true,
+                view.logged_in.then_some("chatgpt"),
+                view.logged_in.then_some("unknown"),
+            )
+            .map_err(account_rpc_error)?;
+    } else {
+        let external = state
+            .codex_external_auth
+            .lock()
+            .map_err(|_| "Codex 外部账号状态锁已损坏".to_string())?
+            .get(&provider.id)
+            .cloned();
+        let api_key = crate::secrets::get_provider_key(&provider.id)?.is_some();
+        let (account, auth_mode, plan_type) = match external {
+            Some(tokens) => (
+                Some(json!({
+                    "type": "chatgpt",
+                    "email": null,
+                    "planType": tokens.plan_type.as_deref().unwrap_or("unknown")
+                })),
+                Some("chatgptAuthTokens"),
+                Some(tokens.plan_type.unwrap_or_else(|| "unknown".into())),
+            ),
+            None if api_key => (Some(json!({"type": "apiKey"})), Some("apikey"), None),
+            None => (None, None, None),
+        };
+        state
+            .codex_account
+            .set_account(account, false, auth_mode, plan_type.as_deref())
+            .map_err(account_rpc_error)?;
+    }
+    Ok(())
+}
+
+async fn refresh_rate_limits(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    let provider = selected_provider(app)?;
+    let response = if provider.built_in {
+        let quota = super::gateway_auth::load_gateway_quota(&state.http, app, &provider.id).await?;
+        gateway_rate_limits(&quota)
+    } else {
+        empty_rate_limits()
+    };
+    state
+        .codex_account
+        .set_rate_limits(response)
+        .map_err(account_rpc_error)?;
+    Ok(())
+}
+
+fn selected_provider(app: &AppHandle) -> Result<super::settings::Provider, String> {
+    let settings = super::settings::read_settings(app)?;
+    settings
+        .providers
+        .into_iter()
+        .find(|provider| provider.id == settings.chat_provider_id)
+        .ok_or_else(|| "未配置 Codex Runtime 供应商".into())
+}
+
+fn gateway_account_value(account: super::gateway_auth::GatewayAccount) -> Value {
+    json!({
+        "type": "chatgpt",
+        "email": (!account.email.trim().is_empty()).then_some(account.email),
+        "planType": "unknown"
+    })
+}
+
+fn gateway_rate_limits(quota: &super::gateway_auth::GatewayQuotaView) -> Value {
+    let package_remaining = quota
+        .packages
+        .iter()
+        .map(|package| package.window_remaining.max(0))
+        .sum::<i64>();
+    let has_credits = quota.wallet.balance_micro > 0 || package_remaining > 0;
+    let used_percent = quota
+        .packages
+        .iter()
+        .filter(|package| package.quota_per_window > 0)
+        .map(|package| {
+            let used = package
+                .quota_per_window
+                .saturating_sub(package.window_remaining.max(0));
+            ((used as f64 / package.quota_per_window as f64) * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as i32
+        })
+        .max();
+    let snapshot = json!({
+        "limitId": "tietiezhi-gateway",
+        "limitName": "Tietiezhi Gateway",
+        "primary": used_percent.map(|used_percent| json!({
+            "usedPercent": used_percent,
+            "windowDurationMins": null,
+            "resetsAt": null
+        })),
+        "secondary": null,
+        "credits": {
+            "hasCredits": has_credits,
+            "unlimited": false,
+            "balance": format_micro(quota.wallet.balance_micro)
+        },
+        "individualLimit": null,
+        "spendControlReached": !has_credits,
+        "planType": "unknown",
+        "rateLimitReachedType": (!has_credits).then_some("rate_limit_reached")
+    });
+    json!({
+        "rateLimits": snapshot,
+        "rateLimitsByLimitId": {
+            "tietiezhi-gateway": snapshot
+        },
+        "rateLimitResetCredits": null
+    })
+}
+
+fn empty_rate_limits() -> Value {
+    json!({
+        "rateLimits": {
+            "limitId": null,
+            "limitName": null,
+            "primary": null,
+            "secondary": null,
+            "credits": null,
+            "individualLimit": null,
+            "spendControlReached": null,
+            "planType": null,
+            "rateLimitReachedType": null
+        },
+        "rateLimitsByLimitId": null,
+        "rateLimitResetCredits": null
+    })
+}
+
+fn format_micro(value: i64) -> String {
+    let sign = if value < 0 { "-" } else { "" };
+    let absolute = value.unsigned_abs();
+    format!("{sign}{}.{:06}", absolute / 1_000_000, absolute % 1_000_000)
+}
+
+fn required_account_string(request: &Value, pointer: &str) -> Result<String, AccountRpcError> {
+    request
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| AccountRpcError::invalid(format!("{pointer} 不能为空")))
+}
+
+fn normalized_plan_type(value: &str) -> &'static str {
+    match value {
+        "free" => "free",
+        "go" => "go",
+        "plus" => "plus",
+        "pro" => "pro",
+        "prolite" => "prolite",
+        "team" => "team",
+        "self_serve_business_usage_based" => "self_serve_business_usage_based",
+        "business" => "business",
+        "enterprise_cbp_usage_based" => "enterprise_cbp_usage_based",
+        "enterprise" => "enterprise",
+        "edu" => "edu",
+        _ => "unknown",
+    }
+}
+
+fn cancel_account_login(state: &AppState, login_id: &str) {
+    if let Ok(mut cancels) = state.codex_login_cancels.lock() {
+        if let Some(cancel) = cancels.remove(login_id) {
+            cancel.cancel();
+        }
+    }
+}
+
+fn cancel_all_account_logins(state: &AppState) {
+    if let Ok(mut cancels) = state.codex_login_cancels.lock() {
+        for (_, cancel) in cancels.drain() {
+            cancel.cancel();
+        }
+    }
+}
+
+fn account_rpc_error(error: AccountRpcError) -> String {
+    format!("Codex account 状态错误：{}", error.message)
+}
+
+fn account_output(output: AccountDispatchOutput) -> DispatchOutput {
+    DispatchOutput {
+        response: output.response,
+        notifications: account_notifications(output.notifications),
+    }
+}
+
+fn account_notifications(notifications: Vec<AccountNotification>) -> Vec<RoutedNotification> {
+    notifications
+        .into_iter()
+        .map(|notification| RoutedNotification {
+            recipients: notification.recipients,
+            method: notification.method,
+            params: notification.params,
+        })
+        .collect()
 }
 
 fn launch_turn_executor(
@@ -225,12 +875,24 @@ async fn run_turn_executor(
     let base_url = super::api_url(&resolved.base_url, "")
         .trim_end_matches('/')
         .to_owned();
-    let provider =
-        tietiezhi_agent_model::Provider::openai_compatible(resolved.kind, base_url, resolved.key);
-    let client = ResponsesClient::new(http, provider);
+    let provider_id = resolved.id;
+    let provider_name = resolved.kind;
+    let mut bearer_token = app
+        .state::<AppState>()
+        .codex_external_auth
+        .lock()
+        .map_err(|_| ModelError::Consumer("Codex 外部账号状态锁已损坏".into()))?
+        .get(&provider_id)
+        .map(|tokens| tokens.access_token.clone())
+        .or(resolved.key);
+    let capability_key = format!("{provider_id}\n{base_url}");
+    let wire_api = resolved.wire_api;
+    let mut client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
+    ensure_responses_capability(&app, &capability_key, wire_api, &client).await?;
     let mut projection = ResponseProjection::new(initial.model.clone());
     let mut can_drain_steered = false;
     let mut output_schema = None;
+    let mut auth_refresh_attempted = false;
 
     loop {
         let drained = manager
@@ -254,10 +916,22 @@ async fn run_turn_executor(
             let notifications = projection.apply(&manager, &thread_id, &turn_id, event)?;
             emit_notifications(&app, &notifications).map_err(ModelError::Consumer)
         });
-        tokio::select! {
+        let result = tokio::select! {
             _ = cancel.cancelled() => return Ok(()),
-            result = stream => result?,
+            result = stream => result,
+        };
+        if matches!(result, Err(ModelError::Unauthorized { .. }))
+            && !auth_refresh_attempted
+            && !projection.model_output_seen()
+        {
+            if let Some(tokens) = refresh_external_auth(&app, &provider_id).await? {
+                auth_refresh_attempted = true;
+                bearer_token = Some(tokens.access_token);
+                client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
+                continue;
+            }
         }
+        result?;
         if cancel.is_cancelled() {
             return Ok(());
         }
@@ -274,6 +948,132 @@ async fn run_turn_executor(
             }
             None => continue,
         }
+    }
+}
+
+fn responses_client(
+    http: &reqwest::Client,
+    provider_name: &str,
+    base_url: &str,
+    bearer_token: Option<String>,
+) -> ResponsesClient {
+    ResponsesClient::new(
+        http.clone(),
+        tietiezhi_agent_model::Provider::openai_compatible(provider_name, base_url, bearer_token),
+    )
+}
+
+async fn refresh_external_auth(
+    app: &AppHandle,
+    provider_id: &str,
+) -> Result<Option<ExternalAuthTokens>, ModelError> {
+    let state = app.state::<AppState>();
+    let current = state
+        .codex_external_auth
+        .lock()
+        .map_err(|_| ModelError::Consumer("Codex 外部账号状态锁已损坏".into()))?
+        .get(provider_id)
+        .cloned();
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let recipients = state
+        .codex_account
+        .connections()
+        .map_err(|error| ModelError::Consumer(error.message))?;
+    let pending = state
+        .codex_account_requests
+        .begin_auth_refresh(recipients, Some(current.account_id))
+        .map_err(|error| ModelError::Consumer(error.message))?;
+    emit_server_request(app, &pending.request).map_err(ModelError::Consumer)?;
+    let request_id = pending.request.id.clone();
+    let result = match tokio::time::timeout(Duration::from_secs(60), pending.receiver).await {
+        Ok(Ok(result)) => result.map_err(|error| ModelError::InvalidRequest {
+            message: error.message,
+        })?,
+        Ok(Err(_)) => {
+            return Err(ModelError::Consumer("外部账号刷新响应通道已关闭".into()));
+        }
+        Err(_) => {
+            let _ = state.codex_account_requests.cancel(&request_id);
+            return Err(ModelError::InvalidRequest {
+                message: "等待外部账号刷新超时".into(),
+            });
+        }
+    };
+    let access_token = result
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ModelError::Consumer("外部账号刷新缺少 accessToken".into()))?
+        .to_owned();
+    let account_id = result
+        .get("chatgptAccountId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ModelError::Consumer("外部账号刷新缺少 chatgptAccountId".into()))?
+        .to_owned();
+    let plan_type = result
+        .get("chatgptPlanType")
+        .and_then(Value::as_str)
+        .map(normalized_plan_type)
+        .map(str::to_owned);
+    let tokens = ExternalAuthTokens {
+        access_token,
+        account_id,
+        plan_type,
+    };
+    state
+        .codex_external_auth
+        .lock()
+        .map_err(|_| ModelError::Consumer("Codex 外部账号状态锁已损坏".into()))?
+        .insert(provider_id.into(), tokens.clone());
+    Ok(Some(tokens))
+}
+
+async fn ensure_responses_capability(
+    app: &AppHandle,
+    capability_key: &str,
+    wire_api: super::settings::WireApi,
+    client: &ResponsesClient,
+) -> Result<(), ModelError> {
+    match wire_api {
+        super::settings::WireApi::Responses => return Ok(()),
+        super::settings::WireApi::ChatCompletions => {
+            return Err(ModelError::InvalidRequest {
+                message: "当前供应商配置为仅普通聊天；Codex Agent Runtime 必须使用 Responses API"
+                    .into(),
+            });
+        }
+        super::settings::WireApi::Auto => {}
+    }
+    let state = app.state::<AppState>();
+    let cached = state
+        .codex_wire_capabilities
+        .lock()
+        .map_err(|_| ModelError::Consumer("供应商 capability 缓存锁已损坏".into()))?
+        .get(capability_key)
+        .copied();
+    let supported = match cached {
+        Some(supported) => supported,
+        None => {
+            let supported = client.supports_responses().await?;
+            state
+                .codex_wire_capabilities
+                .lock()
+                .map_err(|_| ModelError::Consumer("供应商 capability 缓存锁已损坏".into()))?
+                .insert(capability_key.into(), supported);
+            supported
+        }
+    };
+    if supported {
+        Ok(())
+    } else {
+        Err(ModelError::InvalidRequest {
+            message:
+                "当前供应商没有可用的 /v1/responses；请升级 Gateway，或改用支持 Responses API 的供应商"
+                    .into(),
+        })
     }
 }
 
@@ -315,6 +1115,7 @@ struct ResponseProjection {
     reroute_emitted: bool,
     verification_emitted: bool,
     needs_follow_up: bool,
+    model_output_seen: bool,
 }
 
 impl ResponseProjection {
@@ -327,6 +1128,7 @@ impl ResponseProjection {
             reroute_emitted: false,
             verification_emitted: false,
             needs_follow_up: false,
+            model_output_seen: false,
         }
     }
 
@@ -345,18 +1147,21 @@ impl ResponseProjection {
                 .error_notification(thread_id, turn_id, error.as_turn_error(), true)
                 .map_err(core_model_error),
             ResponseEvent::OutputItemAdded(item) => {
+                self.model_output_seen = true;
                 self.track_item(&item);
                 manager
                     .model_item_started(thread_id, turn_id, item)
                     .map_err(core_model_error)
             }
             ResponseEvent::OutputItemDone(item) => {
+                self.model_output_seen = true;
                 self.track_item(&item);
                 manager
                     .model_item_completed(thread_id, turn_id, item)
                     .map_err(core_model_error)
             }
             ResponseEvent::OutputTextDelta(delta) => {
+                self.model_output_seen = true;
                 let item_id = self.current_agent_item.as_deref().ok_or_else(|| {
                     ModelError::Consumer("text delta arrived before agent message item".into())
                 })?;
@@ -365,6 +1170,7 @@ impl ResponseProjection {
                     .map_err(core_model_error)
             }
             ResponseEvent::ReasoningSummaryPartAdded { summary_index } => {
+                self.model_output_seen = true;
                 let item_id = self.reasoning_item()?;
                 manager
                     .reasoning_summary_part_added(thread_id, turn_id, item_id, summary_index)
@@ -374,6 +1180,7 @@ impl ResponseProjection {
                 delta,
                 summary_index,
             } => {
+                self.model_output_seen = true;
                 let item_id = self.reasoning_item()?;
                 manager
                     .reasoning_summary_delta(thread_id, turn_id, item_id, summary_index, &delta)
@@ -384,6 +1191,7 @@ impl ResponseProjection {
                 text,
                 summary_index,
             } => {
+                self.model_output_seen = true;
                 manager
                     .reasoning_summary_done(thread_id, turn_id, &item_id, summary_index, &text)
                     .map_err(core_model_error)?;
@@ -393,12 +1201,16 @@ impl ResponseProjection {
                 delta,
                 content_index,
             } => {
+                self.model_output_seen = true;
                 let item_id = self.reasoning_item()?;
                 manager
                     .reasoning_text_delta(thread_id, turn_id, item_id, content_index, &delta)
                     .map_err(core_model_error)
             }
-            ResponseEvent::ToolCallInputDelta { .. } => Ok(Vec::new()),
+            ResponseEvent::ToolCallInputDelta { .. } => {
+                self.model_output_seen = true;
+                Ok(Vec::new())
+            }
             ResponseEvent::ServerModel(model) => {
                 if self.server_model.as_deref() == Some(model.as_str()) {
                     return Ok(Vec::new());
@@ -473,6 +1285,10 @@ impl ResponseProjection {
     fn take_needs_follow_up(&mut self) -> bool {
         std::mem::take(&mut self.needs_follow_up)
     }
+
+    fn model_output_seen(&self) -> bool {
+        self.model_output_seen
+    }
 }
 
 fn core_model_error(error: tietiezhi_agent_core::RpcError) -> ModelError {
@@ -500,7 +1316,11 @@ fn fail_turn(
 
 #[cfg(test)]
 mod tests {
-    use super::{nonempty_or_unconfigured, ResponseProjection};
+    use super::{
+        empty_rate_limits, format_micro, gateway_rate_limits, nonempty_or_unconfigured,
+        normalized_plan_type, ResponseProjection,
+    };
+    use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
 
     #[test]
     fn empty_runtime_selection_is_explicitly_unconfigured() {
@@ -515,8 +1335,53 @@ mod tests {
         assert_eq!(projection.requested_model, "gpt-requested");
         assert!(!projection.reroute_emitted);
         assert!(!projection.verification_emitted);
+        assert!(!projection.model_output_seen());
         projection.needs_follow_up = true;
         assert!(projection.take_needs_follow_up());
         assert!(!projection.take_needs_follow_up());
+    }
+
+    #[test]
+    fn gateway_quota_maps_to_protocol_rate_limit_without_losing_micro_units() {
+        let quota = GatewayQuotaView {
+            wallet: GatewayWallet {
+                balance_micro: 12_345_678,
+                frozen_micro: 0,
+                total_topup_micro: 0,
+                total_spend_micro: 0,
+            },
+            packages: Vec::new(),
+            recent_consumption: Vec::new(),
+            payment_channels: GatewayPaymentChannels {
+                alipay: true,
+                wechat: false,
+            },
+        };
+        let response = gateway_rate_limits(&quota);
+        assert_eq!(response["rateLimits"]["credits"]["balance"], "12.345678");
+        assert_eq!(response["rateLimits"]["credits"]["hasCredits"], true);
+        assert_eq!(
+            response["rateLimitsByLimitId"]["tietiezhi-gateway"],
+            response["rateLimits"]
+        );
+        assert_eq!(format_micro(-1), "-0.000001");
+        assert!(
+            serde_json::from_value::<tietiezhi_agent_protocol::GetAccountRateLimitsResponse>(
+                response
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn empty_limits_and_plan_types_stay_protocol_valid() {
+        assert!(
+            serde_json::from_value::<tietiezhi_agent_protocol::GetAccountRateLimitsResponse>(
+                empty_rate_limits()
+            )
+            .is_ok()
+        );
+        assert_eq!(normalized_plan_type("team"), "team");
+        assert_eq!(normalized_plan_type("future-plan"), "unknown");
     }
 }
