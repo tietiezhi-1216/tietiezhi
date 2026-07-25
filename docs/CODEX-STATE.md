@@ -35,12 +35,12 @@ SQLite 不是会话历史的单一事实源。发生“rollout 已写入、SQLit
 - `session_meta`：Thread 身份、创建时间、rollout 路径和来源
 - `turn_context`：每个真实 Turn 的 cwd、审批、沙箱、模型、推理配置和 Turn ID
 - `response_item`：模型可见的 canonical Responses API Item
-- `legacy_checkpoint`：迁移期完整会话快照
+- `legacy_checkpoint`：旧任务兼容镜像与降级回滚锚点
 - `event_msg`：带 `threadId`、`turnId`、`itemId` 和 `sequence` 的 R3 流式事件
 
 新写入先进入 rollout 并 flush，checkpoint 还会执行 `sync_data`，随后用 SQLite 事务更新索引，最后原子替换兼容 `task.json`。同一进程内相同路径共享一个锁和文件句柄，checkpoint 与流式事件不会互相覆盖。
 
-R5 新 Thread 已写入 canonical `session_meta` 和 `response_item`。R6 增加 `turn_context` 以及 canonical `task_started`、Core `TurnItem` 生命周期和 Turn 终态事件，并按原始 ordinal 保留不同 rollout 类型的交错顺序。状态库重建后，`ThreadManager` 直接从 `session_meta` 和这些事件恢复完整 Turn；R4 的旧 `threadId` 元数据继续由会话迁移层处理。`legacy_checkpoint` 只负责迁移现有任务，并在 R38 删除旧运行时后停止写入。
+R5 新 Thread 已写入 canonical `session_meta` 和 `response_item`。R6 增加 `turn_context` 以及 canonical `task_started`、Core `TurnItem` 生命周期和 Turn 终态事件，并按原始 ordinal 保留不同 rollout 类型的交错顺序。状态库重建后，`ThreadManager` 直接从 `session_meta` 和这些事件恢复完整 Turn；R4 的旧 `threadId` 元数据由会话迁移层处理。R38 后 `legacy_checkpoint` 可继续作为旧任务/UI 兼容镜像写入，但不参与新 Runtime 的 Thread/Turn 恢复决策。
 
 ## 崩溃恢复
 

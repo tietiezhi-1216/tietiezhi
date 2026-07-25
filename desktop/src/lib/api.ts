@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   createChatEventNormalizer,
   type ChatEvent,
@@ -6,12 +7,17 @@ import {
 } from "@/lib/chat-events";
 import type { TaskMode } from "@/lib/task-mode";
 import type { ClientRequest as CodexClientRequest } from "../../../shared/codex/v2/typescript/ClientRequest";
+import type { ClientNotification as CodexClientNotification } from "../../../shared/codex/v2/typescript/ClientNotification";
 import type { RequestId as CodexRequestId } from "../../../shared/codex/v2/typescript/RequestId";
 import type { ServerNotification as CodexServerNotification } from "../../../shared/codex/v2/typescript/ServerNotification";
 import type { ServerRequest as CodexServerRequest } from "../../../shared/codex/v2/typescript/ServerRequest";
 import type { AppsInstalledResponse } from "../../../shared/codex/v2/typescript/v2/AppsInstalledResponse";
 import type { AppsListResponse } from "../../../shared/codex/v2/typescript/v2/AppsListResponse";
 import type { AppsReadResponse } from "../../../shared/codex/v2/typescript/v2/AppsReadResponse";
+import type { ThreadStartResponse } from "../../../shared/codex/v2/typescript/v2/ThreadStartResponse";
+import type { ThreadResumeResponse } from "../../../shared/codex/v2/typescript/v2/ThreadResumeResponse";
+import type { TurnStartResponse } from "../../../shared/codex/v2/typescript/v2/TurnStartResponse";
+import type { UserInput } from "../../../shared/codex/v2/typescript/v2/UserInput";
 
 export type { ChatEvent } from "@/lib/chat-events";
 
@@ -41,7 +47,9 @@ export interface CodexV2DispatchOutput {
   notifications: CodexV2Notification[];
 }
 
-export async function codexV2Request(
+const codexInitialization = new Map<string, Promise<void>>();
+
+async function rawCodexV2Request(
   connectionId: string,
   request: CodexClientRequest,
 ): Promise<CodexV2DispatchOutput> {
@@ -49,6 +57,53 @@ export async function codexV2Request(
     connectionId,
     request,
   });
+}
+
+async function ensureCodexInitialized(connectionId: string): Promise<void> {
+  let initialization = codexInitialization.get(connectionId);
+  if (!initialization) {
+    initialization = (async () => {
+      const output = await rawCodexV2Request(connectionId, {
+        id: `initialize-${connectionId}`,
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: "tietiezhi-desktop",
+            title: "Tietiezhi Desktop",
+            version: "desktop",
+          },
+          capabilities: {
+            experimentalApi: true,
+            requestAttestation: true,
+            mcpServerOpenaiFormElicitation: true,
+            optOutNotificationMethods: [],
+          },
+        },
+      });
+      if (output.response.error) {
+        throw new Error(output.response.error.message);
+      }
+      await invoke("codex_v2_notify", {
+        connectionId,
+        notification: { method: "initialized" } satisfies CodexClientNotification,
+      });
+    })().catch((error: unknown) => {
+      codexInitialization.delete(connectionId);
+      throw error;
+    });
+    codexInitialization.set(connectionId, initialization);
+  }
+  await initialization;
+}
+
+export async function codexV2Request(
+  connectionId: string,
+  request: CodexClientRequest,
+): Promise<CodexV2DispatchOutput> {
+  if (request.method !== "initialize") {
+    await ensureCodexInitialized(connectionId);
+  }
+  return rawCodexV2Request(connectionId, request);
 }
 
 export async function codexV2ServerResponse(response: CodexV2Response): Promise<boolean> {
@@ -1345,28 +1400,224 @@ export interface ChatStreamArgs {
   onEvent: (event: ChatEvent) => void;
 }
 
-export function chatStream(args: ChatStreamArgs): Promise<void> {
-  const channel = new Channel<ChatEvent | LegacyChatEvent>();
-  const threadId = args.conversationId?.trim()
-    ? args.conversationId
-    : `chat_${args.requestId}`;
-  const normalize = createChatEventNormalizer(
-    threadId,
-    args.requestId,
-  );
-  channel.onmessage = (event) => args.onEvent(normalize(event));
-  return invoke("chat_stream", {
-    requestId: args.requestId,
-    providerId: args.providerId,
-    model: args.model,
-    messages: args.messages,
-    conversationId: args.conversationId ?? null,
-    agentId: args.agentId ?? null,
-    projectId: args.projectId ?? null,
-    taskMode: args.taskMode,
-    contextAction: args.contextAction ?? null,
-    onEvent: channel,
+let codexChatRequestId = 0;
+const codexChatTurns = new Map<number, { threadId: string; turnId: string }>();
+
+function nextCodexChatRequestId(prefix: string): string {
+  codexChatRequestId += 1;
+  return `${prefix}-${codexChatRequestId}`;
+}
+
+async function codexWorkspaceRequest<T>(
+  method: CodexClientRequest["method"],
+  params: Record<string, unknown>,
+): Promise<T> {
+  const output = await codexV2Request("desktop", {
+    id: nextCodexChatRequestId(method.replaceAll("/", "-")),
+    method,
+    params,
+  } as CodexClientRequest);
+  if (output.response.error) {
+    throw new Error(output.response.error.message);
+  }
+  return output.response.result as T;
+}
+
+export async function codexStartWorkspaceThread(
+  providerId: string,
+  model: string,
+  agentId?: string,
+): Promise<ThreadStartResponse> {
+  const agent = agentId
+    ? (await listAgents()).find((candidate) => candidate.id === agentId)
+    : undefined;
+  return codexWorkspaceRequest<ThreadStartResponse>("thread/start", {
+    model: agent?.model || model,
+    modelProvider: agent?.modelProviderId || providerId,
+    developerInstructions: agent?.systemPrompt || null,
+    ephemeral: false,
+    threadSource: "app",
   });
+}
+
+export async function codexResumeWorkspaceThread(
+  threadId: string,
+): Promise<ThreadResumeResponse> {
+  return codexWorkspaceRequest<ThreadResumeResponse>("thread/resume", { threadId });
+}
+
+function latestUserInput(messages: ChatMessage[]): UserInput[] {
+  const message = [...messages].reverse().find((candidate) => candidate.role === "user");
+  if (!message) return [];
+  if (typeof message.content === "string") {
+    return [{ type: "text", text: message.content, text_elements: [] }];
+  }
+  return message.content.flatMap((part): UserInput[] => {
+    if (part.type === "text") {
+      return [{ type: "text", text: part.text, text_elements: [] }];
+    }
+    return [{ type: "image", url: part.image_url.url }];
+  });
+}
+
+export async function chatStream(args: ChatStreamArgs): Promise<void> {
+  const threadId = args.conversationId?.trim();
+  if (!threadId) throw new Error("Codex Thread 尚未创建");
+  const normalize = createChatEventNormalizer(threadId, args.requestId);
+  let turnId = "";
+  let sequence = 0;
+  const emittedAgentItems = new Set<string>();
+  const emit = (event: LegacyChatEvent, itemId?: string) => {
+    sequence += 1;
+    const normalized = normalize(event);
+    args.onEvent({
+      ...normalized,
+      threadId,
+      ...(turnId ? { turnId } : {}),
+      ...(itemId ? { itemId } : {}),
+      sequence,
+      emittedAtMs: Date.now(),
+    });
+  };
+
+  if (args.contextAction === "inspect") {
+    await codexWorkspaceRequest("thread/read", { threadId, includeTurns: true });
+    emit({ type: "done", cancelled: false });
+    return;
+  }
+
+  await codexResumeWorkspaceThread(threadId);
+  const workspace = await taskWorkspaceOverview(threadId).catch(() => null);
+  let finish: (() => void) | undefined;
+  const completed = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const unlisten = await listen<CodexV2Notification>(
+    CODEX_V2_NOTIFICATION_EVENT,
+    (event) => {
+      const notification = event.payload;
+      const params = notification.params as {
+        threadId?: string;
+        turnId?: string;
+        itemId?: string;
+        delta?: string;
+      };
+      if (params.threadId !== threadId) return;
+      const eventTurnId =
+        params.turnId ??
+        (notification.method === "turn/started" ||
+        notification.method === "turn/completed"
+          ? notification.params.turn.id
+          : "");
+      if (turnId && eventTurnId && eventTurnId !== turnId) return;
+      if (eventTurnId) turnId = eventTurnId;
+      switch (notification.method) {
+        case "turn/started":
+          codexChatTurns.set(args.requestId, { threadId, turnId });
+          emit({ type: "started", model: args.model });
+          break;
+        case "item/agentMessage/delta":
+          emittedAgentItems.add(notification.params.itemId);
+          emit(
+            { type: "delta", content: notification.params.delta },
+            notification.params.itemId,
+          );
+          break;
+        case "item/reasoning/summaryTextDelta":
+        case "item/reasoning/textDelta":
+          emit(
+            { type: "reasoning", content: notification.params.delta },
+            notification.params.itemId,
+          );
+          break;
+        case "item/completed":
+          if (
+            notification.params.item.type === "agentMessage" &&
+            !emittedAgentItems.has(notification.params.item.id) &&
+            notification.params.item.text
+          ) {
+            emit(
+              { type: "delta", content: notification.params.item.text },
+              notification.params.item.id,
+            );
+          }
+          break;
+        case "thread/tokenUsage/updated":
+          emit({
+            type: "usage",
+            promptTokens: notification.params.tokenUsage.last.inputTokens,
+            completionTokens: notification.params.tokenUsage.last.outputTokens,
+            totalTokens: notification.params.tokenUsage.last.totalTokens,
+            cachedTokens: notification.params.tokenUsage.last.cachedInputTokens,
+          });
+          break;
+        case "thread/compacted":
+          emit({
+            type: "contextCompacted",
+            automatic: true,
+            duringTurn: true,
+            summary: "已整理 Codex Thread 上下文",
+            estimatedTokensBefore: 0,
+            estimatedTokensAfter: 0,
+            contextWindow: 0,
+          });
+          break;
+        case "error":
+          emit({
+            type: "error",
+            message: notification.params.error.message,
+            detail:
+              notification.params.error.additionalDetails ??
+              notification.params.error.message,
+            code: notification.params.error.codexErrorInfo
+              ? JSON.stringify(notification.params.error.codexErrorInfo)
+              : undefined,
+            retryable: notification.params.willRetry,
+            retries: 0,
+          });
+          break;
+        case "turn/completed": {
+          const cancelled = notification.params.turn.status === "interrupted";
+          if (notification.params.turn.status === "failed" && notification.params.turn.error) {
+            emit({
+              type: "error",
+              message: notification.params.turn.error.message,
+              detail:
+                notification.params.turn.error.additionalDetails ??
+                notification.params.turn.error.message,
+              code: notification.params.turn.error.codexErrorInfo
+                ? JSON.stringify(notification.params.turn.error.codexErrorInfo)
+                : undefined,
+              retryable: false,
+              retries: 0,
+            });
+          }
+          emit({ type: "done", cancelled });
+          finish?.();
+          break;
+        }
+      }
+    },
+  );
+  try {
+    if (args.contextAction === "compact") {
+      await codexWorkspaceRequest("thread/compact/start", { threadId });
+    } else {
+      const result = await codexWorkspaceRequest<TurnStartResponse>("turn/start", {
+        threadId,
+        clientUserMessageId: `desktop-${args.requestId}`,
+        input: latestUserInput(args.messages),
+        cwd: workspace?.rootPath ?? null,
+        model: args.model,
+      });
+      turnId = result.turn.id;
+      codexChatTurns.set(args.requestId, { threadId, turnId });
+    }
+    await completed;
+  } finally {
+    codexChatTurns.delete(args.requestId);
+    unlisten();
+  }
 }
 
 export interface TietiezhiStreamArgs {
@@ -1739,7 +1990,12 @@ export function defaultSystemPrompt(): Promise<string> {
   return invoke<string>("default_system_prompt");
 }
 
-export function chatCancel(requestId: number): Promise<void> {
+export async function chatCancel(requestId: number): Promise<void> {
+  const active = codexChatTurns.get(requestId);
+  if (active) {
+    await codexWorkspaceRequest("turn/interrupt", active);
+    return;
+  }
   return invoke("chat_cancel", { requestId });
 }
 
@@ -1893,24 +2149,32 @@ export function generateConversationTitle(
   });
 }
 
-export function deleteConversation(id: string): Promise<void> {
-  return invoke("delete_conversation", { id });
+export async function deleteConversation(id: string): Promise<void> {
+  await codexWorkspaceRequest("thread/delete", { threadId: id });
 }
 
-export function archiveConversation(id: string): Promise<void> {
-  return invoke("archive_conversation", { id });
+export async function archiveConversation(id: string): Promise<void> {
+  await codexWorkspaceRequest("thread/archive", { threadId: id });
 }
 
-export function restoreConversation(id: string): Promise<void> {
-  return invoke("restore_conversation", { id });
+export async function restoreConversation(id: string): Promise<void> {
+  await codexWorkspaceRequest("thread/unarchive", { threadId: id });
 }
 
 export function setConversationPinned(id: string, pinned: boolean): Promise<number> {
   return invoke<number>("set_conversation_pinned", { id, pinned });
 }
 
-export function archiveProjectConversations(projectId: string): Promise<number> {
-  return invoke<number>("archive_project_conversations", { projectId });
+export async function archiveProjectConversations(projectId: string): Promise<number> {
+  const conversations = (await listConversations()).filter(
+    (conversation) => conversation.projectId === projectId,
+  );
+  await Promise.all(
+    conversations.map((conversation) =>
+      codexWorkspaceRequest("thread/archive", { threadId: conversation.id }),
+    ),
+  );
+  return conversations.length;
 }
 
 /** Normalize command rejections (Rust returns plain strings). */

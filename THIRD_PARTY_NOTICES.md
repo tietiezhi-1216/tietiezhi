@@ -442,3 +442,14 @@ R36 的结构化日志、指标、Doctor、Feedback、Attestation 和 reverse-re
 - `codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`
 
 本地实现位于 `crates/agent-observability`、`crates/agent-hooks` 和桌面 App Server 宿主。OpenAI 专有 Sentry、Statsig 和 Attestation 服务未被复制；上传与 OTLP 映射到 Tietiezhi 可配置端点。不调用、链接或分发上游 Codex 二进制。
+
+R38 的 App Server 初始化、连接能力协商和外部 Agent 配置迁移行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/app-server/src/message_processor.rs`
+- `codex-rs/app-server/src/request_processors/initialize_processor.rs`
+- `codex-rs/app-server/src/external_agent_migration`
+- `codex-rs/app-server/src/outgoing_message.rs`
+- `codex-rs/app-server-protocol/src/protocol/common.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2`
+
+本地实现位于 `desktop/src-tauri/src/commands/codex.rs`、`crates/agent-core` 和 `crates/agent-state`。外部 Claude/Cursor 数据只按固定协议转换为本地 Codex 配置与 canonical rollout，不运行、链接或分发外部 Agent 或上游 Codex 二进制。

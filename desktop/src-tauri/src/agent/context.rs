@@ -40,17 +40,6 @@ pub enum ContextAction {
     Disabled,
 }
 
-impl ContextAction {
-    pub fn from_wire(value: Option<&str>) -> Result<Self, String> {
-        match value.unwrap_or("").trim().to_ascii_lowercase().as_str() {
-            "" | "chat" => Ok(Self::Chat),
-            "compact" => Ok(Self::Compact),
-            "inspect" => Ok(Self::Inspect),
-            value => Err(format!("未知的上下文操作：{value}")),
-        }
-    }
-}
-
 pub fn compaction_threshold(context_window: u64) -> u64 {
     context_window.saturating_mul(COMPACTION_THRESHOLD_PERCENT) / 100
 }

@@ -47,4 +47,4 @@ cargo clippy --manifest-path crates/agent-stability/Cargo.toml --all-targets -- 
 cargo test --manifest-path crates/agent-exec/Cargo.toml
 ```
 
-R38 删除旧 Agent Runtime 后，稳定性测试只允许通过新 Thread/Turn/Item、Responses、Tool Runtime 和 Rollout 路径运行。
+R38 已删除旧 Workspace Agent Runtime；稳定性测试只允许通过新 Thread/Turn/Item、Responses、Tool Runtime 和 Rollout 路径运行。

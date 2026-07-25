@@ -37,7 +37,7 @@ export interface CodexThreadTimeline {
     steps: TurnPlanStep[];
   };
   notices: CodexTimelineNotice[];
-  pendingRequestIds: string[];
+  pendingRequests: CodexV2ServerRequest[];
   realtime?: {
     active: boolean;
     version?: string;
@@ -60,7 +60,7 @@ export interface CodexTimelineState {
 const emptyTimeline = (): CodexThreadTimeline => ({
   entries: [],
   notices: [],
-  pendingRequestIds: [],
+  pendingRequests: [],
 });
 
 function requestId(value: string | number): string {
@@ -282,8 +282,9 @@ export function reduceCodexTimeline(
     case "serverRequest/resolved":
       next = {
         ...timeline,
-        pendingRequestIds: timeline.pendingRequestIds.filter(
-          (id) => id !== requestId(notification.params.requestId),
+        pendingRequests: timeline.pendingRequests.filter(
+          (request) =>
+            requestId(request.id) !== requestId(notification.params.requestId),
         ),
       };
       break;
@@ -433,9 +434,13 @@ export const useCodexTimelineStore = create<CodexTimelineState>((set) => ({
           ...state.threads,
           [threadId]: {
             ...timeline,
-            pendingRequestIds: timeline.pendingRequestIds.includes(id)
-              ? timeline.pendingRequestIds
-              : [...timeline.pendingRequestIds, id],
+            pendingRequests: timeline.pendingRequests.some(
+              (candidate) => requestId(candidate.id) === id,
+            )
+              ? timeline.pendingRequests.map((candidate) =>
+                  requestId(candidate.id) === id ? request : candidate,
+                )
+              : [...timeline.pendingRequests, request],
           },
         },
       };

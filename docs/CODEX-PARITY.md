@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 9 |
+| 待实现 | 0 |
 | 实现中 | 0 |
-| 已实现 | 151 |
+| 已实现 | 160 |
 | 服务映射 | 10 |
 
 ## 阶段进度
@@ -41,9 +41,9 @@
 | R0 | 基线治理 | 已完成 | shared/codex/v2/upstream-baseline.json；desktop/scripts/check-codex-parity.mjs；pnpm check:codex-parity；pnpm typecheck；pnpm build；cargo test（130 项） | 官方 V2 方法仍全部待实现；R1 起逐项推进 |
 | R1 | 旧运行时止血 | 已完成 | desktop/src-tauri/src/permission/mod.rs；desktop/src-tauri/src/agent/loop_.rs；commands::conversations 旧决策迁移测试；scripts/check-permission-prompt.mjs；pnpm test:permission-ui；pnpm typecheck；pnpm build；cargo test | 尚未具备 Codex OS 沙箱、ExecPolicy 和独立 Approval 状态机；这些能力由 R14-R18 实现 |
 | R2 | 协议层 | 已完成 | crates/agent-protocol；shared/codex/v2/schema；shared/codex/v2/typescript；desktop/scripts/check-codex-schema.mjs；Rust 双向 fixture 与反向 Schema 测试；pnpm test:codex-protocol-ts | 本阶段只实现协议类型与生成门禁，170 个方法的运行时行为仍由 R3-R39 逐项实现 |
-| R3 | 事件模型 | 已完成 | crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build | Thread 生命周期通知已由 R5 接入正式 App Server 路由；Turn/Item 通知由 R6 接管，LegacyChatEvent 在 R38 删除 |
-| R4 | 持久化 | 已完成 | crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build | 新 Runtime 已由 R5 写入 canonical session_meta/response_item；旧会话仍写 legacy_checkpoint，R6 接管 Turn/Item，task.json 镜像在 R38 删除 |
-| R5 | Thread 生命周期 | 已完成 | crates/agent-core；commands/codex.rs；docs/CODEX-THREADS.md；SQLite v2→v3 迁移与 canonical session_meta 索引重建测试；12 项 ThreadManager 测试；137 项桌面 Rust 测试；pnpm typecheck；pnpm build | Turn 列表暂存于 canonical_json 查询缓存；R6 将以 rollout 的 Turn/Item 事件重建并接入真实执行状态机，旧会话适配层在 R38 删除 |
+| R3 | 事件模型 | 已完成 | crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build | LegacyChatEvent 仅用于 UI 正文投影、旧记录和独立 Companion；Workspace 权威事件全部为 App Server V2。 |
+| R4 | 持久化 | 已完成 | crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build | canonical rollout 是权威记录；task.json/legacy_checkpoint 只保留兼容与回滚，不参与 Thread/Turn 恢复。 |
+| R5 | Thread 生命周期 | 已完成 | crates/agent-core；commands/codex.rs；docs/CODEX-THREADS.md；SQLite v2→v3 迁移与 canonical session_meta 索引重建测试；12 项 ThreadManager 测试；137 项桌面 Rust 测试；pnpm typecheck；pnpm build | Thread 与 Turn 均从 canonical rollout 重建；旧任务已原地迁移并进入同一生命周期。 |
 | R6 | Turn 生命周期 | 已完成 | crates/agent-core；crates/agent-state canonical rollout ordinal 投影；docs/CODEX-TURNS.md；19 项 TurnManager 测试；崩溃中断、分叉顺序与 R5 rollout 迁移测试；cargo clippy -D warnings；pnpm 协议/迁移/typecheck/build 门禁 | R7 尚未接入 Responses API、模型增量 Item、usage、reasoning summary 和重试；当前 exactly-once 输入队列只提供执行器边界 |
 | R7 | Responses 模型层 | 已完成 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md | Gateway Responses 能力探测、在线模型目录、账号额度和 rate-limit 服务映射进入 R8；工具调用执行进入 R10-R13。 |
 | R8 | Gateway 对齐 | 已完成 | crates/agent-account 账号与反向请求测试；crates/agent-model Responses 探测与在线目录测试；desktop Gateway/Provider/额度适配；Gateway be473f1 路由与 Discovery 测试；docs/CODEX-GATEWAY.md | Gateway 不提供 Token 日聚合、Workspace Message、reset-credit 和加额邮件时使用协议显式的空能力、noCredit 或 Invalid Request；上下文压缩与工具执行分别进入 R9-R13。 |
@@ -66,17 +66,17 @@
 | R25 | Plan 与用户输入 | 已完成 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md | The unified Item timeline consumes these notifications in R31; the current reverse-request component is SSR-verified. |
 | R26 | Collaboration | 已完成 | crates/agent-collab; crates/agent-core/src/lib.rs CollaborationIdentity and response_history_tail; desktop/src-tauri/src/commands/codex.rs DesktopCollaborationHost and protocol-exact Item projection; docs/CODEX-COLLABORATION.md | Subagents inherit the selected execution environment; Git Worktree isolation is applied by R29 rather than duplicating directories in the collaboration control plane. |
 | R27 | Guardian 与 Review | 已完成 | crates/agent-review; crates/agent-core review lifecycle and guardian audit rollout; desktop Responses executor and approval integration; docs/CODEX-REVIEW-GUARDIAN.md | Guardian is an untrusted model reviewer and never expands Sandbox or durable approval scope; failures and timeouts fail closed. Review shares the selected environment but disables Web, image, Goal/Plan and collaboration tools. |
-| R28 | Memory | 已完成 | crates/agent-memory Chronicle 作业/文件/引用/工具/迁移测试；crates/agent-core Thread memory mode、污染恢复与 memoryCitation；desktop Responses、额度阈值和实验请求接线；docs/CODEX-MEMORY.md | Chronicle 仅使用当前 Responses Provider；实验 Memory 方法未写入固定 stable Schema，R38 前继续保留协议兼容测试。 |
+| R28 | Memory | 已完成 | crates/agent-memory Chronicle 作业/文件/引用/工具/迁移测试；crates/agent-core Thread memory mode、污染恢复与 memoryCitation；desktop Responses、额度阈值和实验请求接线；docs/CODEX-MEMORY.md | Chronicle 仅使用当前 Responses Provider；实验 Memory 方法继续由显式协议兼容测试约束，不声明为固定 stable 方法。 |
 | R29 | Git 与 Worktree | 已完成 | crates/agent-git detached Worktree、.worktreeinclude、Snapshot/Restore/Handoff、清理与旧工作区接管测试；desktop 共享环境命令、提示词和 SSR/migration UI 门禁；docs/CODEX-GIT-WORKTREES.md | Local 环境会直接修改用户项目，UI 与审批必须持续明确展示；Windows worktree 与长路径仍由跨平台 CI 和 R37 soak 覆盖。 |
 | R30 | 集成终端 | 已完成 | R13 crates/agent-exec PTY/ConPTY、stdin、resize、poll 和进程树测试；desktop terminal Thread 会话命令、多标签文本终端、任务删除清理与 SSR 门禁；docs/CODEX-INTEGRATED-TERMINAL.md | 集成终端使用安全的文本 VT 投影而非完整 GPU 终端模拟器；复杂全屏 TUI 的像素级呈现留给外部终端，stdin/resize/进程语义已完整。 |
-| R31 | Desktop 时间线 | 已完成 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build | Legacy ChatItem 时间线仅在 R38 迁移完成后删除；文件能力不替代模型工具的 Approval 与 Sandbox。 |
+| R31 | Desktop 时间线 | 已完成 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build | 旧消息组件只展示正文和历史记录；运行操作只使用强类型 Item，文件能力不替代 Approval 与 Sandbox。 |
 | R32 | Diff 与 Git UI | 已完成 | crates/agent-git Diff/Stage/Unstage/Discard/Commit/Push/PR；desktop WorkspaceGitPanel；7 项 Git 测试；pnpm test:workspace-git-ui/typecheck/build；docs/CODEX-DIFF-GIT-UI.md | PR 链接当前仅支持 GitHub remote；Push 永不 force，Discard 仅操作显式选择路径。 |
 | R33 | Apps 与连接器 | 已完成 | crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-apps-panel.tsx; docs/CODEX-APPS.md | 插件 App 工具只有在其 MCP/宿主运行时存在时才可调用；目录不会把 synthetic 或隐藏工具误报为 callable。 |
 | R34 | Automations | 已完成 | desktop/src-tauri/src/automation/runtime.rs; desktop/src-tauri/src/automation/store.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/automations/automation-list.tsx; docs/CODEX-AUTOMATIONS.md | 无人值守运行固定 approvalPolicy=never；交互审批节点禁止发布，必须审批的副作用会失败。指定项目必须是 Git 工作树，每个 Run 使用独立 Worktree。 |
 | R35 | 远程与实时 | 已完成 | crates/agent-remote; crates/agent-realtime; desktop Device Fabric remote bridge; App Server remote/realtime dispatch; Remote & Realtime UI; docs/CODEX-REMOTE-REALTIME.md | Remote transport uses Tietiezhi Device Fabric because the upstream OpenAI remote service is proprietary; protocol lifecycle, authorization, routing and notifications remain source-compatible. Realtime availability depends on the selected provider exposing the pinned WebSocket/WebRTC endpoints. |
 | R36 | 运维能力 | 已完成 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md | OpenAI proprietary Sentry, Statsig and attestation issuers are service-mapped rather than copied; telemetry and feedback networking remain opt-in through explicit Tietiezhi endpoints. |
 | R37 | 稳定性工程 | 已完成 | crates/agent-stability; crates/agent-exec/src/manager.rs; .github/workflows/codex-soak.yml; docs/CODEX-STABILITY.md | 定时 Soak 由 GitHub macOS/Windows runner 持续验证，常规 CI 使用有界快速矩阵。 |
-| R38 | 迁移切换 | 待开始 |  |  |
+| R38 | 迁移切换 | 已完成 | desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md | 旧 task.json/legacy_checkpoint 保留为兼容镜像与回滚锚点；LegacyChatEvent 只用于 UI 投影、旧持久记录和独立铁铁汁 Companion，不是 Workspace 执行协议。 |
 | R39 | 正式发布 | 待开始 |  |  |
 
 ## Client Requests
@@ -106,9 +106,9 @@
 | `configRequirements/read` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
 | `experimentalFeature/enablement/set` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
 | `experimentalFeature/list` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
-| `externalAgentConfig/detect` | 待实现 | R38 |  |
-| `externalAgentConfig/import` | 待实现 | R38 |  |
-| `externalAgentConfig/import/readHistories` | 待实现 | R38 |  |
+| `externalAgentConfig/detect` | 已实现 | R38 | 检测 Claude/Cursor 的 AGENTS、配置、Skills、Subagents、Hooks、Commands、MCP、Memory 和 Sessions。 |
+| `externalAgentConfig/import` | 已实现 | R38 | 异步原子导入，路径限制在检测根内，Sessions 转换为 canonical Thread。 |
+| `externalAgentConfig/import/readHistories` | 已实现 | R38 | 从原子历史文件读取已完成导入；不返回未经安装的 connector。 |
 | `feedback/upload` | 服务映射 | R36 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md |
 | `fs/copy` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `fs/createDirectory` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
@@ -121,7 +121,7 @@
 | `fs/writeFile` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `fuzzyFileSearch` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `hooks/list` | 已实现 | R36 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md |
-| `initialize` | 待实现 | R2 |  |
+| `initialize` | 已实现 | R2 | 每个桌面连接先完成 App Server V2 initialize，协商 experimentalApi、attestation、MCP form elicitation 与通知 opt-out。 |
 | `marketplace/add` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
 | `marketplace/remove` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
 | `marketplace/upgrade` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
@@ -177,7 +177,7 @@
 
 | 方法 | 状态 | 目标阶段 | 证据或备注 |
 | --- | --- | --- | --- |
-| `initialized` | 待实现 | R2 |  |
+| `initialized` | 已实现 | R2 | 客户端显式发送 initialized 后才接收协商范围内的通知和反向请求。 |
 
 ## Server Requests
 
@@ -204,10 +204,10 @@
 | `app/list/updated` | 已实现 | R33 | 目录刷新及插件安装/卸载后发布完整 AppInfo 快照。 |
 | `command/exec/outputDelta` | 已实现 | R13 | desktop wait_streamed_command_exec；V2 notification validation |
 | `configWarning` | 已实现 | R21 | crates/agent-config 配置层/来源/CAS/Requirements 测试；desktop V2 生成类型验证；docs/CODEX-CONFIG.md |
-| `deprecationNotice` | 待实现 | R3 |  |
+| `deprecationNotice` | 已实现 | R3 | 初始化后明确通知旧 Workspace Chat Completions Agent 已移除。 |
 | `error` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
-| `externalAgentConfig/import/completed` | 待实现 | R38 |  |
-| `externalAgentConfig/import/progress` | 待实现 | R38 |  |
+| `externalAgentConfig/import/completed` | 已实现 | R38 | 完成通知和原子历史包含逐项成功/失败结果。 |
+| `externalAgentConfig/import/progress` | 已实现 | R38 | 每个迁移项发送经固定 V2 Schema 校验的进度通知。 |
 | `fs/changed` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `fuzzyFileSearch/sessionCompleted` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `fuzzyFileSearch/sessionUpdated` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
@@ -265,7 +265,7 @@
 | `turn/moderationMetadata` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `turn/plan/updated` | 已实现 | R25 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md |
 | `turn/started` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
-| `warning` | 待实现 | R3 |  |
+| `warning` | 已实现 | R3 | 初始化后按连接能力发送 Responses 渠道缺失等结构化警告。 |
 | `windows/worldWritableWarning` | 已实现 | R16 | 源码构建 self-reentry；真实 Windows runner 执行沙箱、ConPTY 和桌面构建。 |
 | `windowsSandbox/setupCompleted` | 已实现 | R16 | 源码构建 self-reentry；真实 Windows runner 执行沙箱、ConPTY 和桌面构建。 |
 

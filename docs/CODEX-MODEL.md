@@ -4,7 +4,7 @@
 
 R7 在 `crates/agent-model`、`crates/agent-core` 和 Tauri `commands/codex.rs` 内源码级实现固定基线 `rust-v0.145.0` 的 Responses HTTP/SSE 模型路径，不运行、嵌入或分发上游 `codex` 二进制。
 
-新 Runtime 的 Agent 请求只发送到供应商 `/v1/responses`。旧 Runtime 在 R38 删除前仍可为普通聊天和迁移期旧任务调用 `/v1/chat/completions`，但不参与 `codex_v2_request` 的 Thread/Turn 执行。
+Workspace Agent 请求只发送到供应商 `/v1/responses`，不会回退 `/v1/chat/completions`。Chat Completions 仅服务独立铁铁汁 Companion、语音润色等非 Workspace 功能，不参与 `codex_v2_request` 的 Thread/Turn 执行。
 
 ## Responses 请求
 

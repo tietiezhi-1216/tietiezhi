@@ -192,14 +192,6 @@ impl ModelInfo {
         self.overrides.kind.unwrap_or(self.kind)
     }
 
-    pub fn accepts_modality(&self, modality: ModelModality) -> bool {
-        self.overrides
-            .input_modalities
-            .as_ref()
-            .unwrap_or(&self.input_modalities)
-            .contains(&modality)
-    }
-
     pub fn has_capability(&self, capability: ModelCapability) -> bool {
         self.overrides
             .capabilities

@@ -61,10 +61,9 @@ SQLite v3 的 `canonical_json` 是查询缓存。状态库损坏、丢失或重�
 
 ## 迁移兼容
 
-- 旧会话命令只展示 `canonical_json` 为空的 R4 任务。
-- App Server V2 可以读取旧任务的索引元数据，但不会改写旧 `task.json`。
-- 新 Runtime Thread 不进入旧会话列表，避免旧 UI 尝试把 canonical rollout 当作 `legacy_checkpoint`。
-- 两套入口在 R31 UI 切换前并存，R38 删除旧 Agent 循环与兼容快照。
+- canonical Thread 与已迁移旧任务进入同一会话列表；前端通过 Thread API 恢复，兼容 `task.json` 只提供正文与降级回滚锚点。
+- App Server V2 原地接管旧任务 ID、项目和工作区，不复制目录。
+- R38 已删除旧 Workspace Agent 循环；归档、恢复、删除与执行均走 Thread 生命周期。
 
 ## 验证
 

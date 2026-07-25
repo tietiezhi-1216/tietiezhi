@@ -4,6 +4,8 @@ import {
   archiveProjectConversations,
   chatCancel,
   chatStream,
+  codexResumeWorkspaceThread,
+  codexStartWorkspaceThread,
   deleteConversation,
   errorMessage,
   generateConversationTitle,
@@ -24,6 +26,10 @@ import type {
   StoredMessage,
 } from "@/lib/api";
 import { useProjectStore } from "@/stores/projects";
+import {
+  installCodexTimelineListeners,
+  useCodexTimelineStore,
+} from "@/stores/codex-timeline";
 import type { TaskMode } from "@/lib/task-mode";
 import { notifyActionableGatewayError } from "@/lib/gateway-feedback";
 
@@ -828,6 +834,18 @@ export const useChatStore = create<ChatState>()((set, get) => {
           streamRetry: null,
           streamActivity: null,
         });
+        void installCodexTimelineListeners();
+        void codexResumeWorkspaceThread(id)
+          .then((resumed) => {
+            for (const turn of resumed.thread.turns) {
+              useCodexTimelineStore
+                .getState()
+                .hydrate(id, turn.id, turn.items);
+            }
+          })
+          .catch((error: unknown) => {
+            console.error("恢复 Codex Thread 失败：", errorMessage(error));
+          });
         if (conv.projectId) void useProjectStore.getState().markUsed(conv.projectId);
       } catch (err) {
         console.error("加载会话失败：", errorMessage(err));
@@ -942,9 +960,33 @@ export const useChatStore = create<ChatState>()((set, get) => {
       let convId = get().activeId;
       let title: string;
       if (convId == null) {
-        convId = crypto.randomUUID();
+        try {
+          const started = await codexStartWorkspaceThread(
+            providerId,
+            model,
+            get().activeAgentId || undefined,
+          );
+          convId = started.thread.id;
+        } catch (error) {
+          set((state) => ({
+            items: [
+              ...state.items,
+              {
+                id: nextId++,
+                kind: "error",
+                summary: "无法创建 Codex Thread",
+                detail: errorMessage(error),
+                retryable: true,
+                retries: 0,
+                createdAt: Date.now(),
+              },
+            ],
+          }));
+          return;
+        }
         title = DEFAULT_CONVERSATION_TITLE;
         set({ activeId: convId });
+        void installCodexTimelineListeners();
       } else {
         title =
           get().conversations.find((c) => c.id === convId)?.title ??
@@ -973,7 +1015,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
       });
 
       // Persist the user turn right away so it survives crashes mid-stream.
-      persist(convId, title, persistConversationItems(get().items));
+      await persist(convId, title, persistConversationItems(get().items));
 
       // The item currently receiving text deltas. A tool call closes it so
       // the next delta opens a fresh message (text/tool interleaving).

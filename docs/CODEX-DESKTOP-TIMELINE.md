@@ -8,7 +8,7 @@ R31 将桌面端从通用工具卡迁移到 App Server V2 的强类型 `ThreadIt
 - Turn、Thread、Diff、Plan、警告和反向请求等待状态分别保存，不依赖展示文本推断状态。
 - 18 类 `ThreadItem` 都有明确渲染分支：消息、推理、计划、命令、文件、MCP、动态工具、协作、Web、图片、Review、Hook 和压缩。
 - 重启读取的 Turn Items 可通过同一 Store hydrate，实时通知和历史记录不会形成两套渲染模型。
-- Legacy `ChatItem` 在 R38 完成任务迁移前继续只读共存；新 Runtime 不再把强类型 Item 压成旧工具卡。
+- Legacy `ChatItem` 只保留正文消息的现有展示与旧记录兼容；命令、文件、MCP、Plan、审批和其它运行行为只渲染强类型 Item，不再压成旧工具卡。
 
 ## 桌面文件服务
 

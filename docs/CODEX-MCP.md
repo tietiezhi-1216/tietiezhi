@@ -48,7 +48,7 @@ R19 按固定上游 `rust-v0.145.0` 在 Tauri Rust 进程内实现 MCP 客户端
 - 模型路径和直接 V2 调用都生成 `mcpToolCall` Item。
 - 开始、完成、失败、参数、富结果、错误和耗时写入 canonical rollout。
 - Thread 重启恢复和 Fork 保留图片、音频、结构化内容与 `_meta`。
-- 旧 Chat 路径暂时通过文本兼容包装器读取同一 Runtime，R38 删除旧路径。
+- Workspace 只通过同一 Responses Tool Runtime 调用 MCP；正文 UI 的兼容投影不参与 MCP 执行或持久化。
 
 ## 验证
 

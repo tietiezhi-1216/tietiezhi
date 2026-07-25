@@ -6,8 +6,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
 
-use super::models::{classify, ModelInfo, ModelKind, ModelModality, ReasoningEffort};
-use super::workspace::TaskMode;
+use super::models::{classify, ModelInfo, ModelKind, ReasoningEffort};
 use super::{api_url, providers};
 use crate::agent::context::ContextAction;
 use crate::agent::failure::ChatFailure;
@@ -32,16 +31,6 @@ fn ensure_chat_model(model: &str, model_info: Option<&ModelInfo>) -> Result<(), 
 pub struct ChatMessage {
     pub role: String,
     pub content: serde_json::Value,
-}
-
-fn messages_contain_images(messages: &[ChatMessage]) -> bool {
-    messages.iter().any(|message| {
-        message.content.as_array().is_some_and(|parts| {
-            parts.iter().any(|part| {
-                part.get("type").and_then(serde_json::Value::as_str) == Some("image_url")
-            })
-        })
-    })
 }
 
 /// Incremental SSE line splitter: feed raw bytes, get complete lines back.
@@ -91,146 +80,6 @@ struct StreamDelta {
     content: Option<String>,
 }
 
-/// Stream one OpenAI-compatible chat completion against the given provider.
-/// Connection details are resolved Rust-side from the provider id. Deltas are
-/// pushed through `on_event`; the command itself only fails on argument-level
-/// problems, so the frontend has a single place (the channel) to observe the
-/// outcome.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn chat_stream(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    request_id: u32,
-    provider_id: String,
-    model: String,
-    messages: Vec<ChatMessage>,
-    conversation_id: Option<String>,
-    agent_id: Option<String>,
-    project_id: Option<String>,
-    task_mode: Option<TaskMode>,
-    context_action: Option<String>,
-    on_event: Channel<ScopedChatEvent>,
-) -> Result<(), String> {
-    let thread_id = conversation_id
-        .clone()
-        .filter(|id| !id.trim().is_empty())
-        .unwrap_or_else(|| format!("chat_{request_id}"));
-    let rollout = conversation_id
-        .as_deref()
-        .filter(|id| !id.trim().is_empty())
-        .map(|id| super::conversations::event_rollout_appender(&app, id))
-        .transpose()?;
-    let on_event = match rollout {
-        Some(rollout) => ChatEventEmitter::with_rollout(on_event, thread_id, rollout)?,
-        None => ChatEventEmitter::new(on_event, thread_id)?,
-    };
-    let context_action = ContextAction::from_wire(context_action.as_deref())?;
-    let cancel = CancellationToken::new();
-    if let Some(previous) = state
-        .chat_cancels
-        .lock()
-        .unwrap()
-        .insert(request_id, cancel.clone())
-    {
-        previous.cancel();
-    }
-
-    // An agent may pin both its provider and model. Legacy agent profiles only
-    // stored the model, in which case the chat's current provider remains in use.
-    let (provider_id, model) = match super::agents::model_override(&app, agent_id.as_deref()) {
-        Some((agent_provider_id, agent_model)) if !agent_provider_id.trim().is_empty() => {
-            (agent_provider_id, agent_model)
-        }
-        Some((_, agent_model)) => (provider_id, agent_model),
-        None => (provider_id, model),
-    };
-
-    let result: Result<bool, ChatFailure> = match providers::resolve(&app, &provider_id) {
-        Ok(resolved) => {
-            let reasoning_effort =
-                super::agents::reasoning_effort_override(&app, agent_id.as_deref())
-                    .or_else(|| {
-                        super::settings::read_settings(&app)
-                            .ok()
-                            .map(|settings| settings.chat_reasoning_effort)
-                    })
-                    .map(|effort| ReasoningEffort::from_setting(&effort))
-                    .unwrap_or(ReasoningEffort::Auto);
-            match super::agents::resolve_env(
-                &app,
-                agent_id.as_deref(),
-                project_id.as_deref(),
-                conversation_id.as_deref(),
-                task_mode.unwrap_or_default(),
-            ) {
-                Ok(env) => {
-                    let model_info = resolved
-                        .models
-                        .iter()
-                        .find(|candidate| candidate.id == model);
-                    match ensure_chat_model(&model, model_info) {
-                        Ok(())
-                            if context_action == ContextAction::Chat
-                                && messages_contain_images(&messages)
-                                && !model_info.is_some_and(|info| {
-                                    info.accepts_modality(ModelModality::Image)
-                                }) =>
-                        {
-                            Err(ChatFailure::message(
-                                "当前模型未声明图片输入能力，请更换模型或在模型设置中开启",
-                            ))
-                        }
-                        Ok(()) => {
-                            let _ = on_event.send(ChatEvent::Started {
-                                model: model.clone(),
-                            });
-                            crate::agent::loop_::run_agent_loop(
-                                &app,
-                                &state.http,
-                                &state.permissions,
-                                &state.mcp,
-                                request_id,
-                                &resolved.base_url,
-                                resolved.key.as_deref(),
-                                &model,
-                                model_info,
-                                reasoning_effort,
-                                messages,
-                                env,
-                                context_action,
-                                &cancel,
-                                &on_event,
-                            )
-                            .await
-                        }
-                        Err(e) => Err(ChatFailure::message(e)),
-                    }
-                }
-                Err(e) => Err(ChatFailure::message(e)),
-            }
-        }
-        Err(e) => Err(ChatFailure::message(e)),
-    };
-
-    state.chat_cancels.lock().unwrap().remove(&request_id);
-    state.permissions.end_session(request_id);
-
-    let final_event = match result {
-        Ok(cancelled) => ChatEvent::Done { cancelled },
-        Err(failure) => ChatEvent::Error {
-            message: failure.summary,
-            detail: failure.detail,
-            code: failure.code,
-            status: failure.status,
-            retryable: failure.retryable,
-            retries: failure.retries,
-        },
-    };
-    let _ = on_event.send(final_event);
-    Ok(())
-}
-
 /// The single Tietiezhi companion timeline. Its dedicated control-center
 /// configuration resolves the Home, memory, Skills, MCP and safe tools.
 #[tauri::command]
@@ -272,7 +121,7 @@ pub async fn tietiezhi_stream(
         let _ = on_event.send(ChatEvent::Started {
             model: model.clone(),
         });
-        crate::agent::loop_::run_agent_loop(
+        crate::agent::loop_::run_companion_loop(
             &app,
             &state.http,
             &state.permissions,
@@ -528,22 +377,6 @@ mod tests {
         let error = ensure_chat_model("sensenova-u1-fast", None).unwrap_err();
         assert!(error.contains("不支持聊天接口"));
         assert!(ensure_chat_model("deepseek-v4-flash", None).is_ok());
-    }
-
-    #[test]
-    fn detects_openai_image_content_parts() {
-        let messages = vec![ChatMessage {
-            role: "user".into(),
-            content: json!([
-                { "type": "text", "text": "看一下" },
-                { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } }
-            ]),
-        }];
-        assert!(messages_contain_images(&messages));
-        assert!(!messages_contain_images(&[ChatMessage {
-            role: "user".into(),
-            content: "只是文字".into(),
-        }]));
     }
 
     /// End-to-end: HTTP request → SSE body → parsed deltas, against a real

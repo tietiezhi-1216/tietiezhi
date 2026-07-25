@@ -64,6 +64,7 @@
 | Rollout 持久化 | `codex-rs/rollout`、`thread-store`、`state` | `crates/agent-state`、`desktop/src-tauri/src/commands/conversations.rs` | R4 |
 | 运维与追踪 | `codex-rs/otel`、`feedback`、Doctor 行为 | `crates/agent-observability` | R36 |
 | 稳定性、故障注入与 Soak | `codex-rs/core/tests`、`codex-api/src/sse`、`rollout`、`rmcp-client`、`utils/pty` | `crates/agent-stability`、`.github/workflows/codex-soak.yml` | R37 |
+| 初始化、外部 Agent 导入与迁移切换 | `app-server/src/message_processor.rs`、`app-server/src/external_agent_migration`、`app-server/src/request_processors/initialize_processor.rs`、`app-server-protocol/src/protocol/v2` | `desktop/src-tauri/src/commands/codex.rs`、`crates/agent-core`、`crates/agent-state`、`desktop/src/lib/api.ts`、`desktop/src/stores/chat.ts` | R38 |
 
 ## 升级流程
 
@@ -137,7 +138,7 @@ R29 已增加 `crates/agent-git`，将 Work/Code 收敛为同一任务的工作�
 
 R30 已在 `crates/agent-exec` 上增加 Thread 多会话集成终端，用户终端与 App Server/模型命令共享 PTY/ConPTY、stdin、resize、输出缓冲和进程树清理；桌面 UI 提供多标签和持续轮询。详细行为见 `docs/CODEX-INTEGRATED-TERMINAL.md`。
 
-R31 已实现 App Server V2 桌面文件服务和强类型 `ThreadItem` 时间线。Item 开始、增量和完成事件按稳定 ID 合并，18 类 Item、Turn Plan/Diff、警告和 needs-input 状态使用正式协议渲染；Legacy 时间线只保留到 R38 迁移完成。详细行为见 `docs/CODEX-DESKTOP-TIMELINE.md`。
+R31 已实现 App Server V2 桌面文件服务和强类型 `ThreadItem` 时间线。Item 开始、增量和完成事件按稳定 ID 合并，18 类 Item、Turn Plan/Diff、警告和 needs-input 状态使用正式协议渲染；旧消息组件只保留正文展示和历史兼容，不承载运行时操作。详细行为见 `docs/CODEX-DESKTOP-TIMELINE.md`。
 
 R32 已在唯一 Local/Worktree 环境上实现文件树、逐文件 Diff、Hunk 审查意见、精确 Stage/Unstage/Discard、Commit、非强推 Push 和 GitHub PR 链接。详细行为见 `docs/CODEX-DIFF-GIT-UI.md`。
 
@@ -148,3 +149,5 @@ R34 已将 Automations 接到相同 Thread、Turn、Responses、工具和 Rollou
 R35 已源码实现 Remote Control 生命周期、配对/撤销、精确 Thread 授权、远程 steer/interrupt/approval 和请求幂等，并将专有远程服务映射到 Tietiezhi 自有 Device Fabric。Realtime 直接实现固定版 Codex 的 WebSocket/WebRTC、PCM16、转写/音频/Item 通知及无重放断线恢复，详细行为见 `docs/CODEX-REMOTE-REALTIME.md`。
 
 R17 已补齐 Windows elevated Offline/Online identity、DPAPI、Firewall 代理端口补集规则和持久 WFP filters；真实 Windows runner 验证代理唯一出口。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+
+R38 已完成 App Server `initialize`/`initialized` 协商、Claude/Cursor 外部配置迁移、旧任务原地 canonical 导入与 Workspace 执行切换。Work/Code 只通过 Thread、Turn、Item 和 Responses Runtime 执行；旧 `chat_stream` 与 `run_agent_loop` 已删除，独立铁铁汁 Companion 的兼容流不进入 Workspace。详细迁移、回滚和安全边界见 `docs/CODEX-MIGRATION.md`。

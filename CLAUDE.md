@@ -63,7 +63,7 @@ pnpm tauri icon ../assets/brand/tietiezhi-mark.png   # 重新生成全套图标
 
 - `src/main.rs` 只是入口；逻辑在 `src/lib.rs`（`run()`）。
 - commands 按域拆分在 `src/commands/`；密钥存取封装在 `src/secrets.rs`（keyring，service = `com.tietiezhi.tietiezhi`）。
-- **Agent 体系**（2026-07-16）：`src/agent/`（旧兼容环路、事件与提示词）与 `crates/agent-*`（Codex Runtime 源码级实现）。同一任务只有一个 Local 或 Worktree 文件环境；Work / Code 只是共享 Thread、上下文和文件的不同工具/交付方式，Work 不暴露通用 `bash`，Code 保留工程工具面。Git 项目默认创建 detached Worktree，支持 `.worktreeinclude`、私有 Snapshot、Restore 和 Handoff；Local 直接使用项目目录。旧双空间会原地接管，不再复制交接文件。工具在模型请求和执行路由中双重校验。注意 rmcp 依赖 reqwest 0.13，与主工程 0.12 并存（Cargo.toml 里别名 `reqwest13`）。
+- **Agent 体系**（2026-07-25）：Workspace 的 Work / Code 已完全切换到 `crates/agent-*` Codex Runtime，通过 App Server V2 的 Thread、Turn、Item 与 Responses API 执行。`src/agent/` 只保留独立铁铁汁 Companion 和语音润色所需的兼容流，不得重新接回 Workspace。同一任务只有一个 Local 或 Worktree 文件环境；Work / Code 只是共享 Thread、上下文和文件的不同工具/交付方式。Git 项目默认创建 detached Worktree，支持 `.worktreeinclude`、私有 Snapshot、Restore 和 Handoff；Local 直接使用项目目录。旧双空间会原地接管，不再复制交接文件。工具在模型请求和执行路由中双重校验。注意 rmcp 依赖 reqwest 0.13，与主工程 0.12 并存（Cargo.toml 里别名 `reqwest13`）。
 - **铁铁汁控制中心**（2026-07-25）：专属配置存 `app_config_dir()/tietiezhi.json`；独立 Home 位于 `app_data_dir()/tietiezhi/`，包含 `SOUL.md`、`USER.md`、`MEMORY.md`、`memory/`、`notes/`、`uploads/`、`secrets/` 和系统管理的 `sessions/`。主时间线由 Rust 持久化到 `sessions/main.json`，前端会一次性迁移旧 `localStorage`。铁铁汁对话只使用显式工具白名单（不提供 Bash），Skills / MCP 必须同时全局启用且在控制中心分配；Home 文件命令禁止访问 `sessions/`、路径穿越与软链接越界。开启长期记忆时三个核心 Markdown 文件会进入模型上下文。`secrets/` 仅保存自动生成的 Markdown 元数据和 `${secret:name}` 引用，真实值使用 `secrets.rs` 后端；Rust 只在 MCP env/HTTP headers 或设备调用参数执行前解析引用，文件工具不得修改密钥说明，工具结果返回前必须替换已知真实值。
 - 首次启动不预置供应商、baseURL 或 API Key；所有模型服务均由用户在设置中添加。请求类命令（聊天/模型列表）在 Rust 侧从 settings/keyring 解析连接信息，前端不回传连接信息。
 - **模型能力**：`shared/model-registry/models.json` 是内置兜底注册表；运行时按「用户覆盖 > 渠道 `/v1/models` 扩展元数据 > 内置注册表 > 名称推断」解析输入/输出模态、工具调用和思考等级。用户覆盖与自动识别分开持久化，刷新模型列表不得清除。MCP 通过原生 function calling 暴露，不支持或能力未知的模型以纯对话运行。Reasoning Effort 在 UI 中统一使用英文值（Auto / Low / Medium / High 等）。
@@ -74,7 +74,7 @@ pnpm tauri icon ../assets/brand/tietiezhi-mark.png   # 重新生成全套图标
 - **任务记录**在 `src/commands/conversations.rs` 和 Codex rollout/state 中：任务包含共享消息、项目绑定和当前 `task_mode`，旧记录缺少该字段时默认 Code。切换 Work / Code 不创建任务或文件空间；`task_workspace_overview` 展示同一个 Local/Worktree 环境的成果、Git 变更、Snapshot 和 Handoff。归档保留完整目录，永久删除前保存最终 Snapshot 并注销 worktree。旧 `conversations/{uuid}.json`、`workspaces/{uuid}`、单 `workspace/` 和双模式目录会无损迁移或原地接管。
 - **项目列表**在 `src/commands/projects.rs`：持久化到 `app_data_dir()/projects.json`，支持重命名和打开真实目录；任务可不绑定项目。项目可以是普通文件夹或 Git 仓库，Agent 在首次进入对应模式时从所选项目创建隔离执行空间，不直接修改用户选择的原目录；项目真实目录永不随任务删除。
 - baseURL 归一化：用户填 `https://x.com` 或 `https://x.com/v1` 都可以，Rust 侧统一补 `/v1` 前缀后拼端点。
-- 聊天走 OpenAI 兼容 `/v1/chat/completions`（`stream: true`），SSE 解析在 Rust 侧完成，经 `tauri::ipc::Channel` 把 `{type: delta|done|error}` 事件推给前端；解析器有 `cargo test` 单元测试。
+- Workspace Agent 只走 OpenAI Responses API 和 App Server V2；不得回退 `/v1/chat/completions`。Chat Completions SSE 仅用于独立铁铁汁 Companion、语音润色等非 Workspace 兼容功能，经 `tauri::ipc::Channel` 推送旧事件。
 - 能力声明在 `capabilities/default.json`（当前仅 `core:default`）。新增系统能力时先想想是否真的需要新权限。
 
 ## CI

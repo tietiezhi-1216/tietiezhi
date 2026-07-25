@@ -157,21 +157,24 @@
       },
       {
         "method": "externalAgentConfig/detect",
-        "status": "pending",
+        "status": "implemented",
         "target": "R38",
-        "note": ""
+        "note": "检测 Claude/Cursor 的 AGENTS、配置、Skills、Subagents、Hooks、Commands、MCP、Memory 和 Sessions。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       },
       {
         "method": "externalAgentConfig/import",
-        "status": "pending",
+        "status": "implemented",
         "target": "R38",
-        "note": ""
+        "note": "异步原子导入，路径限制在检测根内，Sessions 转换为 canonical Thread。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       },
       {
         "method": "externalAgentConfig/import/readHistories",
-        "status": "pending",
+        "status": "implemented",
         "target": "R38",
-        "note": ""
+        "note": "从原子历史文件读取已完成导入；不返回未经安装的 connector。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       },
       {
         "method": "feedback/upload",
@@ -247,9 +250,10 @@
       },
       {
         "method": "initialize",
-        "status": "pending",
+        "status": "implemented",
         "target": "R2",
-        "note": ""
+        "note": "每个桌面连接先完成 App Server V2 initialize，协商 experimentalApi、attestation、MCP form elicitation 与通知 opt-out。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       },
       {
         "method": "marketplace/add",
@@ -572,9 +576,10 @@
     "clientNotifications": [
       {
         "method": "initialized",
-        "status": "pending",
+        "status": "implemented",
         "target": "R2",
-        "note": ""
+        "note": "客户端显式发送 initialized 后才接收协商范围内的通知和反向请求。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       }
     ],
     "serverRequests": [
@@ -679,9 +684,10 @@
       },
       {
         "method": "deprecationNotice",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "初始化后明确通知旧 Workspace Chat Completions Agent 已移除。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       },
       {
         "method": "error",
@@ -691,15 +697,17 @@
       },
       {
         "method": "externalAgentConfig/import/completed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R38",
-        "note": ""
+        "note": "完成通知和原子历史包含逐项成功/失败结果。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       },
       {
         "method": "externalAgentConfig/import/progress",
-        "status": "pending",
+        "status": "implemented",
         "target": "R38",
-        "note": ""
+        "note": "每个迁移项发送经固定 V2 Schema 校验的进度通知。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       },
       {
         "method": "fs/changed",
@@ -1048,9 +1056,10 @@
       },
       {
         "method": "warning",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "初始化后按连接能力发送 Responses 渠道缺失等结构化警告。",
+        "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
       },
       {
         "method": "windows/worldWritableWarning",
@@ -1128,21 +1137,21 @@
       "id": "R3",
       "name": "事件模型",
       "status": "completed",
-      "risk": "Thread 生命周期通知已由 R5 接入正式 App Server 路由；Turn/Item 通知由 R6 接管，LegacyChatEvent 在 R38 删除",
+      "risk": "LegacyChatEvent 仅用于 UI 正文投影、旧记录和独立 Companion；Workspace 权威事件全部为 App Server V2。",
       "evidence": "crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build"
     },
     {
       "id": "R4",
       "name": "持久化",
       "status": "completed",
-      "risk": "新 Runtime 已由 R5 写入 canonical session_meta/response_item；旧会话仍写 legacy_checkpoint，R6 接管 Turn/Item，task.json 镜像在 R38 删除",
+      "risk": "canonical rollout 是权威记录；task.json/legacy_checkpoint 只保留兼容与回滚，不参与 Thread/Turn 恢复。",
       "evidence": "crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build"
     },
     {
       "id": "R5",
       "name": "Thread 生命周期",
       "status": "completed",
-      "risk": "Turn 列表暂存于 canonical_json 查询缓存；R6 将以 rollout 的 Turn/Item 事件重建并接入真实执行状态机，旧会话适配层在 R38 删除",
+      "risk": "Thread 与 Turn 均从 canonical rollout 重建；旧任务已原地迁移并进入同一生命周期。",
       "evidence": "crates/agent-core；commands/codex.rs；docs/CODEX-THREADS.md；SQLite v2→v3 迁移与 canonical session_meta 索引重建测试；12 项 ThreadManager 测试；137 项桌面 Rust 测试；pnpm typecheck；pnpm build"
     },
     {
@@ -1303,7 +1312,7 @@
       "id": "R28",
       "name": "Memory",
       "status": "completed",
-      "risk": "Chronicle 仅使用当前 Responses Provider；实验 Memory 方法未写入固定 stable Schema，R38 前继续保留协议兼容测试。",
+      "risk": "Chronicle 仅使用当前 Responses Provider；实验 Memory 方法继续由显式协议兼容测试约束，不声明为固定 stable 方法。",
       "evidence": "crates/agent-memory Chronicle 作业/文件/引用/工具/迁移测试；crates/agent-core Thread memory mode、污染恢复与 memoryCitation；desktop Responses、额度阈值和实验请求接线；docs/CODEX-MEMORY.md"
     },
     {
@@ -1324,7 +1333,7 @@
       "id": "R31",
       "name": "Desktop 时间线",
       "status": "completed",
-      "risk": "Legacy ChatItem 时间线仅在 R38 迁移完成后删除；文件能力不替代模型工具的 Approval 与 Sandbox。",
+      "risk": "旧消息组件只展示正文和历史记录；运行操作只使用强类型 Item，文件能力不替代 Approval 与 Sandbox。",
       "evidence": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
     },
     {
@@ -1372,9 +1381,9 @@
     {
       "id": "R38",
       "name": "迁移切换",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "旧 task.json/legacy_checkpoint 保留为兼容镜像与回滚锚点；LegacyChatEvent 只用于 UI 投影、旧持久记录和独立铁铁汁 Companion，不是 Workspace 执行协议。",
+      "evidence": "desktop/src-tauri/src/commands/codex.rs; desktop/src/lib/api.ts; desktop/src/stores/chat.ts; desktop/src/features/chat/codex-timeline.tsx; crates/agent-core/src/lib.rs; crates/agent-state/src/lib.rs; desktop/scripts/check-codex-runtime-switch.mjs; docs/CODEX-MIGRATION.md"
     },
     {
       "id": "R39",

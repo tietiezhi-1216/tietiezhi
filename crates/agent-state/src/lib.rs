@@ -675,6 +675,42 @@ impl RolloutAppender {
         Ok(())
     }
 
+    /// Append a canonical SessionMeta upgrade for an existing legacy rollout.
+    ///
+    /// R4 rollouts may already contain the compatibility SessionMeta shape.
+    /// Appending rather than rewriting keeps the log crash-safe; recovery
+    /// selects the latest canonical record while preserving the original
+    /// creation timestamp and every prior ordinal.
+    pub fn append_canonical_session_meta_upgrade(
+        &self,
+        thread_id: &str,
+        meta: Value,
+    ) -> StateResult<u64> {
+        let meta_thread_id = session_meta_thread_id(&meta)
+            .ok_or_else(|| StateError::Invalid("session_meta id is required".into()))?;
+        if meta_thread_id != thread_id {
+            return Err(StateError::Invalid(format!(
+                "session_meta belongs to thread {meta_thread_id}, not {thread_id}"
+            )));
+        }
+        if meta.get("session_id").is_none() || meta.get("cli_version").is_none() {
+            return Err(StateError::Invalid(
+                "canonical session_meta requires session_id and cli_version".into(),
+            ));
+        }
+        let mut writer = self.writer()?;
+        if let Some(existing) = &writer.session_thread_id
+            && existing != thread_id
+        {
+            return Err(StateError::Invalid(format!(
+                "rollout belongs to thread {existing}, not {thread_id}"
+            )));
+        }
+        let ordinal = writer.append(RolloutItem::SessionMeta(meta))?;
+        writer.session_thread_id = Some(thread_id.into());
+        Ok(ordinal)
+    }
+
     pub fn append_event(&self, event: Value) -> StateResult<u64> {
         self.writer()?.append(RolloutItem::EventMsg(event))
     }
@@ -812,6 +848,8 @@ fn recover_rollout(path: &Path) -> StateResult<RolloutRecovery> {
                 if recovery.session_thread_id.is_none() {
                     recovery.session_thread_id = session_meta_thread_id(&meta).map(str::to_owned);
                     recovery.session_created_at_ms = Some(line.timestamp_ms);
+                    recovery.session_meta = Some(meta);
+                } else if meta.get("session_id").is_some() && meta.get("cli_version").is_some() {
                     recovery.session_meta = Some(meta);
                 }
             }
@@ -1110,6 +1148,41 @@ mod tests {
             recovered.rollout_items[3].item,
             RecoveredRolloutItemKind::Compacted(_)
         ));
+    }
+
+    #[test]
+    fn canonical_session_meta_upgrade_wins_without_rewriting_legacy_rollout() {
+        let temp = TempDir::new().unwrap();
+        let store = StateStore::open(temp.path()).unwrap();
+        let path = temp.path().join("rollout.jsonl");
+        let appender = store.rollout_appender(&path).unwrap();
+        appender.ensure_session_meta("thread-1", 1, &path).unwrap();
+        appender
+            .append_event(json!({"type":"legacy_event"}))
+            .unwrap();
+        appender
+            .append_canonical_session_meta_upgrade(
+                "thread-1",
+                json!({
+                    "id":"thread-1",
+                    "session_id":"thread-1",
+                    "cli_version":"test",
+                    "cwd":temp.path()
+                }),
+            )
+            .unwrap();
+        appender.sync_data().unwrap();
+        let recovery = store.recover_rollout(&path).unwrap();
+        assert_eq!(recovery.session_thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(
+            recovery
+                .session_meta
+                .as_ref()
+                .and_then(|value| value.get("cli_version"))
+                .and_then(Value::as_str),
+            Some("test")
+        );
+        assert_eq!(recovery.trailing_events.len(), 1);
     }
 
     #[test]

@@ -4,9 +4,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
-use tietiezhi_agent_state::{
-    atomic_write, RolloutAppender, RolloutRecovery, StateStore, ThreadMetadata,
-};
+use tietiezhi_agent_core::{LegacyThreadImport, ThreadManager};
+use tietiezhi_agent_state::{atomic_write, RolloutRecovery, StateStore, ThreadMetadata};
 
 use super::workspace::TaskMode;
 use crate::agent::events::{ChatEvent, ScopedChatEvent};
@@ -297,18 +296,6 @@ fn state_store(app: &AppHandle) -> Result<StateStore, String> {
         .map_err(|error| format!("初始化任务状态库失败：{error}"))
 }
 
-pub(crate) fn event_rollout_appender(app: &AppHandle, id: &str) -> Result<RolloutAppender, String> {
-    validate_id(id)?;
-    let path = rollout_path(app, id)?;
-    let appender = state_store(app)?
-        .rollout_appender(&path)
-        .map_err(|error| format!("打开任务 rollout 失败：{error}"))?;
-    appender
-        .ensure_session_meta(id, now_ms(), &path)
-        .map_err(|error| format!("初始化任务 rollout 失败：{error}"))?;
-    Ok(appender)
-}
-
 fn write_conversation(path: &Path, conversation: &Conversation) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(conversation).map_err(|e| e.to_string())?;
     atomic_write(path, raw.as_bytes()).map_err(|error| format!("原子写入任务失败：{error}"))
@@ -373,8 +360,13 @@ fn persist_conversation(
     let path = rollout_path(app, &conversation.id)?;
     let payload = serde_json::to_value(conversation)
         .map_err(|error| format!("序列化任务 checkpoint 失败：{error}"))?;
+    let mut metadata = metadata_for(conversation, path, 0, 0, "clean");
+    metadata.canonical = store
+        .thread(&conversation.id)
+        .map_err(|error| format!("读取任务索引失败：{error}"))?
+        .and_then(|existing| existing.canonical);
     store
-        .upsert_checkpoint(metadata_for(conversation, path, 0, 0, "clean"), &payload)
+        .upsert_checkpoint(metadata, &payload)
         .map_err(|error| format!("写入任务 rollout 失败：{error}"))?;
     write_conversation(&conversation_path(app, &conversation.id)?, conversation)
 }
@@ -870,6 +862,89 @@ fn reconcile_runtime_store(app: &AppHandle, store: &StateStore) -> Result<(), St
     Ok(())
 }
 
+/// Upgrade every legacy task checkpoint to the canonical Thread/Turn/Item
+/// runtime without changing its UUID or workspace ownership.
+pub(crate) fn migrate_tasks_to_codex(
+    app: &AppHandle,
+    manager: &ThreadManager,
+) -> Result<usize, String> {
+    migrate_legacy(app)?;
+    let store = state_store(app)?;
+    reconcile_runtime_store(app, &store)?;
+    let mut metadata = store
+        .list_threads(false)
+        .map_err(|error| format!("读取活动任务索引失败：{error}"))?;
+    metadata.extend(
+        store
+            .list_threads(true)
+            .map_err(|error| format!("读取归档任务索引失败：{error}"))?,
+    );
+    let mut migrated = 0;
+    for entry in metadata {
+        if entry.canonical.is_some() {
+            continue;
+        }
+        let conversation = load_runtime_conversation(app, &store, &entry.id, true)?;
+        let cwd = super::workspace::resolve_task_workspace(
+            app,
+            (!conversation.project_id.is_empty()).then_some(conversation.project_id.as_str()),
+            Some(&conversation.id),
+            conversation.task_mode,
+        )
+        .or_else(|_| task_workspace_path(app, &conversation.id))?;
+        let messages = conversation
+            .messages
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("序列化旧任务历史失败：{error}"))?;
+        if manager
+            .import_legacy_thread(LegacyThreadImport {
+                id: conversation.id,
+                title: conversation.title,
+                cwd,
+                created_at_ms: conversation.created_at,
+                updated_at_ms: conversation.updated_at,
+                model: conversation
+                    .messages
+                    .iter()
+                    .rev()
+                    .filter_map(|message| message.model.as_ref())
+                    .find(|model| !model.trim().is_empty())
+                    .cloned(),
+                model_provider: conversation
+                    .messages
+                    .iter()
+                    .rev()
+                    .filter_map(|message| message.provider_id.as_ref())
+                    .find(|provider_id| !provider_id.trim().is_empty())
+                    .cloned(),
+                task_mode: conversation.task_mode.as_str().into(),
+                messages,
+            })
+            .map_err(|error| format!("迁移任务到 Codex Runtime 失败：{}", error.message))?
+        {
+            migrated += 1;
+        }
+    }
+    Ok(migrated)
+}
+
+pub(crate) fn prepare_codex_thread_delete(app: &AppHandle, id: &str) -> Result<(), String> {
+    let _guard = store_lock().lock().map_err(|_| "任务存储锁已损坏")?;
+    let store = state_store(app)?;
+    let root = task_root(app, id)?;
+    if !root.exists() {
+        return Ok(());
+    }
+    let project_id = load_runtime_conversation(app, &store, id, false)
+        .ok()
+        .map(|conversation| conversation.project_id)
+        .unwrap_or_default();
+    super::workspace::cleanup_task_workspaces(app, &project_id, &root);
+    Ok(())
+}
+
 fn with_store<T>(
     app: &AppHandle,
     operation: impl FnOnce(&StateStore) -> Result<T, String>,
@@ -889,7 +964,6 @@ fn list_conversation_metas(
         .list_threads(archived)
         .map_err(|error| format!("读取任务索引失败：{error}"))?
         .into_iter()
-        .filter(|thread| thread.canonical.is_none())
         .map(|thread| {
             Ok(ConversationMeta {
                 id: thread.id,
@@ -923,9 +997,6 @@ pub(crate) fn suggestion_history(
         );
         let mut tasks = Vec::new();
         for thread in indexed {
-            if thread.canonical.is_some() {
-                continue;
-            }
             if thread.project_id != expected_project_id || thread.task_mode != task_mode.as_str() {
                 continue;
             }
@@ -956,7 +1027,7 @@ pub(crate) fn suggestion_history(
                 tools: tools.into_iter().collect(),
             });
         }
-        tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
         let total_tasks = tasks.len();
         tasks.truncate(limit);
         Ok(SuggestionHistory {

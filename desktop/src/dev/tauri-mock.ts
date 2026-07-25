@@ -15,7 +15,6 @@ import type {
   ChatAttachment,
   DeviceCore,
   ModelInfo,
-  PermissionDecision,
   Provider,
   TietiezhiConfig,
   TietiezhiDevice,
@@ -320,10 +319,17 @@ export function installTauriMock(): void {
   if (w.__TAURI_INTERNALS__) return;
 
   const callbacks = new Map<number, (payload: unknown) => void>();
+  const eventListeners = new Map<string, Map<number, number>>();
   const setupState = new URLSearchParams(window.location.search).get("setup");
   let nextCallbackId = 1;
+  let nextEventId = 1;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const exampleAutomation = createMockAutomation();
+  const emitMockEvent = (event: string, payload: unknown) => {
+    for (const [id, callbackId] of eventListeners.get(event) ?? []) {
+      callbacks.get(callbackId)?.({ event, id, payload });
+    }
+  };
 
   const state = {
     settings: {
@@ -387,6 +393,14 @@ export function installTauriMock(): void {
         permissionMode: "auto",
       },
     ] as Record<string, unknown>[],
+    codexThreads: new Map<
+      string,
+      {
+        id: string;
+        turns: Array<Record<string, unknown>>;
+        activeTurnId: string | null;
+      }
+    >(),
     skills: new Map<string, { description: string; body: string; enabled: boolean }>([
       [
         "pdf-tools",
@@ -703,135 +717,6 @@ export function installTauriMock(): void {
     push(channel, index, { end: true });
   };
 
-  /** Scripted agent turn: text → tool call → permission ask → result → text. */
-  const streamAgentDemo = async (
-    requestId: number,
-    channel: MockChannel,
-    model = "mock-model",
-    taskMode: "work" | "code" = "code",
-  ) => {
-    let i = 0;
-    const emit = (message: Record<string, unknown>) => push(channel, i++, { message });
-    emit({ type: "started", model });
-    for (const ch of "我来读取一下文件。") {
-      emit({ type: "delta", content: ch });
-      await sleep(20);
-    }
-    emit({ type: "toolCallStart", id: "call_1", name: "read_file", args: { path: "README.md" } });
-    await sleep(600);
-    emit({ type: "toolResult", id: "call_1", output: "    1\t# 铁铁汁\n    2\t演示内容", isError: false });
-    if (taskMode === "work") {
-      emit({
-        type: "toolCallStart",
-        id: "call_2",
-        name: "write_file",
-        args: { path: "成果摘要.md", content: "# 成果摘要" },
-      });
-      await sleep(400);
-      emit({
-        type: "toolResult",
-        id: "call_2",
-        output: "已写入成果摘要.md",
-        isError: false,
-      });
-      for (const ch of "已完成资料整理，成果文件：`成果摘要.md`。") {
-        emit({ type: "delta", content: ch });
-        await sleep(20);
-      }
-      emit({
-        type: "usage",
-        promptTokens: 84,
-        completionTokens: 26,
-        totalTokens: 110,
-        cachedTokens: 20,
-      });
-      emit({ type: "done", cancelled: state.cancelled.has(requestId) });
-      push(channel, i, { end: true });
-      state.cancelled.delete(requestId);
-      return;
-    }
-    emit({
-      type: "permissionRequest",
-      id: "perm_1",
-      tool: "bash",
-      description: "执行命令：ls -la",
-      args: { command: "ls -la" },
-      scope: "命令：ls -la",
-    });
-    // Wait for permission_respond (or cancel).
-    pendingPermission = null;
-    for (let t = 0; t < 600; t++) {
-      if (pendingPermission != null || state.cancelled.has(requestId)) break;
-      await sleep(100);
-    }
-    const decision =
-      (pendingPermission as PermissionDecision | null) ?? "decline";
-    emit({ type: "toolCallStart", id: "call_2", name: "bash", args: { command: "ls -la" } });
-    await sleep(400);
-    if (decision === "cancel") {
-      emit({
-        type: "toolResult",
-        id: "call_2",
-        output: "用户停止了此操作",
-        isError: true,
-        cancelled: true,
-      });
-      emit({ type: "done", cancelled: true });
-      push(channel, i, { end: true });
-      state.cancelled.delete(requestId);
-      return;
-    }
-    emit(
-      decision === "decline"
-        ? { type: "toolResult", id: "call_2", output: "用户拒绝了此操作", isError: true }
-        : { type: "toolResult", id: "call_2", output: "total 8\ndrwxr-xr-x  demo", isError: false },
-    );
-    for (const ch of "已完成：文件读取成功" + (decision === "decline" ? "，命令被拒绝。" : "，命令执行完毕。")) {
-      emit({ type: "delta", content: ch });
-      await sleep(20);
-    }
-    emit({ type: "usage", promptTokens: 96, completionTokens: 31, totalTokens: 127, cachedTokens: 24 });
-    emit({ type: "done", cancelled: state.cancelled.has(requestId) });
-    push(channel, i, { end: true });
-    state.cancelled.delete(requestId);
-  };
-  const streamRetryDemo = async (
-    requestId: number,
-    channel: MockChannel,
-    model = "mock-model",
-  ) => {
-    let i = 0;
-    const emit = (message: Record<string, unknown>) => push(channel, i++, { message });
-    emit({ type: "started", model });
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      if (state.cancelled.has(requestId)) break;
-      emit({
-        type: "retrying",
-        attempt,
-        maxRetries: 5,
-        delayMs: 800,
-        reason: "服务暂时不可用（503）",
-      });
-      await sleep(500);
-    }
-    if (state.cancelled.has(requestId)) {
-      emit({ type: "done", cancelled: true });
-    } else {
-      emit({
-        type: "error",
-        message: "模型服务暂时不可用",
-        detail:
-          '模型服务返回 HTTP 503\n\n{\n  "error": {\n    "code": "do_request_failed",\n    "message": "所有节点均失败：上游服务暂时不可用"\n  }\n}',
-        code: "do_request_failed",
-        status: 503,
-        retryable: true,
-        retries: 5,
-      });
-    }
-    push(channel, i, { end: true });
-    state.cancelled.delete(requestId);
-  };
-  let pendingPermission: string | null = null;
   let gatewayLoggedIn = false;
 
   const handlers: Record<string, Handler> = {
@@ -1347,15 +1232,241 @@ export function installTauriMock(): void {
     mark_project_suggestion_used: () => {
       // The production command records this for the next generation context.
     },
-    permission_respond: (a) => {
-      pendingPermission = a.decision as string;
-    },
+    permission_respond: () => undefined,
     codex_v2_request: (a) => {
       const request = a.request as {
         id: string | number;
         method: string;
         params?: Record<string, unknown>;
       };
+      const connectionId = String(a.connectionId ?? "desktop");
+      const routed = (method: string, params: Record<string, unknown>) => ({
+        recipients: [connectionId],
+        method,
+        params,
+      });
+      const emitCodex = (method: string, params: Record<string, unknown>) =>
+        emitMockEvent("codex-v2-notification", routed(method, params));
+      const threadValue = (thread: {
+        id: string;
+        turns: Array<Record<string, unknown>>;
+        activeTurnId: string | null;
+      }) => ({
+        id: thread.id,
+        sessionId: thread.id,
+        forkedFromId: null,
+        parentThreadId: null,
+        preview: "",
+        ephemeral: false,
+        modelProvider: "builtin-official",
+        createdAt: Math.floor(Date.now() / 1000),
+        updatedAt: Math.floor(Date.now() / 1000),
+        recencyAt: Math.floor(Date.now() / 1000),
+        status: thread.activeTurnId
+          ? { type: "active", activeFlags: [] }
+          : { type: "idle" },
+        path: `/mock/tasks/${thread.id}/rollout.jsonl`,
+        cwd: "/mock/tasks/shared-worktree",
+        cliVersion: "mock",
+        source: "appServer",
+        threadSource: "app",
+        agentNickname: null,
+        agentRole: null,
+        gitInfo: null,
+        name: null,
+        turns: structuredClone(thread.turns),
+      });
+      if (request.method === "initialize") {
+        return {
+          response: {
+            id: request.id,
+            result: {
+              userAgent: "tietiezhi-app-server/mock",
+              platformFamily: "unix",
+              platformOs: "mock",
+              codexHome: "/mock/codex",
+            },
+          },
+          notifications: [],
+        };
+      }
+      if (request.method === "thread/start") {
+        const id = crypto.randomUUID();
+        const thread = { id, turns: [], activeTurnId: null };
+        state.codexThreads.set(id, thread);
+        return {
+          response: {
+            id: request.id,
+            result: {
+              thread: threadValue(thread),
+              model: request.params?.model ?? "gpt-5.6-luna",
+              modelProvider: request.params?.modelProvider ?? "builtin-official",
+              serviceTier: null,
+              cwd: "/mock/tasks/shared-worktree",
+              instructionSources: [],
+              approvalPolicy: "on-request",
+              approvalsReviewer: "user",
+              sandbox: {
+                type: "workspaceWrite",
+                writableRoots: ["/mock/tasks/shared-worktree"],
+                networkAccess: false,
+                excludeTmpdirEnvVar: false,
+                excludeSlashTmp: false,
+              },
+              reasoningEffort: null,
+            },
+          },
+          notifications: [],
+        };
+      }
+      if (request.method === "thread/resume" || request.method === "thread/read") {
+        const id = String(request.params?.threadId ?? "");
+        const thread =
+          state.codexThreads.get(id) ??
+          { id, turns: [], activeTurnId: null };
+        state.codexThreads.set(id, thread);
+        const threadWire = threadValue(thread);
+        return {
+          response: {
+            id: request.id,
+            result:
+              request.method === "thread/read"
+                ? { thread: threadWire }
+                : {
+                    thread: threadWire,
+                    model: "gpt-5.6-luna",
+                    modelProvider: "builtin-official",
+                    serviceTier: null,
+                    cwd: "/mock/tasks/shared-worktree",
+                    instructionSources: [],
+                    approvalPolicy: "on-request",
+                    approvalsReviewer: "user",
+                    sandbox: {
+                      type: "workspaceWrite",
+                      writableRoots: ["/mock/tasks/shared-worktree"],
+                      networkAccess: false,
+                      excludeTmpdirEnvVar: false,
+                      excludeSlashTmp: false,
+                    },
+                    reasoningEffort: null,
+                  },
+          },
+          notifications: [],
+        };
+      }
+      if (request.method === "turn/start") {
+        const threadId = String(request.params?.threadId ?? "");
+        const thread =
+          state.codexThreads.get(threadId) ??
+          { id: threadId, turns: [], activeTurnId: null };
+        state.codexThreads.set(threadId, thread);
+        const turnId = crypto.randomUUID();
+        const userItem: Record<string, unknown> = {
+          id: crypto.randomUUID(),
+          type: "userMessage",
+          content: structuredClone(request.params?.input ?? []),
+        };
+        const turn: {
+          id: string;
+          items: Array<Record<string, unknown>>;
+          itemsView: string;
+          status: string;
+          error: null;
+          startedAt: number;
+          completedAt: number | null;
+          durationMs: number | null;
+        } = {
+          id: turnId,
+          items: [userItem],
+          itemsView: "full",
+          status: "inProgress",
+          error: null,
+          startedAt: Math.floor(Date.now() / 1000),
+          completedAt: null,
+          durationMs: null,
+        };
+        thread.activeTurnId = turnId;
+        thread.turns.push(turn);
+        window.setTimeout(() => {
+          emitCodex("turn/started", { threadId, turn });
+          emitCodex("item/started", { threadId, turnId, item: userItem });
+          emitCodex("item/completed", { threadId, turnId, item: userItem });
+          const agentItem: Record<string, unknown> = {
+            id: crypto.randomUUID(),
+            type: "agentMessage",
+            text: "",
+            phase: null,
+            memoryCitation: null,
+          };
+          turn.items.push(agentItem);
+          emitCodex("item/started", { threadId, turnId, item: agentItem });
+          const answer = "这是 Codex Runtime 的模拟响应。";
+          emitCodex("item/agentMessage/delta", {
+            threadId,
+            turnId,
+            itemId: agentItem.id,
+            delta: answer,
+          });
+          agentItem.text = answer;
+          emitCodex("item/completed", { threadId, turnId, item: agentItem });
+          emitCodex("thread/tokenUsage/updated", {
+            threadId,
+            turnId,
+            tokenUsage: {
+              total: {
+                totalTokens: 18,
+                inputTokens: 10,
+                cachedInputTokens: 0,
+                cacheWriteInputTokens: 0,
+                outputTokens: 8,
+                reasoningOutputTokens: 0,
+              },
+              last: {
+                totalTokens: 18,
+                inputTokens: 10,
+                cachedInputTokens: 0,
+                cacheWriteInputTokens: 0,
+                outputTokens: 8,
+                reasoningOutputTokens: 0,
+              },
+              modelContextWindow: 128000,
+            },
+          });
+          turn.status = "completed";
+          turn.completedAt = Math.floor(Date.now() / 1000);
+          turn.durationMs = 80;
+          thread.activeTurnId = null;
+          emitCodex("turn/completed", { threadId, turn });
+        }, 60);
+        return {
+          response: { id: request.id, result: { turn } },
+          notifications: [],
+        };
+      }
+      if (request.method === "turn/interrupt") {
+        const threadId = String(request.params?.threadId ?? "");
+        const turnId = String(request.params?.turnId ?? "");
+        const thread = state.codexThreads.get(threadId);
+        const turn = thread?.turns.find((candidate) => candidate.id === turnId);
+        if (thread && turn) {
+          turn.status = "interrupted";
+          turn.completedAt = Math.floor(Date.now() / 1000);
+          thread.activeTurnId = null;
+          emitCodex("turn/completed", { threadId, turn });
+        }
+        return { response: { id: request.id, result: {} }, notifications: [] };
+      }
+      if (
+        request.method === "thread/archive" ||
+        request.method === "thread/unarchive" ||
+        request.method === "thread/delete" ||
+        request.method === "thread/compact/start"
+      ) {
+        if (request.method === "thread/delete") {
+          state.codexThreads.delete(String(request.params?.threadId ?? ""));
+        }
+        return { response: { id: request.id, result: {} }, notifications: [] };
+      }
       if (request.method.startsWith("remoteControl/")) {
         const environmentId = state.remoteControlEnabled ? "mock-environment" : null;
         const result =
@@ -1504,6 +1615,7 @@ export function installTauriMock(): void {
             : [],
       };
     },
+    codex_v2_notify: () => undefined,
     codex_v2_server_response: () => true,
     codex_doctor_report: () => ({
       schemaVersion: 1,
@@ -1843,102 +1955,6 @@ export function installTauriMock(): void {
         "mock-tietiezhi",
       );
     },
-    chat_stream: (a) => {
-      if (a.contextAction === "inspect" || a.contextAction === "compact") {
-        const channel = a.onEvent as MockChannel;
-        const model = a.model as string;
-        push(channel, 0, { message: { type: "started", model } });
-        if (a.contextAction === "inspect") {
-          push(channel, 1, {
-            message: {
-              type: "contextUsage",
-              estimatedTokens: 48_320,
-              contextWindow: 256 * 1024,
-              compactAtTokens: Math.floor((256 * 1024 * 80) / 100),
-            },
-          });
-        } else {
-          push(channel, 1, {
-            message: {
-              type: "contextCompactionStarted",
-              automatic: false,
-              estimatedTokens: 48_320,
-              contextWindow: 256 * 1024,
-            },
-          });
-          push(channel, 2, {
-            message: {
-              type: "contextCompacted",
-              automatic: false,
-              duringTurn: false,
-              summary: "## 目标\n- 继续当前工作区任务\n\n## 下一步\n1. 根据用户下一条消息继续",
-              estimatedTokensBefore: 48_320,
-              estimatedTokensAfter: 1_280,
-              contextWindow: 256 * 1024,
-            },
-          });
-        }
-        push(channel, 3, { message: { type: "done", cancelled: false } });
-        return;
-      }
-      const messages = a.messages as {
-        content: string | { type: string; text?: string }[];
-      }[];
-      const content = messages[messages.length - 1]?.content ?? "";
-      const last =
-        typeof content === "string"
-          ? content
-          : (content.find((part) => part.type === "text")?.text ?? "[图片]");
-      if (last.includes("标题生成测试")) {
-        return stream(
-          a.requestId as number,
-          a.onEvent as MockChannel,
-          "标题已经生成。",
-          a.model as string,
-        );
-      }
-      if (last.includes("错误重试")) {
-        return streamRetryDemo(
-          a.requestId as number,
-          a.onEvent as MockChannel,
-          a.model as string,
-        );
-      }
-      // "工具" in the prompt exercises the agent-loop events (tool cards +
-      // permission prompt) without a real model.
-      if (last.includes("工具")) {
-        return streamAgentDemo(
-          a.requestId as number,
-          a.onEvent as MockChannel,
-          a.model as string,
-          a.taskMode === "work" ? "work" : "code",
-        );
-      }
-      // Markdown-shaped so the renderer (headings / lists / tables / fenced
-      // code) can be exercised without a real model.
-      const reply = `收到：**${last}**
-
-## 小标题
-- 列表项一，带 \`行内代码\`
-- 第二项，含 [链接](https://tietiezhi.xyz)
-
-\`\`\`java
-public class Hello {
-    public static void main(String[] args) {
-        // 打印问候语
-        System.out.println("你好，世界");
-    }
-}
-\`\`\`
-
-| 模型 | 类型 |
-| --- | --- |
-| gpt-5.5 | 对话 |
-| mimo-v2.5-asr | 语音识别 |
-
-> 引用：以上由 mock ${a.model} 生成。`;
-      return stream(a.requestId as number, a.onEvent as MockChannel, reply, a.model as string);
-    },
     chat_cancel: (a) => state.cancelled.add(a.requestId as number),
     polish_stream: (a) =>
       stream(
@@ -2239,8 +2255,21 @@ public class Hello {
     },
 
     "plugin:app|version": () => "0.0.0-mock",
-    "plugin:event|listen": () => 0,
-    "plugin:event|unlisten": () => {},
+    "plugin:event|listen": (a) => {
+      const event = String(a.event);
+      const callbackId = Number(a.handler);
+      const eventId = nextEventId++;
+      const listeners = eventListeners.get(event) ?? new Map<number, number>();
+      listeners.set(eventId, callbackId);
+      eventListeners.set(event, listeners);
+      return eventId;
+    },
+    "plugin:event|unlisten": (a) => {
+      eventListeners.get(String(a.event))?.delete(Number(a.eventId));
+    },
+    "plugin:event|emit": (a) => {
+      emitMockEvent(String(a.event), a.payload);
+    },
   };
 
   w.__TAURI_INTERNALS__ = {

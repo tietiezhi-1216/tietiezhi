@@ -566,9 +566,9 @@ async fn compact_transcript(
     Ok(Some(summary))
 }
 
-/// The tool-calling agent loop. Returns `Ok(true)` when cancelled by the user.
+/// Legacy companion-only loop. Workspace Work/Code turns use Codex Runtime.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_agent_loop(
+pub async fn run_companion_loop(
     app: &AppHandle,
     http: &reqwest::Client,
     broker: &PermissionBroker,

@@ -42,6 +42,9 @@ pub struct AppState {
     /// Session-local `/v1/responses` capability probes, keyed by provider id
     /// and normalized base URL.
     pub(crate) codex_wire_capabilities: Mutex<HashMap<String, bool>>,
+    /// App Server handshake state and negotiated notification capabilities,
+    /// scoped to the logical client connection.
+    pub(crate) codex_connections: Mutex<HashMap<String, commands::codex::CodexConnectionState>>,
     /// Source-native App Server V2 account state.
     pub(crate) codex_account: tietiezhi_agent_account::AccountRuntime,
     /// Source-native layered Skills catalog and runtime extra roots.
@@ -129,6 +132,7 @@ pub fn run() {
             codex_cancels: Mutex::new(HashMap::new()),
             codex_input_activity: Mutex::new(HashMap::new()),
             codex_wire_capabilities: Mutex::new(HashMap::new()),
+            codex_connections: Mutex::new(HashMap::new()),
             codex_account: tietiezhi_agent_account::AccountRuntime::default(),
             codex_skills: Mutex::new(None),
             codex_hooks: Mutex::new(None),
@@ -202,9 +206,9 @@ pub fn run() {
             commands::create::read_create_asset_data_url,
             commands::create::export_create_asset,
             commands::create::delete_create_asset,
-            commands::chat::chat_stream,
             commands::chat::tietiezhi_stream,
             commands::codex::codex_v2_request,
+            commands::codex::codex_v2_notify,
             commands::codex::codex_v2_server_response,
             commands::codex::codex_remote_grant_thread,
             commands::codex::codex_remote_revoke_thread,

@@ -17,6 +17,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { codexV2ServerResponse } from "@/lib/api";
 import {
   Collapsible,
   CollapsibleContent,
@@ -28,6 +29,7 @@ import {
   useCodexTimelineStore,
   type CodexTimelineEntry,
 } from "@/stores/codex-timeline";
+import { CodexApprovalPrompt } from "./codex-approval-prompt";
 import type { ThreadItem } from "../../../../shared/codex/v2/typescript/v2/ThreadItem";
 
 const ITEM_LABELS: Record<ThreadItem["type"], string> = {
@@ -313,15 +315,30 @@ export function CodexTimeline({ threadId }: { threadId: string }) {
   if (!timeline || (timeline.entries.length === 0 && timeline.notices.length === 0)) {
     return null;
   }
+  const operationalEntries = timeline.entries.filter(
+    (entry) =>
+      entry.item.type !== "userMessage" &&
+      entry.item.type !== "agentMessage" &&
+      entry.item.type !== "reasoning",
+  );
 
   return (
     <section aria-label="Codex 执行时间线" className="space-y-4">
-      {timeline.pendingRequestIds.length > 0 && (
+      {timeline.pendingRequests.length > 0 && (
         <div className="border-amber-500/30 bg-amber-500/10 flex items-center gap-2 rounded-xl border px-3 py-2 text-sm">
           <MessageSquare className="size-4" />
           需要输入或审批后才能继续
         </div>
       )}
+      {timeline.pendingRequests.map((request) => (
+        <CodexApprovalPrompt
+          key={String(request.id)}
+          request={request}
+          onRespond={(response) => {
+            void codexV2ServerResponse(response);
+          }}
+        />
+      ))}
       {timeline.plan && (
         <div className="bg-muted/40 rounded-xl border px-3 py-2">
           <div className="mb-2 flex items-center gap-2 text-xs font-semibold">
@@ -337,7 +354,7 @@ export function CodexTimeline({ threadId }: { threadId: string }) {
           </div>
         </div>
       )}
-      {timeline.entries.map((entry) => (
+      {operationalEntries.map((entry) => (
         <CodexTimelineItem key={entry.item.id} entry={entry} />
       ))}
       {timeline.notices.map((notice, index) => (

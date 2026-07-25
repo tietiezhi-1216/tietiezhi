@@ -27,28 +27,6 @@ impl TaskMode {
             Self::Code => "code",
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Work => "Work",
-            Self::Code => "Code",
-        }
-    }
-
-    pub fn filter_builtin_tools(self, configured: &[String]) -> Vec<String> {
-        let source: Vec<String> = if configured.is_empty() {
-            crate::tools::ALL_TOOLS
-                .iter()
-                .map(|tool| (*tool).to_string())
-                .collect()
-        } else {
-            configured.to_vec()
-        };
-        source
-            .into_iter()
-            .filter(|tool| self == Self::Code || tool != "bash")
-            .collect()
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -789,14 +767,6 @@ mod tests {
         assert_eq!(TaskMode::Work.as_str(), "work");
         assert_eq!(TaskMode::Code.as_str(), "code");
         assert_eq!(TaskMode::default(), TaskMode::Code);
-        assert!(!TaskMode::Work
-            .filter_builtin_tools(&[])
-            .iter()
-            .any(|tool| tool == "bash"));
-        assert!(TaskMode::Code
-            .filter_builtin_tools(&[])
-            .iter()
-            .any(|tool| tool == "bash"));
     }
 
     #[test]

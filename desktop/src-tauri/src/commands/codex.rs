@@ -65,15 +65,16 @@ use tietiezhi_agent_observability::{
 };
 use tietiezhi_agent_plugins::{PluginActivation, PluginMcpSource, PluginPaths, PluginRuntime};
 use tietiezhi_agent_protocol::{
-    AppsInstalledResponse, AppsListResponse, AppsReadResponse, ClientRequest, JSONRPCRequest,
-    JSONRPCResponse, ListMcpServerStatusResponse, MarketplaceAddResponse,
-    MarketplaceRemoveResponse, MarketplaceUpgradeResponse, McpResourceReadResponse,
-    McpServerOauthLoginResponse, McpServerToolCallResponse, ModelListResponse,
-    ModelProviderCapabilitiesReadResponse, PermissionProfileListResponse, PluginInstallResponse,
-    PluginInstalledResponse, PluginListResponse, PluginReadResponse, PluginShareCheckoutResponse,
-    PluginShareDeleteResponse, PluginShareListResponse, PluginShareSaveResponse,
-    PluginShareUpdateTargetsResponse, PluginSkillReadResponse, PluginUninstallResponse,
-    ServerNotification,
+    AppsInstalledResponse, AppsListResponse, AppsReadResponse, ClientNotification, ClientRequest,
+    ExternalAgentConfigDetectResponse, ExternalAgentConfigImportHistoriesReadResponse,
+    ExternalAgentConfigImportResponse, JSONRPCRequest, JSONRPCResponse,
+    ListMcpServerStatusResponse, MarketplaceAddResponse, MarketplaceRemoveResponse,
+    MarketplaceUpgradeResponse, McpResourceReadResponse, McpServerOauthLoginResponse,
+    McpServerToolCallResponse, ModelListResponse, ModelProviderCapabilitiesReadResponse,
+    PermissionProfileListResponse, PluginInstallResponse, PluginInstalledResponse,
+    PluginListResponse, PluginReadResponse, PluginShareCheckoutResponse, PluginShareDeleteResponse,
+    PluginShareListResponse, PluginShareSaveResponse, PluginShareUpdateTargetsResponse,
+    PluginSkillReadResponse, PluginUninstallResponse, ServerNotification,
 };
 use tietiezhi_agent_realtime::{
     AudioChunk as RealtimeAudioChunk, NotificationSink, RealtimeProvider,
@@ -106,6 +107,15 @@ use crate::AppState;
 
 const CODEX_NOTIFICATION_EVENT: &str = "codex-v2-notification";
 const CODEX_SERVER_REQUEST_EVENT: &str = "codex-v2-server-request";
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CodexConnectionState {
+    initialized: bool,
+    experimental_api: bool,
+    request_attestation: bool,
+    mcp_server_openai_form_elicitation: bool,
+    opt_out_notification_methods: HashSet<String>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ExternalAuthTokens {
@@ -195,8 +205,987 @@ pub(crate) fn thread_manager(app: &AppHandle, state: &AppState) -> Result<Thread
         runtime_defaults(app)?,
     )
     .map_err(|error| format!("初始化 Codex Runtime 失败：{error:?}"))?;
+    super::conversations::migrate_tasks_to_codex(app, &manager)?;
     *slot = Some(manager.clone());
     Ok(manager)
+}
+
+fn initialize_connection(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("initialize 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let capabilities = params
+        .get("capabilities")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let mut connections = state
+        .codex_connections
+        .lock()
+        .map_err(|_| "Codex 连接状态锁已损坏".to_string())?;
+    if connections.contains_key(connection_id) {
+        return Ok(dispatch_error(
+            request,
+            -32600,
+            "connection already initialized",
+        ));
+    }
+    connections.insert(
+        connection_id.to_owned(),
+        CodexConnectionState {
+            initialized: false,
+            experimental_api: capabilities
+                .get("experimentalApi")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            request_attestation: capabilities
+                .get("requestAttestation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            mcp_server_openai_form_elicitation: capabilities
+                .get("mcpServerOpenaiFormElicitation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            opt_out_notification_methods: capabilities
+                .get("optOutNotificationMethods")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+        },
+    );
+    drop(connections);
+    state
+        .codex_account
+        .register_connection(connection_id)
+        .map_err(account_rpc_error)?;
+    let codex_home = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法定位 Codex 配置目录：{error}"))?
+        .join("codex");
+    dispatch_success(
+        request,
+        json!({
+            "userAgent":format!("tietiezhi-app-server/{}", env!("CARGO_PKG_VERSION")),
+            "platformFamily":if cfg!(windows) {"windows"} else {"unix"},
+            "platformOs":std::env::consts::OS,
+            "codexHome":codex_home
+        }),
+    )
+}
+
+#[tauri::command]
+pub fn codex_v2_notify(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    connection_id: String,
+    notification: Value,
+) -> Result<(), String> {
+    if connection_id.trim().is_empty() {
+        return Err("connectionId 不能为空".into());
+    }
+    serde_json::from_value::<ClientNotification>(notification.clone())
+        .map_err(|error| format!("Client Notification 不符合 App Server V2：{error}"))?;
+    if notification.get("method").and_then(Value::as_str) != Some("initialized") {
+        return Err("不支持的 Client Notification".into());
+    }
+    let mut connections = state
+        .codex_connections
+        .lock()
+        .map_err(|_| "Codex 连接状态锁已损坏".to_string())?;
+    let connection = connections
+        .get_mut(&connection_id)
+        .ok_or_else(|| "connection must be initialized first".to_string())?;
+    connection.initialized = true;
+    drop(connections);
+    emit_notifications(
+        &app,
+        &[RoutedNotification {
+            recipients: vec![connection_id.clone()],
+            method: "deprecationNotice".into(),
+            params: json!({
+                "summary":"旧 Workspace Agent 接口已停用",
+                "details":"Work 与 Code 已切换到 Codex Thread/Turn/Item Runtime。"
+            }),
+        }],
+    )?;
+    if let Ok(settings) = super::settings::read_settings(&app) {
+        let unsupported = settings.chat_provider_id.trim().is_empty()
+            || settings.chat_model.trim().is_empty()
+            || settings
+                .providers
+                .iter()
+                .find(|provider| provider.id == settings.chat_provider_id)
+                .is_none_or(|provider| {
+                    provider.wire_api == super::settings::WireApi::ChatCompletions
+                });
+        if unsupported {
+            emit_notifications(
+                &app,
+                &[RoutedNotification {
+                    recipients: vec![connection_id],
+                    method: "warning".into(),
+                    params: json!({
+                        "threadId":Value::Null,
+                        "message":"当前模型渠道未配置 Responses API，Workspace Agent 无法执行 Turn。"
+                    }),
+                }],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ExternalMigrationSource {
+    Claude,
+    Cursor,
+}
+
+impl ExternalMigrationSource {
+    fn parse(value: Option<&str>) -> Self {
+        if value.is_some_and(|value| value.eq_ignore_ascii_case("cursor")) {
+            Self::Cursor
+        } else {
+            Self::Claude
+        }
+    }
+
+    fn config_dir(self) -> &'static str {
+        match self {
+            Self::Claude => ".claude",
+            Self::Cursor => ".cursor",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Cursor => "Cursor",
+        }
+    }
+}
+
+fn external_migration_home(source: ExternalMigrationSource) -> Result<std::path::PathBuf, String> {
+    dirs::home_dir()
+        .map(|home| home.join(source.config_dir()))
+        .ok_or_else(|| "无法定位用户目录".to_string())
+}
+
+fn external_scope_root(
+    source: ExternalMigrationSource,
+    cwd: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    let Some(cwd) = cwd.filter(|cwd| !cwd.trim().is_empty()) else {
+        return external_migration_home(source);
+    };
+    let cwd = std::fs::canonicalize(cwd)
+        .map_err(|error| format!("无法读取迁移工作目录 `{cwd}`：{error}"))?;
+    Ok(cwd.join(source.config_dir()))
+}
+
+fn nonempty_file(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
+fn directory_names(path: &std::path::Path) -> Vec<Value> {
+    let mut names = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .file_type()
+                .ok()
+                .filter(std::fs::FileType::is_dir)
+                .and_then(|_| entry.file_name().into_string().ok())
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names.into_iter().map(|name| json!({"name":name})).collect()
+}
+
+fn session_candidates(path: &std::path::Path) -> Vec<Value> {
+    let mut sessions = Vec::new();
+    let mut pending = vec![path.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if path.extension().and_then(|value| value.to_str()) == Some("jsonl") {
+                sessions.push(json!({
+                    "path":path,
+                    "cwd":"",
+                    "title":Value::Null
+                }));
+            }
+            if sessions.len() >= 100 {
+                return sessions;
+            }
+        }
+    }
+    sessions.sort_by(|left, right| {
+        left.get("path")
+            .and_then(Value::as_str)
+            .cmp(&right.get("path").and_then(Value::as_str))
+    });
+    sessions
+}
+
+fn external_instruction_source(
+    source: ExternalMigrationSource,
+    cwd: Option<&str>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let scope = external_scope_root(source, cwd)?;
+    let candidates = match (source, cwd) {
+        (ExternalMigrationSource::Claude, Some(cwd)) if !cwd.trim().is_empty() => vec![
+            std::path::PathBuf::from(cwd).join("CLAUDE.md"),
+            scope.join("CLAUDE.md"),
+        ],
+        (ExternalMigrationSource::Claude, _) => vec![scope.join("CLAUDE.md")],
+        (ExternalMigrationSource::Cursor, Some(cwd)) if !cwd.trim().is_empty() => vec![
+            std::path::PathBuf::from(cwd).join(".cursorrules"),
+            scope.join("rules"),
+        ],
+        (ExternalMigrationSource::Cursor, _) => vec![scope.join("rules")],
+    };
+    Ok(candidates.into_iter().find(|path| {
+        nonempty_file(path)
+            || (path.is_dir()
+                && std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some()))
+    }))
+}
+
+fn detect_external_agent_items(
+    source: ExternalMigrationSource,
+    include_home: bool,
+    cwds: &[String],
+) -> Result<Vec<Value>, String> {
+    let mut scopes = Vec::new();
+    if include_home {
+        scopes.push(None);
+    }
+    scopes.extend(cwds.iter().cloned().map(Some));
+    let mut items = Vec::new();
+    for cwd in scopes {
+        let scope = external_scope_root(source, cwd.as_deref())?;
+        if !scope.exists() {
+            continue;
+        }
+        let cwd_value = cwd.clone().map(Value::String).unwrap_or(Value::Null);
+        if let Some(instruction) = external_instruction_source(source, cwd.as_deref())? {
+            items.push(json!({
+                "itemType":"AGENTS_MD",
+                "description":format!("从 {} 导入项目指令：{}", source.label(), instruction.display()),
+                "cwd":cwd_value
+            }));
+        }
+        let settings = match source {
+            ExternalMigrationSource::Claude => scope.join("settings.json"),
+            ExternalMigrationSource::Cursor if cwd.is_some() => scope.join("cli.json"),
+            ExternalMigrationSource::Cursor => scope.join("cli-config.json"),
+        };
+        if nonempty_file(&settings) {
+            items.push(json!({
+                "itemType":"CONFIG",
+                "description":format!("从 {} 导入配置：{}", source.label(), settings.display()),
+                "cwd":cwd_value
+            }));
+        }
+        let mut details = serde_json::Map::new();
+        for (item_type, directory, detail_key) in [
+            ("SKILLS", "skills", "skills"),
+            ("SUBAGENTS", "agents", "subagents"),
+            ("HOOKS", "hooks", "hooks"),
+            ("COMMANDS", "commands", "commands"),
+        ] {
+            let names = directory_names(&scope.join(directory));
+            if !names.is_empty() {
+                details.clear();
+                details.insert(detail_key.into(), Value::Array(names));
+                items.push(json!({
+                    "itemType":item_type,
+                    "description":format!("从 {} 导入 {}", source.label(), directory),
+                    "cwd":cwd_value,
+                    "details":Value::Object(details.clone())
+                }));
+            }
+        }
+        let mcp = match source {
+            ExternalMigrationSource::Claude => scope.join(".mcp.json"),
+            ExternalMigrationSource::Cursor => scope.join("mcp.json"),
+        };
+        if nonempty_file(&mcp) {
+            items.push(json!({
+                "itemType":"MCP_SERVER_CONFIG",
+                "description":format!("从 {} 导入 MCP 配置：{}", source.label(), mcp.display()),
+                "cwd":cwd_value
+            }));
+        }
+        if matches!(source, ExternalMigrationSource::Claude) {
+            let memory = scope.join("memory");
+            let memory_files = directory_files(&memory);
+            if !memory_files.is_empty() {
+                items.push(json!({
+                    "itemType":"MEMORY",
+                    "description":"导入 Claude Memory",
+                    "cwd":cwd_value,
+                    "details":{"memory":memory_files}
+                }));
+            }
+        }
+        let sessions = session_candidates(&scope.join("projects"));
+        if !sessions.is_empty() {
+            items.push(json!({
+                "itemType":"SESSIONS",
+                "description":format!("从 {} 导入会话", source.label()),
+                "cwd":cwd_value,
+                "details":{"sessions":sessions}
+            }));
+        }
+    }
+    Ok(items)
+}
+
+fn directory_files(path: &std::path::Path) -> Vec<String> {
+    let mut files = std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .file_type()
+                .ok()
+                .filter(std::fs::FileType::is_file)
+                .and_then(|_| entry.path().to_str().map(str::to_owned))
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
+fn rewrite_external_terms(mut content: String, source: ExternalMigrationSource) -> String {
+    let replacements = match source {
+        ExternalMigrationSource::Claude => [
+            ("CLAUDE.md", "AGENTS.md"),
+            ("Claude Code", "Codex"),
+            ("Claude", "Codex"),
+        ],
+        ExternalMigrationSource::Cursor => [
+            (".cursorrules", "AGENTS.md"),
+            ("Cursor CLI", "Codex"),
+            ("Cursor", "Codex"),
+        ],
+    };
+    for (from, to) in replacements {
+        content = content.replace(from, to);
+    }
+    content
+}
+
+fn copy_tree_without_links(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    std::fs::create_dir_all(target)
+        .map_err(|error| format!("创建迁移目录 `{}` 失败：{error}", target.display()))?;
+    for entry in std::fs::read_dir(source)
+        .map_err(|error| format!("读取迁移目录 `{}` 失败：{error}", source.display()))?
+    {
+        let entry = entry.map_err(|error| format!("读取迁移目录项失败：{error}"))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("读取迁移文件类型失败：{error}"))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let destination = target.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_tree_without_links(&entry.path(), &destination)?;
+        } else if file_type.is_file() && !destination.exists() {
+            std::fs::copy(entry.path(), &destination)
+                .map_err(|error| format!("复制迁移文件失败：{error}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_atomic(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "迁移目标缺少父目录".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|error| format!("创建迁移目标目录失败：{error}"))?;
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("migration"),
+        Uuid::new_v4()
+    ));
+    std::fs::write(&temporary, contents)
+        .map_err(|error| format!("写入迁移临时文件失败：{error}"))?;
+    std::fs::rename(&temporary, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("发布迁移文件失败：{error}")
+    })
+}
+
+fn external_history_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?
+        .join("agent-runtime")
+        .join("external-agent-import-history.json"))
+}
+
+fn read_external_histories(app: &AppHandle) -> Result<Value, String> {
+    let path = external_history_path(app)?;
+    let data = std::fs::read(&path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|value| value.get("data").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    Ok(json!({"data":data,"connectors":[]}))
+}
+
+fn selected_named_sources(item: &Value, key: &str) -> HashSet<String> {
+    item.pointer(&format!("/details/{key}"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn copy_selected_directories(
+    source: &std::path::Path,
+    target: &std::path::Path,
+    selected: &HashSet<String>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut copied = Vec::new();
+    for name in selected {
+        let source_path = source.join(name);
+        if !source_path.is_dir() {
+            return Err(format!("迁移源目录不存在：{}", source_path.display()));
+        }
+        let target_path = target.join(name);
+        copy_tree_without_links(&source_path, &target_path)?;
+        copied.push((
+            source_path.display().to_string(),
+            target_path.display().to_string(),
+        ));
+    }
+    Ok(copied)
+}
+
+fn external_message_text(message: &Value) -> Option<String> {
+    let content = message
+        .pointer("/message/content")
+        .or_else(|| message.get("content"))?;
+    match content {
+        Value::String(text) => (!text.trim().is_empty()).then(|| text.clone()),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| {
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .or_else(|| part.as_str())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!text.trim().is_empty()).then_some(text)
+        }
+        _ => None,
+    }
+}
+
+fn import_external_session(
+    manager: &ThreadManager,
+    session: &Value,
+) -> Result<(String, String), String> {
+    let source_path = session
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "会话迁移缺少 path".to_string())?;
+    let bytes = std::fs::read(source_path)
+        .map_err(|error| format!("读取外部会话 `{source_path}` 失败：{error}"))?;
+    let mut messages = Vec::new();
+    let mut discovered_id = None;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        discovered_id = discovered_id.or_else(|| {
+            value
+                .get("sessionId")
+                .or_else(|| value.get("session_id"))
+                .and_then(Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .map(|value| value.to_string())
+        });
+        let role = value
+            .get("type")
+            .and_then(Value::as_str)
+            .or_else(|| value.pointer("/message/role").and_then(Value::as_str));
+        let Some(role) = role.filter(|role| matches!(*role, "user" | "assistant")) else {
+            continue;
+        };
+        if let Some(content) = external_message_text(&value) {
+            messages.push(json!({
+                "kind":"message",
+                "role":role,
+                "content":content,
+                "createdAt":0
+            }));
+        }
+    }
+    if messages.is_empty() {
+        return Err(format!("外部会话 `{source_path}` 没有可导入消息"));
+    }
+    let id = discovered_id.unwrap_or_else(|| Uuid::now_v7().to_string());
+    let title = session
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            messages
+                .iter()
+                .find_map(|message| message.get("content").and_then(Value::as_str))
+                .map(|text| text.chars().take(80).collect())
+        })
+        .unwrap_or_else(|| "导入的会话".into());
+    let cwd = session
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|cwd| cwd.is_dir())
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    manager
+        .import_legacy_thread(tietiezhi_agent_core::LegacyThreadImport {
+            id: id.clone(),
+            title,
+            cwd,
+            created_at_ms: unix_timestamp_ms().max(0) as u64,
+            updated_at_ms: unix_timestamp_ms().max(0) as u64,
+            model: None,
+            model_provider: None,
+            task_mode: "code".into(),
+            messages,
+        })
+        .map_err(|error| error.message)?;
+    Ok((source_path.into(), id))
+}
+
+fn checked_external_session(
+    session: &Value,
+    allowed_root: &std::path::Path,
+) -> Result<Value, String> {
+    let source_path = session
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "会话迁移缺少 path".to_string())?;
+    let canonical = std::fs::canonicalize(source_path)
+        .map_err(|error| format!("读取外部会话 `{source_path}` 失败：{error}"))?;
+    if !canonical.is_file() || !canonical.starts_with(allowed_root) {
+        return Err("会话路径超出已检测范围".into());
+    }
+    let mut checked = session.clone();
+    checked["path"] = Value::String(canonical.display().to_string());
+    Ok(checked)
+}
+
+fn import_external_item(
+    app: &AppHandle,
+    manager: &ThreadManager,
+    source: ExternalMigrationSource,
+    item: &Value,
+) -> Result<Vec<(String, String)>, String> {
+    let item_type = item
+        .get("itemType")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "迁移项缺少 itemType".to_string())?;
+    let cwd = item.get("cwd").and_then(Value::as_str);
+    let scope = external_scope_root(source, cwd)?;
+    let codex_home = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("无法定位 Codex 配置目录：{error}"))?
+        .join("codex");
+    let project_root = cwd.map(std::path::PathBuf::from);
+    match item_type {
+        "AGENTS_MD" => {
+            let source_path = external_instruction_source(source, cwd)?
+                .ok_or_else(|| "没有检测到可导入的项目指令".to_string())?;
+            let target = project_root
+                .as_ref()
+                .map(|root| root.join("AGENTS.md"))
+                .unwrap_or_else(|| codex_home.join("AGENTS.md"));
+            if target.exists()
+                && std::fs::read_to_string(&target).is_ok_and(|content| !content.trim().is_empty())
+            {
+                return Ok(Vec::new());
+            }
+            let content = if source_path.is_dir() {
+                directory_files(&source_path)
+                    .into_iter()
+                    .filter_map(|path| std::fs::read_to_string(path).ok())
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            } else {
+                std::fs::read_to_string(&source_path)
+                    .map_err(|error| format!("读取外部项目指令失败：{error}"))?
+            };
+            write_atomic(&target, rewrite_external_terms(content, source).as_bytes())?;
+            Ok(vec![(
+                source_path.display().to_string(),
+                target.display().to_string(),
+            )])
+        }
+        "CONFIG" => {
+            let source_path = match source {
+                ExternalMigrationSource::Claude => scope.join("settings.json"),
+                ExternalMigrationSource::Cursor if cwd.is_some() => scope.join("cli.json"),
+                ExternalMigrationSource::Cursor => scope.join("cli-config.json"),
+            };
+            let target = codex_home.join("imports").join(format!(
+                "{}-settings.json",
+                source.label().to_ascii_lowercase()
+            ));
+            let bytes = std::fs::read(&source_path)
+                .map_err(|error| format!("读取外部配置失败：{error}"))?;
+            serde_json::from_slice::<Value>(&bytes)
+                .map_err(|error| format!("外部配置不是有效 JSON：{error}"))?;
+            write_atomic(&target, &bytes)?;
+            Ok(vec![(
+                source_path.display().to_string(),
+                target.display().to_string(),
+            )])
+        }
+        "SKILLS" | "SUBAGENTS" | "HOOKS" | "COMMANDS" => {
+            let (source_name, target_name, detail_key) = match item_type {
+                "SKILLS" => ("skills", "skills", "skills"),
+                "SUBAGENTS" => ("agents", "agents", "subagents"),
+                "HOOKS" => ("hooks", "hooks", "hooks"),
+                "COMMANDS" => ("commands", "skills", "commands"),
+                _ => unreachable!(),
+            };
+            let target_root = project_root
+                .as_ref()
+                .map(|root| root.join(".codex").join(target_name))
+                .unwrap_or_else(|| codex_home.join(target_name));
+            copy_selected_directories(
+                &scope.join(source_name),
+                &target_root,
+                &selected_named_sources(item, detail_key),
+            )
+        }
+        "MCP_SERVER_CONFIG" => {
+            let source_path = match source {
+                ExternalMigrationSource::Claude => scope.join(".mcp.json"),
+                ExternalMigrationSource::Cursor => scope.join("mcp.json"),
+            };
+            let target = codex_home
+                .join("imports")
+                .join(format!("{}-mcp.json", source.label().to_ascii_lowercase()));
+            let bytes = std::fs::read(&source_path)
+                .map_err(|error| format!("读取外部 MCP 配置失败：{error}"))?;
+            serde_json::from_slice::<Value>(&bytes)
+                .map_err(|error| format!("外部 MCP 配置不是有效 JSON：{error}"))?;
+            write_atomic(&target, &bytes)?;
+            Ok(vec![(
+                source_path.display().to_string(),
+                target.display().to_string(),
+            )])
+        }
+        "MEMORY" => {
+            let target = codex_home.join("memories").join("external");
+            let mut copied = Vec::new();
+            for source_path in item
+                .pointer("/details/memory")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                let source_path = std::path::PathBuf::from(source_path);
+                let canonical = std::fs::canonicalize(&source_path)
+                    .map_err(|error| format!("读取外部 Memory 失败：{error}"))?;
+                let allowed = std::fs::canonicalize(scope.join("memory"))
+                    .map_err(|error| format!("读取外部 Memory 根目录失败：{error}"))?;
+                if !canonical.starts_with(&allowed) {
+                    return Err("Memory 路径超出已检测范围".into());
+                }
+                let destination = target.join(
+                    canonical
+                        .file_name()
+                        .ok_or_else(|| "Memory 文件名无效".to_string())?,
+                );
+                let bytes = std::fs::read(&canonical)
+                    .map_err(|error| format!("读取外部 Memory 失败：{error}"))?;
+                write_atomic(&destination, &bytes)?;
+                copied.push((
+                    canonical.display().to_string(),
+                    destination.display().to_string(),
+                ));
+            }
+            Ok(copied)
+        }
+        "SESSIONS" => {
+            let allowed = std::fs::canonicalize(scope.join("projects"))
+                .map_err(|error| format!("读取外部会话根目录失败：{error}"))?;
+            item.pointer("/details/sessions")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|session| {
+                    let checked = checked_external_session(session, &allowed)?;
+                    import_external_session(manager, &checked)
+                })
+                .collect()
+        }
+        "PLUGINS" => Err("插件迁移必须通过 Marketplace 安装流程完成".into()),
+        _ => Err(format!("不支持的迁移项类型 `{item_type}`")),
+    }
+}
+
+fn perform_external_import(
+    app: AppHandle,
+    manager: ThreadManager,
+    connection_id: String,
+    import_id: String,
+    source: ExternalMigrationSource,
+    migration_items: Vec<Value>,
+) {
+    let mut item_type_results = Vec::new();
+    for item in migration_items {
+        let item_type = item
+            .get("itemType")
+            .and_then(Value::as_str)
+            .unwrap_or("CONFIG")
+            .to_owned();
+        let cwd = item.get("cwd").cloned().unwrap_or(Value::Null);
+        let result = match import_external_item(&app, &manager, source, &item) {
+            Ok(successes) => json!({
+                "itemType":item_type,
+                "successes":successes.into_iter().map(|(source_path,target)| json!({
+                    "itemType":item_type,
+                    "cwd":cwd,
+                    "source":source_path,
+                    "target":target
+                })).collect::<Vec<_>>(),
+                "failures":[]
+            }),
+            Err(error) => json!({
+                "itemType":item_type,
+                "successes":[],
+                "failures":[{
+                    "itemType":item_type,
+                    "cwd":cwd,
+                    "source":source.label(),
+                    "failureStage":"import",
+                    "message":error,
+                    "errorType":"io",
+                    "subErrorType":Value::Null
+                }]
+            }),
+        };
+        item_type_results.push(result.clone());
+        let params = json!({"importId":import_id,"itemTypeResults":[result]});
+        if let Ok(notification) = checked_external_import_notification(
+            &connection_id,
+            "externalAgentConfig/import/progress",
+            params,
+        ) {
+            let _ = emit_notifications(&app, &[notification]);
+        }
+    }
+    let completed = json!({"importId":import_id,"itemTypeResults":item_type_results});
+    if let Ok(notification) = checked_external_import_notification(
+        &connection_id,
+        "externalAgentConfig/import/completed",
+        completed.clone(),
+    ) {
+        let _ = emit_notifications(&app, &[notification]);
+    }
+    let mut histories = read_external_histories(&app)
+        .ok()
+        .and_then(|value| value.get("data").cloned())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let successes = completed
+        .get("itemTypeResults")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|result| {
+            result
+                .get("successes")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    let failures = completed
+        .get("itemTypeResults")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|result| {
+            result
+                .get("failures")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect::<Vec<_>>();
+    histories.push(json!({
+        "importId":import_id,
+        "completedAtMs":unix_timestamp_ms(),
+        "successes":successes,
+        "failures":failures
+    }));
+    if let (Ok(path), Ok(bytes)) = (
+        external_history_path(&app),
+        serde_json::to_vec_pretty(&json!({"data":histories})),
+    ) {
+        let _ = write_atomic(&path, &bytes);
+    }
+}
+
+fn checked_external_import_notification(
+    connection_id: &str,
+    method: &str,
+    params: Value,
+) -> Result<RoutedNotification, String> {
+    serde_json::from_value::<ServerNotification>(json!({
+        "method":method,
+        "params":params
+    }))
+    .map_err(|error| format!("外部 Agent 导入通知不符合 App Server V2：{error}"))?;
+    Ok(RoutedNotification {
+        recipients: vec![connection_id.to_owned()],
+        method: method.to_owned(),
+        params,
+    })
+}
+
+async fn dispatch_external_agent_request(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("{method} 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    match method {
+        "externalAgentConfig/detect" => {
+            let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+            let source = ExternalMigrationSource::parse(
+                params.get("migrationSource").and_then(Value::as_str),
+            );
+            let cwds = params
+                .get("cwds")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let result = json!({
+                "items":detect_external_agent_items(
+                    source,
+                    params.get("includeHome").and_then(Value::as_bool).unwrap_or(false),
+                    &cwds
+                )?
+            });
+            serde_json::from_value::<ExternalAgentConfigDetectResponse>(result.clone())
+                .map_err(|error| format!("externalAgentConfig/detect 返回值无效：{error}"))?;
+            dispatch_success(request, result)
+        }
+        "externalAgentConfig/import" => {
+            let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+            let source = ExternalMigrationSource::parse(
+                params.get("migrationSource").and_then(Value::as_str),
+            );
+            let migration_items = params
+                .get("migrationItems")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let import_id = Uuid::now_v7().to_string();
+            let result = json!({"importId":import_id});
+            serde_json::from_value::<ExternalAgentConfigImportResponse>(result.clone())
+                .map_err(|error| format!("externalAgentConfig/import 返回值无效：{error}"))?;
+            let app = app.clone();
+            let manager = thread_manager(&app, state)?;
+            let connection_id = connection_id.to_owned();
+            let import_task_id = import_id.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::task::yield_now().await;
+                perform_external_import(
+                    app,
+                    manager,
+                    connection_id,
+                    import_task_id,
+                    source,
+                    migration_items,
+                );
+            });
+            dispatch_success(request, result)
+        }
+        "externalAgentConfig/import/readHistories" => {
+            let result = read_external_histories(app)?;
+            serde_json::from_value::<ExternalAgentConfigImportHistoriesReadResponse>(
+                result.clone(),
+            )
+            .map_err(|error| format!("导入历史返回值无效：{error}"))?;
+            dispatch_success(request, result)
+        }
+        _ => Ok(dispatch_error(request, -32601, "method not found")),
+    }
 }
 
 fn observability_runtime(app: &AppHandle, state: &AppState) -> Result<Observability, String> {
@@ -1391,10 +2380,38 @@ fn emit_notifications(app: &AppHandle, notifications: &[RoutedNotification]) -> 
                 "notification":notification.wire_message()
             }),
         );
-        app.emit(CODEX_NOTIFICATION_EVENT, notification)
+        let mut local_notification = notification.clone();
+        local_notification.recipients =
+            negotiated_recipients(app, &notification.recipients, &notification.method);
+        if local_notification.recipients.is_empty() {
+            continue;
+        }
+        app.emit(CODEX_NOTIFICATION_EVENT, local_notification)
             .map_err(|error| format!("发送 Codex 通知失败：{error}"))?;
     }
     Ok(())
+}
+
+fn negotiated_recipients(app: &AppHandle, recipients: &[String], method: &str) -> Vec<String> {
+    let state = app.state::<AppState>();
+    let Ok(connections) = state.codex_connections.lock() else {
+        return recipients.to_vec();
+    };
+    recipients
+        .iter()
+        .filter(|recipient| {
+            let Some(connection) = connections.get(*recipient) else {
+                return true;
+            };
+            connection.initialized
+                && !connection.opt_out_notification_methods.contains(method)
+                && (!method.starts_with("experimental/") || connection.experimental_api)
+                && (method != "attestation/generate" || connection.request_attestation)
+                && (method != "mcpServer/elicitation/request"
+                    || connection.mcp_server_openai_form_elicitation)
+        })
+        .cloned()
+        .collect()
 }
 
 fn emit_server_request(
@@ -1402,6 +2419,9 @@ fn emit_server_request(
     request: &AccountServerRequest,
     thread_id: Option<&str>,
 ) -> Result<(), String> {
+    if negotiated_recipients(app, &request.recipients, &request.method).is_empty() {
+        return Err(format!("没有客户端声明支持 `{}`", request.method));
+    }
     register_server_request(
         app,
         &request.id,
@@ -1425,6 +2445,9 @@ fn emit_approval_server_request(
     app: &AppHandle,
     request: &ApprovalServerRequest,
 ) -> Result<(), String> {
+    if negotiated_recipients(app, &request.recipients, &request.method).is_empty() {
+        return Err(format!("没有客户端声明支持 `{}`", request.method));
+    }
     register_server_request(
         app,
         &request.id,
@@ -1449,6 +2472,9 @@ fn emit_operations_server_request(
     request: &OperationsServerRequest,
     thread_id: &str,
 ) -> Result<(), String> {
+    if negotiated_recipients(app, &request.recipients, &request.method).is_empty() {
+        return Err(format!("没有客户端声明支持 `{}`", request.method));
+    }
     register_server_request(app, &request.id, Some(thread_id), &request.recipients)?;
     forward_remote_payload(
         app,
@@ -2014,6 +3040,21 @@ pub(crate) async fn codex_v2_request_inner(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    if method == "initialize" {
+        return initialize_connection(app, state, &connection_id, &request);
+    }
+    {
+        let mut connections = state
+            .codex_connections
+            .lock()
+            .map_err(|_| "Codex 连接状态锁已损坏".to_string())?;
+        connections
+            .entry(connection_id.clone())
+            .or_insert_with(|| CodexConnectionState {
+                initialized: true,
+                ..CodexConnectionState::default()
+            });
+    }
     state
         .codex_account
         .register_connection(&connection_id)
@@ -2035,6 +3076,10 @@ pub(crate) async fn codex_v2_request_inner(
         "feedback/upload" | "hooks/list" | "modelProvider/capabilities/read"
     ) {
         return dispatch_operations_request(app, state, &request, &method).await;
+    }
+    if method.starts_with("externalAgentConfig/") {
+        return dispatch_external_agent_request(app, state, &connection_id, &request, &method)
+            .await;
     }
     if method == "memory/reset" {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
@@ -2066,29 +3111,28 @@ pub(crate) async fn codex_v2_request_inner(
         return Ok(output);
     }
     if SkillsRuntime::handles(&method) {
-        let output = dispatch_skills_request(&app, &state, &connection_id, &request, &method)?;
-        emit_notifications(&app, &output.notifications)?;
+        let output = dispatch_skills_request(app, state, &connection_id, &request, &method)?;
+        emit_notifications(app, &output.notifications)?;
         return Ok(output);
     }
     if matches!(method.as_str(), "app/list" | "app/read" | "app/installed") {
-        let output = dispatch_apps_request(&app, &state, &connection_id, &request, &method)?;
-        emit_notifications(&app, &output.notifications)?;
+        let output = dispatch_apps_request(app, state, &connection_id, &request, &method)?;
+        emit_notifications(app, &output.notifications)?;
         return Ok(output);
     }
     if PluginRuntime::handles(&method) {
-        let output =
-            dispatch_plugin_request(&app, &state, &connection_id, &request, &method).await?;
-        emit_notifications(&app, &output.notifications)?;
+        let output = dispatch_plugin_request(app, state, &connection_id, &request, &method).await?;
+        emit_notifications(app, &output.notifications)?;
         return Ok(output);
     }
     if tietiezhi_agent_account::AccountRuntime::handles(&method) {
         let output =
-            dispatch_account_request(&app, &state, &connection_id, &request, &method).await?;
-        emit_notifications(&app, &output.notifications)?;
+            dispatch_account_request(app, state, &connection_id, &request, &method).await?;
+        emit_notifications(app, &output.notifications)?;
         return Ok(output);
     }
     if method == "model/list" {
-        if let Some(output) = online_model_list(&app, &request)? {
+        if let Some(output) = online_model_list(app, &request)? {
             return Ok(output);
         }
     }
@@ -2097,12 +3141,11 @@ pub(crate) async fn codex_v2_request_inner(
     }
     if super::codex_fs::handles(&method) {
         let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
-        return match super::codex_fs::dispatch(&app, &state, &connection_id, &method, &params).await
-        {
+        return match super::codex_fs::dispatch(app, state, &connection_id, &method, &params).await {
             Ok((result, notifications)) => {
                 let mut output = dispatch_success(&request, result)?;
                 output.notifications = notifications;
-                emit_notifications(&app, &output.notifications)?;
+                emit_notifications(app, &output.notifications)?;
                 Ok(output)
             }
             Err(error) => Ok(dispatch_error(&request, -32602, error)),
@@ -2115,21 +3158,21 @@ pub(crate) async fn codex_v2_request_inner(
             | "mcpServer/tool/call"
             | "mcpServerStatus/list"
     ) {
-        return dispatch_mcp_request(&app, &state, &request, &method).await;
+        return dispatch_mcp_request(app, state, &request, &method).await;
     }
     if matches!(
         method.as_str(),
         "windowsSandbox/readiness" | "windowsSandbox/setupStart"
     ) {
         let output = dispatch_windows_sandbox(&connection_id, &request, &method)?;
-        emit_notifications(&app, &output.notifications)?;
+        emit_notifications(app, &output.notifications)?;
         return Ok(output);
     }
     if method.starts_with("command/exec") {
-        return dispatch_command_exec(&app, &state, &connection_id, &request, &method).await;
+        return dispatch_command_exec(app, state, &connection_id, &request, &method).await;
     }
     if method == "thread/shellCommand" {
-        return dispatch_thread_shell_command(&app, &state, &connection_id, &request).await;
+        return dispatch_thread_shell_command(app, state, &connection_id, &request).await;
     }
     let thread_id = request
         .pointer("/params/threadId")
@@ -2161,12 +3204,17 @@ pub(crate) async fn codex_v2_request_inner(
                 || source.starts_with("subAgent")
         });
 
-    let manager = thread_manager(&app, &state)?;
+    let manager = thread_manager(app, state)?;
+    if method == "thread/delete" {
+        if let Some(thread_id) = thread_id.as_deref() {
+            super::conversations::prepare_codex_thread_delete(app, thread_id)?;
+        }
+    }
     if matches!(method.as_str(), "thread/archive" | "thread/delete") {
         if let Some(thread_id) = thread_id.as_deref() {
-            let cwd = runtime_defaults(&app)?.cwd;
+            let cwd = runtime_defaults(app)?.cwd;
             let hooks = run_hooks(
-                &app,
+                app,
                 &manager,
                 HookRequest {
                     event_name: HookEventName::SessionEnd,
@@ -2195,19 +3243,19 @@ pub(crate) async fn codex_v2_request_inner(
         if let (Some(thread_id), Some(turn_id)) =
             (thread_id.as_deref(), requested_turn_id.as_deref())
         {
-            finalize_interrupted_review(&app, &manager, thread_id, turn_id);
+            finalize_interrupted_review(app, &manager, thread_id, turn_id);
         }
     } else if matches!(method.as_str(), "thread/archive" | "thread/delete") {
         if let Some(thread_id) = thread_id.as_deref() {
             if let Ok(Some(turn_id)) = manager.active_turn_id(thread_id) {
-                finalize_interrupted_review(&app, &manager, thread_id, &turn_id);
+                finalize_interrupted_review(app, &manager, thread_id, &turn_id);
             }
         }
     }
     let output = manager.dispatch(&connection_id, request);
     if method == "thread/memoryMode/set" && output.response.get("error").is_none() {
         if let (Some(thread_id), Some(mode)) = (thread_id.as_deref(), requested_memory_mode) {
-            memory_runtime(&app, &state)?
+            memory_runtime(app, state)?
                 .set_thread_mode(thread_id, mode)
                 .map_err(|error| format!("保存 Thread Memory Mode 失败：{error}"))?;
         }
@@ -2216,7 +3264,7 @@ pub(crate) async fn codex_v2_request_inner(
         if let (Some(thread_id), Some(turn_id)) =
             (thread_id.as_deref(), requested_turn_id.as_deref())
         {
-            signal_turn_input_activity(&state, thread_id, turn_id);
+            signal_turn_input_activity(state, thread_id, turn_id);
         }
     }
     let should_cancel = output.response.get("error").is_none()
@@ -2229,26 +3277,26 @@ pub(crate) async fn codex_v2_request_inner(
             let expected_turn_id = (method == "turn/interrupt")
                 .then_some(requested_turn_id.as_deref())
                 .flatten();
-            cancel_thread(&state, thread_id, expected_turn_id);
+            cancel_thread(state, thread_id, expected_turn_id);
             if matches!(method.as_str(), "thread/archive" | "thread/delete") {
                 let _ = state.codex_realtime.stop(thread_id);
                 state
                     .codex_session_approvals
                     .clear_session(thread_id)
                     .map_err(|error| error.to_string())?;
-                if let Ok(runtime) = hooks_runtime(&app, &state) {
+                if let Ok(runtime) = hooks_runtime(app, state) {
                     runtime.end_session(thread_id);
                 }
             }
         }
     }
-    emit_notifications(&app, &output.notifications)?;
+    emit_notifications(app, &output.notifications)?;
 
     if method == "thread/start"
         && output.response.get("error").is_none()
         && !thread_start_ephemeral
         && !thread_start_is_background
-        && memories_config(&app).generate_memories
+        && memories_config(app).generate_memories
     {
         if let (Some(thread_id), Some(model), Some(model_provider)) = (
             output
@@ -2265,7 +3313,7 @@ pub(crate) async fn codex_v2_request_inner(
                 .and_then(Value::as_str),
         ) {
             launch_memory_pipeline(
-                &app,
+                app,
                 manager.clone(),
                 thread_id.to_owned(),
                 model.to_owned(),
@@ -2288,7 +3336,7 @@ pub(crate) async fn codex_v2_request_inner(
                 .and_then(Value::as_str)
                 .map(str::to_owned),
         ) {
-            launch_turn_executor(&app, &state, manager, thread_id, turn_id);
+            launch_turn_executor(app, state, manager, thread_id, turn_id);
         }
     } else if method == "review/start" && output.response.get("error").is_none() {
         let review_thread_id = output
@@ -2302,7 +3350,7 @@ pub(crate) async fn codex_v2_request_inner(
             .and_then(Value::as_str)
             .map(str::to_owned);
         if let (Some(thread_id), Some(turn_id)) = (review_thread_id, turn_id) {
-            launch_turn_executor(&app, &state, manager, thread_id, turn_id);
+            launch_turn_executor(app, state, manager, thread_id, turn_id);
         }
     } else if method == "thread/compact/start" && output.response.get("error").is_none() {
         let turn_id = output
@@ -2313,7 +3361,7 @@ pub(crate) async fn codex_v2_request_inner(
             .and_then(Value::as_str)
             .map(str::to_owned);
         if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
-            launch_compaction_executor(&app, &state, manager, thread_id, turn_id);
+            launch_compaction_executor(app, state, manager, thread_id, turn_id);
         }
     }
     Ok(output)
@@ -8023,10 +9071,11 @@ async fn turn_tool_runtime(
                 } else {
                     "completed"
                 };
-                let error = result
-                    .is_error
-                    .then(|| json!({"message":result.model_text()}))
-                    .unwrap_or(Value::Null);
+                let error = if result.is_error {
+                    json!({"message":result.model_text()})
+                } else {
+                    Value::Null
+                };
                 let result_value = json!({
                     "content":result.content,
                     "structuredContent":result.structured_content,
@@ -8885,13 +9934,16 @@ fn fail_turn(
 mod tests {
     use super::{
         assistant_response_text, automation_thread_start_request, automation_turn_start_request,
-        collaboration_timeline_item, compaction_response_request, dispatch_windows_sandbox,
-        empty_rate_limits, format_micro, gateway_quota_allows_memory_startup, gateway_rate_limits,
-        local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type,
-        parse_plugin_mcp_source, permission_profile_list, permission_profile_to_tool,
-        permission_profile_to_v2, plugin_enablement_edits, response_request, review_tool_allowed,
-        sanitize_collaboration_fork_history, ConfigPaths, ConfigRuntime, PluginMcpSource,
-        ResponseEvent, ResponseProjection, SkillsPaths, SkillsRuntime,
+        checked_external_import_notification, checked_external_session,
+        collaboration_timeline_item, compaction_response_request, copy_tree_without_links,
+        dispatch_windows_sandbox, empty_rate_limits, external_message_text, format_micro,
+        gateway_quota_allows_memory_startup, gateway_rate_limits, local_tool_timeline_item,
+        merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, parse_plugin_mcp_source,
+        permission_profile_list, permission_profile_to_tool, permission_profile_to_v2,
+        plugin_enablement_edits, response_request, review_tool_allowed, rewrite_external_terms,
+        sanitize_collaboration_fork_history, write_atomic, ConfigPaths, ConfigRuntime,
+        ExternalMigrationSource, PluginMcpSource, ResponseEvent, ResponseProjection, SkillsPaths,
+        SkillsRuntime,
     };
     use crate::commands::gateway_auth::{
         GatewayOwnedPackage, GatewayPaymentChannels, GatewayQuotaView, GatewayWallet,
@@ -8903,6 +9955,113 @@ mod tests {
         CompactionExecutionSnapshot, RuntimeDefaults, ThreadManager, TurnExecutionSnapshot,
     };
     use tietiezhi_agent_tools::{ToolCall, ToolPayload};
+
+    #[test]
+    fn external_agent_migration_rewrites_terms_and_extracts_text() {
+        assert_eq!(
+            rewrite_external_terms(
+                "Claude Code reads CLAUDE.md".into(),
+                ExternalMigrationSource::Claude
+            ),
+            "Codex reads AGENTS.md"
+        );
+        assert_eq!(
+            external_message_text(&json!({
+                "message":{"content":[{"type":"text","text":"first"},"second"]}
+            }))
+            .as_deref(),
+            Some("first\nsecond")
+        );
+    }
+
+    #[test]
+    fn external_agent_migration_uses_atomic_files_and_bounded_sessions() {
+        let temp = TempDir::new().unwrap();
+        let source_root = temp.path().join("source");
+        let target_root = temp.path().join("target");
+        let projects = source_root.join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(projects.join("session.jsonl"), b"{\"type\":\"user\"}\n").unwrap();
+        std::fs::write(source_root.join("regular.txt"), b"safe").unwrap();
+        copy_tree_without_links(&source_root, &target_root).unwrap();
+        assert_eq!(
+            std::fs::read(target_root.join("regular.txt")).unwrap(),
+            b"safe"
+        );
+
+        let checked = checked_external_session(
+            &json!({"path":projects.join("session.jsonl")}),
+            &std::fs::canonicalize(&projects).unwrap(),
+        )
+        .unwrap();
+        assert!(checked["path"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("session.jsonl")));
+
+        let outside = temp.path().join("outside.jsonl");
+        std::fs::write(&outside, b"{}\n").unwrap();
+        assert!(checked_external_session(
+            &json!({"path":outside}),
+            &std::fs::canonicalize(&projects).unwrap()
+        )
+        .is_err());
+
+        let atomic = temp.path().join("nested").join("history.json");
+        write_atomic(&atomic, b"{\"ok\":true}").unwrap();
+        assert_eq!(std::fs::read(&atomic).unwrap(), b"{\"ok\":true}");
+        assert!(std::fs::read_dir(atomic.parent().unwrap())
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_agent_migration_does_not_follow_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(temp.path().join("secret"), b"secret").unwrap();
+        symlink(temp.path().join("secret"), source.join("link")).unwrap();
+        copy_tree_without_links(&source, &target).unwrap();
+        assert!(!target.join("link").exists());
+    }
+
+    #[test]
+    fn external_agent_import_notifications_match_app_server_v2() {
+        for method in [
+            "externalAgentConfig/import/progress",
+            "externalAgentConfig/import/completed",
+        ] {
+            let notification = checked_external_import_notification(
+                "desktop",
+                method,
+                json!({
+                    "importId":"import-1",
+                    "itemTypeResults":[{
+                        "itemType":"CONFIG",
+                        "successes":[],
+                        "failures":[]
+                    }]
+                }),
+            )
+            .unwrap();
+            assert_eq!(notification.recipients, ["desktop"]);
+            assert_eq!(notification.method, method);
+        }
+        assert!(checked_external_import_notification(
+            "desktop",
+            "externalAgentConfig/import/progress",
+            json!({"importId":"missing-results"})
+        )
+        .is_err());
+    }
 
     #[test]
     fn empty_runtime_selection_is_explicitly_unconfigured() {

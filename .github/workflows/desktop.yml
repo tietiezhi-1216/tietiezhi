@@ -140,6 +140,9 @@ jobs:
       - name: Check Codex Runtime diagnostics UI
         run: pnpm test:codex-runtime-diagnostics-ui
 
+      - name: Check Workspace Codex Runtime switch
+        run: pnpm test:codex-runtime-switch
+
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
 

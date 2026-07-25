@@ -223,6 +223,20 @@ pub struct RealtimeThreadConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct LegacyThreadImport {
+    pub id: String,
+    pub title: String,
+    pub cwd: PathBuf,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub model: Option<String>,
+    pub model_provider: Option<String>,
+    pub task_mode: String,
+    pub messages: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CompactionExecutionSnapshot {
     pub thread_id: String,
     pub turn_id: String,
@@ -400,6 +414,97 @@ impl ThreadManager {
         };
         manager.rebuild_missing_indexes()?;
         Ok(manager)
+    }
+
+    /// Upgrade an R4 task checkpoint in place to a canonical Codex Thread.
+    ///
+    /// The Thread id and task directory are retained so existing worktrees,
+    /// sidebar links, terminal ownership, and user files remain attached.
+    pub fn import_legacy_thread(&self, import: LegacyThreadImport) -> RpcResult<bool> {
+        validate_thread_id(&import.id)?;
+        if !import.cwd.is_absolute() {
+            return Err(RpcError::invalid("legacy thread cwd must be absolute"));
+        }
+        if import.task_mode != "code" && import.task_mode != "work" {
+            return Err(RpcError::invalid("legacy task mode must be code or work"));
+        }
+        if self
+            .inner
+            .store
+            .thread(&import.id)
+            .map_err(state_error)?
+            .and_then(|metadata| metadata.canonical)
+            .is_some()
+        {
+            return Ok(false);
+        }
+
+        let history = legacy_messages_to_response_items(&import.messages);
+        let created_at_ms = import.created_at_ms.max(1);
+        let updated_at_ms = import.updated_at_ms.max(created_at_ms);
+        let model = import
+            .model
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.inner.defaults.model.clone());
+        let model_provider = import
+            .model_provider
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| self.inner.defaults.model_provider.clone());
+        let preview = legacy_preview(&import.messages);
+        let record = ThreadRecord {
+            id: import.id.clone(),
+            session_id: import.id.clone(),
+            forked_from_id: None,
+            parent_thread_id: None,
+            preview,
+            ephemeral: false,
+            history_mode: "legacy".into(),
+            model_context_window: resolve_model_context_window(
+                &self.inner.defaults.model_context_windows,
+                &model,
+            ),
+            model_provider,
+            model,
+            base_instructions: None,
+            developer_instructions: None,
+            cwd: import.cwd,
+            cli_version: self.inner.defaults.cli_version.clone(),
+            source: json!("appServer"),
+            thread_source: None,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+            git_info: None,
+            name: (!import.title.trim().is_empty()).then_some(import.title),
+            approval_policy: self.inner.defaults.approval_policy.clone(),
+            approvals_reviewer: self.inner.defaults.approvals_reviewer.clone(),
+            sandbox: self.inner.defaults.sandbox.clone(),
+            reasoning_effort: self.inner.defaults.reasoning_effort.clone(),
+            reasoning_summary: None,
+            personality: None,
+            service_tier: self.inner.defaults.service_tier.clone(),
+            goal: None,
+            memory_mode: "enabled".into(),
+            created_at_ms,
+            updated_at_ms,
+            recency_at_ms: Some(updated_at_ms),
+            turns: Vec::new(),
+        };
+        let mut state = self.state()?;
+        state.loaded.remove(&import.id);
+        let mut loaded = self.create_loaded_thread(record, history, &mut state)?;
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_canonical_session_meta_upgrade(
+                    &import.id,
+                    canonical_session_meta(&loaded.record, &loaded.compact_window),
+                )
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        self.persist_loaded(&mut loaded)?;
+        state.loaded.insert(import.id, loaded);
+        Ok(true)
     }
 
     /// Dispatch one pinned App Server V2 client request.
@@ -4608,7 +4713,11 @@ impl ThreadManager {
                 .and_then(Value::as_str)
                 .unwrap_or(&self.inner.defaults.model_provider)
                 .into(),
-            model: self.inner.defaults.model.clone(),
+            model: meta
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(&self.inner.defaults.model)
+                .into(),
             base_instructions: meta
                 .pointer("/base_instructions/text")
                 .and_then(Value::as_str)
@@ -4648,7 +4757,7 @@ impl ThreadManager {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
             git_info,
-            name: None,
+            name: meta.get("name").and_then(Value::as_str).map(str::to_owned),
             approval_policy: self.inner.defaults.approval_policy.clone(),
             approvals_reviewer: self.inner.defaults.approvals_reviewer.clone(),
             sandbox: self.inner.defaults.sandbox.clone(),
@@ -5924,6 +6033,86 @@ fn response_items_from_rollout(items: &[RecoveredRolloutItem]) -> Vec<Value> {
     reconstruct_context(items).history
 }
 
+fn legacy_messages_to_response_items(messages: &[Value]) -> Vec<Value> {
+    messages
+        .iter()
+        .filter_map(|message| {
+            let kind = message
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("message");
+            let content = match kind {
+                "context" => message
+                    .get("contextSummary")
+                    .or_else(|| message.get("context_summary"))
+                    .and_then(Value::as_str)
+                    .map(|summary| format!("<context_summary>\n{summary}\n</context_summary>")),
+                "toolCall" => {
+                    let name = message
+                        .get("toolName")
+                        .or_else(|| message.get("tool_name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool");
+                    let output = message
+                        .get("toolOutput")
+                        .or_else(|| message.get("tool_output"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    (!output.is_empty()).then(|| format!("[Legacy tool `{name}` result]\n{output}"))
+                }
+                "permission" | "error" => None,
+                _ => message
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            }?;
+            if content.trim().is_empty() {
+                return None;
+            }
+            let role = if kind == "message" {
+                message
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .unwrap_or("user")
+            } else {
+                "user"
+            };
+            let role = match role {
+                "assistant" => "assistant",
+                "system" | "developer" => "developer",
+                _ => "user",
+            };
+            let content_type = if role == "assistant" {
+                "output_text"
+            } else {
+                "input_text"
+            };
+            Some(json!({
+                "type":"message",
+                "role":role,
+                "content":[{"type":content_type,"text":content}]
+            }))
+        })
+        .collect()
+}
+
+fn legacy_preview(messages: &[Value]) -> String {
+    messages
+        .iter()
+        .find(|message| {
+            message
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| role == "user")
+        })
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| text.chars().take(200).collect())
+        .unwrap_or_default()
+}
+
 fn reconstruct_context(
     items: &[RecoveredRolloutItem],
 ) -> tietiezhi_agent_context::ContextReconstruction {
@@ -6433,6 +6622,7 @@ fn canonical_session_meta(record: &ThreadRecord, compact_window: &CompactWindow)
         ("cli_version".into(), json!(record.cli_version)),
         ("source".into(), record.source.clone()),
         ("model_provider".into(), json!(record.model_provider)),
+        ("model".into(), json!(record.model)),
         ("history_mode".into(), json!(record.history_mode)),
         ("memory_mode".into(), json!(record.memory_mode)),
         (
@@ -6440,6 +6630,9 @@ fn canonical_session_meta(record: &ThreadRecord, compact_window: &CompactWindow)
             json!({"window_id": compact_window.window_id.to_string()}),
         ),
     ]);
+    if let Some(name) = &record.name {
+        meta.insert("name".into(), json!(name));
+    }
     if let Some(value) = &record.forked_from_id {
         meta.insert("forked_from_id".into(), json!(value));
     }
@@ -9026,5 +9219,98 @@ mod tests {
             .find(|item| item["type"] == "mcpToolCall")
             .unwrap();
         assert_eq!(forked_mcp, mcp);
+    }
+
+    #[test]
+    fn legacy_task_import_keeps_id_history_and_rebuilds_without_sqlite() {
+        let (temp, manager) = manager();
+        let id = Uuid::now_v7().to_string();
+        let cwd = temp.path().join("workspace");
+        let imported = manager
+            .import_legacy_thread(LegacyThreadImport {
+                id: id.clone(),
+                title: "Existing task".into(),
+                cwd: cwd.clone(),
+                created_at_ms: 10,
+                updated_at_ms: 20,
+                model: Some("gpt-test".into()),
+                model_provider: Some("test-provider".into()),
+                task_mode: "code".into(),
+                messages: vec![
+                    json!({"kind":"message","role":"user","content":"continue this work"}),
+                    json!({"kind":"message","role":"assistant","content":"existing result"}),
+                    json!({"kind":"toolCall","toolName":"bash","toolOutput":"tests passed"}),
+                ],
+            })
+            .unwrap();
+        assert!(imported);
+        assert!(
+            !manager
+                .import_legacy_thread(LegacyThreadImport {
+                    id: id.clone(),
+                    title: "duplicate".into(),
+                    cwd: cwd.clone(),
+                    created_at_ms: 10,
+                    updated_at_ms: 20,
+                    model: None,
+                    model_provider: None,
+                    task_mode: "code".into(),
+                    messages: Vec::new(),
+                })
+                .unwrap()
+        );
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                1,
+                "turn/start",
+                json!({
+                    "threadId":id,
+                    "input":[{"type":"text","text":"next","textElements":[]}]
+                }),
+            ),
+        );
+        assert!(
+            turn.response.get("error").is_none(),
+            "legacy turn/start failed: {}",
+            turn.response
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_owned();
+        let snapshot = manager.turn_execution_snapshot(&id, &turn_id).unwrap();
+        assert!(snapshot.history.iter().any(|item| {
+            item["role"] == "user"
+                && item["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("continue this work"))
+        }));
+        manager.dispatch(
+            "desktop",
+            request(2, "turn/interrupt", json!({"threadId":id,"turnId":turn_id})),
+        );
+        drop(manager);
+        fs::remove_file(temp.path().join("state").join("state.sqlite3")).unwrap();
+
+        let reopened = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "gpt-test".into(),
+                model_provider: "test-provider".into(),
+                cwd,
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        let resumed = reopened.dispatch(
+            "desktop",
+            request(2, "thread/resume", json!({"threadId":id})),
+        );
+        assert!(
+            resumed.response.get("error").is_none(),
+            "legacy thread/resume failed: {}",
+            resumed.response
+        );
+        assert_eq!(result(&resumed)["thread"]["id"], id);
+        assert_eq!(result(&resumed)["thread"]["name"], "Existing task");
     }
 }

@@ -31,7 +31,7 @@ R18 将固定上游 `rust-v0.145.0` 的 Starlark ExecPolicy、绝对路径不变
 
 - `acceptWithExecpolicyAmendment` 立即更新内存策略。
 - 同一修订写入应用数据目录 `agent-runtime/rules/default.rules`。
-- 迁移期同时写入 `approval-rules.json`，保证 R14 旧记录可读取；R38 删除兼容镜像。
+- `approval-rules.json` 是当前精确持久授权存储；旧工具名级授权不会导入，避免扩大历史权限作用域。
 - Shell、解释器、`sudo`、`rm` 等过宽前缀不会作为自动永久允许建议。
 
 ## 验证
