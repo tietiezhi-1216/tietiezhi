@@ -94,7 +94,14 @@ fn on_down(app: &AppHandle) {
         }
     };
 
-    start_session(app);
+    if !start_session(app) {
+        let mut inner = hk.inner.lock().unwrap();
+        if inner.generation == generation {
+            inner.gesture = Gesture::Idle;
+            inner.generation += 1;
+        }
+        return;
+    }
 
     // Resolve click-vs-hold lazily; assume "click" until proven a hold.
     let handle = app.clone();
@@ -128,12 +135,19 @@ fn on_up(app: &AppHandle) {
     }
 }
 
-fn start_session(app: &AppHandle) {
+fn start_session(app: &AppHandle) -> bool {
     if let Err(e) = capsule::show_for_session(app) {
         eprintln!("[dictation] 无法显示胶囊：{e}");
-        return;
+        return false;
     }
-    let _ = app.emit_to(capsule::LABEL, EVENT_START, ());
+    match app.emit_to(capsule::LABEL, EVENT_START, ()) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("[dictation] 无法启动听写：{error}");
+            let _ = capsule::hide_capsule(app.clone());
+            false
+        }
+    }
 }
 
 fn commit(app: &AppHandle, polish: bool) {
@@ -170,7 +184,9 @@ pub fn dictation_toggle(app: AppHandle) {
         }
     };
     if start {
-        start_session(&app);
+        if !start_session(&app) {
+            dictation_reset(app);
+        }
     } else {
         commit(&app, true);
     }

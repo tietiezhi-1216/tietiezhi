@@ -1217,6 +1217,7 @@ export function chatCancel(requestId: number): Promise<void> {
 // MARK: - Dictation
 
 export interface TranscribeArgs {
+  requestId: number;
   providerId: string;
   model: string;
   wavBase64: string;
@@ -1226,6 +1227,7 @@ export interface TranscribeArgs {
 
 export function transcribe(args: TranscribeArgs): Promise<string> {
   return invoke<string>("transcribe", {
+    requestId: args.requestId,
     providerId: args.providerId,
     model: args.model,
     wavBase64: args.wavBase64,
@@ -1277,8 +1279,8 @@ export function deliverText(text: string): Promise<DeliverResult> {
   return invoke<DeliverResult>("deliver_text", { text });
 }
 
-export function accessibilityTrusted(): Promise<boolean> {
-  return invoke<boolean>("accessibility_trusted");
+export function accessibilityTrusted(prompt = false): Promise<boolean> {
+  return invoke<boolean>("accessibility_trusted", { prompt });
 }
 
 /** The built-in polish template (settings editor's reset target). */

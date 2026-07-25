@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
@@ -14,6 +15,8 @@ use crate::AppState;
 
 use crate::agent::events::ChatEventEmitter;
 pub use crate::agent::events::{ChatEvent, ScopedChatEvent};
+
+const DICTATION_POLISH_TIMEOUT: Duration = Duration::from_secs(90);
 
 fn ensure_chat_model(model: &str, model_info: Option<&ModelInfo>) -> Result<(), String> {
     match model_info
@@ -338,20 +341,27 @@ pub(crate) async fn stream_to_channel(
                 let _ = on_event.send(ChatEvent::Started {
                     model: model.clone(),
                 });
-                run_stream(
-                    &state.http,
-                    &resolved.base_url,
-                    &model,
-                    &messages,
-                    resolved.key.as_deref(),
-                    &cancel,
-                    |content| {
-                        on_event
-                            .send(ChatEvent::Delta { content })
-                            .map_err(|e| format!("推送消息到界面失败：{e}"))
-                    },
+                match tokio::time::timeout(
+                    DICTATION_POLISH_TIMEOUT,
+                    run_stream(
+                        &state.http,
+                        &resolved.base_url,
+                        &model,
+                        &messages,
+                        resolved.key.as_deref(),
+                        &cancel,
+                        |content| {
+                            on_event
+                                .send(ChatEvent::Delta { content })
+                                .map_err(|e| format!("推送消息到界面失败：{e}"))
+                        },
+                    ),
                 )
                 .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err("文本润色等待超时，请检查网络后重试".into()),
+                }
             }
             Err(e) => Err(e),
         },

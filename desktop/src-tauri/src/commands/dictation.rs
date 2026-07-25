@@ -9,13 +9,17 @@
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::json;
+use std::time::Duration;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
+use tokio_util::sync::CancellationToken;
 
 use super::chat::{stream_to_channel, ChatMessage, ScopedChatEvent};
 use super::models::{classify, ModelKind};
 use super::{api_url, provider_http_error, providers, snippet};
 use crate::AppState;
+
+const ASR_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Transcribe a Base64-encoded WAV recording. `language` is one of
 /// auto|zh|en (MiMo) — other providers ignore unknown values.
@@ -23,6 +27,7 @@ use crate::AppState;
 pub async fn transcribe(
     state: State<'_, AppState>,
     app: AppHandle,
+    request_id: u32,
     provider_id: String,
     model: String,
     wav_base64: String,
@@ -51,17 +56,37 @@ pub async fn transcribe(
     }
 
     let lang = normalize_language(&language);
+    let cancel = CancellationToken::new();
+    if let Some(previous) = state
+        .chat_cancels
+        .lock()
+        .unwrap()
+        .insert(request_id, cancel.clone())
+    {
+        previous.cancel();
+    }
 
     // Dispatch on the MODEL, not the provider type: ASR protocol is a property of
     // the model, and users often add MiMo as an "openai"-typed provider. Only true
     // Whisper models use the multipart /audio/transcriptions endpoint; everything
     // else (mimo-v2.5-asr, other chat-audio ASR) goes through input_audio over
     // /chat/completions.
-    if uses_whisper_protocol(&model) {
-        transcribe_whisper(&state.http, base, &key, &model, &wav_base64, &lang).await
-    } else {
-        transcribe_mimo(&state.http, base, &key, &model, &wav_base64, &lang).await
-    }
+    let operation = async {
+        if uses_whisper_protocol(&model) {
+            transcribe_whisper(&state.http, base, &key, &model, &wav_base64, &lang).await
+        } else {
+            transcribe_mimo(&state.http, base, &key, &model, &wav_base64, &lang).await
+        }
+    };
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err("语音识别已取消".into()),
+        timed = tokio::time::timeout(ASR_TIMEOUT, operation) => match timed {
+            Ok(result) => result,
+            Err(_) => Err("语音识别等待超时，请检查网络后重试".into()),
+        },
+    };
+    state.chat_cancels.lock().unwrap().remove(&request_id);
+    result
 }
 
 /// Whether a model uses the OpenAI Whisper multipart transcription endpoint
@@ -336,6 +361,51 @@ const TASK_GUARD: &str = "# 任务边界\n\
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::oneshot;
+
+    async fn mock_json_server(response_body: &'static str) -> (String, oneshot::Receiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = socket.read(&mut buffer).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let Some(headers_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..headers_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if request.len() >= headers_end + 4 + content_length {
+                    break;
+                }
+            }
+            let _ = request_tx.send(String::from_utf8_lossy(&request).into_owned());
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        (format!("http://{addr}/v1"), request_rx)
+    }
 
     #[test]
     fn extracts_string_content() {
@@ -392,5 +462,52 @@ mod tests {
         assert!(!sys.contains("语音输入整理器"));
         // …but the task-boundary guard is non-negotiable.
         assert!(sys.contains("任务边界"));
+    }
+
+    #[tokio::test]
+    async fn mimo_asr_uses_chat_audio_request() {
+        let (base, request_rx) =
+            mock_json_server(r#"{"choices":[{"message":{"content":"测试结果"}}]}"#).await;
+        let result = transcribe_mimo(
+            &reqwest::Client::new(),
+            &base,
+            "test-key",
+            "mimo-v2.5-asr",
+            "AA==",
+            "zh",
+        )
+        .await
+        .unwrap();
+        let request = request_rx.await.unwrap();
+
+        assert_eq!(result, "测试结果");
+        assert!(request.starts_with("POST /v1/chat/completions "));
+        assert!(request.contains("\"model\":\"mimo-v2.5-asr\""));
+        assert!(request.contains("data:audio/wav;base64,AA=="));
+        assert!(request.contains("\"language\":\"zh\""));
+    }
+
+    #[tokio::test]
+    async fn whisper_asr_uses_multipart_transcription_request() {
+        let (base, request_rx) = mock_json_server(r#"{"text":"hello world"}"#).await;
+        let result = transcribe_whisper(
+            &reqwest::Client::new(),
+            &base,
+            "test-key",
+            "whisper-1",
+            "UklGRg==",
+            "en",
+        )
+        .await
+        .unwrap();
+        let request = request_rx.await.unwrap();
+
+        assert_eq!(result, "hello world");
+        assert!(request.starts_with("POST /v1/audio/transcriptions "));
+        assert!(request.contains("name=\"file\"; filename=\"audio.wav\""));
+        assert!(request.contains("name=\"model\""));
+        assert!(request.contains("whisper-1"));
+        assert!(request.contains("name=\"language\""));
+        assert!(request.contains("\r\n\r\nen\r\n"));
     }
 }

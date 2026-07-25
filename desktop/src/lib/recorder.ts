@@ -3,6 +3,7 @@
 //! Rust ASR command.
 
 const TARGET_RATE = 16000;
+export const MAX_RECORDING_SECONDS = 300;
 
 export interface Recorder {
   /** Stop capture and return the recording as a Base64 WAV. */
@@ -11,8 +12,15 @@ export interface Recorder {
   cancel: () => void;
 }
 
-/** Start recording; `onLevel` receives a 0…1 loudness value per audio buffer. */
-export async function startRecorder(onLevel: (level: number) => void): Promise<Recorder> {
+/**
+ * Start recording. `onLevel` receives a 0…1 loudness value per audio buffer;
+ * `onLimit` commits the bounded five-minute capture before memory can grow
+ * without limit.
+ */
+export async function startRecorder(
+  onLevel: (level: number) => void,
+  onLimit: () => void,
+): Promise<Recorder> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
   });
@@ -34,8 +42,13 @@ export async function startRecorder(onLevel: (level: number) => void): Promise<R
   processor.connect(mute);
   mute.connect(ctx.destination);
   const srcRate = ctx.sampleRate;
+  const limitTimer = window.setTimeout(onLimit, MAX_RECORDING_SECONDS * 1000);
+  let cleaned = false;
 
   const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    window.clearTimeout(limitTimer);
     processor.onaudioprocess = null;
     processor.disconnect();
     source.disconnect();

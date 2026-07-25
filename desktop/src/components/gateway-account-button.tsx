@@ -139,7 +139,10 @@ export function GatewayAccountButton() {
     logout.isPending ||
     accountQuery.isLoading;
   const dictationReady = Boolean(
-    settingsQuery.data?.asrProviderId && settingsQuery.data?.asrModel,
+    settingsQuery.data?.asrProviderId &&
+      settingsQuery.data?.asrModel &&
+      (!settingsQuery.data?.polishEnabled ||
+        (settingsQuery.data?.polishProviderId && settingsQuery.data?.polishModel)),
   );
   const displayName = loggedIn
     ? account!.nickname.trim() || account!.email
@@ -246,7 +249,9 @@ export function GatewayAccountButton() {
                   <span className="text-muted-foreground block truncate text-[10px]">
                     {dictationReady
                       ? `已就绪 · ${settingsQuery.data?.asrModel}`
-                      : "未配置识别模型"}
+                      : settingsQuery.data?.asrProviderId && settingsQuery.data?.asrModel
+                        ? "未配置润色模型"
+                        : "未配置识别模型"}
                   </span>
                 </span>
                 <DropdownMenuShortcut className="tracking-normal">

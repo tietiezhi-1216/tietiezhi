@@ -35,15 +35,20 @@ import { cn } from "@/lib/utils";
 const COMPACT_HEIGHT = 120;
 const EXPANDED_HEIGHT = 600;
 
-type Phase = "idle" | "recording" | "transcribing" | "polishing" | "result";
+type Phase = "idle" | "starting" | "recording" | "transcribing" | "polishing" | "result";
 
 interface Result {
   text: string;
   error: boolean;
   needsAccessibility: boolean;
+  title?: string;
 }
 
-let nextRequestId = 1;
+function nextRequestId(): number {
+  const value = new Uint32Array(1);
+  crypto.getRandomValues(value);
+  return value[0] || 1;
+}
 
 /** Progressive reveal decoupled from token arrival. */
 function useTypewriter(target: string): string {
@@ -173,11 +178,13 @@ function ResultCard({ result, onClose }: { result: Result; onClose: () => void }
     });
   };
 
-  const title = result.error
-    ? "听写遇到问题"
-    : result.needsAccessibility
-      ? "已复制（未获辅助功能权限）"
-      : "已复制，可粘贴";
+  const title =
+    result.title ??
+    (result.error
+      ? "听写遇到问题"
+      : result.needsAccessibility
+        ? "已复制（未获辅助功能权限）"
+        : "已复制，可粘贴");
 
   return (
     <div className="animate-in fade-in-0 slide-in-from-bottom-2 flex w-[304px] flex-col gap-2.5 rounded-[14px] bg-[#131212] px-[18px] pt-4 pb-[15px] shadow-[0_9px_40px_rgba(0,0,0,0.4)] ring-1 ring-white/[0.08] duration-300">
@@ -228,12 +235,18 @@ export function CapsuleApp() {
 
   const recorderRef = useRef<Recorder | null>(null);
   const requestIdRef = useRef<number | null>(null);
+  const sessionGenerationRef = useRef(0);
+  const finishRef = useRef<(polish: boolean) => Promise<void>>(async () => {});
   const phaseRef = useRef<Phase>("idle");
   phaseRef.current = phase;
 
   const revealed = useTypewriter(streamText);
   const processing = phase === "transcribing" || phase === "polishing";
   const hasCard = result != null;
+  const updatePhase = (next: Phase) => {
+    phaseRef.current = next;
+    setPhase(next);
+  };
 
   // Window grows for the result card, shrinks back otherwise.
   useEffect(() => {
@@ -245,44 +258,60 @@ export function CapsuleApp() {
     recorderRef.current = null;
     setLevel(0);
     setStreamText("");
-    setPhase("idle");
+    updatePhase("idle");
   };
 
   const startSession = async () => {
-    // Only start from a resting state, and never while a recorder is live.
-    if (recorderRef.current || phaseRef.current === "recording" || processing) return;
+    if (recorderRef.current || phaseRef.current !== "idle") return;
+    const generation = ++sessionGenerationRef.current;
+    updatePhase("starting");
     setResult(null);
     setStreamText("");
+    void accessibilityTrusted(true).catch(() => {});
 
     let settings: AppSettings;
     try {
       settings = await loadSettings();
     } catch (err) {
+      updatePhase("idle");
       setResult({ text: errorMessage(err), error: true, needsAccessibility: false });
+      void dictationReset();
       return;
     }
     if (!settings.asrProviderId || !settings.asrModel) {
+      updatePhase("idle");
       setResult({
         text: "尚未选择语音识别模型，请在主窗口「设置 → 语音听写」里配置支持 ASR 的供应商（如小米 MiMo 的 mimo-v2.5-asr）。",
         error: true,
         needsAccessibility: false,
       });
+      void dictationReset();
       return;
     }
 
     try {
-      recorderRef.current = await startRecorder(setLevel);
-      setPhase("recording");
+      const recorder = await startRecorder(setLevel, () => {
+        void finishRef.current(true);
+      });
+      if (generation !== sessionGenerationRef.current) {
+        recorder.cancel();
+        return;
+      }
+      recorderRef.current = recorder;
+      updatePhase("recording");
     } catch {
+      updatePhase("idle");
       setResult({
         text: "无法开始录音。请确认已授予麦克风权限（系统设置 → 隐私与安全性 → 麦克风）。",
         error: true,
         needsAccessibility: false,
       });
+      void dictationReset();
     }
   };
 
   const cancelSession = () => {
+    sessionGenerationRef.current += 1;
     if (requestIdRef.current != null) {
       void chatCancel(requestIdRef.current);
       requestIdRef.current = null;
@@ -301,52 +330,74 @@ export function CapsuleApp() {
   const finish = async (polish: boolean) => {
     const recorder = recorderRef.current;
     if (!recorder || phaseRef.current !== "recording") return;
+    const generation = sessionGenerationRef.current;
     recorderRef.current = null;
+    void dictationReset();
 
     let wavBase64: string;
     try {
       wavBase64 = recorder.stop();
     } catch (err) {
-      setPhase("idle");
+      updatePhase("idle");
       setResult({ text: errorMessage(err), error: true, needsAccessibility: false });
       return;
     }
 
     const settings = await loadSettings().catch(() => null);
-    if (!settings) {
-      setPhase("idle");
+    if (!settings || generation !== sessionGenerationRef.current) {
+      updatePhase("idle");
       return;
     }
 
-    setPhase("transcribing");
+    const requestId = nextRequestId();
+    requestIdRef.current = requestId;
+    updatePhase("transcribing");
     let transcript: string;
     try {
       transcript = await transcribe({
+        requestId,
         providerId: settings.asrProviderId,
         model: settings.asrModel,
         wavBase64,
         language: settings.outputLanguage || "auto",
       });
     } catch (err) {
-      setPhase("idle");
+      requestIdRef.current = null;
+      if (generation !== sessionGenerationRef.current) return;
+      updatePhase("idle");
       setResult({ text: errorMessage(err), error: true, needsAccessibility: false });
       return;
     }
+    if (generation !== sessionGenerationRef.current) return;
 
     transcript = transcript.trim();
     if (!transcript) {
-      setPhase("idle");
+      requestIdRef.current = null;
+      updatePhase("idle");
       setResult({ text: "没有识别到内容，请靠近麦克风再试一次。", error: true, needsAccessibility: false });
       return;
     }
 
     // Optional polish step — the gesture can opt out (push-to-talk).
     let finalText = transcript;
+    if (
+      polish &&
+      settings.polishEnabled &&
+      (!settings.polishProviderId || !settings.polishModel)
+    ) {
+      requestIdRef.current = null;
+      updatePhase("idle");
+      setResult({
+        text: transcript,
+        error: false,
+        needsAccessibility: false,
+        title: "识别成功，但未配置润色模型",
+      });
+      return;
+    }
     if (polish && settings.polishEnabled && settings.polishProviderId && settings.polishModel) {
-      setPhase("polishing");
+      updatePhase("polishing");
       setStreamText("");
-      const requestId = nextRequestId++;
-      requestIdRef.current = requestId;
       let polished = "";
       let failed = false;
       try {
@@ -357,10 +408,13 @@ export function CapsuleApp() {
           transcript,
           options: { outputLanguage: settings.outputLanguage || "auto" },
           onEvent: (event) => {
+            if (generation !== sessionGenerationRef.current) return;
             if (event.type === "delta") {
               polished += event.content;
               setStreamText(polished);
             } else if (event.type === "error") {
+              failed = true;
+            } else if (event.type === "done" && event.cancelled) {
               failed = true;
             }
           },
@@ -369,12 +423,25 @@ export function CapsuleApp() {
         failed = true;
       }
       requestIdRef.current = null;
-      // Polish is best-effort: fall back to the raw transcript on failure.
-      finalText = !failed && polished.trim() ? polished.trim() : transcript;
+      if (generation !== sessionGenerationRef.current) return;
+      if (failed || !polished.trim()) {
+        updatePhase("idle");
+        setResult({
+          text: transcript,
+          error: false,
+          needsAccessibility: false,
+          title: "润色失败，已保留原始转写",
+        });
+        return;
+      }
+      finalText = polished.trim();
+    } else {
+      requestIdRef.current = null;
     }
 
     await deliver(finalText);
   };
+  finishRef.current = finish;
 
   const deliver = async (text: string) => {
     // Hide first so the user's target app is frontmost and its field focused.
@@ -448,18 +515,18 @@ export function CapsuleApp() {
         {processing && <ThinkingBackground />}
 
         {/* Left button: cancel while recording, close otherwise. */}
-        {!processing && (
-          <button
-            onClick={cancelSession}
-            aria-label={recording ? "取消" : "关闭胶囊"}
-            className="grid size-[26px] shrink-0 place-items-center rounded-full bg-white/[0.18] text-white/90 hover:bg-white/25"
-          >
-            <X className="size-3" strokeWidth={3} />
-          </button>
-        )}
+        <button
+          onClick={cancelSession}
+          aria-label={recording || processing ? "取消" : "关闭胶囊"}
+          className="grid size-[26px] shrink-0 place-items-center rounded-full bg-white/[0.18] text-white/90 hover:bg-white/25"
+        >
+          <X className="size-3" strokeWidth={3} />
+        </button>
 
         {/* Center content per phase. */}
-        {recording ? (
+        {phase === "starting" ? (
+          <ThinkingLabel text="准备录音" />
+        ) : recording ? (
           <LevelBars level={level} />
         ) : phase === "transcribing" ? (
           <ThinkingLabel text="识别中" />

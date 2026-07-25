@@ -324,12 +324,28 @@ fn normalize_known_model_capabilities(settings: &mut AppSettings) -> bool {
     }
 
     let invalid_selections = [
-        (&settings.chat_provider_id, &settings.chat_model),
-        (&settings.title_provider_id, &settings.title_model),
-        (&settings.asr_provider_id, &settings.asr_model),
-        (&settings.polish_provider_id, &settings.polish_model),
+        (
+            &settings.chat_provider_id,
+            &settings.chat_model,
+            ModelKind::Chat,
+        ),
+        (
+            &settings.title_provider_id,
+            &settings.title_model,
+            ModelKind::Chat,
+        ),
+        (
+            &settings.asr_provider_id,
+            &settings.asr_model,
+            ModelKind::Asr,
+        ),
+        (
+            &settings.polish_provider_id,
+            &settings.polish_model,
+            ModelKind::Chat,
+        ),
     ]
-    .map(|(provider_id, model)| {
+    .map(|(provider_id, model, expected_kind)| {
         let configured = settings
             .providers
             .iter()
@@ -342,8 +358,10 @@ fn normalize_known_model_capabilities(settings: &mut AppSettings) -> bool {
             })
             .map(ModelInfo::effective_kind);
         match configured {
-            Some(kind) => kind != ModelKind::Chat,
-            None => matches!(known_kind_override(model), Some(kind) if kind != ModelKind::Chat),
+            Some(kind) => kind != expected_kind,
+            None => {
+                matches!(known_kind_override(model), Some(kind) if kind != expected_kind)
+            }
         }
     });
 
@@ -575,5 +593,32 @@ mod tests {
         assert!(settings.polish_provider_id.is_empty());
         assert!(settings.polish_model.is_empty());
         assert!(!normalize_known_model_capabilities(&mut settings));
+    }
+
+    #[test]
+    fn asr_selection_keeps_asr_models_and_rejects_chat_models() {
+        let mut settings = AppSettings {
+            providers: vec![Provider {
+                id: "provider".into(),
+                name: "Provider".into(),
+                kind: "openai".into(),
+                base_url: "https://example.com/v1".into(),
+                wire_api: WireApi::Auto,
+                built_in: false,
+                models: vec![ModelInfo::new("mimo-v2.5-asr"), ModelInfo::new("gpt-5.5")],
+            }],
+            asr_provider_id: "provider".into(),
+            asr_model: "mimo-v2.5-asr".into(),
+            ..Default::default()
+        };
+
+        assert!(!normalize_known_model_capabilities(&mut settings));
+        assert_eq!(settings.asr_provider_id, "provider");
+        assert_eq!(settings.asr_model, "mimo-v2.5-asr");
+
+        settings.asr_model = "gpt-5.5".into();
+        assert!(normalize_known_model_capabilities(&mut settings));
+        assert!(settings.asr_provider_id.is_empty());
+        assert!(settings.asr_model.is_empty());
     }
 }
