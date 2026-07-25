@@ -28,7 +28,7 @@
 | --- | --- | --- | --- |
 | 旧运行时审批止血 | `codex-rs/core/src/tools/approvals.rs` | `desktop/src-tauri/src/permission` | R1 |
 | App Server V2 协议 | `codex-rs/app-server-protocol` | `crates/agent-protocol` | R2 |
-| Thread/Turn/Item 映射 | `codex-rs/app-server-protocol/src/protocol` | `crates/agent-protocol` | R2-R3 |
+| Thread/Turn/Item 映射 | `codex-rs/app-server-protocol/src/protocol` | `crates/agent-protocol`、`crates/agent-events`、`desktop/src-tauri/src/agent/events.rs` | R2-R3 |
 | Thread 管理 | `codex-rs/core/src/codex_thread.rs`、`thread_manager.rs` | `crates/agent-core` | R5-R6 |
 | Turn 任务状态机 | `codex-rs/core/src/tasks`、`state/turn.rs` | `crates/agent-core` | R6 |
 | Responses 客户端 | `codex-rs/core/src/client.rs`、`model-provider` | `crates/agent-model` | R7 |
@@ -71,4 +71,6 @@
 
 R2 已引入固定上游生成的 273 个 JSON Schema、617 个 TypeScript 类型和 `crates/agent-protocol` Rust 编译期类型生成。四类协议表面与 machine ledger 的 89/1/10/70 个方法逐项校验，跨语言 fixture 和 Rust 反向 Schema 生成已纳入 CI。
 
-当前只完成协议边界，不代表任何 V2 方法已经具备运行时行为。R3 开始接入 Thread、Turn、Item 事件模型，R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能把 ledger 方法状态改为 `implemented`。
+R3 已增加独立的 `crates/agent-events` 事件总线和旧 `ChatEvent` 双端迁移适配。当前所有 Agent 增量事件都带有非空 `threadId`、`turnId`、`itemId`、Turn 内单调 `sequence` 和时间戳；同一消息、推理、工具与压缩生命周期使用稳定 Item ID。具体映射和删除兼容层的条件见 `docs/CODEX-EVENTS.md`。
+
+当前仍未接入正式 App Server 服务端通知传输，也未持久化事件身份，因此 R3 目标的通知方法继续保持 `pending`，由 R4-R6 在 rollout、Thread 和 Turn 状态机落地后再按行为证据转为 `implemented`。R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

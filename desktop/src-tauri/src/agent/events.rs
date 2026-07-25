@@ -1,10 +1,13 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
+use tauri::ipc::Channel;
+use tietiezhi_agent_events::{EventEnvelope, EventSequencer};
 
 /// Events streamed to the frontend over the tauri IPC channel. Tag values are
 /// camelCase, which keeps the original lowercase `delta`/`done`/`error`
 /// spelling intact for existing consumers (dictation polish).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -100,6 +103,113 @@ pub enum ChatEvent {
     },
 }
 
+pub type ScopedChatEvent = EventEnvelope<ChatEvent>;
+
+#[derive(Debug)]
+struct AdapterState {
+    sequencer: EventSequencer,
+    turn_item_id: String,
+    agent_message_item_id: Option<String>,
+    reasoning_item_id: Option<String>,
+    context_item_id: Option<String>,
+    current_tool_item_id: Option<String>,
+}
+
+impl AdapterState {
+    fn new(thread_id: String) -> Result<Self, String> {
+        let turn_id = format!("turn_{}", uuid::Uuid::new_v4());
+        let sequencer =
+            EventSequencer::new(thread_id, turn_id).map_err(|error| error.to_string())?;
+        Ok(Self {
+            sequencer,
+            turn_item_id: new_item_id(),
+            agent_message_item_id: None,
+            reasoning_item_id: None,
+            context_item_id: None,
+            current_tool_item_id: None,
+        })
+    }
+
+    fn item_id_for(&mut self, event: &ChatEvent) -> String {
+        match event {
+            ChatEvent::Delta { .. } => self
+                .agent_message_item_id
+                .get_or_insert_with(new_item_id)
+                .clone(),
+            ChatEvent::Reasoning { .. } => self
+                .reasoning_item_id
+                .get_or_insert_with(new_item_id)
+                .clone(),
+            ChatEvent::Usage { .. } => self
+                .agent_message_item_id
+                .clone()
+                .unwrap_or_else(|| self.turn_item_id.clone()),
+            ChatEvent::ToolCallStart { id, .. } => {
+                self.current_tool_item_id = Some(id.clone());
+                id.clone()
+            }
+            ChatEvent::ToolProgress { id, .. } | ChatEvent::ToolResult { id, .. } => id.clone(),
+            ChatEvent::PermissionRequest { id, .. } => self
+                .current_tool_item_id
+                .clone()
+                .unwrap_or_else(|| id.clone()),
+            ChatEvent::ContextCompactionStarted { .. }
+            | ChatEvent::ContextCompacted { .. }
+            | ChatEvent::ContextUsage { .. } => {
+                self.context_item_id.get_or_insert_with(new_item_id).clone()
+            }
+            ChatEvent::Started { .. }
+            | ChatEvent::Retrying { .. }
+            | ChatEvent::Done { .. }
+            | ChatEvent::Error { .. } => self.turn_item_id.clone(),
+        }
+    }
+
+    fn wrap(&mut self, event: ChatEvent) -> ScopedChatEvent {
+        let item_id = self.item_id_for(&event);
+        let clear_tool = matches!(&event, ChatEvent::ToolResult { id, .. }
+            if self.current_tool_item_id.as_deref() == Some(id.as_str()));
+        let clear_context = matches!(&event, ChatEvent::ContextCompacted { .. });
+        let envelope = self
+            .sequencer
+            .wrap(item_id, event)
+            .expect("adapter always creates a non-empty item id");
+        if clear_tool {
+            self.current_tool_item_id = None;
+        }
+        if clear_context {
+            self.context_item_id = None;
+        }
+        envelope
+    }
+}
+
+fn new_item_id() -> String {
+    format!("item_{}", uuid::Uuid::new_v4())
+}
+
+/// Migration adapter from the legacy flat event payload to the Codex
+/// Thread/Turn/Item event identity required by the new timeline.
+#[derive(Clone)]
+pub struct ChatEventEmitter {
+    channel: Channel<ScopedChatEvent>,
+    state: Arc<Mutex<AdapterState>>,
+}
+
+impl ChatEventEmitter {
+    pub fn new(channel: Channel<ScopedChatEvent>, thread_id: String) -> Result<Self, String> {
+        Ok(Self {
+            channel,
+            state: Arc::new(Mutex::new(AdapterState::new(thread_id)?)),
+        })
+    }
+
+    pub fn send(&self, event: ChatEvent) -> tauri::Result<()> {
+        let event = self.state.lock().unwrap().wrap(event);
+        self.channel.send(event)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,5 +296,39 @@ mod tests {
         assert_eq!(v["type"], "contextCompacted");
         assert_eq!(v["estimatedTokensBefore"], 210_000);
         assert_eq!(v["duringTurn"], false);
+    }
+
+    #[test]
+    fn migration_adapter_assigns_stable_item_ids_and_monotonic_sequence() {
+        let mut adapter = AdapterState::new("thread-1".into()).unwrap();
+        let first = adapter.wrap(ChatEvent::Delta {
+            content: "a".into(),
+        });
+        let second = adapter.wrap(ChatEvent::Delta {
+            content: "b".into(),
+        });
+        let tool_start = adapter.wrap(ChatEvent::ToolCallStart {
+            id: "call-1".into(),
+            name: "bash".into(),
+            args: json!({"command":"pwd"}),
+            timeout_ms: None,
+        });
+        let tool_result = adapter.wrap(ChatEvent::ToolResult {
+            id: "call-1".into(),
+            output: "ok".into(),
+            is_error: false,
+            duration_ms: 1,
+            exit_code: Some(0),
+            timed_out: false,
+            cancelled: false,
+            truncated: false,
+        });
+
+        assert_eq!(first.thread_id, "thread-1");
+        assert!(!first.turn_id.is_empty());
+        assert_eq!(first.item_id, second.item_id);
+        assert_eq!(second.sequence, first.sequence + 1);
+        assert_eq!(tool_start.item_id, "call-1");
+        assert_eq!(tool_result.item_id, "call-1");
     }
 }

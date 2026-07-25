@@ -4277,6 +4277,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-events"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "tietiezhi-desktop"
 version = "2026.7.25-t144511"
 dependencies = [
@@ -4306,6 +4313,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tietiezhi-agent-events",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",

@@ -12,7 +12,8 @@ use crate::agent::context::ContextAction;
 use crate::agent::failure::ChatFailure;
 use crate::AppState;
 
-pub use crate::agent::events::ChatEvent;
+use crate::agent::events::ChatEventEmitter;
+pub use crate::agent::events::{ChatEvent, ScopedChatEvent};
 
 fn ensure_chat_model(model: &str, model_info: Option<&ModelInfo>) -> Result<(), String> {
     match model_info
@@ -106,8 +107,13 @@ pub async fn chat_stream(
     project_id: Option<String>,
     task_mode: Option<TaskMode>,
     context_action: Option<String>,
-    on_event: Channel<ChatEvent>,
+    on_event: Channel<ScopedChatEvent>,
 ) -> Result<(), String> {
+    let thread_id = conversation_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| format!("chat_{request_id}"));
+    let on_event = ChatEventEmitter::new(on_event, thread_id)?;
     let context_action = ContextAction::from_wire(context_action.as_deref())?;
     let cancel = CancellationToken::new();
     if let Some(previous) = state
@@ -225,8 +231,9 @@ pub async fn tietiezhi_stream(
     device_id: String,
     device_name: String,
     messages: Vec<ChatMessage>,
-    on_event: Channel<ChatEvent>,
+    on_event: Channel<ScopedChatEvent>,
 ) -> Result<(), String> {
+    let on_event = ChatEventEmitter::new(on_event, "tietiezhi_main".into())?;
     let cancel = CancellationToken::new();
     state
         .chat_cancels
@@ -301,8 +308,9 @@ pub(crate) async fn stream_to_channel(
     provider_id: String,
     model: String,
     messages: Vec<ChatMessage>,
-    on_event: Channel<ChatEvent>,
+    on_event: Channel<ScopedChatEvent>,
 ) -> Result<(), String> {
+    let on_event = ChatEventEmitter::new(on_event, format!("polish_{request_id}"))?;
     let cancel = CancellationToken::new();
     state
         .chat_cancels

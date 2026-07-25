@@ -8,11 +8,10 @@ pub mod skill;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
-use tauri::ipc::Channel;
 use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::events::ChatEvent;
+use crate::agent::events::{ChatEvent, ChatEventEmitter};
 
 /// Everything a builtin tool needs to run.
 pub struct ToolCtx {
@@ -22,7 +21,7 @@ pub struct ToolCtx {
     pub available_skills: Vec<String>,
     pub cancel: CancellationToken,
     pub call_id: String,
-    pub on_event: Channel<ChatEvent>,
+    pub on_event: ChatEventEmitter,
 }
 
 impl ToolCtx {

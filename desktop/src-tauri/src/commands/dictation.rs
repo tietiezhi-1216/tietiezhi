@@ -12,7 +12,7 @@ use serde_json::json;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 
-use super::chat::{stream_to_channel, ChatEvent, ChatMessage};
+use super::chat::{stream_to_channel, ChatMessage, ScopedChatEvent};
 use super::models::{classify, ModelKind};
 use super::{api_url, provider_http_error, providers, snippet};
 use crate::AppState;
@@ -221,7 +221,7 @@ pub async fn polish_stream(
     model: String,
     transcript: String,
     options: PolishOptions,
-    on_event: Channel<ChatEvent>,
+    on_event: Channel<ScopedChatEvent>,
 ) -> Result<(), String> {
     // The user's custom template (settings) overrides the built-in one.
     let custom = super::settings::read_settings(&app)

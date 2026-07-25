@@ -1,5 +1,12 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import {
+  createChatEventNormalizer,
+  type ChatEvent,
+  type LegacyChatEvent,
+} from "@/lib/chat-events";
 import type { TaskMode } from "@/lib/task-mode";
+
+export type { ChatEvent } from "@/lib/chat-events";
 
 export type ProviderType = "openai" | "mimo";
 
@@ -602,89 +609,6 @@ export type PermissionDecision =
 
 export type LegacyPermissionDecision = "allow" | "allowAlways" | "deny";
 
-export type ChatEvent =
-  | { type: "started"; model: string }
-  | { type: "delta"; content: string }
-  | { type: "reasoning"; content: string }
-  | {
-      type: "usage";
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
-      cachedTokens: number;
-    }
-  | {
-      type: "toolCallStart";
-      id: string;
-      name: string;
-      args: unknown;
-      timeoutMs?: number;
-    }
-  | {
-      type: "toolProgress";
-      id: string;
-      output: string;
-      elapsedMs: number;
-      truncated: boolean;
-    }
-  | {
-      type: "toolResult";
-      id: string;
-      output: string;
-      isError: boolean;
-      durationMs: number;
-      exitCode?: number;
-      timedOut: boolean;
-      cancelled: boolean;
-      truncated: boolean;
-    }
-  | {
-      type: "permissionRequest";
-      id: string;
-      tool: string;
-      description: string;
-      args: unknown;
-      scope: string;
-    }
-  | {
-      type: "retrying";
-      attempt: number;
-      maxRetries: number;
-      delayMs: number;
-      reason: string;
-    }
-  | {
-      type: "contextCompactionStarted";
-      automatic: boolean;
-      estimatedTokens: number;
-      contextWindow: number;
-    }
-  | {
-      type: "contextCompacted";
-      automatic: boolean;
-      duringTurn: boolean;
-      summary: string;
-      estimatedTokensBefore: number;
-      estimatedTokensAfter: number;
-      contextWindow: number;
-    }
-  | {
-      type: "contextUsage";
-      estimatedTokens: number;
-      contextWindow: number;
-      compactAtTokens: number;
-    }
-  | { type: "done"; cancelled: boolean }
-  | {
-      type: "error";
-      message: string;
-      detail: string;
-      code?: string;
-      status?: number;
-      retryable: boolean;
-      retries: number;
-    };
-
 // MARK: - Settings
 
 export function loadSettings(): Promise<AppSettings> {
@@ -879,8 +803,15 @@ export interface ChatStreamArgs {
 }
 
 export function chatStream(args: ChatStreamArgs): Promise<void> {
-  const channel = new Channel<ChatEvent>();
-  channel.onmessage = args.onEvent;
+  const channel = new Channel<ChatEvent | LegacyChatEvent>();
+  const threadId = args.conversationId?.trim()
+    ? args.conversationId
+    : `chat_${args.requestId}`;
+  const normalize = createChatEventNormalizer(
+    threadId,
+    args.requestId,
+  );
+  channel.onmessage = (event) => args.onEvent(normalize(event));
   return invoke("chat_stream", {
     requestId: args.requestId,
     providerId: args.providerId,
@@ -904,8 +835,12 @@ export interface TietiezhiStreamArgs {
 }
 
 export function tietiezhiStream(args: TietiezhiStreamArgs): Promise<void> {
-  const channel = new Channel<ChatEvent>();
-  channel.onmessage = args.onEvent;
+  const channel = new Channel<ChatEvent | LegacyChatEvent>();
+  const normalize = createChatEventNormalizer(
+    "tietiezhi_main",
+    args.requestId,
+  );
+  channel.onmessage = (event) => args.onEvent(normalize(event));
   return invoke("tietiezhi_stream", {
     requestId: args.requestId,
     deviceId: args.deviceId,
@@ -1261,8 +1196,12 @@ export interface PolishStreamArgs {
 }
 
 export function polishStream(args: PolishStreamArgs): Promise<void> {
-  const channel = new Channel<ChatEvent>();
-  channel.onmessage = args.onEvent;
+  const channel = new Channel<ChatEvent | LegacyChatEvent>();
+  const normalize = createChatEventNormalizer(
+    `polish_${args.requestId}`,
+    args.requestId,
+  );
+  channel.onmessage = (event) => args.onEvent(normalize(event));
   return invoke("polish_stream", {
     requestId: args.requestId,
     providerId: args.providerId,

@@ -8,7 +8,7 @@ on:
     branches: [main]
     paths:
       - 'desktop/**'
-      - 'crates/agent-protocol/**'
+      - 'crates/**'
       - 'shared/codex/**'
       - 'docs/CODEX-*.md'
       - 'THIRD_PARTY_NOTICES.md'
@@ -17,7 +17,7 @@ on:
     branches: [main]
     paths:
       - 'desktop/**'
-      - 'crates/agent-protocol/**'
+      - 'crates/**'
       - 'shared/codex/**'
       - 'docs/CODEX-*.md'
       - 'THIRD_PARTY_NOTICES.md'
@@ -66,6 +66,7 @@ jobs:
           workspaces: |
             desktop/src-tauri
             crates/agent-protocol
+            crates/agent-events
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -82,8 +83,14 @@ jobs:
       - name: Typecheck Codex protocol
         run: pnpm test:codex-protocol-ts
 
+      - name: Check chat event migration
+        run: pnpm test:chat-event-migration
+
       - name: Codex protocol Rust tests
         run: cargo test --manifest-path ../crates/agent-protocol/Cargo.toml
+
+      - name: Codex event Rust tests
+        run: cargo test --manifest-path ../crates/agent-events/Cargo.toml
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

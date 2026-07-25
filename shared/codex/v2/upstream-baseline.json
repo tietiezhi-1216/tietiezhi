@@ -1101,9 +1101,9 @@
     {
       "id": "R3",
       "name": "事件模型",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "事件身份尚未写入 rollout/SQLite，正式 App Server 通知仍待 R4-R6 接入；LegacyChatEvent 兼容层在 R38 删除",
+      "evidence": "crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build"
     },
     {
       "id": "R4",

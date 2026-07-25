@@ -14,6 +14,7 @@
     "check:codex-parity": "node scripts/check-codex-parity.mjs",
     "check:codex-schema": "node scripts/check-codex-schema.mjs",
     "test:permission-ui": "node scripts/check-permission-prompt.mjs",
+    "test:chat-event-migration": "node scripts/check-chat-event-migration.mjs",
     "test:codex-protocol-ts": "tsc -p ../shared/codex/v2/tsconfig.json",
     "typecheck": "tsc --noEmit",
     "version:timestamp": "node scripts/set-release-version.mjs",

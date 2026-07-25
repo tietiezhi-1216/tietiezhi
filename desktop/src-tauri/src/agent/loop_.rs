@@ -5,7 +5,6 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::ipc::Channel;
 use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -14,7 +13,7 @@ use super::context::{
     estimate_payload_tokens, should_compact, summary_message, truncate_summary, ContextAction,
     DEFAULT_CONTEXT_WINDOW_TOKENS,
 };
-use super::events::ChatEvent;
+use super::events::{ChatEvent, ChatEventEmitter};
 use super::failure::{retry_delay_ms, ChatFailure};
 use crate::commands::api_url;
 use crate::commands::models::{
@@ -212,7 +211,7 @@ async fn stream_once(
     reasoning_effort: ReasoningEffort,
     emit_output_events: bool,
     cancel: &CancellationToken,
-    on_event: &Channel<ChatEvent>,
+    on_event: &ChatEventEmitter,
 ) -> Result<StreamOutcome, ChatFailure> {
     let mut body = json!({
         "model": model,
@@ -383,7 +382,7 @@ async fn stream_with_retries(
     reasoning_effort: ReasoningEffort,
     emit_output_events: bool,
     cancel: &CancellationToken,
-    on_event: &Channel<ChatEvent>,
+    on_event: &ChatEventEmitter,
 ) -> Result<StreamOutcome, ChatFailure> {
     let mut retries = 0;
     loop {
@@ -501,7 +500,7 @@ async fn compact_messages(
     estimated_tokens: u64,
     context_window: u64,
     cancel: &CancellationToken,
-    on_event: &Channel<ChatEvent>,
+    on_event: &ChatEventEmitter,
 ) -> Result<Option<String>, ChatFailure> {
     if messages.is_empty() {
         return Err(ChatFailure::message("当前任务还没有可压缩的对话上下文"));
@@ -533,7 +532,7 @@ async fn compact_transcript(
     estimated_tokens: u64,
     context_window: u64,
     cancel: &CancellationToken,
-    on_event: &Channel<ChatEvent>,
+    on_event: &ChatEventEmitter,
 ) -> Result<Option<String>, ChatFailure> {
     on_event
         .send(ChatEvent::ContextCompactionStarted {
@@ -584,7 +583,7 @@ pub async fn run_agent_loop(
     env: AgentEnv,
     context_action: ContextAction,
     cancel: &CancellationToken,
-    on_event: &Channel<ChatEvent>,
+    on_event: &ChatEventEmitter,
 ) -> Result<bool, ChatFailure> {
     // MCP is a client-side bridge implemented through native function calling.
     // Unknown and explicitly unsupported models run as plain chat instead of
