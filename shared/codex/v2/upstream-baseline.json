@@ -88,27 +88,27 @@
       },
       {
         "method": "command/exec",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "desktop codex.rs dispatch_command_exec；agent-exec integration tests"
       },
       {
         "method": "command/exec/resize",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "desktop codex.rs；agent-exec PTY resize test"
       },
       {
         "method": "command/exec/terminate",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "desktop codex.rs；agent-exec process-group cleanup test"
       },
       {
         "method": "command/exec/write",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "desktop codex.rs；agent-exec stdin roundtrip test"
       },
       {
         "method": "config/batchWrite",
@@ -496,9 +496,9 @@
       },
       {
         "method": "thread/shellCommand",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "desktop codex.rs dispatch_thread_shell_command；docs/CODEX-EXEC.md"
       },
       {
         "method": "thread/start",
@@ -584,9 +584,9 @@
       },
       {
         "method": "item/commandExecution/requestApproval",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "agent-approval command broker；V2 schema tests"
       },
       {
         "method": "item/fileChange/requestApproval",
@@ -646,9 +646,9 @@
       },
       {
         "method": "command/exec/outputDelta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "desktop wait_streamed_command_exec；V2 notification validation"
       },
       {
         "method": "configWarning",
@@ -736,15 +736,15 @@
       },
       {
         "method": "item/commandExecution/outputDelta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "agent-core command_execution_output_delta；core lifecycle test"
       },
       {
         "method": "item/commandExecution/terminalInteraction",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "agent-core terminal interaction；core lifecycle test"
       },
       {
         "method": "item/completed",
@@ -832,15 +832,15 @@
       },
       {
         "method": "process/exited",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "desktop thread shell executor；V2 notification validation"
       },
       {
         "method": "process/outputDelta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R13",
-        "note": ""
+        "note": "desktop thread shell executor；V2 notification validation"
       },
       {
         "method": "remoteControl/status/changed",
@@ -1171,9 +1171,9 @@
     {
       "id": "R13",
       "name": "Unified Exec",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R14-R18 仍需完成精确审批策略、macOS/Windows OS 沙箱、网络隔离和 ExecPolicy；R30 再暴露多终端桌面 UI。",
+      "evidence": "crates/agent-exec PTY/ConPTY、管道和会话管理；agent-tools exec_command/write_stdin；desktop command/exec* 与 thread/shellCommand；agent-core CommandExecution Item；docs/CODEX-EXEC.md"
     },
     {
       "id": "R14",

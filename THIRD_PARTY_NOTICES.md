@@ -89,6 +89,13 @@ R10 的工具注册、路由、生命周期、模型结果和并行调度行为�
 - `codex-rs/app-server/src/dynamic_tools.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
 
+上游 `utils/pty/src/win/conpty.rs` 本身包含来自 WezTerm 的 MIT 许可代码，原版权与完整 MIT 许可文本已逐字保留在 `crates/agent-exec/src/win/conpty.rs`：
+
+- Project: WezTerm
+- Source: https://github.com/wezterm/wezterm
+- Copyright: Copyright (c) 2018-Present Wez Furlong
+- License: MIT
+
 R11 的基础工具、Tool Search、模型能力门控和强类型 Item 行为参考以下上游源码并在本仓库重新实现，没有链接或调用上游 crate：
 
 - `codex-rs/core/src/tools/handlers/current_time.rs`
@@ -118,3 +125,29 @@ R12 的 Patch 语法、流式解析、宽容上下文匹配、FileChange 生命�
 - `codex-rs/app-server-protocol/src/protocol/v2/turn.rs`
 
 本项目在上游行为之上增加了全量预演、工作区与 symlink 逃逸校验、同文件系统 staging、备份回滚和多文件事务提交，以满足 R12 的原子写入门禁。
+
+R13 的 PTY、管道、进程组和 Windows ConPTY 实现从以下 Apache-2.0 上游源码移植到 `crates/agent-exec`，增加会话管理、输出日志、超时、取消和协议投影，但不链接或调用上游二进制：
+
+- `codex-rs/utils/pty/src/lib.rs`
+- `codex-rs/utils/pty/src/pipe.rs`
+- `codex-rs/utils/pty/src/process.rs`
+- `codex-rs/utils/pty/src/process_group.rs`
+- `codex-rs/utils/pty/src/pty.rs`
+- `codex-rs/utils/pty/src/windows_input.rs`
+- `codex-rs/utils/pty/src/windows_input_tests.rs`
+- `codex-rs/utils/pty/src/win/conpty.rs`
+- `codex-rs/utils/pty/src/win/mod.rs`
+- `codex-rs/utils/pty/src/win/procthreadattr.rs`
+- `codex-rs/utils/pty/src/win/psuedocon.rs`
+
+R13 的 Unified Exec 工具、App Server 命令接口和 Item 生命周期还参考以下上游源码重新实现：
+
+- `codex-rs/core/src/tools/handlers/unified_exec.rs`
+- `codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs`
+- `codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs`
+- `codex-rs/core/src/unified_exec/process_manager.rs`
+- `codex-rs/app-server/src/command_exec.rs`
+- `codex-rs/app-server/src/request_processors/command_exec_processor.rs`
+- `codex-rs/app-server/src/request_processors/thread_processor.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/command_exec.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`

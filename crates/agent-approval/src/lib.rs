@@ -36,10 +36,27 @@ pub enum FileChangeApprovalDecision {
     Cancel,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CommandExecutionApprovalDecision {
+    Accept,
+    AcceptForSession,
+    AcceptWithExecpolicyAmendment { execpolicy_amendment: Vec<String> },
+    ApplyNetworkPolicyAmendment { network_policy_amendment: Value },
+    Decline,
+    Cancel,
+}
+
 #[derive(Debug)]
 pub struct PendingFileChangeApproval {
     pub request: RoutedServerRequest,
     pub receiver: oneshot::Receiver<Result<FileChangeApprovalDecision, ApprovalError>>,
+}
+
+#[derive(Debug)]
+pub struct PendingCommandExecutionApproval {
+    pub request: RoutedServerRequest,
+    pub receiver: oneshot::Receiver<Result<CommandExecutionApprovalDecision, ApprovalError>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +66,19 @@ pub struct FileChangeApprovalParams {
     pub item_id: String,
     pub reason: Option<String>,
     pub grant_root: Option<String>,
+    pub started_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandExecutionApprovalParams {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub approval_id: Option<String>,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub command_actions: Option<Vec<Value>>,
+    pub reason: Option<String>,
     pub started_at_ms: i64,
 }
 
@@ -79,7 +109,10 @@ pub struct ServerRequestBroker {
     pending: Mutex<PendingMap>,
 }
 
-type ApprovalSender = oneshot::Sender<Result<FileChangeApprovalDecision, ApprovalError>>;
+enum ApprovalSender {
+    FileChange(oneshot::Sender<Result<FileChangeApprovalDecision, ApprovalError>>),
+    CommandExecution(oneshot::Sender<Result<CommandExecutionApprovalDecision, ApprovalError>>),
+}
 type PendingMap = HashMap<String, ApprovalSender>;
 
 impl ServerRequestBroker {
@@ -111,8 +144,43 @@ impl ServerRequestBroker {
         self.pending
             .lock()
             .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
-            .insert(id, sender);
+            .insert(id, ApprovalSender::FileChange(sender));
         Ok(PendingFileChangeApproval { request, receiver })
+    }
+
+    pub fn begin_command_execution(
+        &self,
+        recipients: Vec<String>,
+        params: CommandExecutionApprovalParams,
+    ) -> Result<PendingCommandExecutionApproval, ApprovalError> {
+        let id = format!(
+            "approval-{}",
+            self.next_id.fetch_add(1, Ordering::Relaxed) + 1
+        );
+        let request = RoutedServerRequest {
+            recipients,
+            id: json!(id),
+            method: "item/commandExecution/requestApproval".into(),
+            params: json!({
+                "threadId": params.thread_id,
+                "turnId": params.turn_id,
+                "itemId": params.item_id,
+                "approvalId": params.approval_id,
+                "startedAtMs": params.started_at_ms,
+                "command": params.command,
+                "cwd": params.cwd,
+                "commandActions": params.command_actions,
+                "reason": params.reason
+            }),
+        };
+        serde_json::from_value::<ServerRequest>(request.wire_message())
+            .map_err(|error| ApprovalError::new(error.to_string()))?;
+        let (sender, receiver) = oneshot::channel();
+        self.pending
+            .lock()
+            .map_err(|_| ApprovalError::new("approval request state lock poisoned"))?
+            .insert(id, ApprovalSender::CommandExecution(sender));
+        Ok(PendingCommandExecutionApproval { request, receiver })
     }
 
     pub fn resolve(&self, response: &Value) -> Result<bool, ApprovalError> {
@@ -130,18 +198,24 @@ impl ServerRequestBroker {
         let Some(sender) = sender else {
             return Ok(false);
         };
-        let result = match response.get("result") {
-            Some(result) => serde_json::from_value::<FileChangeApprovalResponse>(result.clone())
-                .map(|response| response.decision)
-                .map_err(|error| ApprovalError::new(error.to_string())),
-            None => Err(ApprovalError::new(
-                response
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("file change approval failed"),
-            )),
-        };
-        let _ = sender.send(result);
+        match sender {
+            ApprovalSender::FileChange(sender) => {
+                let result = parse_result::<FileChangeApprovalResponse>(
+                    response,
+                    "file change approval failed",
+                )
+                .map(|response| response.decision);
+                let _ = sender.send(result);
+            }
+            ApprovalSender::CommandExecution(sender) => {
+                let result = parse_result::<CommandExecutionApprovalResponse>(
+                    response,
+                    "command execution approval failed",
+                )
+                .map(|response| response.decision);
+                let _ = sender.send(result);
+            }
+        }
         Ok(true)
     }
 
@@ -158,6 +232,27 @@ impl ServerRequestBroker {
 #[derive(Deserialize)]
 struct FileChangeApprovalResponse {
     decision: FileChangeApprovalDecision,
+}
+
+#[derive(Deserialize)]
+struct CommandExecutionApprovalResponse {
+    decision: CommandExecutionApprovalDecision,
+}
+
+fn parse_result<T: for<'de> Deserialize<'de>>(
+    response: &Value,
+    fallback: &str,
+) -> Result<T, ApprovalError> {
+    match response.get("result") {
+        Some(result) => serde_json::from_value(result.clone())
+            .map_err(|error| ApprovalError::new(error.to_string())),
+        None => Err(ApprovalError::new(
+            response
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or(fallback),
+        )),
+    }
 }
 
 fn request_id_key(id: &Value) -> String {
@@ -219,5 +314,49 @@ mod tests {
                 .resolve(&json!({"id": 999, "result": {"decision":"accept"}}))
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn command_request_matches_v2_and_routes_all_decisions() {
+        let decisions = [
+            json!("accept"),
+            json!("acceptForSession"),
+            json!({"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["git","status"]}}),
+            json!({"applyNetworkPolicyAmendment":{"network_policy_amendment":{"host":"example.com","action":"allow"}}}),
+            json!("decline"),
+            json!("cancel"),
+        ];
+        for decision in decisions {
+            let broker = ServerRequestBroker::default();
+            let pending = broker
+                .begin_command_execution(
+                    vec!["desktop".into()],
+                    CommandExecutionApprovalParams {
+                        thread_id: "01900000-0000-7000-8000-000000000001".into(),
+                        turn_id: "01900000-0000-7000-8000-000000000002".into(),
+                        item_id: "call_1".into(),
+                        approval_id: None,
+                        command: Some("git status".into()),
+                        cwd: Some("/tmp/project".into()),
+                        command_actions: None,
+                        reason: Some("inspect repository".into()),
+                        started_at_ms: 42,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                pending.request.method,
+                "item/commandExecution/requestApproval"
+            );
+            assert!(
+                serde_json::from_value::<ServerRequest>(pending.request.wire_message()).is_ok()
+            );
+            assert!(
+                broker
+                    .resolve(&json!({"id": pending.request.id, "result": {"decision": decision}}))
+                    .unwrap()
+            );
+            pending.receiver.await.unwrap().unwrap();
+        }
     }
 }

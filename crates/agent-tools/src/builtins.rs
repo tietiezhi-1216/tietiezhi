@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -11,7 +11,10 @@ use bm25::{Document, Language, SearchEngine, SearchEngineBuilder};
 use chrono::{SecondsFormat, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tietiezhi_agent_approval::FileChangeApprovalDecision;
+use tietiezhi_agent_approval::{CommandExecutionApprovalDecision, FileChangeApprovalDecision};
+use tietiezhi_agent_exec::{
+    ExecEvent, ExecManager, ExecRequest, ExecResult, OutputChunk, SessionId, TerminalSize,
+};
 use tietiezhi_agent_patch::{PatchPlan, TurnDiffTracker};
 
 use crate::{
@@ -47,6 +50,13 @@ pub type FileChangeApprovalFuture =
     Pin<Box<dyn Future<Output = Result<FileChangeApprovalDecision, ToolError>> + Send + 'static>>;
 pub type FileChangeApprover =
     Arc<dyn Fn(FileChangeApprovalRequest) -> FileChangeApprovalFuture + Send + Sync + 'static>;
+pub type CommandApprovalFuture = Pin<
+    Box<dyn Future<Output = Result<CommandExecutionApprovalDecision, ToolError>> + Send + 'static>,
+>;
+pub type CommandApprover =
+    Arc<dyn Fn(CommandApprovalRequest) -> CommandApprovalFuture + Send + Sync + 'static>;
+pub type CommandObserver =
+    Arc<dyn Fn(CommandRuntimeEvent) -> Result<(), ToolError> + Send + Sync + 'static>;
 
 #[derive(Debug, Clone)]
 pub struct FileChangeApprovalRequest {
@@ -56,6 +66,43 @@ pub struct FileChangeApprovalRequest {
     pub reason: Option<String>,
     pub grant_root: Option<String>,
     pub cancellation: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommandApprovalRequest {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub command: String,
+    pub cwd: String,
+    pub reason: Option<String>,
+    pub cancellation: tokio_util::sync::CancellationToken,
+}
+
+#[derive(Debug, Clone)]
+pub enum CommandRuntimeEvent {
+    Output {
+        thread_id: String,
+        turn_id: String,
+        item_id: String,
+        delta: String,
+    },
+    TerminalInteraction {
+        thread_id: String,
+        turn_id: String,
+        item_id: String,
+        process_id: String,
+        stdin: String,
+    },
+    Exited {
+        thread_id: String,
+        turn_id: String,
+        item_id: String,
+        command: String,
+        cwd: String,
+        process_id: String,
+        result: ExecResult,
+    },
 }
 
 pub fn current_time_handler() -> Arc<dyn ToolHandler> {
@@ -101,6 +148,598 @@ pub fn apply_patch_handler(
         approver,
         tracker: Mutex::new(tracker),
     }))
+}
+
+pub fn unified_exec_handlers(
+    manager: ExecManager,
+    cwd: PathBuf,
+    requires_approval: bool,
+    approver: Option<CommandApprover>,
+    observer: CommandObserver,
+) -> Vec<Arc<dyn ToolHandler>> {
+    let sessions = Arc::new(Mutex::new(HashMap::new()));
+    vec![
+        Arc::new(ExecCommandHandler {
+            manager: manager.clone(),
+            cwd,
+            requires_approval,
+            approver,
+            observer: observer.clone(),
+            sessions: sessions.clone(),
+        }),
+        Arc::new(WriteStdinHandler {
+            manager,
+            observer,
+            sessions,
+        }),
+    ]
+}
+
+#[derive(Debug, Clone)]
+struct CommandSession {
+    thread_id: String,
+    turn_id: String,
+    item_id: String,
+    command: String,
+    cwd: String,
+    cursor: usize,
+}
+
+struct ExecCommandHandler {
+    manager: ExecManager,
+    cwd: PathBuf,
+    requires_approval: bool,
+    approver: Option<CommandApprover>,
+    observer: CommandObserver,
+    sessions: Arc<Mutex<HashMap<String, CommandSession>>>,
+}
+
+#[derive(Deserialize)]
+struct ExecCommandArgs {
+    cmd: String,
+    #[serde(default)]
+    workdir: Option<String>,
+    #[serde(default)]
+    tty: bool,
+    #[serde(default = "default_exec_yield_time_ms")]
+    yield_time_ms: u64,
+    #[serde(default)]
+    max_output_tokens: Option<usize>,
+    #[serde(default)]
+    shell: Option<String>,
+    #[serde(default)]
+    login: bool,
+}
+
+impl ToolHandler for ExecCommandHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("exec_command")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        let mut spec = ToolSpec::function(
+            self.tool_name(),
+            "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "cmd":{"type":"string","description":"Shell command to execute."},
+                    "workdir":{"type":"string","description":"Working directory. Defaults to the turn cwd."},
+                    "tty":{"type":"boolean","description":"Run attached to a PTY."},
+                    "yield_time_ms":{"type":"integer","minimum":1,"description":"Wait before yielding output."},
+                    "max_output_tokens":{"type":"integer","minimum":1,"description":"Maximum output tokens returned by this call."},
+                    "shell":{"type":"string","description":"Shell binary to launch."},
+                    "login":{"type":"boolean","description":"Use login shell semantics."}
+                },
+                "required":["cmd"],
+                "additionalProperties":false
+            }),
+        );
+        spec.output_schema = Some(exec_tool_output_schema());
+        spec
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        let manager = self.manager.clone();
+        let base_cwd = self.cwd.clone();
+        let requires_approval = self.requires_approval;
+        let approver = self.approver.clone();
+        let observer = self.observer.clone();
+        let sessions = self.sessions.clone();
+        Box::pin(async move {
+            let ToolPayload::Function { arguments } = &invocation.call.payload else {
+                return Err(ToolError::InvalidCall(
+                    "exec_command requires function arguments".into(),
+                ));
+            };
+            let args: ExecCommandArgs = serde_json::from_str(arguments)
+                .map_err(|error| ToolError::InvalidCall(error.to_string()))?;
+            if args.cmd.trim().is_empty() {
+                return Err(ToolError::InvalidCall("cmd must not be empty".into()));
+            }
+            if args.max_output_tokens == Some(0) {
+                return Err(ToolError::InvalidCall(
+                    "max_output_tokens must be greater than zero".into(),
+                ));
+            }
+            let cwd = resolve_exec_cwd(&base_cwd, args.workdir.as_deref())?;
+            let cwd_display = cwd.to_string_lossy().into_owned();
+            if requires_approval {
+                let Some(approver) = approver else {
+                    return Ok(command_failure_output(
+                        &invocation.call.call_id,
+                        &args.cmd,
+                        &cwd_display,
+                        "command approval channel is unavailable",
+                    ));
+                };
+                let decision = approver(CommandApprovalRequest {
+                    thread_id: invocation.thread_id.clone(),
+                    turn_id: invocation.turn_id.clone(),
+                    item_id: invocation.call.call_id.clone(),
+                    command: args.cmd.clone(),
+                    cwd: cwd_display.clone(),
+                    reason: Some("execute command".into()),
+                    cancellation: invocation.cancellation.clone(),
+                })
+                .await?;
+                if matches!(
+                    decision,
+                    CommandExecutionApprovalDecision::Decline
+                        | CommandExecutionApprovalDecision::Cancel
+                ) {
+                    if decision == CommandExecutionApprovalDecision::Cancel {
+                        invocation.cancellation.cancel();
+                    }
+                    return Ok(command_status_output(
+                        &invocation.call.call_id,
+                        &args.cmd,
+                        &cwd_display,
+                        "declined",
+                        false,
+                        "Command declined by user.",
+                    ));
+                }
+            }
+
+            let process_id = manager.allocate_session_id();
+            let session_id = SessionId::new(
+                exec_owner(&invocation.thread_id, &invocation.turn_id),
+                &process_id,
+            );
+            let command = shell_argv(&args.cmd, args.shell.as_deref(), args.login);
+            let request = ExecRequest {
+                command,
+                cwd: cwd.clone(),
+                env: HashMap::new(),
+                tty: args.tty,
+                stream_stdin: true,
+                size: TerminalSize::default(),
+                output_bytes_cap: Some(tietiezhi_agent_exec::DEFAULT_OUTPUT_BYTES_CAP),
+                timeout: None,
+                cancellation: Some(invocation.cancellation.clone()),
+            };
+            let events = match manager.spawn(session_id.clone(), request).await {
+                Ok(events) => events,
+                Err(error) => {
+                    return Ok(command_failure_output(
+                        &invocation.call.call_id,
+                        &args.cmd,
+                        &cwd_display,
+                        &error.to_string(),
+                    ));
+                }
+            };
+            let command_session = CommandSession {
+                thread_id: invocation.thread_id.clone(),
+                turn_id: invocation.turn_id.clone(),
+                item_id: invocation.call.call_id.clone(),
+                command: args.cmd.clone(),
+                cwd: cwd_display.clone(),
+                cursor: 0,
+            };
+            sessions
+                .lock()
+                .map_err(|_| ToolError::Handler("exec session state lock poisoned".into()))?
+                .insert(process_id.clone(), command_session.clone());
+            monitor_command(events, process_id.clone(), command_session, observer);
+
+            let yield_time = Duration::from_millis(clamp_yield_time(args.yield_time_ms));
+            let polled = manager
+                .poll(&session_id, 0, yield_time)
+                .await
+                .map_err(|error| ToolError::Handler(error.to_string()))?;
+            let completed = polled.result.is_some();
+            if let Ok(mut sessions) = sessions.lock()
+                && let Some(session) = sessions.get_mut(&process_id)
+            {
+                session.cursor = polled.next_cursor;
+            }
+            let output = exec_poll_output(
+                &invocation.call.call_id,
+                &process_id,
+                polled.chunks,
+                polled.result,
+                args.max_output_tokens,
+            );
+            if completed {
+                if let Ok(mut sessions) = sessions.lock() {
+                    sessions.remove(&process_id);
+                }
+                let _ = manager.remove(&session_id);
+            }
+            Ok(output)
+        })
+    }
+}
+
+struct WriteStdinHandler {
+    manager: ExecManager,
+    observer: CommandObserver,
+    sessions: Arc<Mutex<HashMap<String, CommandSession>>>,
+}
+
+#[derive(Deserialize)]
+struct WriteStdinArgs {
+    session_id: u64,
+    #[serde(default)]
+    chars: String,
+    #[serde(default = "default_write_stdin_yield_time_ms")]
+    yield_time_ms: u64,
+    #[serde(default)]
+    max_output_tokens: Option<usize>,
+}
+
+impl ToolHandler for WriteStdinHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("write_stdin")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        let mut spec = ToolSpec::function(
+            self.tool_name(),
+            "Writes characters to an existing unified exec session and returns recent output.",
+            json!({
+                "type":"object",
+                "properties":{
+                    "session_id":{"type":"integer","minimum":1,"description":"Session identifier returned by exec_command."},
+                    "chars":{"type":"string","description":"Characters to write. Empty input polls only."},
+                    "yield_time_ms":{"type":"integer","minimum":1,"description":"Wait before yielding output."},
+                    "max_output_tokens":{"type":"integer","minimum":1,"description":"Maximum output tokens returned by this call."}
+                },
+                "required":["session_id"],
+                "additionalProperties":false
+            }),
+        );
+        spec.output_schema = Some(exec_tool_output_schema());
+        spec
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        true
+    }
+
+    fn waits_for_runtime_cancellation(&self) -> bool {
+        true
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        let manager = self.manager.clone();
+        let observer = self.observer.clone();
+        let sessions = self.sessions.clone();
+        Box::pin(async move {
+            let ToolPayload::Function { arguments } = &invocation.call.payload else {
+                return Err(ToolError::InvalidCall(
+                    "write_stdin requires function arguments".into(),
+                ));
+            };
+            let args: WriteStdinArgs = serde_json::from_str(arguments)
+                .map_err(|error| ToolError::InvalidCall(error.to_string()))?;
+            if args.max_output_tokens == Some(0) {
+                return Err(ToolError::InvalidCall(
+                    "max_output_tokens must be greater than zero".into(),
+                ));
+            }
+            let process_id = args.session_id.to_string();
+            let session = sessions
+                .lock()
+                .map_err(|_| ToolError::Handler("exec session state lock poisoned".into()))?
+                .get(&process_id)
+                .cloned()
+                .ok_or_else(|| ToolError::Handler(format!("unknown exec session {process_id}")))?;
+            let id = SessionId::new(
+                exec_owner(&session.thread_id, &session.turn_id),
+                &process_id,
+            );
+            if !args.chars.is_empty() {
+                manager
+                    .write(&id, args.chars.as_bytes(), false)
+                    .await
+                    .map_err(|error| ToolError::Handler(error.to_string()))?;
+            }
+            if !args.chars.is_empty()
+                || manager
+                    .wait(&id, Some(Duration::ZERO))
+                    .await
+                    .map_err(|error| ToolError::Handler(error.to_string()))?
+                    .is_none()
+            {
+                observer(CommandRuntimeEvent::TerminalInteraction {
+                    thread_id: session.thread_id.clone(),
+                    turn_id: session.turn_id.clone(),
+                    item_id: session.item_id.clone(),
+                    process_id: process_id.clone(),
+                    stdin: args.chars.clone(),
+                })?;
+            }
+            let yield_ms = if args.chars.is_empty() {
+                args.yield_time_ms.clamp(5_000, 30_000)
+            } else {
+                clamp_yield_time(args.yield_time_ms)
+            };
+            let polled = manager
+                .poll(&id, session.cursor, Duration::from_millis(yield_ms))
+                .await
+                .map_err(|error| ToolError::Handler(error.to_string()))?;
+            let completed = polled.result.is_some();
+            if let Ok(mut sessions) = sessions.lock()
+                && let Some(session) = sessions.get_mut(&process_id)
+            {
+                session.cursor = polled.next_cursor;
+            }
+            let output = exec_poll_output(
+                &session.item_id,
+                &process_id,
+                polled.chunks,
+                polled.result,
+                args.max_output_tokens,
+            );
+            if completed {
+                if let Ok(mut sessions) = sessions.lock() {
+                    sessions.remove(&process_id);
+                }
+                let _ = manager.remove(&id);
+            }
+            Ok(output)
+        })
+    }
+}
+
+fn monitor_command(
+    mut events: tokio::sync::broadcast::Receiver<ExecEvent>,
+    process_id: String,
+    session: CommandSession,
+    observer: CommandObserver,
+) {
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(ExecEvent::Output(chunk)) => {
+                    if !chunk.bytes.is_empty() {
+                        let _ = observer(CommandRuntimeEvent::Output {
+                            thread_id: session.thread_id.clone(),
+                            turn_id: session.turn_id.clone(),
+                            item_id: session.item_id.clone(),
+                            delta: String::from_utf8_lossy(&chunk.bytes).into_owned(),
+                        });
+                    }
+                }
+                Ok(ExecEvent::Exited(result)) => {
+                    let _ = observer(CommandRuntimeEvent::Exited {
+                        thread_id: session.thread_id.clone(),
+                        turn_id: session.turn_id.clone(),
+                        item_id: session.item_id.clone(),
+                        command: session.command.clone(),
+                        cwd: session.cwd.clone(),
+                        process_id: process_id.clone(),
+                        result,
+                    });
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+fn command_failure_output(item_id: &str, command: &str, cwd: &str, message: &str) -> ToolOutput {
+    command_status_output(item_id, command, cwd, "failed", false, message)
+}
+
+fn command_status_output(
+    item_id: &str,
+    command: &str,
+    cwd: &str,
+    status: &str,
+    success: bool,
+    message: &str,
+) -> ToolOutput {
+    let output = if success {
+        ToolOutput::success(Value::String(message.into()))
+    } else {
+        ToolOutput::failure(Value::String(message.into()))
+    };
+    output.with_metadata(json!({
+        "kind":"commandExecution",
+        "deferItemCompletion":false,
+        "item":{
+            "type":"commandExecution",
+            "id":item_id,
+            "command":command,
+            "cwd":cwd,
+            "processId":null,
+            "status":status,
+            "commandActions":[],
+            "aggregatedOutput":message,
+            "exitCode":null,
+            "durationMs":null,
+            "source":"agent"
+        }
+    }))
+}
+
+fn exec_poll_output(
+    item_id: &str,
+    process_id: &str,
+    chunks: Vec<OutputChunk>,
+    result: Option<ExecResult>,
+    max_output_tokens: Option<usize>,
+) -> ToolOutput {
+    let (output, token_count) = truncate_command_output(&chunks, max_output_tokens);
+    let wall_time_seconds = result
+        .as_ref()
+        .map_or(0.0, |result| result.wall_time_ms as f64 / 1_000.0);
+    let mut content = json!({
+        "chunk_id":format!("{item_id}:{}", chunks.last().map_or(0, |chunk| chunk.cursor)),
+        "wall_time_seconds":wall_time_seconds,
+        "original_token_count":token_count,
+        "output":output
+    });
+    let success = result.as_ref().is_none_or(|result| result.exit_code == 0);
+    if let Some(result) = result {
+        content["exit_code"] = json!(result.exit_code);
+    } else {
+        content["session_id"] = json!(process_id.parse::<u64>().unwrap_or_default());
+    }
+    let output = if success {
+        ToolOutput::success(content)
+    } else {
+        ToolOutput::failure(content)
+    };
+    output.with_metadata(json!({
+        "kind":"commandExecution",
+        "deferItemCompletion":true
+    }))
+}
+
+fn truncate_command_output(chunks: &[OutputChunk], max_tokens: Option<usize>) -> (String, usize) {
+    let mut output = String::new();
+    for chunk in chunks {
+        let text = String::from_utf8_lossy(&chunk.bytes);
+        output.push_str(&text);
+    }
+    let Some(max_tokens) = max_tokens else {
+        let token_count = output.chars().count().div_ceil(4);
+        return (output, token_count);
+    };
+    let token_count = output.chars().count().div_ceil(4);
+    let max_chars = max_tokens.saturating_mul(4);
+    if output.chars().count() <= max_chars {
+        return (output, token_count);
+    }
+    let head = max_chars / 2;
+    let tail = max_chars.saturating_sub(head);
+    let prefix = output.chars().take(head).collect::<String>();
+    let suffix = output
+        .chars()
+        .rev()
+        .take(tail)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    (
+        format!("{prefix}\n… output truncated …\n{suffix}"),
+        token_count,
+    )
+}
+
+fn resolve_exec_cwd(base: &std::path::Path, workdir: Option<&str>) -> Result<PathBuf, ToolError> {
+    let cwd = workdir
+        .filter(|workdir| !workdir.trim().is_empty())
+        .map(PathBuf::from)
+        .map_or_else(
+            || base.to_path_buf(),
+            |path| {
+                if path.is_absolute() {
+                    path
+                } else {
+                    base.join(path)
+                }
+            },
+        );
+    if !cwd.is_dir() {
+        return Err(ToolError::InvalidCall(format!(
+            "working directory does not exist: {}",
+            cwd.display()
+        )));
+    }
+    Ok(cwd)
+}
+
+fn shell_argv(command: &str, shell: Option<&str>, login: bool) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        let _ = login;
+        let shell = shell.unwrap_or("powershell.exe");
+        let mut argv = vec![shell.to_string()];
+        if shell.to_ascii_lowercase().contains("powershell")
+            || shell.to_ascii_lowercase().contains("pwsh")
+        {
+            argv.extend(["-NoProfile".into(), "-Command".into(), command.into()]);
+        } else {
+            argv.extend(["/C".into(), command.into()]);
+        }
+        argv
+    }
+    #[cfg(not(windows))]
+    {
+        let shell = shell
+            .map(str::to_owned)
+            .or_else(|| std::env::var("SHELL").ok())
+            .unwrap_or_else(|| "/bin/sh".into());
+        vec![
+            shell,
+            if login { "-lc" } else { "-c" }.into(),
+            command.into(),
+        ]
+    }
+}
+
+fn exec_owner(thread_id: &str, turn_id: &str) -> String {
+    format!("{thread_id}/{turn_id}")
+}
+
+fn clamp_yield_time(value: u64) -> u64 {
+    let value = if cfg!(windows) {
+        value.max(2_000)
+    } else {
+        value
+    };
+    value.clamp(250, 30_000)
+}
+
+fn default_exec_yield_time_ms() -> u64 {
+    10_000
+}
+
+fn default_write_stdin_yield_time_ms() -> u64 {
+    250
+}
+
+fn exec_tool_output_schema() -> Value {
+    json!({
+        "type":"object",
+        "properties":{
+            "chunk_id":{"type":"string"},
+            "wall_time_seconds":{"type":"number"},
+            "exit_code":{"type":"integer"},
+            "session_id":{"type":"integer"},
+            "original_token_count":{"type":"integer"},
+            "output":{"type":"string"}
+        },
+        "required":["wall_time_seconds","output"],
+        "additionalProperties":false
+    })
 }
 
 struct ApplyPatchHandler {
@@ -862,6 +1501,108 @@ mod tests {
             .unwrap();
         assert!(!output.success);
         assert!(!temp.path().join("denied.txt").exists());
+        assert_eq!(output.metadata.unwrap()["item"]["status"], "declined");
+    }
+
+    #[tokio::test]
+    async fn unified_exec_runs_and_emits_command_lifecycle() {
+        let temp = TempDir::new().unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let handlers = unified_exec_handlers(
+            ExecManager::default(),
+            temp.path().to_path_buf(),
+            false,
+            None,
+            Arc::new(move |event| {
+                observed.lock().unwrap().push(event);
+                Ok(())
+            }),
+        );
+        let output = handlers[0]
+            .handle(invocation(
+                ToolName::plain("exec_command"),
+                if cfg!(windows) {
+                    json!({"cmd":"Write-Output hello","yield_time_ms":2000})
+                } else {
+                    json!({"cmd":"printf hello","yield_time_ms":2000})
+                },
+            ))
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert_eq!(output.content["exit_code"], 0);
+        assert!(output.content["output"].as_str().unwrap().contains("hello"));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|event| matches!(event, CommandRuntimeEvent::Exited { .. }))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unified_exec_background_session_accepts_stdin() {
+        let temp = TempDir::new().unwrap();
+        let handlers = unified_exec_handlers(
+            ExecManager::default(),
+            temp.path().to_path_buf(),
+            false,
+            None,
+            Arc::new(|_| Ok(())),
+        );
+        let output = handlers[0]
+            .handle(invocation(
+                ToolName::plain("exec_command"),
+                if cfg!(windows) {
+                    json!({"cmd":"$line=Read-Host; Write-Output $line","yield_time_ms":250})
+                } else {
+                    json!({"cmd":"read line; printf '%s' \"$line\"","yield_time_ms":250})
+                },
+            ))
+            .await
+            .unwrap();
+        let session_id = output.content["session_id"].as_u64().unwrap();
+        let output = handlers[1]
+            .handle(invocation(
+                ToolName::plain("write_stdin"),
+                json!({"session_id":session_id,"chars":"hello\n","yield_time_ms":2000}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(output.content["exit_code"], 0);
+        assert!(output.content["output"].as_str().unwrap().contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn unified_exec_decline_never_spawns() {
+        let temp = TempDir::new().unwrap();
+        let approver: CommandApprover =
+            Arc::new(|_| Box::pin(async { Ok(CommandExecutionApprovalDecision::Decline) }));
+        let handlers = unified_exec_handlers(
+            ExecManager::default(),
+            temp.path().to_path_buf(),
+            true,
+            Some(approver),
+            Arc::new(|_| Ok(())),
+        );
+        let output = handlers[0]
+            .handle(invocation(
+                ToolName::plain("exec_command"),
+                json!({"cmd":"this-command-must-not-run"}),
+            ))
+            .await
+            .unwrap();
+        assert!(!output.success);
         assert_eq!(output.metadata.unwrap()["item"]["status"], "declined");
     }
 

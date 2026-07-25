@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tietiezhi_agent_account::{
@@ -9,8 +10,8 @@ use tietiezhi_agent_account::{
     ImmediateLogin,
 };
 use tietiezhi_agent_approval::{
-    FileChangeApprovalDecision, FileChangeApprovalParams,
-    RoutedServerRequest as ApprovalServerRequest,
+    CommandExecutionApprovalDecision, CommandExecutionApprovalParams, FileChangeApprovalDecision,
+    FileChangeApprovalParams, RoutedServerRequest as ApprovalServerRequest,
 };
 use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
@@ -21,10 +22,13 @@ use tietiezhi_agent_model::{
     list_online_models, supports_original_image_detail, ModelError, OnlineModel, Reasoning,
     ResponseEvent, ResponsesApiRequest, ResponsesClient, TextControls, TextFormat, TextFormatType,
 };
-use tietiezhi_agent_protocol::{ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse};
+use tietiezhi_agent_protocol::{
+    ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse, ServerNotification,
+};
 use tietiezhi_agent_tools::builtins::{
     apply_patch_handler, context_remaining_handler, current_time_handler, sleep_handler,
-    view_image_handler, web_search_handler, FileChangeApprovalRequest,
+    unified_exec_handlers, view_image_handler, web_search_handler, CommandApprovalRequest,
+    CommandRuntimeEvent, FileChangeApprovalRequest,
 };
 use tietiezhi_agent_tools::{ToolCall, ToolCallRuntime, ToolPayload, ToolRegistry, ToolRouter};
 use tokio_util::sync::CancellationToken;
@@ -237,6 +241,12 @@ pub async fn codex_v2_request(
             return Ok(output);
         }
     }
+    if method.starts_with("command/exec") {
+        return dispatch_command_exec(&app, &state, &connection_id, &request, &method).await;
+    }
+    if method == "thread/shellCommand" {
+        return dispatch_thread_shell_command(&app, &state, &connection_id, &request).await;
+    }
     let thread_id = request
         .pointer("/params/threadId")
         .and_then(Value::as_str)
@@ -431,6 +441,531 @@ fn dispatch_error(request: &Value, code: i64, message: impl Into<String>) -> Dis
         }),
         notifications: Vec::new(),
     }
+}
+
+fn dispatch_success(request: &Value, result: Value) -> Result<DispatchOutput, String> {
+    let response = json!({
+        "id": request.get("id").cloned().unwrap_or(Value::Null),
+        "result": result
+    });
+    serde_json::from_value::<JSONRPCResponse>(response.clone())
+        .map_err(|error| format!("Codex JSON-RPC 响应无效：{error}"))?;
+    Ok(DispatchOutput {
+        response,
+        notifications: Vec::new(),
+    })
+}
+
+async fn dispatch_command_exec(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("{method} 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let process_id = params
+        .get("processId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let owner = format!("connection/{connection_id}");
+    match method {
+        "command/exec" => {
+            let command = params
+                .get("command")
+                .and_then(Value::as_array)
+                .map(|command| {
+                    command
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if command.is_empty() || command[0].trim().is_empty() {
+                return Ok(dispatch_error(
+                    request,
+                    -32602,
+                    "command/exec command must not be empty",
+                ));
+            }
+            let tty = params.get("tty").and_then(Value::as_bool).unwrap_or(false);
+            let stream_stdin = tty
+                || params
+                    .get("streamStdin")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            let stream_output = tty
+                || params
+                    .get("streamStdoutStderr")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+            if (tty || stream_stdin || stream_output) && process_id.is_none() {
+                return Ok(dispatch_error(
+                    request,
+                    -32602,
+                    "command/exec tty or streaming requires a client-supplied processId",
+                ));
+            }
+            if process_id.as_deref().is_some_and(str::is_empty) {
+                return Ok(dispatch_error(
+                    request,
+                    -32602,
+                    "command/exec processId must not be empty",
+                ));
+            }
+            if params.get("size").is_some_and(|size| !size.is_null()) && !tty {
+                return Ok(dispatch_error(
+                    request,
+                    -32602,
+                    "command/exec size requires tty: true",
+                ));
+            }
+            let disable_cap = params
+                .get("disableOutputCap")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if disable_cap
+                && params
+                    .get("outputBytesCap")
+                    .is_some_and(|value| !value.is_null())
+            {
+                return Ok(dispatch_error(
+                    request,
+                    -32602,
+                    "disableOutputCap cannot be combined with outputBytesCap",
+                ));
+            }
+            let disable_timeout = params
+                .get("disableTimeout")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if disable_timeout
+                && params
+                    .get("timeoutMs")
+                    .is_some_and(|value| !value.is_null())
+            {
+                return Ok(dispatch_error(
+                    request,
+                    -32602,
+                    "disableTimeout cannot be combined with timeoutMs",
+                ));
+            }
+            let timeout = if disable_timeout {
+                None
+            } else {
+                let timeout_ms = match params.get("timeoutMs").filter(|value| !value.is_null()) {
+                    Some(value) => match value.as_i64().filter(|value| *value >= 0) {
+                        Some(value) => value as u64,
+                        None => {
+                            return Ok(dispatch_error(
+                                request,
+                                -32602,
+                                "timeoutMs must be non-negative",
+                            ));
+                        }
+                    },
+                    None => 10 * 60 * 1_000,
+                };
+                Some(Duration::from_millis(timeout_ms))
+            };
+            let output_bytes_cap = if disable_cap {
+                None
+            } else {
+                Some(
+                    params
+                        .get("outputBytesCap")
+                        .filter(|value| !value.is_null())
+                        .and_then(Value::as_u64)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .unwrap_or(tietiezhi_agent_exec::DEFAULT_OUTPUT_BYTES_CAP),
+                )
+            };
+            let cwd = params
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(std::path::PathBuf::from)
+                .unwrap_or(std::env::current_dir().map_err(|error| error.to_string())?);
+            let env = params
+                .get("env")
+                .and_then(Value::as_object)
+                .map(|env| {
+                    env.iter()
+                        .map(|(key, value)| {
+                            (
+                                key.clone(),
+                                value
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .filter(|_| !value.is_null()),
+                            )
+                        })
+                        .collect::<HashMap<_, _>>()
+                })
+                .unwrap_or_default();
+            let size = match terminal_size(params.get("size")) {
+                Ok(size) => size,
+                Err(error) => return Ok(dispatch_error(request, -32602, error)),
+            };
+            let exposed_process_id = process_id
+                .clone()
+                .unwrap_or_else(|| format!("internal-{}", state.codex_exec.allocate_session_id()));
+            let id =
+                tietiezhi_agent_exec::SessionId::new(owner.clone(), exposed_process_id.clone());
+            let events = match state
+                .codex_exec
+                .spawn(
+                    id.clone(),
+                    tietiezhi_agent_exec::ExecRequest {
+                        command,
+                        cwd,
+                        env,
+                        tty,
+                        stream_stdin,
+                        size,
+                        output_bytes_cap,
+                        timeout,
+                        cancellation: None,
+                    },
+                )
+                .await
+            {
+                Ok(events) => events,
+                Err(error) => return Ok(dispatch_error(request, -32602, error.to_string())),
+            };
+            let result = if stream_output {
+                wait_streamed_command_exec(
+                    app,
+                    connection_id,
+                    &exposed_process_id,
+                    events,
+                    &state.codex_exec,
+                    &id,
+                )
+                .await?
+            } else {
+                state
+                    .codex_exec
+                    .wait(&id, None)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "command/exec ended without a result".to_string())?
+            };
+            let _ = state.codex_exec.remove(&id);
+            let exit_code = if result.timed_out {
+                124
+            } else {
+                result.exit_code
+            };
+            dispatch_success(
+                request,
+                json!({
+                    "exitCode":exit_code,
+                    "stdout":if stream_output { String::new() } else { result.stdout },
+                    "stderr":if stream_output { String::new() } else { result.stderr }
+                }),
+            )
+        }
+        "command/exec/write" => {
+            let Some(process_id) = process_id else {
+                return Ok(dispatch_error(request, -32602, "processId is required"));
+            };
+            let id = tietiezhi_agent_exec::SessionId::new(owner, process_id);
+            let bytes = match params.get("deltaBase64").filter(|value| !value.is_null()) {
+                Some(value) => {
+                    let Some(encoded) = value.as_str() else {
+                        return Ok(dispatch_error(
+                            request,
+                            -32602,
+                            "deltaBase64 must be a string",
+                        ));
+                    };
+                    match base64::engine::general_purpose::STANDARD.decode(encoded) {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            return Ok(dispatch_error(
+                                request,
+                                -32602,
+                                format!("invalid deltaBase64: {error}"),
+                            ));
+                        }
+                    }
+                }
+                None => Vec::new(),
+            };
+            if let Err(error) = state
+                .codex_exec
+                .write(
+                    &id,
+                    &bytes,
+                    params
+                        .get("closeStdin")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                )
+                .await
+            {
+                return Ok(dispatch_error(request, -32602, error.to_string()));
+            }
+            dispatch_success(request, json!({}))
+        }
+        "command/exec/resize" => {
+            let Some(process_id) = process_id else {
+                return Ok(dispatch_error(request, -32602, "processId is required"));
+            };
+            let id = tietiezhi_agent_exec::SessionId::new(owner, process_id);
+            let size = match terminal_size(params.get("size")) {
+                Ok(size) => size,
+                Err(error) => return Ok(dispatch_error(request, -32602, error)),
+            };
+            if let Err(error) = state.codex_exec.resize(&id, size) {
+                return Ok(dispatch_error(request, -32602, error.to_string()));
+            }
+            dispatch_success(request, json!({}))
+        }
+        "command/exec/terminate" => {
+            let Some(process_id) = process_id else {
+                return Ok(dispatch_error(request, -32602, "processId is required"));
+            };
+            let id = tietiezhi_agent_exec::SessionId::new(owner, process_id);
+            if let Err(error) = state.codex_exec.terminate(&id) {
+                return Ok(dispatch_error(request, -32602, error.to_string()));
+            }
+            dispatch_success(request, json!({}))
+        }
+        _ => Ok(dispatch_error(request, -32601, "method not found")),
+    }
+}
+
+async fn wait_streamed_command_exec(
+    app: &AppHandle,
+    connection_id: &str,
+    process_id: &str,
+    mut events: tokio::sync::broadcast::Receiver<tietiezhi_agent_exec::ExecEvent>,
+    manager: &tietiezhi_agent_exec::ExecManager,
+    id: &tietiezhi_agent_exec::SessionId,
+) -> Result<tietiezhi_agent_exec::ExecResult, String> {
+    let mut cursor = 0;
+    loop {
+        match events.recv().await {
+            Ok(tietiezhi_agent_exec::ExecEvent::Output(chunk)) => {
+                cursor = cursor.max(chunk.cursor);
+                emit_command_exec_output(app, connection_id, process_id, chunk)?;
+            }
+            Ok(tietiezhi_agent_exec::ExecEvent::Exited(result)) => {
+                let missed = manager
+                    .poll(id, cursor, Duration::ZERO)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                for chunk in missed.chunks {
+                    emit_command_exec_output(app, connection_id, process_id, chunk)?;
+                }
+                return Ok(result);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                let missed = manager
+                    .poll(id, cursor, Duration::ZERO)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                for chunk in missed.chunks {
+                    cursor = cursor.max(chunk.cursor);
+                    emit_command_exec_output(app, connection_id, process_id, chunk)?;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return manager
+                    .wait(id, None)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "command/exec output stream closed before exit".into());
+            }
+        }
+    }
+}
+
+fn emit_command_exec_output(
+    app: &AppHandle,
+    connection_id: &str,
+    process_id: &str,
+    chunk: tietiezhi_agent_exec::OutputChunk,
+) -> Result<(), String> {
+    emit_checked_notification(
+        app,
+        RoutedNotification {
+            recipients: vec![connection_id.into()],
+            method: "command/exec/outputDelta".into(),
+            params: json!({
+                "processId":process_id,
+                "stream":match chunk.stream {
+                    tietiezhi_agent_exec::OutputStream::Stdout => "stdout",
+                    tietiezhi_agent_exec::OutputStream::Stderr => "stderr",
+                },
+                "deltaBase64":base64::engine::general_purpose::STANDARD.encode(chunk.bytes),
+                "capReached":chunk.cap_reached
+            }),
+        },
+    )
+}
+
+async fn dispatch_thread_shell_command(
+    app: &AppHandle,
+    state: &AppState,
+    connection_id: &str,
+    request: &Value,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("thread/shellCommand 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let thread_id = request
+        .pointer("/params/threadId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let command = request
+        .pointer("/params/command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if command.is_empty() {
+        return Ok(dispatch_error(request, -32602, "command must not be empty"));
+    }
+    let manager = thread_manager(app, state)?;
+    let context = match manager.thread_shell_context(connection_id, thread_id) {
+        Ok(context) => context,
+        Err(error) => return Ok(dispatch_error(request, error.code, error.message)),
+    };
+    let process_handle = uuid::Uuid::new_v4().to_string();
+    let id = tietiezhi_agent_exec::SessionId::new(
+        format!("thread-shell/{thread_id}"),
+        process_handle.clone(),
+    );
+    let events = match state
+        .codex_exec
+        .spawn(
+            id.clone(),
+            tietiezhi_agent_exec::ExecRequest {
+                command: host_shell_argv(command),
+                cwd: context.cwd,
+                env: HashMap::new(),
+                tty: false,
+                stream_stdin: false,
+                size: tietiezhi_agent_exec::TerminalSize::default(),
+                output_bytes_cap: Some(tietiezhi_agent_exec::DEFAULT_OUTPUT_BYTES_CAP),
+                timeout: None,
+                cancellation: None,
+            },
+        )
+        .await
+    {
+        Ok(events) => events,
+        Err(error) => return Ok(dispatch_error(request, -32603, error.to_string())),
+    };
+    let app_handle = app.clone();
+    let exec = state.codex_exec.clone();
+    let recipients = context.recipients;
+    tauri::async_runtime::spawn(async move {
+        let mut events = events;
+        loop {
+            match events.recv().await {
+                Ok(tietiezhi_agent_exec::ExecEvent::Output(chunk)) => {
+                    let notification = RoutedNotification {
+                        recipients: recipients.clone(),
+                        method: "process/outputDelta".into(),
+                        params: json!({
+                            "processHandle":process_handle,
+                            "stream":match chunk.stream {
+                                tietiezhi_agent_exec::OutputStream::Stdout => "stdout",
+                                tietiezhi_agent_exec::OutputStream::Stderr => "stderr",
+                            },
+                            "deltaBase64":base64::engine::general_purpose::STANDARD.encode(chunk.bytes),
+                            "capReached":chunk.cap_reached
+                        }),
+                    };
+                    let _ = emit_checked_notification(&app_handle, notification);
+                }
+                Ok(tietiezhi_agent_exec::ExecEvent::Exited(result)) => {
+                    let notification = RoutedNotification {
+                        recipients: recipients.clone(),
+                        method: "process/exited".into(),
+                        params: json!({
+                            "processHandle":process_handle,
+                            "exitCode":if result.timed_out { 124 } else { result.exit_code },
+                            "stdout":"",
+                            "stdoutCapReached":result.stdout_cap_reached,
+                            "stderr":"",
+                            "stderrCapReached":result.stderr_cap_reached
+                        }),
+                    };
+                    let _ = emit_checked_notification(&app_handle, notification);
+                    let _ = exec.remove(&id);
+                    break;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    dispatch_success(request, json!({}))
+}
+
+fn terminal_size(value: Option<&Value>) -> Result<tietiezhi_agent_exec::TerminalSize, String> {
+    let rows = value
+        .and_then(|value| value.get("rows"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .unwrap_or(24);
+    let cols = value
+        .and_then(|value| value.get("cols"))
+        .and_then(Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .unwrap_or(80);
+    if rows == 0 || cols == 0 {
+        return Err("command/exec size rows and cols must be greater than 0".into());
+    }
+    Ok(tietiezhi_agent_exec::TerminalSize { rows, cols })
+}
+
+fn host_shell_argv(command: &str) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        vec![
+            "powershell.exe".into(),
+            "-NoProfile".into(),
+            "-Command".into(),
+            command.into(),
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        vec![
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()),
+            "-c".into(),
+            command.into(),
+        ]
+    }
+}
+
+fn emit_checked_notification(
+    app: &AppHandle,
+    notification: RoutedNotification,
+) -> Result<(), String> {
+    serde_json::from_value::<ServerNotification>(notification.wire_message())
+        .map_err(|error| format!("Codex notification payload 无效：{error}"))?;
+    emit_notifications(app, &[notification])
 }
 
 async fn dispatch_account_request(
@@ -1338,10 +1873,19 @@ async fn run_turn_executor(
                     .metadata
                     .as_ref()
                     .filter(|metadata| {
-                        metadata.get("kind").and_then(Value::as_str) == Some("fileChange")
+                        matches!(
+                            metadata.get("kind").and_then(Value::as_str),
+                            Some("fileChange" | "commandExecution")
+                        )
                     })
                     .and_then(|metadata| metadata.get("item"))
                     .cloned();
+                let defer_item_completion = output
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("deferItemCompletion"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 if let Some(item) = metadata_item.or(timeline_item) {
                     if item.get("type").and_then(Value::as_str) == Some("fileChange") {
                         let changes = item
@@ -1359,10 +1903,12 @@ async fn run_turn_executor(
                             .map_err(core_model_error)?;
                         emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
                     }
-                    let notifications = manager
-                        .local_tool_item_completed(&thread_id, &turn_id, item)
-                        .map_err(core_model_error)?;
-                    emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                    if !defer_item_completion {
+                        let notifications = manager
+                            .local_tool_item_completed(&thread_id, &turn_id, item)
+                            .map_err(core_model_error)?;
+                        emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                    }
                 }
                 if let Some(diff) = output
                     .metadata
@@ -1689,6 +2235,156 @@ fn turn_tool_runtime(
             ModelError::Consumer(format!("初始化 Codex apply_patch 失败：{error}"))
         })?,
     );
+    let requires_command_approval = snapshot.approval_policy.as_str() != Some("never");
+    let command_approval_app = app.clone();
+    let command_approval_manager = manager.clone();
+    let command_approver = requires_command_approval.then(|| {
+        Arc::new(move |request: CommandApprovalRequest| {
+            let app = command_approval_app.clone();
+            let manager = command_approval_manager.clone();
+            Box::pin(async move {
+                let waiting = manager
+                    .set_thread_status(
+                        &request.thread_id,
+                        json!({"type":"active","activeFlags":["waitingOnApproval"]}),
+                    )
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(format!(
+                            "set command approval status: {error:?}"
+                        ))
+                    })?;
+                emit_notifications(&app, &waiting)
+                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                let state = app.state::<AppState>();
+                let recipients = manager
+                    .thread_recipients(&request.thread_id)
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(format!(
+                            "resolve command approval recipients: {error:?}"
+                        ))
+                    })?;
+                let started_at_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+                    .min(i64::MAX as u128) as i64;
+                let pending = state
+                    .codex_approval_requests
+                    .begin_command_execution(
+                        recipients,
+                        CommandExecutionApprovalParams {
+                            thread_id: request.thread_id.clone(),
+                            turn_id: request.turn_id.clone(),
+                            item_id: request.item_id.clone(),
+                            approval_id: None,
+                            command: Some(request.command),
+                            cwd: Some(request.cwd),
+                            command_actions: None,
+                            reason: request.reason,
+                            started_at_ms,
+                        },
+                    )
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                    })?;
+                let request_id = pending.request.id.clone();
+                emit_approval_server_request(&app, &pending.request)
+                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                let decision = tokio::select! {
+                    result = pending.receiver => result
+                        .map_err(|_| tietiezhi_agent_tools::ToolError::Handler(
+                            "command approval channel closed".into()
+                        ))?
+                        .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?,
+                    () = request.cancellation.cancelled() => {
+                        let _ = state.codex_approval_requests.cancel(&request_id);
+                        CommandExecutionApprovalDecision::Cancel
+                    }
+                };
+                let active = manager
+                    .set_thread_status(
+                        &request.thread_id,
+                        json!({"type":"active","activeFlags":[]}),
+                    )
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(format!(
+                            "restore active status: {error:?}"
+                        ))
+                    })?;
+                emit_notifications(&app, &active)
+                    .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                Ok(decision)
+            })
+                as tietiezhi_agent_tools::builtins::CommandApprovalFuture
+        }) as tietiezhi_agent_tools::builtins::CommandApprover
+    });
+    let observer_app = app.clone();
+    let observer_manager = manager.clone();
+    let observer = Arc::new(move |event: CommandRuntimeEvent| {
+        let notifications = match event {
+            CommandRuntimeEvent::Output {
+                thread_id,
+                turn_id,
+                item_id,
+                delta,
+            } => observer_manager
+                .command_execution_output_delta(&thread_id, &turn_id, &item_id, &delta),
+            CommandRuntimeEvent::TerminalInteraction {
+                thread_id,
+                turn_id,
+                item_id,
+                process_id,
+                stdin,
+            } => observer_manager.command_execution_terminal_interaction(
+                &thread_id,
+                &turn_id,
+                &item_id,
+                &process_id,
+                &stdin,
+            ),
+            CommandRuntimeEvent::Exited {
+                thread_id,
+                turn_id,
+                item_id,
+                command,
+                cwd,
+                process_id,
+                result,
+            } => {
+                let mut aggregated_output = result.stdout;
+                aggregated_output.push_str(&result.stderr);
+                observer_manager.local_tool_item_completed(
+                    &thread_id,
+                    &turn_id,
+                    json!({
+                        "type":"commandExecution",
+                        "id":item_id,
+                        "command":command,
+                        "cwd":cwd,
+                        "processId":process_id,
+                        "status":if result.exit_code == 0 { "completed" } else { "failed" },
+                        "commandActions":[],
+                        "aggregatedOutput":aggregated_output,
+                        "exitCode":if result.timed_out { 124 } else { result.exit_code },
+                        "durationMs":i64::try_from(result.wall_time_ms).unwrap_or(i64::MAX),
+                        "source":"agent"
+                    }),
+                )
+            }
+        }
+        .map_err(|error| {
+            tietiezhi_agent_tools::ToolError::Handler(format!("project command event: {error:?}"))
+        })?;
+        emit_notifications(&observer_app, &notifications)
+            .map_err(tietiezhi_agent_tools::ToolError::Handler)
+    }) as tietiezhi_agent_tools::builtins::CommandObserver;
+    handlers.extend(unified_exec_handlers(
+        app.state::<AppState>().codex_exec.clone(),
+        snapshot.cwd.clone(),
+        requires_command_approval,
+        command_approver,
+        observer,
+    ));
     let registry = ToolRegistry::new(handlers, Vec::new())
         .map_err(|error| ModelError::Consumer(format!("初始化 Codex 基础工具失败：{error}")))?;
     let router = Arc::new(ToolRouter::new(registry));
@@ -1728,6 +2424,37 @@ fn local_tool_timeline_item(snapshot: &TurnExecutionSnapshot, call: &ToolCall) -
         call.tool_name.namespace.as_deref(),
         call.tool_name.name.as_str(),
     ) {
+        (None, "exec_command") => {
+            let command = arguments.get("cmd")?.as_str()?;
+            let workdir = arguments
+                .get("workdir")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .map_or_else(
+                    || snapshot.cwd.clone(),
+                    |path| {
+                        if path.is_absolute() {
+                            path
+                        } else {
+                            snapshot.cwd.join(path)
+                        }
+                    },
+                );
+            Some(json!({
+                "type":"commandExecution",
+                "id":call.call_id,
+                "command":command,
+                "cwd":workdir.to_string_lossy(),
+                "processId":null,
+                "status":"inProgress",
+                "commandActions":[],
+                "aggregatedOutput":null,
+                "exitCode":null,
+                "durationMs":null,
+                "source":"agent"
+            }))
+        }
         (Some("clock"), "sleep") => {
             let duration_ms = arguments.get("duration_ms")?.as_u64()?;
             (duration_ms > 0 && duration_ms <= 12 * 60 * 60 * 1000).then(|| {
@@ -2246,6 +2973,20 @@ mod tests {
         .unwrap();
         assert_eq!(sleep["type"], "sleep");
         assert_eq!(sleep["durationMs"], 25);
+        let command = local_tool_timeline_item(
+            &snapshot,
+            &tietiezhi_agent_tools::ToolCall {
+                tool_name: tietiezhi_agent_tools::ToolName::plain("exec_command"),
+                call_id: "call_exec".into(),
+                payload: tietiezhi_agent_tools::ToolPayload::Function {
+                    arguments: "{\"cmd\":\"printf ok\",\"workdir\":\"subdir\"}".into(),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(command["type"], "commandExecution");
+        assert_eq!(command["status"], "inProgress");
+        assert_eq!(command["command"], "printf ok");
     }
 
     #[test]
@@ -2331,5 +3072,34 @@ mod tests {
         );
         assert_eq!(normalized_plan_type("team"), "team");
         assert_eq!(normalized_plan_type("future-plan"), "unknown");
+    }
+
+    #[test]
+    fn unified_exec_requests_and_notifications_match_v2() {
+        for request in [
+            json!({"id":1,"method":"command/exec","params":{"command":["printf","ok"],"tty":false,"streamStdin":false,"streamStdoutStderr":false,"disableOutputCap":false,"disableTimeout":false}}),
+            json!({"id":2,"method":"command/exec/write","params":{"processId":"p1","deltaBase64":"b2sK","closeStdin":false}}),
+            json!({"id":3,"method":"command/exec/resize","params":{"processId":"p1","size":{"rows":24,"cols":80}}}),
+            json!({"id":4,"method":"command/exec/terminate","params":{"processId":"p1"}}),
+            json!({"id":5,"method":"thread/shellCommand","params":{"threadId":"01900000-0000-7000-8000-000000000001","command":"printf ok"}}),
+        ] {
+            assert!(
+                serde_json::from_value::<tietiezhi_agent_protocol::ClientRequest>(request).is_ok()
+            );
+        }
+        for notification in [
+            json!({"method":"command/exec/outputDelta","params":{"processId":"p1","stream":"stdout","deltaBase64":"b2s=","capReached":false}}),
+            json!({"method":"item/commandExecution/outputDelta","params":{"threadId":"01900000-0000-7000-8000-000000000001","turnId":"01900000-0000-7000-8000-000000000002","itemId":"exec_1","delta":"ok"}}),
+            json!({"method":"item/commandExecution/terminalInteraction","params":{"threadId":"01900000-0000-7000-8000-000000000001","turnId":"01900000-0000-7000-8000-000000000002","itemId":"exec_1","processId":"1","stdin":"input\n"}}),
+            json!({"method":"process/outputDelta","params":{"processHandle":"p1","stream":"stderr","deltaBase64":"ZXJy","capReached":false}}),
+            json!({"method":"process/exited","params":{"processHandle":"p1","exitCode":0,"stdout":"","stdoutCapReached":false,"stderr":"","stderrCapReached":false}}),
+        ] {
+            assert!(
+                serde_json::from_value::<tietiezhi_agent_protocol::ServerNotification>(
+                    notification
+                )
+                .is_ok()
+            );
+        }
     }
 }

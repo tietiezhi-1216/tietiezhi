@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 107 |
+| 待实现 | 96 |
 | 实现中 | 0 |
-| 已实现 | 54 |
+| 已实现 | 65 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -51,7 +51,7 @@
 | R10 | 工具内核 | 已完成 | crates/agent-tools Registry、Router、Lifecycle、模型结果、Dynamic Tool V2 和 RwLock 并发/取消测试；docs/CODEX-TOOLS.md | R11-R13 仍需注册基础工具、Apply Patch 与 Unified Exec；R14-R18 在同一内核接入审批、沙箱、网络与 ExecPolicy。 |
 | R11 | 基础工具 | 已完成 | crates/agent-tools 基础工具与 BM25 Tool Search；desktop Responses 工具闭环、steer 活动信号和模型能力门控；crates/agent-core 强类型 Sleep/ImageView/WebSearch Item；docs/CODEX-BUILTIN-TOOLS.md | R12/R13 仍需实现有文件或进程副作用的 Patch 与 Unified Exec；R14-R18 负责审批、沙箱、网络与 ExecPolicy，R19/R25 负责 MCP、Plan 和用户输入工具。 |
 | R12 | Patch 与 Diff | 已完成 | crates/agent-patch Lark/流式解析与多文件原子事务；crates/agent-approval FileChange 反向请求；agent-tools apply_patch；agent-core FileChange/Turn Diff；docs/CODEX-PATCH.md | R14 仍需扩展完整 Approval Policy、精确会话授权缓存及命令/网络审批；R15-R17 仍需提供 OS 沙箱和网络隔离。 |
-| R13 | Unified Exec | 待开始 |  |  |
+| R13 | Unified Exec | 已完成 | crates/agent-exec PTY/ConPTY、管道和会话管理；agent-tools exec_command/write_stdin；desktop command/exec* 与 thread/shellCommand；agent-core CommandExecution Item；docs/CODEX-EXEC.md | R14-R18 仍需完成精确审批策略、macOS/Windows OS 沙箱、网络隔离和 ExecPolicy；R30 再暴露多终端桌面 UI。 |
 | R14 | 审批策略 | 待开始 |  |  |
 | R15 | macOS 沙箱 | 待开始 |  |  |
 | R16 | Windows 沙箱 | 待开始 |  |  |
@@ -95,10 +95,10 @@
 | `app/installed` | 待实现 | R33 |  |
 | `app/list` | 待实现 | R33 |  |
 | `app/read` | 待实现 | R33 |  |
-| `command/exec` | 待实现 | R13 |  |
-| `command/exec/resize` | 待实现 | R13 |  |
-| `command/exec/terminate` | 待实现 | R13 |  |
-| `command/exec/write` | 待实现 | R13 |  |
+| `command/exec` | 已实现 | R13 | desktop codex.rs dispatch_command_exec；agent-exec integration tests |
+| `command/exec/resize` | 已实现 | R13 | desktop codex.rs；agent-exec PTY resize test |
+| `command/exec/terminate` | 已实现 | R13 | desktop codex.rs；agent-exec process-group cleanup test |
+| `command/exec/write` | 已实现 | R13 | desktop codex.rs；agent-exec stdin roundtrip test |
 | `config/batchWrite` | 待实现 | R21 |  |
 | `config/mcpServer/reload` | 待实现 | R21 |  |
 | `config/read` | 待实现 | R21 |  |
@@ -163,7 +163,7 @@
 | `thread/read` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/resume` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/rollback` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
-| `thread/shellCommand` | 待实现 | R13 |  |
+| `thread/shellCommand` | 已实现 | R13 | desktop codex.rs dispatch_thread_shell_command；docs/CODEX-EXEC.md |
 | `thread/start` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/unarchive` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/unsubscribe` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
@@ -187,7 +187,7 @@
 | `applyPatchApproval` | 待实现 | R14 |  |
 | `attestation/generate` | 待实现 | R36 |  |
 | `execCommandApproval` | 待实现 | R14 |  |
-| `item/commandExecution/requestApproval` | 待实现 | R13 |  |
+| `item/commandExecution/requestApproval` | 已实现 | R13 | agent-approval command broker；V2 schema tests |
 | `item/fileChange/requestApproval` | 已实现 | R12 | crates/agent-approval ServerRequestBroker V2 Schema 与四决策测试；desktop/src-tauri/src/commands/codex.rs |
 | `item/permissions/requestApproval` | 待实现 | R14 |  |
 | `item/tool/call` | 已实现 | R10 | crates/agent-tools 生成并校验精确 App Server V2 Dynamic Tool ServerRequest/Response，保持 thread/turn/call/namespace/tool/arguments；docs/CODEX-TOOLS.md |
@@ -202,7 +202,7 @@
 | `account/rateLimits/updated` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
 | `account/updated` | 已实现 | R8 | crates/agent-account 的全连接登录、账号与稀疏额度通知测试；desktop commands/codex.rs 的 routed notification 适配 |
 | `app/list/updated` | 待实现 | R33 |  |
-| `command/exec/outputDelta` | 待实现 | R13 |  |
+| `command/exec/outputDelta` | 已实现 | R13 | desktop wait_streamed_command_exec；V2 notification validation |
 | `configWarning` | 待实现 | R21 |  |
 | `deprecationNotice` | 待实现 | R3 |  |
 | `error` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
@@ -217,8 +217,8 @@
 | `item/agentMessage/delta` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `item/autoApprovalReview/completed` | 待实现 | R27 |  |
 | `item/autoApprovalReview/started` | 待实现 | R27 |  |
-| `item/commandExecution/outputDelta` | 待实现 | R13 |  |
-| `item/commandExecution/terminalInteraction` | 待实现 | R13 |  |
+| `item/commandExecution/outputDelta` | 已实现 | R13 | agent-core command_execution_output_delta；core lifecycle test |
+| `item/commandExecution/terminalInteraction` | 已实现 | R13 | agent-core terminal interaction；core lifecycle test |
 | `item/completed` | 已实现 | R3 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `item/fileChange/outputDelta` | 已实现 | R12 | crates/agent-core 兼容发布器与 V2 载荷测试；正常执行按 Codex 0.145.0 不发送废弃通知 |
 | `item/fileChange/patchUpdated` | 已实现 | R12 | crates/agent-core FileChange 增量投影；desktop Responses delta/最终预览；FileChange 生命周期测试 |
@@ -233,8 +233,8 @@
 | `model/rerouted` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `model/safetyBuffering/updated` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `model/verification` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
-| `process/exited` | 待实现 | R13 |  |
-| `process/outputDelta` | 待实现 | R13 |  |
+| `process/exited` | 已实现 | R13 | desktop thread shell executor；V2 notification validation |
+| `process/outputDelta` | 已实现 | R13 | desktop thread shell executor；V2 notification validation |
 | `remoteControl/status/changed` | 待实现 | R35 |  |
 | `serverRequest/resolved` | 待实现 | R36 |  |
 | `skills/changed` | 待实现 | R22 |  |

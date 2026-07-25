@@ -71,6 +71,7 @@ jobs:
             crates/agent-account
             crates/agent-approval
             crates/agent-patch
+            crates/agent-exec
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -119,6 +120,9 @@ jobs:
 
       - name: Codex atomic apply patch tests
         run: cargo test --manifest-path ../crates/agent-patch/Cargo.toml
+
+      - name: Codex PTY and unified exec tests
+        run: cargo test --manifest-path ../crates/agent-exec/Cargo.toml
 
       - name: Codex Responses model tests
         run: cargo test --manifest-path ../crates/agent-model/Cargo.toml

@@ -45,6 +45,8 @@ pub struct AppState {
     pub(crate) codex_account_requests: tietiezhi_agent_account::AccountServerRequestBroker,
     /// Reverse JSON-RPC requests for command/file/network approval.
     pub(crate) codex_approval_requests: tietiezhi_agent_approval::ServerRequestBroker,
+    /// PTY and pipe sessions shared by App Server command methods and model tools.
+    pub(crate) codex_exec: tietiezhi_agent_exec::ExecManager,
     /// Unstable externally supplied ChatGPT tokens are intentionally memory-only.
     pub(crate) codex_external_auth: Mutex<HashMap<String, commands::codex::ExternalAuthTokens>>,
 }
@@ -91,6 +93,7 @@ pub fn run() {
             codex_login_cancels: Mutex::new(HashMap::new()),
             codex_account_requests: tietiezhi_agent_account::AccountServerRequestBroker::default(),
             codex_approval_requests: tietiezhi_agent_approval::ServerRequestBroker::default(),
+            codex_exec: tietiezhi_agent_exec::ExecManager::default(),
             codex_external_auth: Mutex::new(HashMap::new()),
         })
         .manage(commands::hotkey::HotkeyState::default())

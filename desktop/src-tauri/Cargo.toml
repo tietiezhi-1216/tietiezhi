@@ -19,6 +19,7 @@ tietiezhi-agent-approval = { path = "../../crates/agent-approval" }
 tietiezhi-agent-context = { path = "../../crates/agent-context" }
 tietiezhi-agent-core = { path = "../../crates/agent-core" }
 tietiezhi-agent-events = { path = "../../crates/agent-events" }
+tietiezhi-agent-exec = { path = "../../crates/agent-exec" }
 tietiezhi-agent-model = { path = "../../crates/agent-model" }
 tietiezhi-agent-patch = { path = "../../crates/agent-patch" }
 tietiezhi-agent-protocol = { path = "../../crates/agent-protocol" }

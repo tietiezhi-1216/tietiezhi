@@ -253,6 +253,12 @@ pub struct DispatchOutput {
     pub notifications: Vec<RoutedNotification>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadShellContext {
+    pub cwd: PathBuf,
+    pub recipients: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RpcError {
     pub code: i64,
@@ -2164,6 +2170,64 @@ impl ThreadManager {
         )
     }
 
+    pub fn command_execution_output_delta(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        delta: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.update_streaming_item(thread_id, turn_id, item_id, |item| {
+            if item.get("type").and_then(Value::as_str) != Some("commandExecution") {
+                return Err(RpcError::invalid(
+                    "streaming item is not a command execution",
+                ));
+            }
+            let output = item
+                .get("aggregatedOutput")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            item["aggregatedOutput"] = json!(format!("{output}{delta}"));
+            Ok(())
+        })?;
+        self.model_delta_notification(
+            thread_id,
+            "item/commandExecution/outputDelta",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "delta": delta
+            }),
+        )
+    }
+
+    pub fn command_execution_terminal_interaction(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        process_id: &str,
+        stdin: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            "item/commandExecution/terminalInteraction",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "processId": process_id,
+                "stdin": stdin
+            }),
+        )?])
+    }
+
     /// Compatibility implementation for the deprecated V2 notification.
     /// New executions use canonical FileChange items and `patchUpdated`.
     pub fn file_change_output_delta(
@@ -2218,6 +2282,32 @@ impl ThreadManager {
             .unwrap_or_default();
         recipients.sort();
         Ok(recipients)
+    }
+
+    pub fn thread_shell_context(
+        &self,
+        connection_id: &str,
+        thread_id: &str,
+    ) -> RpcResult<ThreadShellContext> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let loaded = self.load_thread_locked(thread_id, &mut state)?;
+        state.loaded.insert(thread_id.into(), loaded.clone());
+        state
+            .subscribers
+            .entry(thread_id.into())
+            .or_default()
+            .insert(connection_id.into());
+        let mut recipients = state
+            .subscribers
+            .get(thread_id)
+            .map(|subscribers| subscribers.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        recipients.sort();
+        Ok(ThreadShellContext {
+            cwd: loaded.record.cwd,
+            recipients,
+        })
     }
 
     pub fn agent_message_delta(
@@ -3953,6 +4043,19 @@ fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
             "changes": item.get("changes").cloned().unwrap_or_else(|| json!([])),
             "status": item.get("status").cloned().unwrap_or_else(|| json!("inProgress"))
         })),
+        Some("commandExecution") => Ok(json!({
+            "type": "CommandExecution",
+            "id": required_item_string(item, "id", "commandExecution item")?,
+            "command": item.get("command").cloned().unwrap_or_else(|| json!("")),
+            "cwd": item.get("cwd").cloned().unwrap_or_else(|| json!("")),
+            "process_id": item.get("processId").cloned().unwrap_or(Value::Null),
+            "status": item.get("status").cloned().unwrap_or_else(|| json!("inProgress")),
+            "command_actions": item.get("commandActions").cloned().unwrap_or_else(|| json!([])),
+            "aggregated_output": item.get("aggregatedOutput").cloned().unwrap_or(Value::Null),
+            "exit_code": item.get("exitCode").cloned().unwrap_or(Value::Null),
+            "duration_ms": item.get("durationMs").cloned().unwrap_or(Value::Null),
+            "source": item.get("source").cloned().unwrap_or_else(|| json!("agent"))
+        })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported ThreadItem conversion to core: {other}"
         ))),
@@ -4015,6 +4118,19 @@ fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
             "id": required_item_string(item, "id", "FileChange item")?,
             "changes": item.get("changes").cloned().unwrap_or_else(|| json!([])),
             "status": item.get("status").cloned().unwrap_or_else(|| json!("inProgress"))
+        })),
+        Some("CommandExecution") => Ok(json!({
+            "type": "commandExecution",
+            "id": required_item_string(item, "id", "CommandExecution item")?,
+            "command": item.get("command").cloned().unwrap_or_else(|| json!("")),
+            "cwd": item.get("cwd").cloned().unwrap_or_else(|| json!("")),
+            "processId": item.get("process_id").cloned().unwrap_or(Value::Null),
+            "status": item.get("status").cloned().unwrap_or_else(|| json!("inProgress")),
+            "commandActions": item.get("command_actions").cloned().unwrap_or_else(|| json!([])),
+            "aggregatedOutput": item.get("aggregated_output").cloned().unwrap_or(Value::Null),
+            "exitCode": item.get("exit_code").cloned().unwrap_or(Value::Null),
+            "durationMs": item.get("duration_ms").cloned().unwrap_or(Value::Null),
+            "source": item.get("source").cloned().unwrap_or_else(|| json!("agent"))
         })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported core TurnItem conversion: {other}"
@@ -6572,5 +6688,91 @@ mod tests {
             .find(|item| item["type"] == "fileChange")
             .unwrap_or_else(|| panic!("missing file change in {items:?}"));
         assert_eq!(file_change["status"], "completed");
+    }
+
+    #[test]
+    fn command_execution_lifecycle_deltas_and_terminal_input_match_v2() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"].as_str().unwrap();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"run","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap();
+        manager
+            .local_tool_item_started(
+                thread_id,
+                turn_id,
+                json!({
+                    "type":"commandExecution",
+                    "id":"exec_1",
+                    "command":"printf hello",
+                    "cwd":"/tmp",
+                    "processId":"7",
+                    "status":"inProgress",
+                    "commandActions":[],
+                    "aggregatedOutput":null,
+                    "exitCode":null,
+                    "durationMs":null,
+                    "source":"agent"
+                }),
+            )
+            .unwrap();
+        let delta = manager
+            .command_execution_output_delta(thread_id, turn_id, "exec_1", "hello")
+            .unwrap();
+        assert_eq!(delta[0].method, "item/commandExecution/outputDelta");
+        let interaction = manager
+            .command_execution_terminal_interaction(thread_id, turn_id, "exec_1", "7", "input\n")
+            .unwrap();
+        assert_eq!(
+            interaction[0].method,
+            "item/commandExecution/terminalInteraction"
+        );
+        manager
+            .local_tool_item_completed(
+                thread_id,
+                turn_id,
+                json!({
+                    "type":"commandExecution",
+                    "id":"exec_1",
+                    "command":"printf hello",
+                    "cwd":"/tmp",
+                    "processId":"7",
+                    "status":"completed",
+                    "commandActions":[],
+                    "aggregatedOutput":"hello",
+                    "exitCode":0,
+                    "durationMs":2,
+                    "source":"agent"
+                }),
+            )
+            .unwrap();
+        manager.complete_turn(thread_id, turn_id, None).unwrap();
+        let read = manager.dispatch(
+            "desktop",
+            request(
+                3,
+                "thread/read",
+                json!({"threadId":thread_id,"includeTurns":true}),
+            ),
+        );
+        let command = result(&read)["thread"]["turns"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "commandExecution")
+            .unwrap()
+            .clone();
+        assert_eq!(command["aggregatedOutput"], "hello");
+        assert_eq!(command["exitCode"], 0);
     }
 }
