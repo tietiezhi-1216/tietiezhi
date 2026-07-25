@@ -1203,9 +1203,9 @@
     {
       "id": "R17",
       "name": "网络策略",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "in_progress",
+      "risk": "Windows managed network currently fails closed; source-built elevated sandbox identity and Firewall/WFP proxy allowlist remain required before R39 release.",
+      "evidence": "crates/agent-network；agent-tools restricted network integration；macOS Seatbelt proxy-only tests；desktop command approval adapter；docs/CODEX-NETWORK.md"
     },
     {
       "id": "R18",

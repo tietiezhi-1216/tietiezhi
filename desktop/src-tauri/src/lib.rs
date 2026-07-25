@@ -52,6 +52,8 @@ pub struct AppState {
         Mutex<Option<tietiezhi_agent_approval::PersistentApprovalStore>>,
     /// PTY and pipe sessions shared by App Server command methods and model tools.
     pub(crate) codex_exec: tietiezhi_agent_exec::ExecManager,
+    /// Shared, execution-attributed HTTP/SOCKS network sandbox proxy.
+    pub(crate) codex_network: tietiezhi_agent_network::NetworkRuntime,
     /// Unstable externally supplied ChatGPT tokens are intentionally memory-only.
     pub(crate) codex_external_auth: Mutex<HashMap<String, commands::codex::ExternalAuthTokens>>,
 }
@@ -101,6 +103,7 @@ pub fn run() {
             codex_session_approvals: tietiezhi_agent_approval::SessionApprovalStore::default(),
             codex_persistent_approvals: Mutex::new(None),
             codex_exec: tietiezhi_agent_exec::ExecManager::default(),
+            codex_network: tietiezhi_agent_network::NetworkRuntime::default(),
             codex_external_auth: Mutex::new(HashMap::new()),
         })
         .manage(commands::hotkey::HotkeyState::default())

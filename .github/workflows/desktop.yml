@@ -68,6 +68,7 @@ jobs:
             crates/agent-context
             crates/agent-tools
             crates/agent-model
+            crates/agent-network
             crates/agent-account
             crates/agent-approval
             crates/agent-patch
@@ -130,6 +131,9 @@ jobs:
 
       - name: Codex platform sandbox tests
         run: cargo test --manifest-path ../crates/agent-sandbox/Cargo.toml
+
+      - name: Codex attributed network proxy tests
+        run: cargo test --manifest-path ../crates/agent-network/Cargo.toml
 
       - name: Codex Responses model tests
         run: cargo test --manifest-path ../crates/agent-model/Cargo.toml

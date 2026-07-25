@@ -55,7 +55,7 @@
 | R14 | 审批策略 | 已完成 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md | R15/R16 尚需把审批决策绑定到真实 OS 沙箱，R17/R18 尚需消费持久网络与 ExecPolicy Amendment；关闭 granular 类别已 fail-closed。 |
 | R15 | macOS 沙箱 | 已完成 | crates/agent-sandbox 实现固定 /usr/bin/sandbox-exec、read-only/workspace-write/danger/external、可写根、受保护元数据、临时目录、网络开关和 symlink 安全；agent-exec Pipe/PTY、Unified Exec、command/exec 与 apply_patch 共用策略；10 项沙箱测试、7 项 exec 测试和 20 项工具测试覆盖真实 macOS 拒绝。 | Windows 隔离由 R16 实现；域名代理、连接审批和网络审计由 R17 实现；R21 再提供完整分层 Permission Profile 配置。 |
 | R16 | Windows 沙箱 | 已完成 | crates/agent-sandbox Windows Restricted Token/ACL/Job/wrapper；crates/agent-exec/tests/windows_sandbox.rs；desktop commands/codex.rs；docs/CODEX-SANDBOX-WINDOWS.md；Windows CI | Windows ACL 准备失败时 fail-closed；每次发布由 Windows runner 重跑真实逃逸测试。 |
-| R17 | 网络策略 | 待开始 |  |  |
+| R17 | 网络策略 | 进行中 | crates/agent-network；agent-tools restricted network integration；macOS Seatbelt proxy-only tests；desktop command approval adapter；docs/CODEX-NETWORK.md | Windows managed network currently fails closed; source-built elevated sandbox identity and Firewall/WFP proxy allowlist remain required before R39 release. |
 | R18 | ExecPolicy | 待开始 |  |  |
 | R19 | MCP 完整实现 | 待开始 |  |  |
 | R20 | 指令层 | 待开始 |  |  |

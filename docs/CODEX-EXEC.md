@@ -46,7 +46,7 @@ R13 负责可靠进程与协议生命周期，不冒充安全隔离：
 
 - R14 实现完整 Approval Policy、会话缓存和精确授权作用域。
 - R15 为 macOS Pipe 与 PTY 提供 Seatbelt；R16 为 Windows Pipe 与 ConPTY 提供源码构建的 Restricted Token/ACL/Job Object 沙箱。
-- R17 提供命令网络策略和代理归因。
+- R17 为 restricted network 提供命令代理、执行归因、域名规则和连接审批；模型与 Web Search 网络保持独立。
 - R18 使用解析后的 ExecPolicy 替代临时的统一询问策略。
 - R30 在桌面 UI 暴露每个 Thread 的多个集成终端。
 

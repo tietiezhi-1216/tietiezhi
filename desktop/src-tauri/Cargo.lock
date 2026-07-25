@@ -4717,6 +4717,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-network"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "globset",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "tietiezhi-agent-patch"
 version = "0.1.0"
 dependencies = [
@@ -4768,6 +4783,7 @@ dependencies = [
  "serde_json",
  "tietiezhi-agent-approval",
  "tietiezhi-agent-exec",
+ "tietiezhi-agent-network",
  "tietiezhi-agent-patch",
  "tietiezhi-agent-protocol",
  "tietiezhi-agent-sandbox",
@@ -4813,6 +4829,7 @@ dependencies = [
  "tietiezhi-agent-events",
  "tietiezhi-agent-exec",
  "tietiezhi-agent-model",
+ "tietiezhi-agent-network",
  "tietiezhi-agent-patch",
  "tietiezhi-agent-protocol",
  "tietiezhi-agent-sandbox",

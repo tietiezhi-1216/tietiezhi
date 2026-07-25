@@ -40,4 +40,4 @@ Windows 测试覆盖：
 - `agent-exec` 的 Pipe 与 ConPTY 都通过源码构建 wrapper 执行。
 - readiness、setup、warning 和 completed 通知通过固定 V2 Schema。
 
-GitHub Windows runner 执行 `agent-sandbox`、`agent-exec`、桌面 Rust 测试和 NSIS 构建；macOS 本地和 CI 继续验证 Seatbelt 路径。R17 在此隔离基础上增加域名网络规则、代理归因和连接审批。
+GitHub Windows runner 执行 `agent-sandbox`、`agent-exec`、桌面 Rust 测试和 NSIS 构建；macOS 本地和 CI 继续验证 Seatbelt 路径。R17 已增加域名网络规则、代理归因和连接审批。unelevated token 无法可靠阻止代理绕过，因此 Windows managed network 当前失败关闭；elevated identity 与 Firewall/WFP 是 R39 发布前必须关闭的安全风险。

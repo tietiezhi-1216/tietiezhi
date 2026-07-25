@@ -193,3 +193,19 @@ R16 的 Windows Restricted Token、ACL、世界可写审计、用户目录隐藏
 - `codex-rs/core/src/tools/handlers/unified_exec/mod.rs`
 
 本地实现用当前桌面可执行文件或测试 runner 进行源码级 self-reentry，并增加策略审计缓存、capability SID、Pipe/ConPTY 集成测试和固定 App Server V2 setup/readiness 通知。
+
+R17 的域名规则、私网目标拒绝、代理归因、HTTP/SOCKS5 出口和网络决策语义参考以下 Apache-2.0 上游源码重新实现，没有链接或调用上游二进制：
+
+- `codex-rs/network-proxy/src/attribution.rs`
+- `codex-rs/network-proxy/src/config.rs`
+- `codex-rs/network-proxy/src/connect_policy.rs`
+- `codex-rs/network-proxy/src/network_policy.rs`
+- `codex-rs/network-proxy/src/policy.rs`
+- `codex-rs/network-proxy/src/proxy.rs`
+- `codex-rs/network-proxy/src/reasons.rs`
+- `codex-rs/network-proxy/src/responses.rs`
+- `codex-rs/core/src/network_policy_decision.rs`
+- `codex-rs/protocol/src/network_policy.rs`
+- `codex-rs/sandboxing/src/seatbelt.rs`
+
+本地实现增加与现有 `PersistentApprovalStore`、Unified Exec 和 App Server `command/exec` 的适配；模型 API、Hosted Web Search 和用户 shell 不通过命令代理。

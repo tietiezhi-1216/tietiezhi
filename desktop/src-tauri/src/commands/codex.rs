@@ -25,6 +25,10 @@ use tietiezhi_agent_model::{
     list_online_models, supports_original_image_detail, ModelError, OnlineModel, Reasoning,
     ResponseEvent, ResponsesApiRequest, ResponsesClient, TextControls, TextFormat, TextFormatType,
 };
+use tietiezhi_agent_network::{
+    NetworkApprovalDecision, NetworkDomainPermission, NetworkExecutionRequest, NetworkMode,
+    NetworkPolicy, NetworkPolicyAmendment,
+};
 use tietiezhi_agent_protocol::{
     ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse,
     PermissionProfileListResponse, ServerNotification,
@@ -32,8 +36,8 @@ use tietiezhi_agent_protocol::{
 use tietiezhi_agent_tools::builtins::{
     apply_patch_handler, context_remaining_handler, current_time_handler,
     request_permissions_handler, sleep_handler, unified_exec_handlers, view_image_handler,
-    web_search_handler, CommandApprovalRequest, CommandRuntimeEvent, FileChangeApprovalRequest,
-    PermissionsApprovalRequest,
+    web_search_handler, CommandApprovalRequest, CommandNetworkRequest, CommandRuntimeEvent,
+    FileChangeApprovalRequest, PermissionsApprovalRequest,
 };
 use tietiezhi_agent_tools::{ToolCall, ToolCallRuntime, ToolPayload, ToolRegistry, ToolRouter};
 use tokio_util::sync::CancellationToken;
@@ -688,7 +692,7 @@ async fn dispatch_command_exec(
                 .and_then(Value::as_str)
                 .map(std::path::PathBuf::from)
                 .unwrap_or(std::env::current_dir().map_err(|error| error.to_string())?);
-            let env = params
+            let mut env = params
                 .get("env")
                 .and_then(Value::as_object)
                 .map(|env| {
@@ -719,6 +723,35 @@ async fn dispatch_command_exec(
                     Ok(policy) => policy,
                     Err(error) => return Ok(dispatch_error(request, -32602, error.to_string())),
                 };
+            let _network = if sandbox_policy.is_restricted() && sandbox_policy.network_access() {
+                match state
+                    .codex_network
+                    .prepare_execution(NetworkExecutionRequest {
+                        thread_id: format!("command-exec/{connection_id}"),
+                        turn_id: "command-exec".into(),
+                        item_id: process_id.clone().unwrap_or_else(|| "command-exec".into()),
+                        command: command.join(" "),
+                        policy: NetworkPolicy {
+                            enabled: true,
+                            mode: NetworkMode::Full,
+                            domains: Default::default(),
+                            allow_local_binding: false,
+                        },
+                        approver: None,
+                    })
+                    .await
+                {
+                    Ok(prepared) => {
+                        env.extend(prepared.env().clone());
+                        Some(prepared)
+                    }
+                    Err(error) => {
+                        return Ok(dispatch_error(request, -32603, error.to_string()));
+                    }
+                }
+            } else {
+                None
+            };
             let exposed_process_id = process_id
                 .clone()
                 .unwrap_or_else(|| format!("internal-{}", state.codex_exec.allocate_session_id()));
@@ -2723,6 +2756,150 @@ fn turn_tool_runtime(
         emit_notifications(&observer_app, &notifications)
             .map_err(tietiezhi_agent_tools::ToolError::Handler)
     }) as tietiezhi_agent_tools::builtins::CommandObserver;
+    let network_runtime = app.state::<AppState>().codex_network.clone();
+    let network_app = app.clone();
+    let network_manager = manager.clone();
+    let network_prompts_allowed = approval_policy.allows(ApprovalCategory::Rule);
+    let network_preparer = Arc::new(move |request: CommandNetworkRequest| {
+        let runtime = network_runtime.clone();
+        let app = network_app.clone();
+        let manager = network_manager.clone();
+        Box::pin(async move {
+            let app_state = app.state::<AppState>();
+            if let Ok(store) = persistent_approval_store(&app, &app_state) {
+                let amendments = store
+                    .snapshot()
+                    .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?
+                    .rules
+                    .into_iter()
+                    .filter_map(|rule| match rule {
+                        PersistentApprovalRule::NetworkPolicy { amendment } => {
+                            parse_network_policy_amendment(&amendment)
+                        }
+                        PersistentApprovalRule::ExecPolicy { .. } => None,
+                    });
+                runtime.replace_persistent_rules(amendments);
+            }
+            let approval_app = app.clone();
+            let approval_manager = manager.clone();
+            let approval_runtime = runtime.clone();
+            let approver = Arc::new(
+                move |network: tietiezhi_agent_network::NetworkApprovalRequest| {
+                    let app = approval_app.clone();
+                    let manager = approval_manager.clone();
+                    let runtime = approval_runtime.clone();
+                    Box::pin(async move {
+                        if !network_prompts_allowed {
+                            return NetworkApprovalDecision::Deny;
+                        }
+                        let protocol = network_protocol_label(network.protocol);
+                        let key = ApprovalKey::Network {
+                            scheme: protocol.into(),
+                            host: network.host.clone(),
+                            port: Some(network.port),
+                            action: "connect".into(),
+                        };
+                        let state = app.state::<AppState>();
+                        if state
+                            .codex_session_approvals
+                            .contains_all_for(&network.thread_id, std::slice::from_ref(&key))
+                        {
+                            return NetworkApprovalDecision::AllowOnce;
+                        }
+                        let recipients = match manager.thread_recipients(&network.thread_id) {
+                            Ok(recipients) => recipients,
+                            Err(_) => return NetworkApprovalDecision::Deny,
+                        };
+                        let started_at_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                            .min(i64::MAX as u128)
+                            as i64;
+                        let pending = match state.codex_approval_requests.begin_command_execution(
+                            recipients,
+                            CommandExecutionApprovalParams {
+                                thread_id: network.thread_id.clone(),
+                                turn_id: network.turn_id.clone(),
+                                item_id: network.item_id.clone(),
+                                approval_id: None,
+                                command: Some(network.command),
+                                cwd: None,
+                                command_actions: None,
+                                environment_id: Some("local".into()),
+                                network_approval_context: Some(json!({
+                                    "host":network.host,
+                                    "protocol":protocol
+                                })),
+                                proposed_execpolicy_amendment: None,
+                                proposed_network_policy_amendments: Some(vec![
+                                    json!({"host":network.host,"action":"allow"}),
+                                    json!({"host":network.host,"action":"deny"}),
+                                ]),
+                                reason: Some(network.reason),
+                                started_at_ms,
+                            },
+                        ) {
+                            Ok(pending) => pending,
+                            Err(_) => return NetworkApprovalDecision::Deny,
+                        };
+                        if emit_approval_server_request(&app, &pending.request).is_err() {
+                            return NetworkApprovalDecision::Deny;
+                        }
+                        match pending.receiver.await {
+                            Ok(Ok(CommandExecutionApprovalDecision::Accept)) => {
+                                NetworkApprovalDecision::AllowOnce
+                            }
+                            Ok(Ok(CommandExecutionApprovalDecision::AcceptForSession)) => {
+                                let _ = state
+                                    .codex_session_approvals
+                                    .approve_for(&network.thread_id, &[key]);
+                                NetworkApprovalDecision::AllowOnce
+                            }
+                            Ok(Ok(
+                                CommandExecutionApprovalDecision::ApplyNetworkPolicyAmendment {
+                                    network_policy_amendment,
+                                },
+                            )) => {
+                                let Some(amendment) =
+                                    parse_network_policy_amendment(&network_policy_amendment)
+                                else {
+                                    return NetworkApprovalDecision::Deny;
+                                };
+                                if let Ok(store) = persistent_approval_store(&app, &state) {
+                                    let _ = store.append(PersistentApprovalRule::NetworkPolicy {
+                                        amendment: network_policy_amendment,
+                                    });
+                                }
+                                runtime.apply_persistent_amendment(amendment.clone());
+                                NetworkApprovalDecision::Apply(amendment)
+                            }
+                            Ok(Ok(CommandExecutionApprovalDecision::Cancel)) => {
+                                NetworkApprovalDecision::Cancel
+                            }
+                            _ => NetworkApprovalDecision::Deny,
+                        }
+                    }) as tietiezhi_agent_network::NetworkApprovalFuture
+                },
+            ) as tietiezhi_agent_network::NetworkApprover;
+            runtime
+                .prepare_execution(NetworkExecutionRequest {
+                    thread_id: request.thread_id,
+                    turn_id: request.turn_id,
+                    item_id: request.item_id,
+                    command: request.command,
+                    policy: NetworkPolicy {
+                        enabled: true,
+                        mode: NetworkMode::Full,
+                        domains: Default::default(),
+                        allow_local_binding: false,
+                    },
+                    approver: Some(approver),
+                })
+                .await
+                .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))
+        }) as tietiezhi_agent_tools::builtins::NetworkPreparationFuture
+    }) as tietiezhi_agent_tools::builtins::NetworkPreparer;
     handlers.extend(unified_exec_handlers(
         app.state::<AppState>().codex_exec.clone(),
         snapshot.cwd.clone(),
@@ -2730,12 +2907,37 @@ fn turn_tool_runtime(
         requires_command_approval,
         command_approver,
         observer,
+        Some(network_preparer),
     ));
     let registry = ToolRegistry::new(handlers, Vec::new())
         .map_err(|error| ModelError::Consumer(format!("初始化 Codex 基础工具失败：{error}")))?;
     let router = Arc::new(ToolRouter::new(registry));
     let specs = router.model_visible_wire_specs();
     Ok((ToolCallRuntime::new(router), specs))
+}
+
+fn network_protocol_label(protocol: tietiezhi_agent_network::NetworkProtocol) -> &'static str {
+    match protocol {
+        tietiezhi_agent_network::NetworkProtocol::Http => "http",
+        tietiezhi_agent_network::NetworkProtocol::HttpsConnect => "https",
+        tietiezhi_agent_network::NetworkProtocol::Socks5Tcp => "socks5Tcp",
+    }
+}
+
+fn parse_network_policy_amendment(value: &Value) -> Option<NetworkPolicyAmendment> {
+    let host = value.get("host")?.as_str()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let action = match value.get("action")?.as_str()? {
+        "allow" => NetworkDomainPermission::Allow,
+        "deny" => NetworkDomainPermission::Deny,
+        _ => return None,
+    };
+    Some(NetworkPolicyAmendment {
+        host: host.into(),
+        action,
+    })
 }
 
 fn dispatch_windows_sandbox(

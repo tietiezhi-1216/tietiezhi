@@ -239,6 +239,12 @@ pub fn sandbox_command(
     }
     #[cfg(windows)]
     {
+        if policy.network_access() && !managed_proxy_ports(inherited_env).is_empty() {
+            return Err(SandboxError::InvalidPolicy(
+                "managed network access requires the elevated Windows sandbox identity and WFP backend; refusing a proxy environment that could be bypassed"
+                    .into(),
+            ));
+        }
         let command = windows::wrap_command(command, cwd, inherited_env, policy)?;
         Ok(SandboxInvocation {
             command,
@@ -324,10 +330,16 @@ fn seatbelt_command(
         build_write_policy(&writable_roots),
     ];
     if network_access {
-        policy_sections.push(
+        let proxy_ports = managed_proxy_ports(inherited_env);
+        let network_rules = if proxy_ports.is_empty() {
             "(allow network-outbound)\n(allow network-inbound)\n".to_string()
-                + SEATBELT_NETWORK_POLICY,
-        );
+        } else {
+            proxy_ports
+                .iter()
+                .map(|port| format!("(allow network-outbound (remote ip \"localhost:{port}\"))\n"))
+                .collect()
+        };
+        policy_sections.push(network_rules + SEATBELT_NETWORK_POLICY);
     }
     let full_policy = policy_sections.join("\n");
 
@@ -344,6 +356,27 @@ fn seatbelt_command(
     args.push("--".into());
     args.extend(command);
     Ok(args)
+}
+
+fn managed_proxy_ports(inherited_env: &std::collections::HashMap<String, String>) -> BTreeSet<u16> {
+    ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"]
+        .into_iter()
+        .filter_map(|name| inherited_env.get(name))
+        .filter(|value| {
+            value
+                .split_once("://")
+                .is_some_and(|(_, authority)| authority.rsplit('@').next().is_some())
+        })
+        .filter_map(|value| {
+            let authority = value.split_once("://")?.1.rsplit('@').next()?;
+            authority
+                .trim_end_matches('/')
+                .rsplit_once(':')?
+                .1
+                .parse()
+                .ok()
+        })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -749,5 +782,62 @@ mod tests {
             }
         }
         panic!("enabled sandbox did not connect to loopback listener");
+    }
+
+    #[test]
+    fn managed_proxy_environment_is_reduced_to_loopback_ports() {
+        let env = std::collections::HashMap::from([
+            (
+                "HTTPS_PROXY".into(),
+                "http://execution:x@127.0.0.1:43123".into(),
+            ),
+            (
+                "ALL_PROXY".into(),
+                "socks5h://execution:x@127.0.0.1:48081".into(),
+            ),
+        ]);
+        assert_eq!(
+            managed_proxy_ports(&env),
+            BTreeSet::from([43123_u16, 48081_u16])
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn managed_proxy_policy_blocks_direct_network_bypass() {
+        let root = tempfile::tempdir().unwrap();
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let direct = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_port = proxy.local_addr().unwrap().port();
+        let direct_port = direct.local_addr().unwrap().port();
+        let mut env = std::env::vars().collect::<std::collections::HashMap<_, _>>();
+        env.insert(
+            "HTTP_PROXY".into(),
+            format!("http://execution:x@127.0.0.1:{proxy_port}"),
+        );
+        let invocation = sandbox_command(
+            vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "/usr/bin/nc -z -w 1 127.0.0.1 \"$1\" && ! /usr/bin/nc -z -w 1 127.0.0.1 \"$2\""
+                    .into(),
+                "sandbox".into(),
+                proxy_port.to_string(),
+                direct_port.to_string(),
+            ],
+            root.path(),
+            &env,
+            &SandboxPolicy::ReadOnly {
+                network_access: true,
+            },
+        )
+        .unwrap();
+        let output = std::process::Command::new(&invocation.command[0])
+            .args(&invocation.command[1..])
+            .current_dir(root.path())
+            .envs(env)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
     }
 }

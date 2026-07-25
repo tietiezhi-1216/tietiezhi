@@ -65,6 +65,23 @@ pub type PermissionsApprover =
     Arc<dyn Fn(PermissionsApprovalRequest) -> PermissionsApprovalFuture + Send + Sync + 'static>;
 pub type CommandObserver =
     Arc<dyn Fn(CommandRuntimeEvent) -> Result<(), ToolError> + Send + Sync + 'static>;
+pub type NetworkPreparationFuture = Pin<
+    Box<
+        dyn Future<Output = Result<tietiezhi_agent_network::PreparedNetwork, ToolError>>
+            + Send
+            + 'static,
+    >,
+>;
+pub type NetworkPreparer =
+    Arc<dyn Fn(CommandNetworkRequest) -> NetworkPreparationFuture + Send + Sync + 'static>;
+
+#[derive(Debug, Clone)]
+pub struct CommandNetworkRequest {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub command: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct FileChangeApprovalRequest {
@@ -189,6 +206,7 @@ pub fn unified_exec_handlers(
     requires_approval: bool,
     approver: Option<CommandApprover>,
     observer: CommandObserver,
+    network_preparer: Option<NetworkPreparer>,
 ) -> Vec<Arc<dyn ToolHandler>> {
     let sessions = Arc::new(Mutex::new(HashMap::new()));
     vec![
@@ -198,6 +216,7 @@ pub fn unified_exec_handlers(
             sandbox_policy,
             requires_approval,
             approver,
+            network_preparer,
             observer: observer.clone(),
             sessions: sessions.clone(),
         }),
@@ -216,7 +235,7 @@ pub fn request_permissions_handler(
     Arc::new(RequestPermissionsHandler { cwd, approver })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct CommandSession {
     thread_id: String,
     turn_id: String,
@@ -224,6 +243,7 @@ struct CommandSession {
     command: String,
     cwd: String,
     cursor: usize,
+    _network: Option<Arc<tietiezhi_agent_network::PreparedNetwork>>,
 }
 
 struct RequestPermissionsHandler {
@@ -323,6 +343,7 @@ struct ExecCommandHandler {
     sandbox_policy: tietiezhi_agent_sandbox::SandboxPolicy,
     requires_approval: bool,
     approver: Option<CommandApprover>,
+    network_preparer: Option<NetworkPreparer>,
     observer: CommandObserver,
     sessions: Arc<Mutex<HashMap<String, CommandSession>>>,
 }
@@ -416,6 +437,7 @@ impl ToolHandler for ExecCommandHandler {
         let base_sandbox_policy = self.sandbox_policy.clone();
         let requires_approval = self.requires_approval;
         let approver = self.approver.clone();
+        let network_preparer = self.network_preparer.clone();
         let observer = self.observer.clone();
         let sessions = self.sessions.clone();
         Box::pin(async move {
@@ -536,10 +558,36 @@ impl ToolHandler for ExecCommandHandler {
                     .map_err(|error| ToolError::Handler(error.to_string()))?,
                 _ => base_sandbox_policy,
             };
+            let prepared_network =
+                if sandbox_policy.network_access() && sandbox_policy.is_restricted() {
+                    let Some(preparer) = network_preparer else {
+                        return Ok(command_failure_output(
+                            &invocation.call.call_id,
+                            &args.cmd,
+                            &cwd_display,
+                            "restricted network proxy is unavailable",
+                        ));
+                    };
+                    Some(Arc::new(
+                        preparer(CommandNetworkRequest {
+                            thread_id: invocation.thread_id.clone(),
+                            turn_id: invocation.turn_id.clone(),
+                            item_id: invocation.call.call_id.clone(),
+                            command: args.cmd.clone(),
+                        })
+                        .await?,
+                    ))
+                } else {
+                    None
+                };
+            let env = prepared_network
+                .as_ref()
+                .map(|prepared| prepared.env().clone())
+                .unwrap_or_default();
             let request = ExecRequest {
                 command,
                 cwd: cwd.clone(),
-                env: HashMap::new(),
+                env,
                 tty: args.tty,
                 stream_stdin: true,
                 size: TerminalSize::default(),
@@ -566,6 +614,7 @@ impl ToolHandler for ExecCommandHandler {
                 command: args.cmd.clone(),
                 cwd: cwd_display.clone(),
                 cursor: 0,
+                _network: prepared_network,
             };
             sessions
                 .lock()
@@ -1881,6 +1930,7 @@ mod tests {
                 observed.lock().unwrap().push(event);
                 Ok(())
             }),
+            None,
         );
         let output = handlers[0]
             .handle(invocation(
@@ -1923,6 +1973,7 @@ mod tests {
             false,
             None,
             Arc::new(|_| Ok(())),
+            None,
         );
         let output = handlers[0]
             .handle(invocation(
@@ -1959,6 +2010,7 @@ mod tests {
             true,
             Some(approver),
             Arc::new(|_| Ok(())),
+            None,
         );
         let output = handlers[0]
             .handle(invocation(
@@ -1969,6 +2021,75 @@ mod tests {
             .unwrap();
         assert!(!output.success);
         assert_eq!(output.metadata.unwrap()["item"]["status"], "declined");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn unified_exec_routes_restricted_network_through_attributed_proxy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_addr = origin.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = origin.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nproxied")
+                .await
+                .unwrap();
+        });
+        let runtime = tietiezhi_agent_network::NetworkRuntime::new();
+        let preparer: NetworkPreparer = Arc::new(move |request| {
+            let runtime = runtime.clone();
+            Box::pin(async move {
+                runtime
+                    .prepare_execution(tietiezhi_agent_network::NetworkExecutionRequest {
+                        thread_id: request.thread_id,
+                        turn_id: request.turn_id,
+                        item_id: request.item_id,
+                        command: request.command,
+                        policy: tietiezhi_agent_network::NetworkPolicy {
+                            enabled: true,
+                            allow_local_binding: true,
+                            ..Default::default()
+                        },
+                        approver: None,
+                    })
+                    .await
+                    .map_err(|error| ToolError::Handler(error.to_string()))
+            })
+        });
+        let temp = TempDir::new().unwrap();
+        let handlers = unified_exec_handlers(
+            ExecManager::default(),
+            temp.path().to_path_buf(),
+            tietiezhi_agent_sandbox::SandboxPolicy::ReadOnly {
+                network_access: true,
+            },
+            false,
+            None,
+            Arc::new(|_| Ok(())),
+            Some(preparer),
+        );
+        let output = handlers[0]
+            .handle(invocation(
+                ToolName::plain("exec_command"),
+                json!({
+                    "cmd":format!("curl --silent --show-error http://{origin_addr}/"),
+                    "yield_time_ms":2000
+                }),
+            ))
+            .await
+            .unwrap();
+        assert!(output.success, "{output:?}");
+        assert!(
+            output.content["output"]
+                .as_str()
+                .unwrap()
+                .contains("proxied")
+        );
     }
 
     #[test]

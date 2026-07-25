@@ -47,7 +47,7 @@ R14 在源码级 Runtime 中实现 Codex 的 Approval Policy 和反向 JSON-RPC�
 - `:workspace`
 - `:danger-full-access`
 
-`request_permissions` 接受 filesystem/network Profile，向订阅该 Thread 的客户端发送 V2 反向请求，并支持 `turn` 或 `session` grant scope。R15 已把文件授权应用到 Seatbelt 可写根；R17 继续实现按域名和代理归因的网络授权。
+`request_permissions` 接受 filesystem/network Profile，向订阅该 Thread 的客户端发送 V2 反向请求，并支持 `turn` 或 `session` grant scope。R15 已把文件授权应用到 Seatbelt 可写根；R17 已把 network grant 接入带执行归因的代理、精确域名审批和持久 Amendment。
 
 ## 客户端
 
