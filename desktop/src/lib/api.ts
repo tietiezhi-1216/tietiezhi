@@ -648,6 +648,29 @@ export interface WorkspaceHandoff {
   createdAtMs: number;
 }
 
+export interface WorkspaceGitChange {
+  path: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  stagedDiff: string;
+  unstagedDiff: string;
+  truncated: boolean;
+}
+
+export interface WorkspaceGitDiff {
+  head: string | null;
+  branch: string | null;
+  detached: boolean;
+  remotes: string[];
+  changes: WorkspaceGitChange[];
+}
+
+export interface WorkspaceGitCommit {
+  commit: string;
+  summary: string;
+}
+
 export interface TaskWorkspaceOverview {
   work: TaskWorkspaceModeStatus;
   code: TaskWorkspaceModeStatus;
@@ -693,6 +716,54 @@ export function handoffTaskWorkspace(args: {
   label: string;
 }): Promise<WorkspaceHandoff> {
   return invoke<WorkspaceHandoff>("handoff_task_workspace", args);
+}
+
+export function taskWorkspaceGitDiff(taskId: string): Promise<WorkspaceGitDiff> {
+  return invoke<WorkspaceGitDiff>("task_workspace_git_diff", { taskId });
+}
+
+export function stageTaskWorkspacePaths(args: {
+  taskId: string;
+  paths: string[];
+}): Promise<WorkspaceGitDiff> {
+  return invoke<WorkspaceGitDiff>("stage_task_workspace_paths", args);
+}
+
+export function unstageTaskWorkspacePaths(args: {
+  taskId: string;
+  paths: string[];
+}): Promise<WorkspaceGitDiff> {
+  return invoke<WorkspaceGitDiff>("unstage_task_workspace_paths", args);
+}
+
+export function discardTaskWorkspacePaths(args: {
+  taskId: string;
+  paths: string[];
+}): Promise<WorkspaceGitDiff> {
+  return invoke<WorkspaceGitDiff>("discard_task_workspace_paths", args);
+}
+
+export function commitTaskWorkspace(args: {
+  taskId: string;
+  message: string;
+}): Promise<WorkspaceGitCommit> {
+  return invoke<WorkspaceGitCommit>("commit_task_workspace", args);
+}
+
+export function pushTaskWorkspace(args: {
+  taskId: string;
+  remote: string;
+  branch: string;
+}): Promise<WorkspaceGitDiff> {
+  return invoke<WorkspaceGitDiff>("push_task_workspace", args);
+}
+
+export function taskWorkspacePullRequestUrl(args: {
+  taskId: string;
+  remote: string;
+  branch: string;
+}): Promise<string> {
+  return invoke<string>("task_workspace_pull_request_url", args);
 }
 
 /** @deprecated Work and Code now share one Local/Worktree environment. */

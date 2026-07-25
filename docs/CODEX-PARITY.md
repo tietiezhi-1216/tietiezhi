@@ -70,7 +70,7 @@
 | R29 | Git 与 Worktree | 已完成 | crates/agent-git detached Worktree、.worktreeinclude、Snapshot/Restore/Handoff、清理与旧工作区接管测试；desktop 共享环境命令、提示词和 SSR/migration UI 门禁；docs/CODEX-GIT-WORKTREES.md | Local 环境会直接修改用户项目，UI 与审批必须持续明确展示；Windows worktree 与长路径仍由跨平台 CI 和 R37 soak 覆盖。 |
 | R30 | 集成终端 | 已完成 | R13 crates/agent-exec PTY/ConPTY、stdin、resize、poll 和进程树测试；desktop terminal Thread 会话命令、多标签文本终端、任务删除清理与 SSR 门禁；docs/CODEX-INTEGRATED-TERMINAL.md | 集成终端使用安全的文本 VT 投影而非完整 GPU 终端模拟器；复杂全屏 TUI 的像素级呈现留给外部终端，stdin/resize/进程语义已完整。 |
 | R31 | Desktop 时间线 | 已完成 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build | Legacy ChatItem 时间线仅在 R38 迁移完成后删除；文件能力不替代模型工具的 Approval 与 Sandbox。 |
-| R32 | Diff 与 Git UI | 待开始 |  |  |
+| R32 | Diff 与 Git UI | 已完成 | crates/agent-git Diff/Stage/Unstage/Discard/Commit/Push/PR；desktop WorkspaceGitPanel；7 项 Git 测试；pnpm test:workspace-git-ui/typecheck/build；docs/CODEX-DIFF-GIT-UI.md | PR 链接当前仅支持 GitHub remote；Push 永不 force，Discard 仅操作显式选择路径。 |
 | R33 | Apps 与连接器 | 待开始 |  |  |
 | R34 | Automations | 待开始 |  |  |
 | R35 | 远程与实时 | 待开始 |  |  |

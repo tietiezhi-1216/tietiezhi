@@ -49,6 +49,7 @@ import { StarterSuggestions } from "@/features/chat/starter-suggestions";
 import { ToolCallCard } from "@/features/chat/tool-call-card";
 import { IntegratedTerminalPanel } from "@/features/chat/integrated-terminal-panel";
 import { WorkspaceModePanel } from "@/features/chat/workspace-mode-panel";
+import { GIT_REVIEW_PROMPT_EVENT } from "@/features/chat/workspace-git-panel";
 import {
   dictationToggle,
   errorMessage,
@@ -263,6 +264,17 @@ export function ChatPage() {
   const hasConversation = items.length > 0;
   const suggestionsLoading =
     suggestionsEnabled && !hasConversation && recommendationsQuery.isPending;
+
+  useEffect(() => {
+    const receiveReviewPrompt = (event: Event) => {
+      const detail = (event as CustomEvent<{ taskId: string; prompt: string }>).detail;
+      if (!detail || detail.taskId !== activeId) return;
+      setInput(detail.prompt);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    };
+    window.addEventListener(GIT_REVIEW_PROMPT_EVENT, receiveReviewPrompt);
+    return () => window.removeEventListener(GIT_REVIEW_PROMPT_EVENT, receiveReviewPrompt);
+  }, [activeId]);
 
   useEffect(() => {
     if (!builtInProvider || startupRefreshRef.current) return;

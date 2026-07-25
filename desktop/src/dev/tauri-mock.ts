@@ -524,6 +524,26 @@ export function installTauriMock(): void {
       snapshotId: string;
       createdAtMs: number;
     }>,
+    workspaceGitChanges: [
+      {
+        path: "src/App.tsx",
+        staged: false,
+        unstaged: true,
+        untracked: false,
+        stagedDiff: "",
+        unstagedDiff: "@@ -1 +1 @@\n-old\n+new\n",
+        truncated: false,
+      },
+      {
+        path: "src/new-feature.ts",
+        staged: false,
+        unstaged: false,
+        untracked: true,
+        stagedDiff: "",
+        unstagedDiff: "--- /dev/null\n+++ b/src/new-feature.ts\n+export const ready = true;\n",
+        truncated: false,
+      },
+    ],
     terminalSessions: new Map<
       string,
       {
@@ -1736,6 +1756,54 @@ public class Hello {
       state.workspaceHandoffs.push(handoff);
       return handoff;
     },
+    task_workspace_git_diff: () => ({
+      head: "1234567890abcdef",
+      branch: null,
+      detached: true,
+      remotes: ["origin"],
+      changes: structuredClone(state.workspaceGitChanges),
+    }),
+    stage_task_workspace_paths: (a) => {
+      for (const change of state.workspaceGitChanges) {
+        if ((a.paths as string[]).includes(change.path)) {
+          change.staged = true;
+          change.stagedDiff = change.unstagedDiff;
+          change.unstaged = false;
+          change.untracked = false;
+          change.unstagedDiff = "";
+        }
+      }
+      return handlers.task_workspace_git_diff(a);
+    },
+    unstage_task_workspace_paths: (a) => {
+      for (const change of state.workspaceGitChanges) {
+        if ((a.paths as string[]).includes(change.path)) {
+          change.unstaged = true;
+          change.unstagedDiff = change.stagedDiff;
+          change.staged = false;
+          change.stagedDiff = "";
+        }
+      }
+      return handlers.task_workspace_git_diff(a);
+    },
+    discard_task_workspace_paths: (a) => {
+      state.workspaceGitChanges = state.workspaceGitChanges.filter(
+        (change) => !(a.paths as string[]).includes(change.path),
+      );
+      return handlers.task_workspace_git_diff(a);
+    },
+    commit_task_workspace: (a) => {
+      state.workspaceGitChanges = state.workspaceGitChanges.filter(
+        (change) => !change.staged,
+      );
+      return {
+        commit: crypto.randomUUID().replaceAll("-", ""),
+        summary: String(a.message),
+      };
+    },
+    push_task_workspace: (a) => handlers.task_workspace_git_diff(a),
+    task_workspace_pull_request_url: (a) =>
+      `https://github.com/example/project/compare/main...${String(a.branch)}?expand=1`,
     transfer_task_workspace_file: (a) => String(a.path),
     terminal_list: (a) =>
       [...state.terminalSessions.values()].filter(

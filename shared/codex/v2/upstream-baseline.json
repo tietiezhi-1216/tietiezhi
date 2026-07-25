@@ -1326,9 +1326,9 @@
     {
       "id": "R32",
       "name": "Diff 与 Git UI",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "PR 链接当前仅支持 GitHub remote；Push 永不 force，Discard 仅操作显式选择路径。",
+      "evidence": "crates/agent-git Diff/Stage/Unstage/Discard/Commit/Push/PR；desktop WorkspaceGitPanel；7 项 Git 测试；pnpm test:workspace-git-ui/typecheck/build；docs/CODEX-DIFF-GIT-UI.md"
     },
     {
       "id": "R33",

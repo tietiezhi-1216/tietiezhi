@@ -57,6 +57,7 @@
 | Local、Worktree、Snapshot 与 Handoff | `codex-rs/git-utils`、`core/src/git_info*`、桌面执行环境行为 | `crates/agent-git`、`desktop/src-tauri/src/commands/workspace.rs` | R29 |
 | Thread 集成终端 | `codex-rs/utils/pty`、`core/src/unified_exec`、`app-server/src/command_exec.rs` | `crates/agent-exec`、`desktop/src-tauri/src/commands/terminal.rs` | R30 |
 | Desktop 时间线与文件服务 | `app-server-protocol/src/protocol/v2/item.rs`、`tui/src/chatwidget/replay.rs`、`exec-server-protocol/src/protocol.rs`、`file-search` | `desktop/src/stores/codex-timeline.ts`、`desktop/src/features/chat/codex-timeline.tsx`、`desktop/src-tauri/src/commands/codex_fs.rs` | R31 |
+| Diff 与 Git UI | `git-utils`、`tui/src/chatwidget/replay.rs` 的 FileChange/Diff 行为 | `crates/agent-git`、`desktop/src/features/chat/workspace-git-panel.tsx` | R32 |
 | Rollout 持久化 | `codex-rs/rollout`、`thread-store`、`state` | `crates/agent-state`、`desktop/src-tauri/src/commands/conversations.rs` | R4 |
 | 运维与追踪 | `codex-rs/otel`、`feedback`、Doctor 行为 | `crates/agent-observability` | R36 |
 
@@ -129,5 +130,7 @@ R29 已增加 `crates/agent-git`，将 Work/Code 收敛为同一任务的工作�
 R30 已在 `crates/agent-exec` 上增加 Thread 多会话集成终端，用户终端与 App Server/模型命令共享 PTY/ConPTY、stdin、resize、输出缓冲和进程树清理；桌面 UI 提供多标签和持续轮询。详细行为见 `docs/CODEX-INTEGRATED-TERMINAL.md`。
 
 R31 已实现 App Server V2 桌面文件服务和强类型 `ThreadItem` 时间线。Item 开始、增量和完成事件按稳定 ID 合并，18 类 Item、Turn Plan/Diff、警告和 needs-input 状态使用正式协议渲染；Legacy 时间线只保留到 R38 迁移完成。详细行为见 `docs/CODEX-DESKTOP-TIMELINE.md`。
+
+R32 已在唯一 Local/Worktree 环境上实现文件树、逐文件 Diff、Hunk 审查意见、精确 Stage/Unstage/Discard、Commit、非强推 Push 和 GitHub PR 链接。详细行为见 `docs/CODEX-DIFF-GIT-UI.md`。
 
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

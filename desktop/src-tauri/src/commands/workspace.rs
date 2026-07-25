@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tietiezhi_agent_git::{
-    ExecutionEnvironment, WorkspaceDescriptor, WorkspaceHandoff, WorkspaceRuntime,
-    WorkspaceSnapshot,
+    ExecutionEnvironment, WorkspaceDescriptor, WorkspaceGitCommit, WorkspaceGitDiff,
+    WorkspaceHandoff, WorkspaceRuntime, WorkspaceSnapshot,
 };
 use walkdir::WalkDir;
 
@@ -236,6 +236,119 @@ pub async fn handoff_task_workspace(
     })
     .await
     .map_err(|error| format!("创建工作区交接失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn task_workspace_git_diff(
+    app: AppHandle,
+    task_id: String,
+) -> Result<WorkspaceGitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .diff(&task_id)
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("读取 Git Diff 失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn stage_task_workspace_paths(
+    app: AppHandle,
+    task_id: String,
+    paths: Vec<String>,
+) -> Result<WorkspaceGitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .stage_paths(&task_id, &paths)
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("暂存 Git 文件失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn unstage_task_workspace_paths(
+    app: AppHandle,
+    task_id: String,
+    paths: Vec<String>,
+) -> Result<WorkspaceGitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .unstage_paths(&task_id, &paths)
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("取消暂存 Git 文件失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn discard_task_workspace_paths(
+    app: AppHandle,
+    task_id: String,
+    paths: Vec<String>,
+) -> Result<WorkspaceGitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .discard_paths(&task_id, &paths)
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("回退 Git 文件失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn commit_task_workspace(
+    app: AppHandle,
+    task_id: String,
+    message: String,
+) -> Result<WorkspaceGitCommit, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .commit(&task_id, &message)
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("提交 Git 变更失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn push_task_workspace(
+    app: AppHandle,
+    task_id: String,
+    remote: String,
+    branch: String,
+) -> Result<WorkspaceGitDiff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .push(&task_id, &remote, &branch)
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("推送 Git 分支失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn task_workspace_pull_request_url(
+    app: AppHandle,
+    task_id: String,
+    remote: String,
+    branch: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .pull_request_url(&task_id, &remote, &branch)
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("生成 Pull Request 链接失败：{error}"))?
 }
 
 /// Pre-R29 compatibility. Both modes now address the same file, so no copy is

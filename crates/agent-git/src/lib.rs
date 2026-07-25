@@ -22,6 +22,7 @@ const SNAPSHOT_REF_ROOT: &str = "refs/tietiezhi/snapshots";
 const DISABLED_HOOKS_PATH: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 const MAX_INCLUDED_FILE_BYTES: u64 = 100 * 1024 * 1024;
 const MAX_INCLUDED_TOTAL_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_DIFF_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Error)]
 pub enum GitEnvironmentError {
@@ -75,6 +76,35 @@ pub struct WorkspaceHandoff {
     pub commit: String,
     pub snapshot_id: String,
     pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitChange {
+    pub path: String,
+    pub staged: bool,
+    pub unstaged: bool,
+    pub untracked: bool,
+    pub staged_diff: String,
+    pub unstaged_diff: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitDiff {
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub remotes: Vec<String>,
+    pub changes: Vec<WorkspaceGitChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGitCommit {
+    pub commit: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -359,6 +389,191 @@ impl WorkspaceRuntime {
             return Ok(Vec::new());
         };
         changed_files(&root, &descriptor.relative_project)
+    }
+
+    pub fn diff(&self, task_id: &str) -> Result<WorkspaceGitDiff> {
+        let descriptor = self
+            .read(task_id)?
+            .ok_or_else(|| GitEnvironmentError::StateNotFound(task_id.into()))?;
+        let root = git_command_root(&descriptor)
+            .ok_or_else(|| GitEnvironmentError::NotGit(descriptor.active_root.clone()))?;
+        let mut changes = Vec::new();
+        for status in git_status_entries(&root, &descriptor.relative_project)? {
+            let repository_path = descriptor.relative_project.join(&status.path);
+            let mut staged_diff = if status.staged {
+                git_diff(&root, true, &repository_path)?
+            } else {
+                String::new()
+            };
+            let mut unstaged_diff = if status.untracked {
+                untracked_diff(&descriptor.active_root.join(&status.path))?
+            } else if status.unstaged {
+                git_diff(&root, false, &repository_path)?
+            } else {
+                String::new()
+            };
+            let staged_truncated = truncate_diff(&mut staged_diff);
+            let unstaged_truncated = truncate_diff(&mut unstaged_diff);
+            changes.push(WorkspaceGitChange {
+                path: slash_path(&status.path),
+                staged: status.staged,
+                unstaged: status.unstaged,
+                untracked: status.untracked,
+                staged_diff,
+                unstaged_diff,
+                truncated: staged_truncated || unstaged_truncated,
+            });
+        }
+        let mut remotes = git_stdout(&root, ["remote"])?
+            .lines()
+            .map(str::trim)
+            .filter(|remote| !remote.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        remotes.sort();
+        remotes.dedup();
+        Ok(WorkspaceGitDiff {
+            head: git_optional(&root, ["rev-parse", "--verify", "HEAD"]),
+            branch: current_branch(&root),
+            detached: current_branch(&root).is_none(),
+            remotes,
+            changes,
+        })
+    }
+
+    pub fn stage_paths(&self, task_id: &str, paths: &[String]) -> Result<WorkspaceGitDiff> {
+        let descriptor = self.required_git_descriptor(task_id)?;
+        let root = git_command_root(&descriptor).expect("validated by required_git_descriptor");
+        let paths = scoped_repository_paths(&descriptor, paths)?;
+        run_git_paths(&root, &["add", "--"], &paths)?;
+        self.diff(task_id)
+    }
+
+    pub fn unstage_paths(&self, task_id: &str, paths: &[String]) -> Result<WorkspaceGitDiff> {
+        let descriptor = self.required_git_descriptor(task_id)?;
+        let root = git_command_root(&descriptor).expect("validated by required_git_descriptor");
+        let paths = scoped_repository_paths(&descriptor, paths)?;
+        if git_optional(&root, ["rev-parse", "--verify", "HEAD"]).is_some() {
+            run_git_paths(&root, &["restore", "--staged", "--"], &paths)?;
+        } else {
+            run_git_paths(&root, &["rm", "--cached", "--ignore-unmatch", "--"], &paths)?;
+        }
+        self.diff(task_id)
+    }
+
+    pub fn discard_paths(&self, task_id: &str, paths: &[String]) -> Result<WorkspaceGitDiff> {
+        let descriptor = self.required_git_descriptor(task_id)?;
+        let root = git_command_root(&descriptor).expect("validated by required_git_descriptor");
+        let statuses = git_status_entries(&root, &descriptor.relative_project)?;
+        for requested in validate_scoped_paths(paths)? {
+            let status = statuses
+                .iter()
+                .find(|status| status.path == requested)
+                .ok_or_else(|| {
+                    GitEnvironmentError::Invalid(format!(
+                        "path is not changed: {}",
+                        requested.display()
+                    ))
+                })?;
+            if status.untracked {
+                let target = descriptor.active_root.join(&requested);
+                let metadata = fs::symlink_metadata(&target)?;
+                if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                    return Err(GitEnvironmentError::Invalid(format!(
+                        "refusing to recursively discard untracked directory: {}",
+                        requested.display()
+                    )));
+                }
+                fs::remove_file(target)?;
+            } else {
+                let repository_path = descriptor.relative_project.join(&requested);
+                run_git_paths(
+                    &root,
+                    &["restore", "--source=HEAD", "--staged", "--worktree", "--"],
+                    &[repository_path],
+                )?;
+            }
+        }
+        self.diff(task_id)
+    }
+
+    pub fn commit(&self, task_id: &str, message: &str) -> Result<WorkspaceGitCommit> {
+        let descriptor = self.required_git_descriptor(task_id)?;
+        let root = git_command_root(&descriptor).expect("validated by required_git_descriptor");
+        let message = message.trim();
+        if message.is_empty() || message.len() > 10_000 {
+            return Err(GitEnvironmentError::Invalid(
+                "commit message must contain 1 to 10000 bytes".into(),
+            ));
+        }
+        if git_status(&root, ["diff", "--cached", "--quiet"])? {
+            return Err(GitEnvironmentError::Invalid(
+                "there are no staged changes to commit".into(),
+            ));
+        }
+        run_git(&root, ["commit", "-m", message])?;
+        let commit = git_stdout(&root, ["rev-parse", "HEAD"])?;
+        let summary = git_stdout(&root, ["show", "-s", "--format=%s", "HEAD"])?;
+        Ok(WorkspaceGitCommit {
+            commit: commit.trim().into(),
+            summary: summary.trim().into(),
+        })
+    }
+
+    pub fn push(&self, task_id: &str, remote: &str, branch: &str) -> Result<WorkspaceGitDiff> {
+        let descriptor = self.required_git_descriptor(task_id)?;
+        let root = git_command_root(&descriptor).expect("validated by required_git_descriptor");
+        let remote = remote.trim();
+        let remotes = git_stdout(&root, ["remote"])?;
+        if !remotes.lines().any(|candidate| candidate == remote) {
+            return Err(GitEnvironmentError::Invalid(format!(
+                "unknown Git remote: {remote}"
+            )));
+        }
+        validate_branch(&root, branch)?;
+        run_git(
+            &root,
+            [
+                "push",
+                "--set-upstream",
+                remote,
+                &format!("HEAD:refs/heads/{branch}"),
+            ],
+        )?;
+        self.diff(task_id)
+    }
+
+    pub fn pull_request_url(&self, task_id: &str, remote: &str, branch: &str) -> Result<String> {
+        let descriptor = self.required_git_descriptor(task_id)?;
+        let root = git_command_root(&descriptor).expect("validated by required_git_descriptor");
+        validate_branch(&root, branch)?;
+        let url = git_stdout(&root, ["remote", "get-url", remote])?;
+        let repository = github_repository(url.trim()).ok_or_else(|| {
+            GitEnvironmentError::Invalid("pull request links currently require GitHub".into())
+        })?;
+        let remote_head = git_optional(
+            &root,
+            [
+                "symbolic-ref",
+                "--short",
+                &format!("refs/remotes/{remote}/HEAD"),
+            ],
+        )
+        .and_then(|value| value.split_once('/').map(|(_, branch)| branch.to_owned()))
+        .unwrap_or_else(|| "main".into());
+        Ok(format!(
+            "https://github.com/{repository}/compare/{remote_head}...{branch}?expand=1"
+        ))
+    }
+
+    fn required_git_descriptor(&self, task_id: &str) -> Result<WorkspaceDescriptor> {
+        let descriptor = self
+            .read(task_id)?
+            .ok_or_else(|| GitEnvironmentError::StateNotFound(task_id.into()))?;
+        if git_command_root(&descriptor).is_none() {
+            return Err(GitEnvironmentError::NotGit(descriptor.active_root.clone()));
+        }
+        Ok(descriptor)
     }
 
     pub fn snapshot(&self, task_id: &str, label: &str) -> Result<WorkspaceSnapshot> {
@@ -924,6 +1139,161 @@ fn changed_files(root: &Path, project_prefix: &Path) -> Result<Vec<String>> {
     Ok(changed)
 }
 
+#[derive(Debug, Clone)]
+struct GitStatusEntry {
+    path: PathBuf,
+    staged: bool,
+    unstaged: bool,
+    untracked: bool,
+}
+
+fn git_status_entries(root: &Path, project_prefix: &Path) -> Result<Vec<GitStatusEntry>> {
+    let output = git_output(
+        root,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    let records = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+        .collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    let mut index = 0;
+    while index < records.len() {
+        let record = records[index];
+        if record.len() >= 4 {
+            let repository_path = path_from_git(&record[3..])?;
+            if let Ok(path) = repository_path.strip_prefix(project_prefix) {
+                let x = record[0];
+                let y = record[1];
+                entries.push(GitStatusEntry {
+                    path: path.to_path_buf(),
+                    staged: x != b' ' && x != b'?',
+                    unstaged: y != b' ' && y != b'?',
+                    untracked: x == b'?' && y == b'?',
+                });
+            }
+            if matches!(record[0], b'R' | b'C') || matches!(record[1], b'R' | b'C') {
+                index += 1;
+            }
+        }
+        index += 1;
+    }
+    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(entries)
+}
+
+fn git_diff(root: &Path, staged: bool, path: &Path) -> Result<String> {
+    let mut arguments = vec![
+        OsString::from("diff"),
+        OsString::from("--no-ext-diff"),
+        OsString::from("--no-color"),
+    ];
+    if staged {
+        arguments.push(OsString::from("--cached"));
+    }
+    arguments.push(OsString::from("--"));
+    arguments.push(path.as_os_str().to_owned());
+    git_stdout_os_env(root, arguments, &[])
+}
+
+fn untracked_diff(path: &Path) -> Result<String> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Ok("Binary or non-regular untracked file\n".into());
+    }
+    let bytes = fs::read(path)?;
+    if bytes.iter().take(MAX_DIFF_BYTES).any(|byte| *byte == 0) {
+        return Ok("Binary untracked file\n".into());
+    }
+    let body = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_DIFF_BYTES)]);
+    let mut diff = format!(
+        "--- /dev/null\n+++ b/{}\n",
+        path.file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default()
+    );
+    for line in body.lines() {
+        diff.push('+');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    Ok(diff)
+}
+
+fn truncate_diff(diff: &mut String) -> bool {
+    if diff.len() <= MAX_DIFF_BYTES {
+        return false;
+    }
+    let mut boundary = MAX_DIFF_BYTES;
+    while !diff.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    diff.truncate(boundary);
+    diff.push_str("\n… diff truncated …\n");
+    true
+}
+
+fn validate_scoped_paths(paths: &[String]) -> Result<Vec<PathBuf>> {
+    if paths.is_empty() {
+        return Err(GitEnvironmentError::Invalid(
+            "at least one path must be selected".into(),
+        ));
+    }
+    let mut validated = Vec::new();
+    for raw in paths {
+        let path = Path::new(raw);
+        if raw.trim().is_empty()
+            || path.is_absolute()
+            || path
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(GitEnvironmentError::Invalid(format!(
+                "invalid workspace path: {raw}"
+            )));
+        }
+        validated.push(path.to_path_buf());
+    }
+    validated.sort();
+    validated.dedup();
+    Ok(validated)
+}
+
+fn scoped_repository_paths(
+    descriptor: &WorkspaceDescriptor,
+    paths: &[String],
+) -> Result<Vec<PathBuf>> {
+    Ok(validate_scoped_paths(paths)?
+        .into_iter()
+        .map(|path| descriptor.relative_project.join(path))
+        .collect())
+}
+
+fn run_git_paths(root: &Path, prefix: &[&str], paths: &[PathBuf]) -> Result<()> {
+    let mut arguments = prefix.iter().map(OsString::from).collect::<Vec<OsString>>();
+    arguments.extend(paths.iter().map(|path| path.as_os_str().to_owned()));
+    run_git_os_env(root, arguments, &[])
+}
+
+fn github_repository(remote: &str) -> Option<String> {
+    let path = if let Some(path) = remote.strip_prefix("git@github.com:") {
+        path
+    } else if let Some(path) = remote.strip_prefix("ssh://git@github.com/") {
+        path
+    } else {
+        remote.strip_prefix("https://github.com/")?
+    };
+    let path = path.trim_end_matches('/').trim_end_matches(".git");
+    let mut parts = path.split('/');
+    let owner = parts.next()?;
+    let repository = parts.next()?;
+    if owner.is_empty() || repository.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some(format!("{owner}/{repository}"))
+}
+
 fn git_command_root(descriptor: &WorkspaceDescriptor) -> Option<PathBuf> {
     match descriptor.environment {
         ExecutionEnvironment::Worktree => descriptor.worktree_root.clone(),
@@ -1220,6 +1590,8 @@ mod tests {
         fs::create_dir(&root).unwrap();
         run(&root, &["init", "-q", "--initial-branch=main"]);
         run(&root, &["config", "core.autocrlf", "false"]);
+        run(&root, &["config", "user.name", "Test"]);
+        run(&root, &["config", "user.email", "test@example.invalid"]);
         fs::write(root.join(".gitignore"), "ignored/\n").unwrap();
         fs::write(root.join("tracked.txt"), "base\n").unwrap();
         run(&root, &["add", ".gitignore", "tracked.txt"]);
@@ -1405,5 +1777,108 @@ mod tests {
             .unwrap()
             .contains(&"tracked.txt".into()));
         runtime.cleanup(&task_id).unwrap();
+    }
+
+    #[test]
+    fn diff_stage_unstage_and_discard_are_path_scoped() {
+        let (temporary, root) = repository();
+        let runtime = WorkspaceRuntime::open(temporary.path().join("state")).unwrap();
+        let task_id = Uuid::now_v7().to_string();
+        runtime
+            .resolve(
+                &task_id,
+                Some(&root),
+                &temporary.path().join("unused"),
+                Some(ExecutionEnvironment::Local),
+            )
+            .unwrap();
+        fs::write(root.join("tracked.txt"), "changed\n").unwrap();
+        fs::write(root.join("keep.txt"), "keep\n").unwrap();
+
+        let diff = runtime.diff(&task_id).unwrap();
+        assert_eq!(diff.changes.len(), 2);
+        assert!(diff
+            .changes
+            .iter()
+            .find(|change| change.path == "tracked.txt")
+            .unwrap()
+            .unstaged_diff
+            .contains("+changed"));
+
+        let staged = runtime
+            .stage_paths(&task_id, &["tracked.txt".into()])
+            .unwrap();
+        assert!(
+            staged
+                .changes
+                .iter()
+                .find(|change| change.path == "tracked.txt")
+                .unwrap()
+                .staged
+        );
+        runtime
+            .unstage_paths(&task_id, &["tracked.txt".into()])
+            .unwrap();
+        runtime
+            .discard_paths(&task_id, &["tracked.txt".into()])
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(fs::read_to_string(root.join("keep.txt")).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn commit_push_and_pull_request_url_never_force_update() {
+        let (temporary, root) = repository();
+        let runtime = WorkspaceRuntime::open(temporary.path().join("state")).unwrap();
+        let task_id = Uuid::now_v7().to_string();
+        runtime
+            .resolve(
+                &task_id,
+                Some(&root),
+                &temporary.path().join("unused"),
+                Some(ExecutionEnvironment::Local),
+            )
+            .unwrap();
+        fs::write(root.join("tracked.txt"), "committed\n").unwrap();
+        runtime
+            .stage_paths(&task_id, &["tracked.txt".into()])
+            .unwrap();
+        let commit = runtime.commit(&task_id, "test commit").unwrap();
+        assert_eq!(commit.summary, "test commit");
+
+        let bare = temporary.path().join("remote.git");
+        run(
+            temporary.path(),
+            &["init", "--bare", "-q", bare.to_str().unwrap()],
+        );
+        run(&root, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        runtime.push(&task_id, "origin", "codex/test").unwrap();
+        assert_eq!(
+            git_stdout(&bare, ["rev-parse", "refs/heads/codex/test"]).unwrap(),
+            commit.commit
+        );
+        run(
+            &root,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "git@github.com:openai/codex.git",
+            ],
+        );
+        assert_eq!(
+            runtime
+                .pull_request_url(&task_id, "origin", "codex/test")
+                .unwrap(),
+            "https://github.com/openai/codex/compare/main...codex/test?expand=1"
+        );
+        assert!(runtime
+            .push(&task_id, "missing", "codex/test")
+            .unwrap_err()
+            .to_string()
+            .contains("unknown Git remote"));
     }
 }

@@ -49,6 +49,7 @@ import type {
 import { getTaskMode } from "@/lib/task-mode";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat";
+import { WorkspaceGitPanel } from "@/features/chat/workspace-git-panel";
 
 const formatBytes = (bytes: number): string => {
   if (bytes < 1_024) return `${bytes} B`;
@@ -345,6 +346,9 @@ export function WorkspaceModePanel() {
               <GitBranch />
               Handoff
             </Button>
+          )}
+          {activeId && activeStatus?.isGit && (
+            <WorkspaceGitPanel taskId={activeId} disabled={!canOperate} />
           )}
         </div>
 

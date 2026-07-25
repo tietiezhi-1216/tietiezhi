@@ -120,6 +120,9 @@ jobs:
       - name: Check Codex typed timeline UI
         run: pnpm test:codex-timeline-ui
 
+      - name: Check workspace Git Diff UI
+        run: pnpm test:workspace-git-ui
+
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
 

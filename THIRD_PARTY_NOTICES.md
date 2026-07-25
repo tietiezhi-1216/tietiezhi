@@ -382,3 +382,5 @@ R31 的强类型时间线、文件服务和模糊搜索行为参考以下 Apache
 - `codex-rs/utils/fuzzy-match/src`
 
 本地实现位于 `desktop/src-tauri/src/commands/codex_fs.rs`、`desktop/src/stores/codex-timeline.ts` 和 `desktop/src/features/chat/codex-timeline.tsx`，不调用、链接或分发上游 Codex 二进制。
+
+R32 的 Diff 与 Git UI 复用 R29 已登记的 Apache-2.0 Git 基线，并参考 `codex-rs/tui/src/chatwidget/replay.rs` 的 FileChange/Diff 展示行为。本地 Git 操作位于 `crates/agent-git`，React 界面位于 `desktop/src/features/chat/workspace-git-panel.tsx`；只调用系统 Git，不调用、链接或分发上游 Codex 二进制。
