@@ -34,8 +34,8 @@
 | Responses 客户端 | `codex-rs/codex-api/src/common.rs`、`codex-api/src/sse/responses.rs`、`core/src/client.rs`、`responses_retry.rs`、`models-manager/models.json` | `crates/agent-model`、`crates/agent-core`、`desktop/src-tauri/src/commands/codex.rs` | R7 |
 | 账号与 Gateway 服务 | `app-server/src/request_processors/account_processor.rs`、`account_processor/rate_limit_resets.rs`、`app-server-protocol/src/protocol/v2/account.rs` | `crates/agent-account`、`desktop/src-tauri/src/commands/codex.rs`、`gateway_auth.rs` | R8 |
 | 上下文与压缩 | `codex-rs/core/src/context_manager`、`compact*.rs`、`session/context_window.rs`、`session/token_budget.rs` | `crates/agent-context`、`crates/agent-core`、`desktop/src-tauri/src/commands/codex.rs` | R9 |
-| 工具注册和调度 | `codex-rs/core/src/tools/registry.rs`、`router.rs`、`orchestrator.rs` | `crates/agent-tools` | R10 |
-| 工具并发 | `codex-rs/core/src/tools/parallel.rs` | `crates/agent-tools` | R10 |
+| 工具注册、路由和生命周期 | `codex-rs/core/src/tools/registry.rs`、`router.rs`、`lifecycle.rs`、`orchestrator.rs` | `crates/agent-tools` | R10 |
+| 工具并发与取消 | `codex-rs/core/src/tools/parallel.rs` | `crates/agent-tools` | R10 |
 | Apply Patch | `codex-rs/apply-patch`、`core/src/tools/handlers/apply_patch*` | `crates/agent-patch` | R12 |
 | Unified Exec | `codex-rs/core/src/tools/handlers/unified_exec`、`utils/pty` | `crates/agent-exec` | R13 |
 | 审批 | `codex-rs/core/src/tools/approvals.rs` | `crates/agent-approval` | R14 |
@@ -86,4 +86,6 @@ R8 已增加 `crates/agent-account`，把 App Server V2 的账号登录、取消
 
 R9 已增加 `crates/agent-context`，实现 canonical 历史重建、真实服务端 Token Usage 与本地未采样 Item 估算、模型上下文窗口、90% 自动压缩、手动压缩、20,000 Token 最近用户消息保留、压缩窗口链和 RFC 7386 World State 增量。压缩作为正式 `contextCompaction` Item 运行并写入 `compacted` rollout；固定 V2 中已废弃的 `thread/compacted` 不再发送。详细行为见 `docs/CODEX-CONTEXT.md`。
 
-R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责把上游默认关闭的高级 TokenBudget 配置暴露到分层配置；R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R10 已增加 `crates/agent-tools`，实现名称空间感知的 Registry、Router、模型可见/延迟/隐藏暴露、Lifecycle Contributor、结构化模型结果、`item/tool/call` V2 桥接、取消唯一终态以及与 Codex 相同的 RwLock 并发门。只声明可并行的工具共享读锁，其他工具使用写锁并与所有调用互斥。详细行为见 `docs/CODEX-TOOLS.md`。
+
+R11-R13 仍需注册具体基础工具、Apply Patch 和 Unified Exec；R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责把上游默认关闭的高级 TokenBudget 配置暴露到分层配置；R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

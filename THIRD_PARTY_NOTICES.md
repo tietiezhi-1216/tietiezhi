@@ -77,3 +77,14 @@ R9 的历史规范化、上下文窗口、自动/手动压缩、World State 和 
 
 - `crates/agent-context/prompts/compact.md` 来源于 `codex-rs/prompts/templates/compact/prompt.md`
 - `crates/agent-context/prompts/summary-prefix.md` 来源于 `codex-rs/prompts/templates/compact/summary_prefix.md`
+
+R10 的工具注册、路由、生命周期、模型结果和并行调度行为参考以下上游源码并在本仓库重新实现，没有链接或调用上游 crate：
+
+- `codex-rs/core/src/tools/context.rs`
+- `codex-rs/core/src/tools/registry.rs`
+- `codex-rs/core/src/tools/router.rs`
+- `codex-rs/core/src/tools/lifecycle.rs`
+- `codex-rs/core/src/tools/parallel.rs`
+- `codex-rs/core/src/tools/orchestrator.rs`
+- `codex-rs/app-server/src/dynamic_tools.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`

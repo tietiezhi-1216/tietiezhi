@@ -66,6 +66,7 @@ jobs:
             crates/agent-state
             crates/agent-core
             crates/agent-context
+            crates/agent-tools
             crates/agent-model
             crates/agent-account
 
@@ -107,6 +108,9 @@ jobs:
 
       - name: Codex context and compaction tests
         run: cargo test --manifest-path ../crates/agent-context/Cargo.toml
+
+      - name: Codex tool kernel tests
+        run: cargo test --manifest-path ../crates/agent-tools/Cargo.toml
 
       - name: Codex Responses model tests
         run: cargo test --manifest-path ../crates/agent-model/Cargo.toml

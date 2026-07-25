@@ -602,9 +602,9 @@
       },
       {
         "method": "item/tool/call",
-        "status": "pending",
+        "status": "implemented",
         "target": "R10",
-        "note": ""
+        "note": "crates/agent-tools 生成并校验精确 App Server V2 Dynamic Tool ServerRequest/Response，保持 thread/turn/call/namespace/tool/arguments；docs/CODEX-TOOLS.md"
       },
       {
         "method": "item/tool/requestUserInput",
@@ -1150,9 +1150,9 @@
     {
       "id": "R10",
       "name": "工具内核",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R11-R13 仍需注册基础工具、Apply Patch 与 Unified Exec；R14-R18 在同一内核接入审批、沙箱、网络与 ExecPolicy。",
+      "evidence": "crates/agent-tools Registry、Router、Lifecycle、模型结果、Dynamic Tool V2 和 RwLock 并发/取消测试；docs/CODEX-TOOLS.md"
     },
     {
       "id": "R11",
