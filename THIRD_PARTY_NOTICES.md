@@ -166,3 +166,15 @@ R14 的审批策略、会话缓存、反向请求、权限 Profile 和 `request_
 - `codex-rs/core/src/config/permission_profile_catalog.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2/permissions.rs`
+
+R15 的 macOS Seatbelt 策略生成、命令封装和逃逸测试参考或移植以下 Apache-2.0 上游源码，没有链接或调用上游二进制：
+
+- `codex-rs/sandboxing/src/seatbelt.rs`
+- `codex-rs/sandboxing/src/seatbelt_tests.rs`
+- `codex-rs/sandboxing/src/seatbelt_base_policy.sbpl` 移植到 `crates/agent-sandbox/src/policies/seatbelt_base_policy.sbpl`
+- `codex-rs/sandboxing/src/seatbelt_network_policy.sbpl` 移植到 `crates/agent-sandbox/src/policies/seatbelt_network_policy.sbpl`
+- `codex-rs/core/src/safety.rs`
+- `codex-rs/core/src/apply_patch.rs`
+- `codex-rs/core/src/tools/runtimes/apply_patch.rs`
+
+本地实现复用同一 `SandboxPolicy` 约束 Pipe、PTY 和 Patch 路径；路径检查额外解析最深已存在父目录，避免新文件通过 symlink 父目录逃逸。

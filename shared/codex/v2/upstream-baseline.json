@@ -1185,9 +1185,9 @@
     {
       "id": "R15",
       "name": "macOS 沙箱",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Windows 隔离由 R16 实现；域名代理、连接审批和网络审计由 R17 实现；R21 再提供完整分层 Permission Profile 配置。",
+      "evidence": "crates/agent-sandbox 实现固定 /usr/bin/sandbox-exec、read-only/workspace-write/danger/external、可写根、受保护元数据、临时目录、网络开关和 symlink 安全；agent-exec Pipe/PTY、Unified Exec、command/exec 与 apply_patch 共用策略；10 项沙箱测试、7 项 exec 测试和 20 项工具测试覆盖真实 macOS 拒绝。"
     },
     {
       "id": "R16",

@@ -18,6 +18,7 @@ tietiezhi-agent-approval = { path = "../agent-approval" }
 tietiezhi-agent-exec = { path = "../agent-exec" }
 tietiezhi-agent-patch = { path = "../agent-patch" }
 tietiezhi-agent-protocol = { path = "../agent-protocol" }
+tietiezhi-agent-sandbox = { path = "../agent-sandbox" }
 tokio = { version = "1", features = ["fs", "sync", "rt", "macros", "time"] }
 tokio-util = "0.7"
 

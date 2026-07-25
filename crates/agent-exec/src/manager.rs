@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tietiezhi_agent_sandbox::SandboxPolicy;
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -49,6 +50,7 @@ pub struct ExecRequest {
     /// `None` disables the execution timeout.
     pub timeout: Option<Duration>,
     pub cancellation: Option<CancellationToken>,
+    pub sandbox_policy: Option<SandboxPolicy>,
 }
 
 impl ExecRequest {
@@ -63,6 +65,7 @@ impl ExecRequest {
             output_bytes_cap: Some(DEFAULT_OUTPUT_BYTES_CAP),
             timeout: Some(DEFAULT_TIMEOUT),
             cancellation: None,
+            sandbox_policy: None,
         }
     }
 }
@@ -214,8 +217,21 @@ impl ExecManager {
                 }
             }
         }
-        let program = &request.command[0];
-        let args = request.command[1..].to_vec();
+        let command = match &request.sandbox_policy {
+            Some(policy) => {
+                tietiezhi_agent_sandbox::sandbox_command(
+                    request.command.clone(),
+                    &request.cwd,
+                    &env,
+                    policy,
+                )
+                .map_err(|error| ExecError::Spawn(error.to_string()))?
+                .command
+            }
+            None => request.command.clone(),
+        };
+        let program = &command[0];
+        let args = command[1..].to_vec();
         let spawned = if request.tty {
             spawn_pty_process(program, &args, &request.cwd, &env, &None, request.size, &[]).await
         } else if request.stream_stdin {
@@ -678,5 +694,47 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let result = unsafe { libc::kill(child_pid, 0) };
         assert_eq!(result, -1, "descendant process {child_pid} survived");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn seatbelt_is_enforced_for_pipe_and_pty_processes() {
+        for tty in [false, true] {
+            let cwd = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let allowed = cwd
+                .path()
+                .join(if tty { "pty-allowed" } else { "pipe-allowed" });
+            let denied = outside
+                .path()
+                .join(if tty { "pty-denied" } else { "pipe-denied" });
+            let manager = ExecManager::default();
+            let id = SessionId::new("sandbox", if tty { "pty" } else { "pipe" });
+            let mut request = ExecRequest::buffered(
+                vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf ok > \"$1\"; if printf no > \"$2\" 2>/dev/null; then exit 9; fi; printf enforced"
+                        .into(),
+                    "sandbox".into(),
+                    allowed.to_string_lossy().into_owned(),
+                    denied.to_string_lossy().into_owned(),
+                ],
+                cwd.path().to_path_buf(),
+            );
+            request.tty = tty;
+            request.sandbox_policy = Some(SandboxPolicy::WorkspaceWrite {
+                writable_roots: vec![cwd.path().to_path_buf()],
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            });
+            manager.spawn(id.clone(), request).await.unwrap();
+            let result = manager.wait(&id, None).await.unwrap().unwrap();
+            assert_eq!(result.exit_code, 0, "{result:?}");
+            assert!(result.stdout.contains("enforced"), "{result:?}");
+            assert_eq!(std::fs::read_to_string(allowed).unwrap(), "ok");
+            assert!(!denied.exists());
+        }
     }
 }

@@ -12,12 +12,14 @@ use chrono::{SecondsFormat, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tietiezhi_agent_approval::{
-    CommandExecutionApprovalDecision, FileChangeApprovalDecision, PermissionsApprovalResponse,
+    ApprovalRequirement, CommandExecutionApprovalDecision, FileChangeApprovalDecision,
+    PermissionsApprovalResponse,
 };
 use tietiezhi_agent_exec::{
     ExecEvent, ExecManager, ExecRequest, ExecResult, OutputChunk, SessionId, TerminalSize,
 };
-use tietiezhi_agent_patch::{PatchPlan, TurnDiffTracker};
+use tietiezhi_agent_patch::{PatchChangeKind, PatchPlan, TurnDiffTracker};
+use tietiezhi_agent_sandbox::SandboxPolicy;
 
 use crate::{
     ToolError, ToolFuture, ToolHandler, ToolInvocation, ToolName, ToolOutput, ToolPayload,
@@ -163,14 +165,18 @@ pub fn tool_search_handler(
 
 pub fn apply_patch_handler(
     cwd: PathBuf,
-    requires_approval: bool,
+    sandbox_policy: SandboxPolicy,
+    always_requires_approval: bool,
+    escape_approval_requirement: ApprovalRequirement,
     approver: Option<FileChangeApprover>,
 ) -> Result<Arc<dyn ToolHandler>, ToolError> {
     let tracker = TurnDiffTracker::new(&cwd)
         .map_err(|error| ToolError::Handler(format!("initialize turn diff: {error}")))?;
     Ok(Arc::new(ApplyPatchHandler {
         cwd,
-        requires_approval,
+        sandbox_policy,
+        always_requires_approval,
+        escape_approval_requirement,
         approver,
         tracker: Mutex::new(tracker),
     }))
@@ -179,6 +185,7 @@ pub fn apply_patch_handler(
 pub fn unified_exec_handlers(
     manager: ExecManager,
     cwd: PathBuf,
+    sandbox_policy: tietiezhi_agent_sandbox::SandboxPolicy,
     requires_approval: bool,
     approver: Option<CommandApprover>,
     observer: CommandObserver,
@@ -188,6 +195,7 @@ pub fn unified_exec_handlers(
         Arc::new(ExecCommandHandler {
             manager: manager.clone(),
             cwd,
+            sandbox_policy,
             requires_approval,
             approver,
             observer: observer.clone(),
@@ -312,6 +320,7 @@ impl ToolHandler for RequestPermissionsHandler {
 struct ExecCommandHandler {
     manager: ExecManager,
     cwd: PathBuf,
+    sandbox_policy: tietiezhi_agent_sandbox::SandboxPolicy,
     requires_approval: bool,
     approver: Option<CommandApprover>,
     observer: CommandObserver,
@@ -404,6 +413,7 @@ impl ToolHandler for ExecCommandHandler {
     fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
         let manager = self.manager.clone();
         let base_cwd = self.cwd.clone();
+        let base_sandbox_policy = self.sandbox_policy.clone();
         let requires_approval = self.requires_approval;
         let approver = self.approver.clone();
         let observer = self.observer.clone();
@@ -449,6 +459,17 @@ impl ToolHandler for ExecCommandHandler {
             if args.sandbox_permissions != "require_escalated" && args.prefix_rule.is_some() {
                 return Err(ToolError::InvalidCall(
                     "prefix_rule is only valid with require_escalated".into(),
+                ));
+            }
+            if args.sandbox_permissions != "use_default"
+                && !requires_approval
+                && base_sandbox_policy.is_restricted()
+            {
+                return Ok(command_failure_output(
+                    &invocation.call.call_id,
+                    &args.cmd,
+                    &base_cwd.to_string_lossy(),
+                    "approval policy does not allow permission escalation",
                 ));
             }
             let cwd = resolve_exec_cwd(&base_cwd, args.workdir.as_deref())?;
@@ -505,6 +526,16 @@ impl ToolHandler for ExecCommandHandler {
                 &process_id,
             );
             let command = shell_argv(&args.cmd, args.shell.as_deref(), args.login);
+            let sandbox_policy = match args.sandbox_permissions.as_str() {
+                "require_escalated" => tietiezhi_agent_sandbox::SandboxPolicy::DangerFullAccess,
+                "with_additional_permissions" => base_sandbox_policy
+                    .with_additional_permissions(
+                        args.additional_permissions.as_ref().expect("validated"),
+                        &cwd,
+                    )
+                    .map_err(|error| ToolError::Handler(error.to_string()))?,
+                _ => base_sandbox_policy,
+            };
             let request = ExecRequest {
                 command,
                 cwd: cwd.clone(),
@@ -515,6 +546,7 @@ impl ToolHandler for ExecCommandHandler {
                 output_bytes_cap: Some(tietiezhi_agent_exec::DEFAULT_OUTPUT_BYTES_CAP),
                 timeout: None,
                 cancellation: Some(invocation.cancellation.clone()),
+                sandbox_policy: Some(sandbox_policy),
             };
             let events = match manager.spawn(session_id.clone(), request).await {
                 Ok(events) => events,
@@ -933,7 +965,9 @@ fn exec_tool_output_schema() -> Value {
 
 struct ApplyPatchHandler {
     cwd: PathBuf,
-    requires_approval: bool,
+    sandbox_policy: SandboxPolicy,
+    always_requires_approval: bool,
+    escape_approval_requirement: ApprovalRequirement,
     approver: Option<FileChangeApprover>,
     tracker: Mutex<TurnDiffTracker>,
 }
@@ -961,7 +995,9 @@ impl ToolHandler for ApplyPatchHandler {
 
     fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
         let cwd = self.cwd.clone();
-        let requires_approval = self.requires_approval;
+        let sandbox_policy = self.sandbox_policy.clone();
+        let always_requires_approval = self.always_requires_approval;
+        let escape_approval_requirement = self.escape_approval_requirement.clone();
         let approver = self.approver.clone();
         let tracker = &self.tracker;
         Box::pin(async move {
@@ -984,6 +1020,31 @@ impl ToolHandler for ApplyPatchHandler {
                 }
             };
             let changes = plan.changes().to_vec();
+            let files = patch_target_files(&cwd, &changes);
+            let inherited_env = std::env::vars().collect();
+            let constrained = files.iter().all(|path| {
+                sandbox_policy
+                    .can_write_path(path, &cwd, &inherited_env)
+                    .unwrap_or(false)
+            });
+            if !constrained
+                && let ApprovalRequirement::Forbidden { reason } = &escape_approval_requirement
+            {
+                return Ok(file_change_output(
+                    &invocation.call.call_id,
+                    changes,
+                    "failed",
+                    None,
+                    false,
+                    format!("patch rejected: {reason}"),
+                ));
+            }
+            let requires_approval = always_requires_approval
+                || (!constrained
+                    && matches!(
+                        escape_approval_requirement,
+                        ApprovalRequirement::NeedsApproval { .. }
+                    ));
             if requires_approval {
                 let Some(approver) = approver else {
                     return Ok(file_change_output(
@@ -1002,9 +1063,9 @@ impl ToolHandler for ApplyPatchHandler {
                     reason: Some("apply patch to workspace files".into()),
                     grant_root: None,
                     environment_id: "local".into(),
-                    files: changes
+                    files: files
                         .iter()
-                        .map(|change| cwd.join(&change.path).to_string_lossy().into_owned())
+                        .map(|path| path.to_string_lossy().into_owned())
                         .collect(),
                     patch: input.clone(),
                     cancellation: invocation.cancellation.clone(),
@@ -1054,6 +1115,25 @@ impl ToolHandler for ApplyPatchHandler {
             ))
         })
     }
+}
+
+fn patch_target_files(
+    cwd: &std::path::Path,
+    changes: &[tietiezhi_agent_patch::FileUpdateChange],
+) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for change in changes {
+        files.push(cwd.join(&change.path));
+        if let PatchChangeKind::Update {
+            move_path: Some(move_path),
+        } = &change.kind
+        {
+            files.push(cwd.join(move_path));
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
 }
 
 fn file_change_output(
@@ -1696,7 +1776,21 @@ mod tests {
     #[tokio::test]
     async fn apply_patch_uses_freeform_wire_and_returns_file_change_metadata() {
         let temp = TempDir::new().unwrap();
-        let handler = apply_patch_handler(temp.path().to_path_buf(), false, None).unwrap();
+        let handler = apply_patch_handler(
+            temp.path().to_path_buf(),
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots: Vec::new(),
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            },
+            false,
+            ApprovalRequirement::Forbidden {
+                reason: "approval policy is never".into(),
+            },
+            None,
+        )
+        .unwrap();
         assert_eq!(handler.spec().wire_override.unwrap()["type"], "custom");
         let output = handler
             .handle(patch_invocation(
@@ -1722,7 +1816,19 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let approver: FileChangeApprover =
             Arc::new(|_| Box::pin(async { Ok(FileChangeApprovalDecision::Decline) }));
-        let handler = apply_patch_handler(temp.path().to_path_buf(), true, Some(approver)).unwrap();
+        let handler = apply_patch_handler(
+            temp.path().to_path_buf(),
+            SandboxPolicy::WorkspaceWrite {
+                writable_roots: Vec::new(),
+                network_access: false,
+                exclude_tmpdir_env_var: true,
+                exclude_slash_tmp: true,
+            },
+            true,
+            ApprovalRequirement::NeedsApproval { reason: None },
+            Some(approver),
+        )
+        .unwrap();
         let output = handler
             .handle(patch_invocation(
                 "*** Begin Patch\n*** Add File: denied.txt\n+no\n*** End Patch",
@@ -1735,6 +1841,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_patch_read_only_never_rejects_without_writing() {
+        let temp = TempDir::new().unwrap();
+        let handler = apply_patch_handler(
+            temp.path().to_path_buf(),
+            SandboxPolicy::ReadOnly {
+                network_access: false,
+            },
+            false,
+            ApprovalRequirement::Forbidden {
+                reason: "approval policy is never".into(),
+            },
+            None,
+        )
+        .unwrap();
+        let output = handler
+            .handle(patch_invocation(
+                "*** Begin Patch\n*** Add File: denied.txt\n+no\n*** End Patch",
+            ))
+            .await
+            .unwrap();
+        assert!(!output.success);
+        assert!(!temp.path().join("denied.txt").exists());
+        assert_eq!(output.metadata.unwrap()["item"]["status"], "failed");
+    }
+
+    #[tokio::test]
     async fn unified_exec_runs_and_emits_command_lifecycle() {
         let temp = TempDir::new().unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -1742,6 +1874,7 @@ mod tests {
         let handlers = unified_exec_handlers(
             ExecManager::default(),
             temp.path().to_path_buf(),
+            tietiezhi_agent_sandbox::SandboxPolicy::DangerFullAccess,
             false,
             None,
             Arc::new(move |event| {
@@ -1786,6 +1919,7 @@ mod tests {
         let handlers = unified_exec_handlers(
             ExecManager::default(),
             temp.path().to_path_buf(),
+            tietiezhi_agent_sandbox::SandboxPolicy::DangerFullAccess,
             false,
             None,
             Arc::new(|_| Ok(())),
@@ -1821,6 +1955,7 @@ mod tests {
         let handlers = unified_exec_handlers(
             ExecManager::default(),
             temp.path().to_path_buf(),
+            tietiezhi_agent_sandbox::SandboxPolicy::DangerFullAccess,
             true,
             Some(approver),
             Arc::new(|_| Ok(())),

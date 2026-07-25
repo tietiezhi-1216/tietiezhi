@@ -45,7 +45,7 @@ R13 在 Tauri Rust 进程内实现 Codex Unified Exec，不运行或嵌入上游
 R13 负责可靠进程与协议生命周期，不冒充安全隔离：
 
 - R14 实现完整 Approval Policy、会话缓存和精确授权作用域。
-- R15/R16 分别提供 macOS Seatbelt 与 Windows Restricted Token/ACL/Job Object 沙箱。
+- R15 已为 macOS Pipe 与 PTY 命令提供 Seatbelt；R16 继续提供 Windows Restricted Token/ACL/Job Object 沙箱。
 - R17 提供命令网络策略和代理归因。
 - R18 使用解析后的 ExecPolicy 替代临时的统一询问策略。
 - R30 在桌面 UI 暴露每个 Thread 的多个集成终端。

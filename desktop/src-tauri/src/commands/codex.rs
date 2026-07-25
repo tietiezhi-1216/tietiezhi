@@ -701,6 +701,16 @@ async fn dispatch_command_exec(
                 Ok(size) => size,
                 Err(error) => return Ok(dispatch_error(request, -32602, error)),
             };
+            let sandbox_policy_value = params
+                .get("sandboxPolicy")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .unwrap_or(runtime_defaults(app)?.sandbox);
+            let sandbox_policy =
+                match tietiezhi_agent_sandbox::SandboxPolicy::from_value(sandbox_policy_value) {
+                    Ok(policy) => policy,
+                    Err(error) => return Ok(dispatch_error(request, -32602, error.to_string())),
+                };
             let exposed_process_id = process_id
                 .clone()
                 .unwrap_or_else(|| format!("internal-{}", state.codex_exec.allocate_session_id()));
@@ -720,6 +730,7 @@ async fn dispatch_command_exec(
                         output_bytes_cap,
                         timeout,
                         cancellation: None,
+                        sandbox_policy: Some(sandbox_policy),
                     },
                 )
                 .await
@@ -952,6 +963,7 @@ async fn dispatch_thread_shell_command(
                 output_bytes_cap: Some(tietiezhi_agent_exec::DEFAULT_OUTPUT_BYTES_CAP),
                 timeout: None,
                 cancellation: None,
+                sandbox_policy: None,
             },
         )
         .await
@@ -2234,11 +2246,15 @@ fn turn_tool_runtime(
     let approval_policy =
         serde_json::from_value::<AskForApproval>(snapshot.approval_policy.clone())
             .unwrap_or_default();
-    // R15/R16 replace this transitional unavailable state with the real
-    // platform sandbox capability. Until then, restricted profiles fail closed.
+    // macOS uses the R15 Seatbelt implementation. Windows stays unavailable
+    // until R16 installs its Restricted Token/ACL sandbox and therefore fails closed.
+    let sandbox_policy =
+        tietiezhi_agent_sandbox::SandboxPolicy::from_value(snapshot.sandbox.clone())
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
     let sandbox_availability = match snapshot.sandbox.get("type").and_then(Value::as_str) {
         Some("dangerFullAccess") => SandboxAvailability::Unrestricted,
         Some("externalSandbox") => SandboxAvailability::External,
+        _ if cfg!(target_os = "macos") => SandboxAvailability::Restricted,
         _ => SandboxAvailability::Unavailable,
     };
     if approval_policy.allows(ApprovalCategory::RequestPermissions) {
@@ -2361,21 +2377,27 @@ fn turn_tool_runtime(
             }),
         ));
     }
-    let patch_approval_requirement = default_exec_approval_requirement(
+    let always_requires_patch_approval = approval_policy == AskForApproval::UnlessTrusted;
+    let patch_escape_requirement = category_approval_requirement(
         approval_policy,
-        sandbox_availability,
-        /*trusted_read_only*/ false,
+        ApprovalCategory::Sandbox,
+        "apply patch outside writable sandbox roots",
     );
-    let requires_patch_approval =
-        !matches!(patch_approval_requirement, ApprovalRequirement::Skip { .. });
+    let has_patch_approver = always_requires_patch_approval
+        || matches!(
+            patch_escape_requirement,
+            ApprovalRequirement::NeedsApproval { .. }
+        );
     let approval_app = app.clone();
     let approval_manager = manager.clone();
-    let patch_requirement = patch_approval_requirement.clone();
+    let patch_requirement = patch_escape_requirement.clone();
     handlers.push(
         apply_patch_handler(
             snapshot.cwd.clone(),
-            requires_patch_approval,
-            requires_patch_approval.then(|| {
+            sandbox_policy.clone(),
+            always_requires_patch_approval,
+            patch_escape_requirement,
+            has_patch_approver.then(|| {
                 Arc::new(move |request: FileChangeApprovalRequest| {
                     let app = approval_app.clone();
                     let manager = approval_manager.clone();
@@ -2697,6 +2719,7 @@ fn turn_tool_runtime(
     handlers.extend(unified_exec_handlers(
         app.state::<AppState>().codex_exec.clone(),
         snapshot.cwd.clone(),
+        sandbox_policy,
         requires_command_approval,
         command_approver,
         observer,

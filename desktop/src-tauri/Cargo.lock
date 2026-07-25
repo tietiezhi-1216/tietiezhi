@@ -4695,6 +4695,7 @@ dependencies = [
  "serde",
  "shared_library",
  "thiserror 2.0.18",
+ "tietiezhi-agent-sandbox",
  "tokio",
  "tokio-util",
  "uuid",
@@ -4736,6 +4737,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-sandbox"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "tietiezhi-agent-state"
 version = "0.1.0"
 dependencies = [
@@ -4758,6 +4768,7 @@ dependencies = [
  "tietiezhi-agent-exec",
  "tietiezhi-agent-patch",
  "tietiezhi-agent-protocol",
+ "tietiezhi-agent-sandbox",
  "tokio",
  "tokio-util",
 ]
@@ -4802,6 +4813,7 @@ dependencies = [
  "tietiezhi-agent-model",
  "tietiezhi-agent-patch",
  "tietiezhi-agent-protocol",
+ "tietiezhi-agent-sandbox",
  "tietiezhi-agent-state",
  "tietiezhi-agent-tools",
  "tokio",

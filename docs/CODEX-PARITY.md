@@ -53,7 +53,7 @@
 | R12 | Patch 与 Diff | 已完成 | crates/agent-patch Lark/流式解析与多文件原子事务；crates/agent-approval FileChange 反向请求；agent-tools apply_patch；agent-core FileChange/Turn Diff；docs/CODEX-PATCH.md | R14 仍需扩展完整 Approval Policy、精确会话授权缓存及命令/网络审批；R15-R17 仍需提供 OS 沙箱和网络隔离。 |
 | R13 | Unified Exec | 已完成 | crates/agent-exec PTY/ConPTY、管道和会话管理；agent-tools exec_command/write_stdin；desktop command/exec* 与 thread/shellCommand；agent-core CommandExecution Item；docs/CODEX-EXEC.md | R14-R18 仍需完成精确审批策略、macOS/Windows OS 沙箱、网络隔离和 ExecPolicy；R30 再暴露多终端桌面 UI。 |
 | R14 | 审批策略 | 已完成 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md | R15/R16 尚需把审批决策绑定到真实 OS 沙箱，R17/R18 尚需消费持久网络与 ExecPolicy Amendment；关闭 granular 类别已 fail-closed。 |
-| R15 | macOS 沙箱 | 待开始 |  |  |
+| R15 | macOS 沙箱 | 已完成 | crates/agent-sandbox 实现固定 /usr/bin/sandbox-exec、read-only/workspace-write/danger/external、可写根、受保护元数据、临时目录、网络开关和 symlink 安全；agent-exec Pipe/PTY、Unified Exec、command/exec 与 apply_patch 共用策略；10 项沙箱测试、7 项 exec 测试和 20 项工具测试覆盖真实 macOS 拒绝。 | Windows 隔离由 R16 实现；域名代理、连接审批和网络审计由 R17 实现；R21 再提供完整分层 Permission Profile 配置。 |
 | R16 | Windows 沙箱 | 待开始 |  |  |
 | R17 | 网络策略 | 待开始 |  |  |
 | R18 | ExecPolicy | 待开始 |  |  |
