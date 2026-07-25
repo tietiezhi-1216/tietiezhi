@@ -1305,9 +1305,9 @@
     {
       "id": "R29",
       "name": "Git 与 Worktree",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Local 环境会直接修改用户项目，UI 与审批必须持续明确展示；Windows worktree 与长路径仍由跨平台 CI 和 R37 soak 覆盖。",
+      "evidence": "crates/agent-git detached Worktree、.worktreeinclude、Snapshot/Restore/Handoff、清理与旧工作区接管测试；desktop 共享环境命令、提示词和 SSR/migration UI 门禁；docs/CODEX-GIT-WORKTREES.md"
     },
     {
       "id": "R30",

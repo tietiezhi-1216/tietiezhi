@@ -630,15 +630,71 @@ export interface TaskWorkspaceModeStatus {
   transferableFiles: WorkspaceFileEntry[];
 }
 
+export type ExecutionEnvironment = "local" | "worktree";
+
+export interface WorkspaceSnapshot {
+  id: string;
+  label: string;
+  reference: string;
+  commit: string;
+  createdAtMs: number;
+}
+
+export interface WorkspaceHandoff {
+  branch: string;
+  commit: string;
+  snapshotId: string;
+  createdAtMs: number;
+}
+
 export interface TaskWorkspaceOverview {
   work: TaskWorkspaceModeStatus;
   code: TaskWorkspaceModeStatus;
+  environment: ExecutionEnvironment;
+  initialized: boolean;
+  rootPath: string;
+  projectRoot: string | null;
+  head: string | null;
+  branch: string | null;
+  detached: boolean;
+  snapshots: WorkspaceSnapshot[];
+  handoffs: WorkspaceHandoff[];
 }
 
 export function taskWorkspaceOverview(taskId: string): Promise<TaskWorkspaceOverview> {
   return invoke<TaskWorkspaceOverview>("task_workspace_overview", { taskId });
 }
 
+export function setTaskWorkspaceEnvironment(args: {
+  taskId: string;
+  environment: ExecutionEnvironment;
+}): Promise<TaskWorkspaceOverview> {
+  return invoke<TaskWorkspaceOverview>("set_task_workspace_environment", args);
+}
+
+export function createTaskWorkspaceSnapshot(args: {
+  taskId: string;
+  label: string;
+}): Promise<WorkspaceSnapshot> {
+  return invoke<WorkspaceSnapshot>("create_task_workspace_snapshot", args);
+}
+
+export function restoreTaskWorkspaceSnapshot(args: {
+  taskId: string;
+  snapshotId: string;
+}): Promise<TaskWorkspaceOverview> {
+  return invoke<TaskWorkspaceOverview>("restore_task_workspace_snapshot", args);
+}
+
+export function handoffTaskWorkspace(args: {
+  taskId: string;
+  branch?: string;
+  label: string;
+}): Promise<WorkspaceHandoff> {
+  return invoke<WorkspaceHandoff>("handoff_task_workspace", args);
+}
+
+/** @deprecated Work and Code now share one Local/Worktree environment. */
 export function transferTaskWorkspaceFile(args: {
   taskId: string;
   fromMode: TaskMode;

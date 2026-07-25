@@ -68,6 +68,7 @@ jobs:
             crates/agent-collab
             crates/agent-review
             crates/agent-memory
+            crates/agent-git
             crates/agent-config
             crates/agent-skills
             crates/agent-hooks
@@ -110,6 +111,9 @@ jobs:
       - name: Check conversation persistence migration
         run: pnpm test:conversation-migration
 
+      - name: Check Local and Worktree environment UI
+        run: pnpm test:workspace-environment-ui
+
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
 
@@ -133,6 +137,9 @@ jobs:
 
       - name: Codex Chronicle memory tests
         run: cargo test --manifest-path ../crates/agent-memory/Cargo.toml
+
+      - name: Codex Local, Worktree, snapshot, and Handoff tests
+        run: cargo test --manifest-path ../crates/agent-git/Cargo.toml
 
       - name: Codex context and compaction tests
         run: cargo test --manifest-path ../crates/agent-context/Cargo.toml

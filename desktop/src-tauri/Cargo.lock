@@ -5784,6 +5784,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-git"
+version = "0.1.0"
+dependencies = [
+ "dunce",
+ "globset",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "tietiezhi-agent-hooks"
 version = "0.1.0"
 dependencies = [
@@ -6006,6 +6019,7 @@ dependencies = [
  "tietiezhi-agent-events",
  "tietiezhi-agent-exec",
  "tietiezhi-agent-execpolicy",
+ "tietiezhi-agent-git",
  "tietiezhi-agent-hooks",
  "tietiezhi-agent-mcp",
  "tietiezhi-agent-memory",

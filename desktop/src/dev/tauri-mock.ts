@@ -510,6 +510,20 @@ export function installTauriMock(): void {
       },
     ] as TietiezhiDevice[],
     conversations: new Map<string, Record<string, unknown>>(),
+    workspaceEnvironment: "worktree" as "local" | "worktree",
+    workspaceSnapshots: [] as Array<{
+      id: string;
+      label: string;
+      reference: string;
+      commit: string;
+      createdAtMs: number;
+    }>,
+    workspaceHandoffs: [] as Array<{
+      branch: string;
+      commit: string;
+      snapshotId: string;
+      createdAtMs: number;
+    }>,
     automations: new Map<string, AutomationDocument>([
       [exampleAutomation.id, exampleAutomation],
     ]),
@@ -1628,16 +1642,16 @@ public class Hello {
     },
     task_workspace_overview: (a) => {
       const conversation = state.conversations.get(a.taskId as string);
-      const initializedMode = conversation?.taskMode ?? "code";
+      const initialized = Boolean(conversation);
       return {
         work: {
           mode: "work",
-          initialized: initializedMode === "work" || Boolean(conversation),
-          rootPath: "/mock/tasks/work",
-          isGit: false,
+          initialized,
+          rootPath: "/mock/tasks/shared-worktree",
+          isGit: true,
           fileCount: 4,
           fileCountCapped: false,
-          changedFiles: [],
+          changedFiles: ["src/App.tsx", "src/lib/task-mode.ts"],
           deliverables: [
             { path: "竞品调研.md", size: 8_420, modifiedAt: Date.now() },
             { path: "数据汇总.csv", size: 2_180, modifiedAt: Date.now() - 2_000 },
@@ -1649,8 +1663,8 @@ public class Hello {
         },
         code: {
           mode: "code",
-          initialized: initializedMode === "code" || Boolean(conversation),
-          rootPath: "/mock/tasks/code",
+          initialized,
+          rootPath: "/mock/tasks/shared-worktree",
           isGit: true,
           fileCount: 128,
           fileCountCapped: false,
@@ -1665,10 +1679,51 @@ public class Hello {
             },
           ],
         },
+        environment: state.workspaceEnvironment,
+        initialized,
+        rootPath: "/mock/tasks/shared-worktree",
+        projectRoot: "/mock/projects/demo",
+        head: "1234567890abcdef",
+        branch: state.workspaceEnvironment === "local" ? "main" : null,
+        detached: state.workspaceEnvironment === "worktree",
+        snapshots: state.workspaceSnapshots,
+        handoffs: state.workspaceHandoffs,
       };
     },
-    transfer_task_workspace_file: (a) =>
-      `.tietiezhi/imports/${String(a.fromMode)}/${String(a.path)}`,
+    set_task_workspace_environment: (a) => {
+      state.workspaceEnvironment = a.environment as "local" | "worktree";
+      return handlers.task_workspace_overview(a);
+    },
+    create_task_workspace_snapshot: (a) => {
+      const id = crypto.randomUUID();
+      const snapshot = {
+        id,
+        label: String(a.label || "手动快照"),
+        reference: `refs/tietiezhi/snapshots/mock/${id}`,
+        commit: id.replaceAll("-", ""),
+        createdAtMs: Date.now(),
+      };
+      state.workspaceSnapshots.push(snapshot);
+      return snapshot;
+    },
+    restore_task_workspace_snapshot: (a) => {
+      if (!state.workspaceSnapshots.some((snapshot) => snapshot.id === a.snapshotId)) {
+        throw "找不到工作区快照";
+      }
+      return handlers.task_workspace_overview(a);
+    },
+    handoff_task_workspace: () => {
+      const snapshotId = crypto.randomUUID();
+      const handoff = {
+        branch: `codex/mock-${state.workspaceHandoffs.length + 1}`,
+        commit: snapshotId.replaceAll("-", ""),
+        snapshotId,
+        createdAtMs: Date.now(),
+      };
+      state.workspaceHandoffs.push(handoff);
+      return handoff;
+    },
+    transfer_task_workspace_file: (a) => String(a.path),
 
     "plugin:app|version": () => "0.0.0-mock",
     "plugin:event|listen": () => 0,

@@ -54,8 +54,8 @@
 | 子智能体 | `core/src/tools/handlers/multi_agents*` | `crates/agent-collab` | R26 |
 | Guardian 与 Review | `codex-rs/core/src/guardian`、`session/review.rs`、`tasks/review.rs` | `crates/agent-review`、`crates/agent-core`、`desktop/src-tauri/src/commands/codex.rs` | R27 |
 | Chronicle 长期记忆 | `codex-rs/memories/{read,write}`、`ext/memories`、`state/src/runtime/memories.rs`、`protocol/src/memory_citation.rs` | `crates/agent-memory`、`crates/agent-core`、`desktop/src-tauri/src/commands/codex.rs` | R28 |
+| Local、Worktree、Snapshot 与 Handoff | `codex-rs/git-utils`、`core/src/git_info*`、桌面执行环境行为 | `crates/agent-git`、`desktop/src-tauri/src/commands/workspace.rs` | R29 |
 | Rollout 持久化 | `codex-rs/rollout`、`thread-store`、`state` | `crates/agent-state`、`desktop/src-tauri/src/commands/conversations.rs` | R4 |
-| Git 与 Worktree | `codex-rs/git-utils`、桌面 Worktree 行为 | `crates/agent-git` | R29 |
 | 运维与追踪 | `codex-rs/otel`、`feedback`、Doctor 行为 | `crates/agent-observability` | R36 |
 
 ## 升级流程
@@ -121,5 +121,7 @@ R26 已增加 `crates/agent-collab`，实现 MultiAgentV2 canonical Agent Path�
 R27 已增加 `crates/agent-review`，实现 Review target/delivery、内联与独立 Review Thread、Review 专用工具约束和结构化输出，以及 Guardian 对命令、Patch、权限、网络和 MCP 的自动审批。Guardian 使用独立 Responses 调用、90 秒超时、精确 V2 生命周期、人工覆盖与拒绝熔断；沙箱边界始终由 R15/R16 执行，不由审查模型改变。详细行为见 `docs/CODEX-REVIEW-GUARDIAN.md`。
 
 R28 已增加 `crates/agent-memory`，实现 Chronicle 两阶段提取与合并、SQLite 作业租约、受管 Markdown、专用读取工具、Thread 开关与污染状态、`memoryCitation`、额度保护、重置和旧 Tietiezhi MEMORY 扩展迁移。详细行为见 `docs/CODEX-MEMORY.md`。
+
+R29 已增加 `crates/agent-git`，将 Work/Code 收敛为同一任务的工作方式，并实现唯一 Local/Worktree 环境、detached Worktree、`.worktreeinclude`、私有 Snapshot、Restore、Handoff、删除前快照和旧双空间原地接管。详细行为见 `docs/CODEX-GIT-WORKTREES.md`。
 
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

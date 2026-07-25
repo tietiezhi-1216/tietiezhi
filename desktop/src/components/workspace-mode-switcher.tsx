@@ -13,13 +13,13 @@ const MODES: readonly {
   {
     id: "work",
     name: "Work",
-    title: "切换到独立 Work 工作区",
+    title: "切换到 Work 工作方式（共享当前工作区）",
     icon: BriefcaseBusiness,
   },
   {
     id: "code",
     name: "Code",
-    title: "切换到独立 Code 工作区",
+    title: "切换到 Code 工作方式（共享当前工作区）",
     icon: Code2,
   },
 ];
@@ -32,7 +32,7 @@ export function WorkspaceModeSwitcher() {
   return (
     <div
       role="group"
-      aria-label="任务执行工作区"
+      aria-label="任务工作方式"
       className="bg-muted/65 flex h-8 items-center rounded-lg border p-0.5 shadow-xs"
     >
       {MODES.map((mode) => {
@@ -46,7 +46,7 @@ export function WorkspaceModeSwitcher() {
             size="sm"
             disabled={streaming}
             aria-pressed={selected}
-            title={streaming ? "当前任务运行结束后可切换工作区" : mode.title}
+            title={streaming ? "当前任务运行结束后可切换工作方式" : mode.title}
             onClick={() => setTaskMode(mode.id)}
             className={cn(
               "text-muted-foreground h-6 gap-1 rounded-md border border-transparent px-2 text-[11px] font-medium shadow-none transition-[color,background-color,border-color,box-shadow]",

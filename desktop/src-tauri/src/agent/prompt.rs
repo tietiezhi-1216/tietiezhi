@@ -36,7 +36,7 @@ pub fn compose(
     };
 
     prompt.push_str(&format!(
-        "\n\n# 环境\n- 当前执行模式：{}\n- 当前工作区目录：{workspace}\n- Work 与 Code 共享任务上下文，但文件工作区相互隔离；不要假设另一模式中的文件存在于当前目录。",
+        "\n\n# 环境\n- 当前执行模式：{}\n- 当前工作区目录：{workspace}\n- Work 与 Code 是同一任务的不同工作方式，共享同一个 Local 或 Worktree 文件环境；切换方式不会复制、移动或丢失文件。",
         task_mode.label()
     ));
     match task_mode {
@@ -121,7 +121,7 @@ mod tests {
     fn task_mode_is_always_part_of_the_environment_contract() {
         let p = compose("", "", "/ws", &[], TaskMode::Work);
         assert!(p.contains("当前执行模式：Work"));
-        assert!(p.contains("文件工作区相互隔离"));
+        assert!(p.contains("共享同一个 Local 或 Worktree 文件环境"));
         assert!(p.contains("Work 不提供通用终端"));
     }
 

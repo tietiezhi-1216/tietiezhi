@@ -357,3 +357,14 @@ R28 的 Chronicle 长期记忆、两阶段生成、作业租约、受管文件�
 - `crates/agent-memory/assets/consolidation.md`
 
 本地实现位于 `crates/agent-memory`，通过 `agent-core` canonical rollout 和桌面 Responses Provider 执行，不调用、链接或分发上游 Codex 二进制。
+
+R29 的 Git 基线、分支校验、状态读取与桌面 Worktree 行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/git-utils/src/baseline.rs`
+- `codex-rs/git-utils/src/branch.rs`
+- `codex-rs/git-utils/src/info.rs`
+- `codex-rs/git-utils/src/operations.rs`
+- `codex-rs/core/src/git_info.rs`
+- `codex-rs/core/src/git_info_tests.rs`
+
+本地实现位于 `crates/agent-git`，增加 `.worktreeinclude`、alternate-index Snapshot、Restore、Handoff 和旧任务接管；只调用系统 Git，不调用、链接或分发上游 Codex 二进制。

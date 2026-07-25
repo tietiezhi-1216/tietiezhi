@@ -1,14 +1,17 @@
-use std::io::Write;
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::process::Stdio;
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
+use tietiezhi_agent_git::{
+    ExecutionEnvironment, WorkspaceDescriptor, WorkspaceHandoff, WorkspaceRuntime,
+    WorkspaceSnapshot,
+};
 use walkdir::WalkDir;
 
-/// The active execution space inside one shared task transcript.
+/// Work and Code are behavior/tool profiles over the same task workspace.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TaskMode {
@@ -32,9 +35,6 @@ impl TaskMode {
         }
     }
 
-    /// Code owns the terminal-first development surface. Work stays focused
-    /// on research and deliverables; explicit agent profiles cannot silently
-    /// turn it back into a second Code mode.
     pub fn filter_builtin_tools(self, configured: &[String]) -> Vec<String> {
         let source: Vec<String> = if configured.is_empty() {
             crate::tools::ALL_TOOLS
@@ -78,10 +78,17 @@ pub struct TaskWorkspaceModeStatus {
 pub struct TaskWorkspaceOverview {
     pub work: TaskWorkspaceModeStatus,
     pub code: TaskWorkspaceModeStatus,
+    pub environment: ExecutionEnvironment,
+    pub initialized: bool,
+    pub root_path: String,
+    pub project_root: Option<String>,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub snapshots: Vec<WorkspaceSnapshot>,
+    pub handoffs: Vec<WorkspaceHandoff>,
 }
 
-/// Let the user pick a folder for a project or skill import.
-/// Returns `None` when the dialog is dismissed.
 #[tauri::command]
 pub async fn pick_workspace_dir(app: AppHandle) -> Result<Option<String>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -91,63 +98,35 @@ pub async fn pick_workspace_dir(app: AppHandle) -> Result<Option<String>, String
     rx.await.map_err(|_| "选择目录失败".to_string())
 }
 
-/// Resolve one of the two lazily-created, writable execution spaces owned by a
-/// task. Work and Code share a transcript but never share a writable root.
+/// Resolve the single writable environment owned by a task. TaskMode only
+/// changes model/tool behavior and never selects another filesystem root.
 pub(crate) fn resolve_task_workspace(
     app: &AppHandle,
     project_id: Option<&str>,
     task_id: Option<&str>,
-    task_mode: TaskMode,
+    _task_mode: TaskMode,
 ) -> Result<PathBuf, String> {
     let task_id = task_id.ok_or_else(|| "任务尚未创建".to_string())?;
-    let workspace = task_mode_workspace_path(app, task_id, task_mode)?;
-    migrate_legacy_workspace(app, task_id, task_mode, &workspace)?;
-
-    let Some(project_id) = project_id.map(str::trim).filter(|id| !id.is_empty()) else {
-        std::fs::create_dir_all(&workspace)
-            .map_err(|error| format!("创建 {} 工作区失败：{error}", task_mode.label()))?;
-        return canonical_or_original(workspace);
-    };
-
-    let project = super::projects::find_project(app, project_id)?
-        .ok_or_else(|| "项目不存在或已被移除".to_string())?;
-    let project_root = resolve_project_directory(Path::new(&project.root_path))?;
-
-    let workspace_ready = workspace.exists()
-        && std::fs::read_dir(&workspace)
-            .map(|mut entries| entries.next().is_some())
-            .unwrap_or(false);
-    if workspace.exists() && !workspace_ready {
-        let _ = std::fs::remove_dir(&workspace);
+    super::conversations::validate_id(task_id)?;
+    let runtime = workspace_runtime(app)?;
+    if let Some(descriptor) = adopt_legacy_workspace(app, &runtime, task_id, project_id)? {
+        return canonical_or_original(descriptor.active_root);
     }
-
-    let resolved = if workspace_ready {
-        resolve_existing_project_workspace(&project_root, &workspace)?
-    } else if let Some((git_root, relative_project)) = git_project(&project_root) {
-        match create_git_worktree(&git_root, &relative_project, &workspace) {
-            Ok(path) => path,
-            Err(_) => create_directory_snapshot(&project_root, &workspace)?,
-        }
-    } else {
-        create_directory_snapshot(&project_root, &workspace)?
-    };
-
-    let _ = super::projects::mark_used(app, project_id);
-    Ok(resolved)
+    let project_root = project_root_for_id(app, project_id)?;
+    let descriptor = runtime
+        .resolve(
+            task_id,
+            project_root.as_deref(),
+            &shared_workspace_path(app, task_id)?,
+            None,
+        )
+        .map_err(workspace_error)?;
+    if let Some(project_id) = project_id.map(str::trim).filter(|id| !id.is_empty()) {
+        let _ = super::projects::mark_used(app, project_id);
+    }
+    canonical_or_original(descriptor.active_root)
 }
 
-fn task_mode_workspace_path(
-    app: &AppHandle,
-    task_id: &str,
-    task_mode: TaskMode,
-) -> Result<PathBuf, String> {
-    Ok(super::conversations::task_root(app, task_id)?
-        .join("workspaces")
-        .join(task_mode.as_str()))
-}
-
-/// Read-only status for both execution spaces. Merely opening the panel never
-/// creates a worktree or snapshot; spaces remain lazy until first use/import.
 #[tauri::command]
 pub async fn task_workspace_overview(
     app: AppHandle,
@@ -158,24 +137,109 @@ pub async fn task_workspace_overview(
         .map_err(|error| format!("读取工作区状态失败：{error}"))?
 }
 
-fn task_workspace_overview_sync(
-    app: &AppHandle,
-    task_id: &str,
+#[tauri::command]
+pub async fn set_task_workspace_environment(
+    app: AppHandle,
+    task_id: String,
+    environment: ExecutionEnvironment,
 ) -> Result<TaskWorkspaceOverview, String> {
-    super::conversations::validate_id(&task_id)?;
-    let project_id = super::conversations::load_conversation(app.clone(), task_id.to_string())
-        .ok()
-        .map(|conversation| conversation.project_id)
-        .filter(|project_id| !project_id.is_empty());
-    Ok(TaskWorkspaceOverview {
-        work: summarize_mode_workspace(app, task_id, project_id.as_deref(), TaskMode::Work)?,
-        code: summarize_mode_workspace(app, task_id, project_id.as_deref(), TaskMode::Code)?,
+    tauri::async_runtime::spawn_blocking(move || {
+        super::conversations::validate_id(&task_id)?;
+        let project_id = conversation_project_id(&app, &task_id)?;
+        let project_root = project_root_for_id(&app, project_id.as_deref())?;
+        if project_root.is_none() && environment == ExecutionEnvironment::Worktree {
+            return Err("未绑定项目的任务只能使用 Local 环境".into());
+        }
+        let runtime = workspace_runtime(&app)?;
+        let _ = adopt_legacy_workspace(&app, &runtime, &task_id, project_id.as_deref())?;
+        match project_root {
+            Some(project_root) => {
+                runtime
+                    .set_environment(
+                        &task_id,
+                        &project_root,
+                        &shared_workspace_path(&app, &task_id)?,
+                        environment,
+                    )
+                    .map_err(workspace_error)?;
+            }
+            None => {
+                runtime
+                    .resolve(
+                        &task_id,
+                        None,
+                        &shared_workspace_path(&app, &task_id)?,
+                        Some(ExecutionEnvironment::Local),
+                    )
+                    .map_err(workspace_error)?;
+            }
+        }
+        task_workspace_overview_sync(&app, &task_id)
     })
+    .await
+    .map_err(|error| format!("切换执行环境失败：{error}"))?
 }
 
-/// Copy one explicitly selected file into the other isolated space. Imports
-/// live under `.tietiezhi/imports/{mode}` so they never overwrite project
-/// files or pretend that the two roots are automatically synchronized.
+#[tauri::command]
+pub async fn create_task_workspace_snapshot(
+    app: AppHandle,
+    task_id: String,
+    label: String,
+) -> Result<WorkspaceSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .snapshot(&task_id, label.trim())
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("创建工作区快照失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn restore_task_workspace_snapshot(
+    app: AppHandle,
+    task_id: String,
+    snapshot_id: String,
+) -> Result<TaskWorkspaceOverview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .restore(&task_id, &snapshot_id)
+            .map_err(workspace_error)?;
+        task_workspace_overview_sync(&app, &task_id)
+    })
+    .await
+    .map_err(|error| format!("恢复工作区快照失败：{error}"))?
+}
+
+#[tauri::command]
+pub async fn handoff_task_workspace(
+    app: AppHandle,
+    task_id: String,
+    branch: Option<String>,
+    label: String,
+) -> Result<WorkspaceHandoff, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_workspace_descriptor(&app, &task_id)?;
+        workspace_runtime(&app)?
+            .handoff(
+                &task_id,
+                branch.as_deref(),
+                if label.trim().is_empty() {
+                    "Codex handoff"
+                } else {
+                    label.trim()
+                },
+            )
+            .map_err(workspace_error)
+    })
+    .await
+    .map_err(|error| format!("创建工作区交接失败：{error}"))?
+}
+
+/// Pre-R29 compatibility. Both modes now address the same file, so no copy is
+/// performed after the path has been validated.
 #[tauri::command]
 pub async fn transfer_task_workspace_file(
     app: AppHandle,
@@ -185,137 +249,106 @@ pub async fn transfer_task_workspace_file(
     path: String,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        transfer_task_workspace_file_sync(&app, &task_id, from_mode, to_mode, &path)
+        if from_mode == to_mode {
+            return Err("来源和目标工作方式不能相同".into());
+        }
+        let descriptor = ensure_workspace_descriptor(&app, &task_id)?;
+        let relative = checked_relative_path(&path)?;
+        let file = descriptor.active_root.join(&relative);
+        let canonical_file =
+            dunce::canonicalize(&file).map_err(|_| format!("找不到工作区文件：{path}"))?;
+        let canonical_root = dunce::canonicalize(&descriptor.active_root)
+            .map_err(|error| format!("无法解析工作区：{error}"))?;
+        if !canonical_file.starts_with(canonical_root)
+            || !canonical_file.is_file()
+            || file.is_symlink()
+        {
+            return Err("只能交接共享工作区内的普通文件".into());
+        }
+        Ok(display_relative_path(&relative))
     })
     .await
-    .map_err(|error| format!("交接工作区文件失败：{error}"))?
+    .map_err(|error| format!("读取共享工作区文件失败：{error}"))?
 }
 
-fn transfer_task_workspace_file_sync(
+fn task_workspace_overview_sync(
     app: &AppHandle,
     task_id: &str,
-    from_mode: TaskMode,
-    to_mode: TaskMode,
-    path: &str,
-) -> Result<String, String> {
-    super::conversations::validate_id(&task_id)?;
-    if from_mode == to_mode {
-        return Err("来源和目标工作区不能相同".into());
-    }
-    let conversation = super::conversations::load_conversation(app.clone(), task_id.to_string())?;
-    let project_id = (!conversation.project_id.is_empty()).then_some(conversation.project_id);
-    let source_storage = task_mode_workspace_path(app, task_id, from_mode)?;
-    if !source_storage.is_dir() {
-        return Err(format!("{} 工作区尚未创建", from_mode.label()));
-    }
-    let source_root = active_workspace_root(app, project_id.as_deref(), &source_storage)?;
-    let relative = checked_relative_path(path)?;
-    let source = source_root.join(&relative);
-    let canonical_source =
-        dunce::canonicalize(&source).map_err(|_| format!("找不到要导入的文件：{path}"))?;
-    let canonical_root = dunce::canonicalize(&source_root)
-        .map_err(|error| format!("无法解析来源工作区：{error}"))?;
-    if !canonical_source.starts_with(&canonical_root)
-        || !canonical_source.is_file()
-        || source.is_symlink()
-    {
-        return Err("只能导入来源工作区内的普通文件".into());
-    }
-    let size = std::fs::metadata(&canonical_source)
-        .map_err(|error| format!("读取文件信息失败：{error}"))?
-        .len();
-    if size > 100 * 1024 * 1024 {
-        return Err("单个交接文件不能超过 100 MB".into());
-    }
+) -> Result<TaskWorkspaceOverview, String> {
+    super::conversations::validate_id(task_id)?;
+    let project_id = conversation_project_id(app, task_id)?;
+    let project_root = project_root_for_id(app, project_id.as_deref())?;
+    let runtime = workspace_runtime(app)?;
+    let descriptor = adopt_legacy_workspace(app, &runtime, task_id, project_id.as_deref())?
+        .or(runtime.read(task_id).map_err(workspace_error)?);
 
-    let target_root = resolve_task_workspace(app, project_id.as_deref(), Some(task_id), to_mode)?;
-    let imported_relative = PathBuf::from(".tietiezhi")
-        .join("imports")
-        .join(from_mode.as_str())
-        .join(&relative);
-    let destination = target_root.join(&imported_relative);
-    if destination.exists() {
-        return Err(format!(
-            "目标工作区已存在：{}",
-            display_relative_path(&imported_relative)
-        ));
-    }
-    let import_root = target_root.join(".tietiezhi");
-    if import_root.is_symlink() {
-        return Err("目标工作区的 .tietiezhi 不能是符号链接".into());
-    }
-    if let Some(parent) = destination.parent() {
-        reject_symlink_ancestors(&target_root, parent)?;
-        std::fs::create_dir_all(parent).map_err(|error| format!("创建导入目录失败：{error}"))?;
-        let canonical_target = dunce::canonicalize(&target_root)
-            .map_err(|error| format!("无法解析目标工作区：{error}"))?;
-        let canonical_parent =
-            dunce::canonicalize(parent).map_err(|error| format!("无法解析导入目录：{error}"))?;
-        if !canonical_parent.starts_with(canonical_target) {
-            return Err("导入目录超出目标工作区".into());
-        }
-    }
-    std::fs::copy(canonical_source, &destination)
-        .map_err(|error| format!("导入文件失败：{error}"))?;
-    Ok(display_relative_path(&imported_relative))
+    let predicted_environment = if project_root.as_deref().is_some_and(is_git_directory) {
+        ExecutionEnvironment::Worktree
+    } else {
+        ExecutionEnvironment::Local
+    };
+    let predicted_root = if predicted_environment == ExecutionEnvironment::Local {
+        project_root
+            .clone()
+            .unwrap_or(shared_workspace_path(app, task_id)?)
+    } else {
+        shared_workspace_path(app, task_id)?
+    };
+
+    let Some(descriptor) = descriptor else {
+        let work = empty_mode_status(TaskMode::Work, &predicted_root);
+        let code = empty_mode_status(TaskMode::Code, &predicted_root);
+        return Ok(TaskWorkspaceOverview {
+            work,
+            code,
+            environment: predicted_environment,
+            initialized: false,
+            root_path: predicted_root.to_string_lossy().into_owned(),
+            project_root: project_root.map(|path| path.to_string_lossy().into_owned()),
+            head: None,
+            branch: None,
+            detached: false,
+            snapshots: Vec::new(),
+            handoffs: Vec::new(),
+        });
+    };
+
+    let changed_files = runtime.changed_files(task_id).unwrap_or_default();
+    let work = summarize_workspace(&descriptor, TaskMode::Work, &changed_files)?;
+    let code = summarize_workspace(&descriptor, TaskMode::Code, &changed_files)?;
+    Ok(TaskWorkspaceOverview {
+        work,
+        code,
+        environment: descriptor.environment,
+        initialized: descriptor.initialized,
+        root_path: descriptor.active_root.to_string_lossy().into_owned(),
+        project_root: descriptor
+            .project_root
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        head: descriptor.head,
+        branch: descriptor.branch,
+        detached: descriptor.detached,
+        snapshots: descriptor.snapshots,
+        handoffs: descriptor.handoffs,
+    })
 }
 
-fn reject_symlink_ancestors(root: &Path, destination_parent: &Path) -> Result<(), String> {
-    let relative = destination_parent
-        .strip_prefix(root)
-        .map_err(|_| "导入目录超出目标工作区".to_string())?;
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        let Component::Normal(value) = component else {
-            return Err("非法的导入目录".into());
-        };
-        current.push(value);
-        if current.is_symlink() {
-            return Err("导入目录不能经过符号链接".into());
-        }
-        if !current.exists() {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn summarize_mode_workspace(
-    app: &AppHandle,
-    task_id: &str,
-    project_id: Option<&str>,
+fn summarize_workspace(
+    descriptor: &WorkspaceDescriptor,
     mode: TaskMode,
+    changed_files: &[String],
 ) -> Result<TaskWorkspaceModeStatus, String> {
     const MAX_SCANNED_FILES: usize = 5_000;
     const MAX_LISTED_FILES: usize = 24;
 
-    let storage_root = task_mode_workspace_path(app, task_id, mode)?;
-    if !storage_root.is_dir() {
-        return Ok(TaskWorkspaceModeStatus {
-            mode,
-            initialized: false,
-            root_path: storage_root.to_string_lossy().into_owned(),
-            is_git: false,
-            file_count: 0,
-            file_count_capped: false,
-            changed_files: Vec::new(),
-            deliverables: Vec::new(),
-            transferable_files: Vec::new(),
-        });
-    }
-    let root = active_workspace_root(app, project_id, &storage_root)?;
-    let is_git = storage_root.join(".git").exists();
-    let changed_files = if is_git {
-        git_changed_files(&storage_root, &root).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    let changed: std::collections::HashSet<&str> =
-        changed_files.iter().map(String::as_str).collect();
+    let root = &descriptor.active_root;
+    let is_git = descriptor.repository_root.is_some() || is_git_directory(root);
+    let changed: HashSet<&str> = changed_files.iter().map(String::as_str).collect();
     let mut files = Vec::new();
     let mut file_count = 0;
     let mut file_count_capped = false;
-    let entries = WalkDir::new(&root)
+    let entries = WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| entry.file_name() != ".git");
@@ -329,7 +362,7 @@ fn summarize_mode_workspace(
             break;
         }
         file_count += 1;
-        let Ok(relative) = entry.path().strip_prefix(&root) else {
+        let Ok(relative) = entry.path().strip_prefix(root) else {
             continue;
         };
         let Ok(metadata) = entry.metadata() else {
@@ -347,14 +380,14 @@ fn summarize_mode_workspace(
         });
     }
     files.sort_by(|left, right| right.modified_at.cmp(&left.modified_at));
-    let deliverables: Vec<_> = files
+    let deliverables = files
         .iter()
         .filter(|file| {
             is_deliverable(&file.path) && (!is_git || changed.contains(file.path.as_str()))
         })
         .take(MAX_LISTED_FILES)
         .cloned()
-        .collect();
+        .collect::<Vec<_>>();
     let transferable_files = if mode == TaskMode::Work {
         let source = if deliverables.is_empty() {
             &files
@@ -372,32 +405,167 @@ fn summarize_mode_workspace(
     };
     Ok(TaskWorkspaceModeStatus {
         mode,
-        initialized: true,
+        initialized: descriptor.initialized,
         root_path: root.to_string_lossy().into_owned(),
         is_git,
         file_count,
         file_count_capped,
-        changed_files,
+        changed_files: changed_files.to_vec(),
         deliverables,
         transferable_files,
     })
 }
 
-fn active_workspace_root(
+fn empty_mode_status(mode: TaskMode, root: &Path) -> TaskWorkspaceModeStatus {
+    TaskWorkspaceModeStatus {
+        mode,
+        initialized: false,
+        root_path: root.to_string_lossy().into_owned(),
+        is_git: false,
+        file_count: 0,
+        file_count_capped: false,
+        changed_files: Vec::new(),
+        deliverables: Vec::new(),
+        transferable_files: Vec::new(),
+    }
+}
+
+fn ensure_workspace_descriptor(
+    app: &AppHandle,
+    task_id: &str,
+) -> Result<WorkspaceDescriptor, String> {
+    super::conversations::validate_id(task_id)?;
+    let project_id = conversation_project_id(app, task_id)?;
+    resolve_task_workspace(app, project_id.as_deref(), Some(task_id), TaskMode::Code)?;
+    workspace_runtime(app)?
+        .read(task_id)
+        .map_err(workspace_error)?
+        .ok_or_else(|| "任务工作区尚未创建".into())
+}
+
+fn conversation_project_id(app: &AppHandle, task_id: &str) -> Result<Option<String>, String> {
+    let conversation = super::conversations::load_conversation(app.clone(), task_id.to_string())?;
+    Ok((!conversation.project_id.trim().is_empty()).then_some(conversation.project_id))
+}
+
+fn workspace_runtime(app: &AppHandle) -> Result<WorkspaceRuntime, String> {
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位数据目录：{error}"))?
+        .join("agent-runtime")
+        .join("git-workspaces");
+    WorkspaceRuntime::open(root).map_err(workspace_error)
+}
+
+fn shared_workspace_path(app: &AppHandle, task_id: &str) -> Result<PathBuf, String> {
+    super::conversations::task_workspace_path(app, task_id)
+}
+
+fn legacy_mode_workspace_path(
+    app: &AppHandle,
+    task_id: &str,
+    task_mode: TaskMode,
+) -> Result<PathBuf, String> {
+    Ok(super::conversations::task_root(app, task_id)?
+        .join("workspaces")
+        .join(task_mode.as_str()))
+}
+
+fn project_root_for_id(
     app: &AppHandle,
     project_id: Option<&str>,
-    storage_root: &Path,
+) -> Result<Option<PathBuf>, String> {
+    let Some(project_id) = project_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let project = super::projects::find_project(app, project_id)?
+        .ok_or_else(|| "找不到任务绑定的项目".to_string())?;
+    resolve_project_directory(Path::new(&project.root_path)).map(Some)
+}
+
+fn adopt_legacy_workspace(
+    app: &AppHandle,
+    runtime: &WorkspaceRuntime,
+    task_id: &str,
+    project_id: Option<&str>,
+) -> Result<Option<WorkspaceDescriptor>, String> {
+    if let Some(existing) = runtime.read(task_id).map_err(workspace_error)? {
+        return Ok(Some(existing));
+    }
+    let project_root = project_root_for_id(app, project_id)?;
+    for candidate in [
+        shared_workspace_path(app, task_id)?,
+        legacy_mode_workspace_path(app, task_id, TaskMode::Code)?,
+        legacy_mode_workspace_path(app, task_id, TaskMode::Work)?,
+    ] {
+        if !candidate.is_dir() {
+            continue;
+        }
+        let active_root = match project_root.as_deref() {
+            Some(project_root) => resolve_existing_project_workspace(project_root, &candidate)?,
+            None => canonical_or_original(candidate)?,
+        };
+        return runtime
+            .adopt(task_id, project_root.as_deref(), &active_root)
+            .map(Some)
+            .map_err(workspace_error);
+    }
+    Ok(None)
+}
+
+fn resolve_existing_project_workspace(
+    project_root: &Path,
+    workspace: &Path,
 ) -> Result<PathBuf, String> {
-    let Some(project_id) = project_id else {
-        return canonical_or_original(storage_root.to_path_buf());
-    };
-    let Some(project) = super::projects::find_project(app, project_id)? else {
-        return canonical_or_original(storage_root.to_path_buf());
-    };
-    let Ok(project_root) = resolve_project_directory(Path::new(&project.root_path)) else {
-        return canonical_or_original(storage_root.to_path_buf());
-    };
-    resolve_existing_project_workspace(&project_root, storage_root)
+    if workspace.join(".git").exists() {
+        if let Some((_, relative_project)) = git_project(project_root) {
+            let active = workspace.join(relative_project);
+            if active.is_dir() {
+                return canonical_or_original(active);
+            }
+        }
+    }
+    canonical_or_original(workspace.to_path_buf())
+}
+
+fn resolve_project_directory(root: &Path) -> Result<PathBuf, String> {
+    if !root.is_dir() {
+        return Err("项目文件夹不存在".into());
+    }
+    dunce::canonicalize(root).map_err(|error| format!("无法解析项目目录：{error}"))
+}
+
+fn is_git_directory(root: &Path) -> bool {
+    git_output(root, &["rev-parse", "--is-inside-work-tree"])
+        .is_ok_and(|value| value.trim() == "true")
+}
+
+fn git_project(project_root: &Path) -> Option<(PathBuf, PathBuf)> {
+    let output = git_output(project_root, &["rev-parse", "--show-toplevel"]).ok()?;
+    let git_root = dunce::canonicalize(output.trim()).ok()?;
+    let relative_project = project_root.strip_prefix(&git_root).ok()?.to_path_buf();
+    Some((git_root, relative_project))
+}
+
+fn git_output(root: &Path, args: &[&str]) -> Result<String, String> {
+    let mut command = crate::process::background_command("git");
+    let output = command
+        .args(["-C"])
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| format!("无法执行 Git：{error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if message.is_empty() {
+            "所选项目不是可用的 Git 仓库".into()
+        } else {
+            format!("Git 操作失败：{message}")
+        })
+    }
 }
 
 fn checked_relative_path(path: &str) -> Result<PathBuf, String> {
@@ -447,259 +615,22 @@ fn is_deliverable(path: &str) -> bool {
     )
 }
 
-fn git_changed_files(storage_root: &Path, active_root: &Path) -> Result<Vec<String>, String> {
-    let output = git_output_bytes(
-        storage_root,
-        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-    )?;
-    let project_prefix = active_root
-        .strip_prefix(storage_root)
-        .unwrap_or(Path::new(""));
-    let records: Vec<&[u8]> = output
-        .split(|byte| *byte == 0)
-        .filter(|record| !record.is_empty())
-        .collect();
-    let mut changed = Vec::new();
-    let mut index = 0;
-    while index < records.len() {
-        let record = records[index];
-        if record.len() >= 4 {
-            let repository_path = PathBuf::from(String::from_utf8_lossy(&record[3..]).into_owned());
-            if let Ok(relative) = repository_path.strip_prefix(project_prefix) {
-                changed.push(display_relative_path(relative));
-            }
-            let renamed = matches!(record[0], b'R' | b'C') || matches!(record[1], b'R' | b'C');
-            if renamed {
-                index += 1;
-            }
-        }
-        index += 1;
-    }
-    changed.sort();
-    changed.dedup();
-    changed.truncate(100);
-    Ok(changed)
-}
-
-/// Standalone tasks created before dual spaces used `task/workspace`. Preserve
-/// that content as the Code space; Work starts independently.
-fn migrate_legacy_workspace(
-    app: &AppHandle,
-    task_id: &str,
-    task_mode: TaskMode,
-    destination: &Path,
-) -> Result<(), String> {
-    if task_mode != TaskMode::Code || destination.exists() {
-        return Ok(());
-    }
-    let legacy = super::conversations::task_workspace_path(app, task_id)?;
-    if !legacy.exists() {
-        return Ok(());
-    }
-    // Moving a registered Git worktree invalidates the path stored in the
-    // repository's common metadata. Leave it for deletion cleanup and create a
-    // fresh mode-specific worktree instead.
-    if legacy.join(".git").is_file() {
-        return Ok(());
-    }
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| format!("迁移任务工作区失败：{error}"))?;
-    }
-    std::fs::rename(&legacy, destination).map_err(|error| format!("迁移旧任务工作区失败：{error}"))
-}
-
-fn resolve_existing_project_workspace(
-    project_root: &Path,
-    workspace: &Path,
-) -> Result<PathBuf, String> {
-    if workspace.join(".git").exists() {
-        if let Some((_, relative_project)) = git_project(project_root) {
-            let active = workspace.join(relative_project);
-            if active.is_dir() {
-                return canonical_or_original(active);
-            }
-        }
-    }
-    canonical_or_original(workspace.to_path_buf())
-}
-
-fn resolve_project_directory(root: &Path) -> Result<PathBuf, String> {
-    if !root.is_dir() {
-        return Err("项目文件夹不存在".into());
-    }
-    dunce::canonicalize(root).map_err(|error| format!("无法解析项目目录：{error}"))
-}
-
-fn git_project(project_root: &Path) -> Option<(PathBuf, PathBuf)> {
-    let output = git_output(project_root, &["rev-parse", "--show-toplevel"]).ok()?;
-    let git_root = dunce::canonicalize(output.trim()).ok()?;
-    let relative_project = project_root.strip_prefix(&git_root).ok()?.to_path_buf();
-    Some((git_root, relative_project))
-}
-
-fn create_git_worktree(
-    git_root: &Path,
-    relative_project: &Path,
-    workspace: &Path,
-) -> Result<PathBuf, String> {
-    if let Some(parent) = workspace.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| format!("创建任务目录失败：{error}"))?;
-    }
-    let mut command = crate::process::background_command("git");
-    let output = command
-        .args(["-C"])
-        .arg(git_root)
-        .args(["worktree", "add", "--detach"])
-        .arg(workspace)
-        .arg("HEAD")
-        .output()
-        .map_err(|error| format!("无法执行 Git：{error}"))?;
-    if !output.status.success() {
-        let _ = std::fs::remove_dir_all(workspace);
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if message.is_empty() {
-            "创建 Git 工作区失败".into()
-        } else {
-            format!("创建 Git 工作区失败：{message}")
-        });
-    }
-
-    if let Err(error) = seed_worktree_from_checkout(git_root, workspace) {
-        remove_git_worktree(git_root, workspace);
-        let _ = std::fs::remove_dir_all(workspace);
-        return Err(error);
-    }
-
-    let active = workspace.join(relative_project);
-    if !active.is_dir() {
-        remove_git_worktree(git_root, workspace);
-        let _ = std::fs::remove_dir_all(workspace);
-        return Err("Git 工作区中找不到所选项目目录".into());
-    }
-    canonical_or_original(active)
-}
-
-/// A detached worktree starts at HEAD. Apply tracked edits and copy untracked,
-/// non-ignored files so its initial state matches the checkout the user chose.
-fn seed_worktree_from_checkout(source: &Path, workspace: &Path) -> Result<(), String> {
-    let patch = git_output_bytes(source, &["diff", "--binary", "HEAD", "--"])?;
-    if !patch.is_empty() {
-        let mut command = crate::process::background_command("git");
-        let mut child = command
-            .args(["-C"])
-            .arg(workspace)
-            .args(["apply", "--whitespace=nowarn", "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| format!("无法同步项目改动：{error}"))?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| "无法写入 Git 补丁".to_string())?
-            .write_all(&patch)
-            .map_err(|error| format!("写入 Git 补丁失败：{error}"))?;
-        let output = child
-            .wait_with_output()
-            .map_err(|error| format!("等待 Git 补丁失败：{error}"))?;
-        if !output.status.success() {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if message.is_empty() {
-                "同步项目未提交改动失败".into()
-            } else {
-                format!("同步项目未提交改动失败：{message}")
-            });
-        }
-    }
-
-    let untracked = git_output_bytes(
-        source,
-        &["ls-files", "--others", "--exclude-standard", "-z"],
-    )?;
-    for raw in untracked
-        .split(|byte| *byte == 0)
-        .filter(|path| !path.is_empty())
-    {
-        let relative = PathBuf::from(String::from_utf8_lossy(raw).into_owned());
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|component| component == Component::ParentDir)
-        {
-            continue;
-        }
-        let source_file = source.join(&relative);
-        if !source_file.is_file() || source_file.is_symlink() {
-            continue;
-        }
-        let destination = workspace.join(&relative);
-        if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("创建未跟踪文件目录失败：{error}"))?;
-        }
-        std::fs::copy(&source_file, &destination)
-            .map_err(|error| format!("复制未跟踪文件失败：{error}"))?;
-    }
-    Ok(())
-}
-
-fn create_directory_snapshot(source: &Path, destination: &Path) -> Result<PathBuf, String> {
-    if let Some(parent) = destination.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| format!("创建任务目录失败：{error}"))?;
-        if dunce::canonicalize(parent)
-            .ok()
-            .is_some_and(|canonical_parent| canonical_parent.starts_with(source))
-        {
-            return Err("任务工作区不能创建在项目目录内部".into());
-        }
-    }
-    std::fs::create_dir(destination).map_err(|error| format!("创建任务工作区失败：{error}"))?;
-
-    let copied = (|| {
-        let entries = WalkDir::new(source)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|entry| entry.file_name() != ".git");
-        for entry in entries {
-            let entry = entry.map_err(|error| format!("扫描项目目录失败：{error}"))?;
-            let relative = entry
-                .path()
-                .strip_prefix(source)
-                .map_err(|error| format!("解析项目文件失败：{error}"))?;
-            if relative.as_os_str().is_empty() || entry.file_type().is_symlink() {
-                continue;
-            }
-            let target = destination.join(relative);
-            if entry.file_type().is_dir() {
-                std::fs::create_dir_all(&target)
-                    .map_err(|error| format!("创建快照目录失败：{error}"))?;
-            } else if entry.file_type().is_file() {
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|error| format!("创建快照目录失败：{error}"))?;
-                }
-                std::fs::copy(entry.path(), &target)
-                    .map_err(|error| format!("复制项目文件失败：{error}"))?;
-            }
-        }
-        Ok::<(), String>(())
-    })();
-
-    if let Err(error) = copied {
-        let _ = std::fs::remove_dir_all(destination);
-        return Err(error);
-    }
-    canonical_or_original(destination.to_path_buf())
-}
-
 fn canonical_or_original(path: PathBuf) -> Result<PathBuf, String> {
     dunce::canonicalize(&path).map_err(|error| format!("无法解析任务工作区：{error}"))
 }
 
-/// Best-effort worktree unregistering. The task directory is removed by the
-/// caller after both mode-specific Git worktrees have been detached.
+fn workspace_error(error: impl std::fmt::Display) -> String {
+    format!("工作区操作失败：{error}")
+}
+
+/// Save a final snapshot through agent-git before task deletion. Legacy
+/// mode-specific worktrees are also unregistered during migration.
 pub(crate) fn cleanup_task_workspaces(app: &AppHandle, project_id: &str, task_root: &Path) {
+    if let Some(task_id) = task_root.file_name().and_then(|value| value.to_str()) {
+        if let Ok(runtime) = workspace_runtime(app) {
+            let _ = runtime.cleanup(task_id);
+        }
+    }
     if project_id.is_empty() {
         return;
     }
@@ -734,37 +665,12 @@ fn remove_git_worktree(git_root: &Path, workspace: &Path) {
     let _ = remove.status();
 }
 
-fn git_output(root: &Path, args: &[&str]) -> Result<String, String> {
-    git_output_bytes(root, args).map(|output| String::from_utf8_lossy(&output).into_owned())
-}
-
-fn git_output_bytes(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut command = crate::process::background_command("git");
-    let output = command
-        .args(["-C"])
-        .arg(root)
-        .args(args)
-        .output()
-        .map_err(|error| format!("无法执行 Git：{error}"))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if message.is_empty() {
-            "所选项目不是可用的 Git 仓库".into()
-        } else {
-            format!("Git 操作失败：{message}")
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
 
     #[test]
-    fn task_modes_have_stable_storage_names() {
+    fn task_modes_are_profiles_not_storage_roots() {
         assert_eq!(TaskMode::Work.as_str(), "work");
         assert_eq!(TaskMode::Code.as_str(), "code");
         assert_eq!(TaskMode::default(), TaskMode::Code);
@@ -779,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn handoff_paths_and_deliverables_are_strict() {
+    fn workspace_paths_and_deliverables_are_strict() {
         assert_eq!(
             checked_relative_path("reports/result.md").unwrap(),
             PathBuf::from("reports/result.md")
@@ -792,74 +698,8 @@ mod tests {
     }
 
     #[test]
-    fn directory_snapshots_are_independent_and_skip_git_metadata() {
-        let root = std::env::temp_dir().join(format!("tietiezhi-source-{}", Uuid::new_v4()));
-        let snapshot = std::env::temp_dir().join(format!("tietiezhi-snapshot-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(root.join(".git")).unwrap();
-        std::fs::create_dir_all(root.join("nested")).unwrap();
-        std::fs::write(root.join("nested/file.txt"), "source").unwrap();
-        std::fs::write(root.join(".git/config"), "secret").unwrap();
-
-        create_directory_snapshot(&root, &snapshot).unwrap();
-        std::fs::write(snapshot.join("nested/file.txt"), "changed").unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(root.join("nested/file.txt")).unwrap(),
-            "source"
-        );
-        assert!(!snapshot.join(".git").exists());
-        std::fs::remove_dir_all(root).unwrap();
-        std::fs::remove_dir_all(snapshot).unwrap();
-    }
-
-    #[test]
-    fn git_worktrees_start_with_current_tracked_and_untracked_content() {
-        let root = std::env::temp_dir().join(format!("tietiezhi-git-source-{}", Uuid::new_v4()));
-        let worktree =
-            std::env::temp_dir().join(format!("tietiezhi-git-worktree-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let run = |args: &[&str]| {
-            let status = std::process::Command::new("git")
-                .args(["-C"])
-                .arg(&root)
-                .args(args)
-                .status()
-                .unwrap();
-            assert!(status.success(), "git command failed: {args:?}");
-        };
-        run(&["init", "-q"]);
-        std::fs::write(root.join("tracked.txt"), "base").unwrap();
-        run(&["add", "tracked.txt"]);
-        run(&[
-            "-c",
-            "user.name=Tietiezhi Test",
-            "-c",
-            "user.email=test@tietiezhi.invalid",
-            "commit",
-            "-qm",
-            "base",
-        ]);
-        std::fs::write(root.join("tracked.txt"), "changed").unwrap();
-        std::fs::write(root.join("untracked.txt"), "new").unwrap();
-
-        create_git_worktree(&root, Path::new(""), &worktree).unwrap();
-
-        assert_eq!(
-            std::fs::read_to_string(worktree.join("tracked.txt")).unwrap(),
-            "changed"
-        );
-        assert_eq!(
-            std::fs::read_to_string(worktree.join("untracked.txt")).unwrap(),
-            "new"
-        );
-        remove_git_worktree(&root, &worktree);
-        let _ = std::fs::remove_dir_all(&worktree);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
     fn missing_project_directory_is_rejected() {
-        let root = std::env::temp_dir().join(format!("tietiezhi-missing-{}", Uuid::new_v4()));
+        let root = std::env::temp_dir().join(format!("tietiezhi-missing-{}", uuid::Uuid::new_v4()));
         assert_eq!(
             resolve_project_directory(&root).unwrap_err(),
             "项目文件夹不存在"

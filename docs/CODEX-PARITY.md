@@ -67,7 +67,7 @@
 | R26 | Collaboration | 已完成 | crates/agent-collab; crates/agent-core/src/lib.rs CollaborationIdentity and response_history_tail; desktop/src-tauri/src/commands/codex.rs DesktopCollaborationHost and protocol-exact Item projection; docs/CODEX-COLLABORATION.md | Subagents inherit the selected execution environment; Git Worktree isolation is applied by R29 rather than duplicating directories in the collaboration control plane. |
 | R27 | Guardian 与 Review | 已完成 | crates/agent-review; crates/agent-core review lifecycle and guardian audit rollout; desktop Responses executor and approval integration; docs/CODEX-REVIEW-GUARDIAN.md | Guardian is an untrusted model reviewer and never expands Sandbox or durable approval scope; failures and timeouts fail closed. Review shares the selected environment but disables Web, image, Goal/Plan and collaboration tools. |
 | R28 | Memory | 已完成 | crates/agent-memory Chronicle 作业/文件/引用/工具/迁移测试；crates/agent-core Thread memory mode、污染恢复与 memoryCitation；desktop Responses、额度阈值和实验请求接线；docs/CODEX-MEMORY.md | Chronicle 仅使用当前 Responses Provider；实验 Memory 方法未写入固定 stable Schema，R38 前继续保留协议兼容测试。 |
-| R29 | Git 与 Worktree | 待开始 |  |  |
+| R29 | Git 与 Worktree | 已完成 | crates/agent-git detached Worktree、.worktreeinclude、Snapshot/Restore/Handoff、清理与旧工作区接管测试；desktop 共享环境命令、提示词和 SSR/migration UI 门禁；docs/CODEX-GIT-WORKTREES.md | Local 环境会直接修改用户项目，UI 与审批必须持续明确展示；Windows worktree 与长路径仍由跨平台 CI 和 R37 soak 覆盖。 |
 | R30 | 集成终端 | 待开始 |  |  |
 | R31 | Desktop 时间线 | 待开始 |  |  |
 | R32 | Diff 与 Git UI | 待开始 |  |  |
