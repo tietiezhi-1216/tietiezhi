@@ -13,12 +13,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tietiezhi_agent_context::{
+    CompactWindow, ContextRecord, complete_compaction, context_window_status,
+    estimate_history_tokens, model_context_window, reconstruct, world_state_rollout,
+};
 use tietiezhi_agent_model::{ModelError, TokenUsage, list_models};
 use tietiezhi_agent_protocol::{
     ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse, ServerNotification,
-    ThreadApproveGuardianDeniedActionResponse, ThreadArchiveResponse, ThreadDeleteResponse,
-    ThreadForkResponse, ThreadInjectItemsResponse, ThreadItem, ThreadListResponse,
-    ThreadLoadedListResponse, ThreadMetadataUpdateResponse, ThreadReadResponse,
+    ThreadApproveGuardianDeniedActionResponse, ThreadArchiveResponse, ThreadCompactStartResponse,
+    ThreadDeleteResponse, ThreadForkResponse, ThreadInjectItemsResponse, ThreadItem,
+    ThreadListResponse, ThreadLoadedListResponse, ThreadMetadataUpdateResponse, ThreadReadResponse,
     ThreadResumeResponse, ThreadRollbackResponse, ThreadSetNameResponse, ThreadStartResponse,
     ThreadUnarchiveResponse, ThreadUnsubscribeResponse, TurnInterruptResponse, TurnStartResponse,
     TurnSteerResponse,
@@ -46,6 +50,7 @@ pub struct RuntimeDefaults {
     pub sandbox: Value,
     pub reasoning_effort: Option<String>,
     pub service_tier: Option<String>,
+    pub model_context_windows: HashMap<String, i64>,
     pub cli_version: String,
 }
 
@@ -66,6 +71,7 @@ impl Default for RuntimeDefaults {
             }),
             reasoning_effort: None,
             service_tier: None,
+            model_context_windows: HashMap::new(),
             cli_version: env!("CARGO_PKG_VERSION").into(),
         }
     }
@@ -91,6 +97,8 @@ struct ThreadRecord {
     history_mode: String,
     model_provider: String,
     model: String,
+    #[serde(default)]
+    model_context_window: Option<i64>,
     cwd: PathBuf,
     cli_version: String,
     source: Value,
@@ -144,6 +152,25 @@ pub struct TurnExecutionSnapshot {
     pub reasoning_summary: Option<Value>,
     pub service_tier: Option<String>,
     pub history: Vec<Value>,
+    pub model_context_window: Option<i64>,
+    pub active_context_tokens: i64,
+    pub auto_compact_token_limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactionExecutionSnapshot {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub model: String,
+    pub model_provider: String,
+    pub reasoning_effort: Option<String>,
+    pub reasoning_summary: Option<Value>,
+    pub service_tier: Option<String>,
+    pub history: Vec<Value>,
+    pub automatic: bool,
+    pub model_context_window: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +185,8 @@ struct TurnProjection {
     active_turn_id: Option<String>,
     accepted_client_messages: HashMap<String, AcceptedClientMessage>,
     token_usage: TokenUsage,
+    last_token_usage: TokenUsage,
+    active_context_tokens: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -173,6 +202,12 @@ struct LoadedThread {
     guardian_approvals: Vec<Value>,
     injected_items: Vec<Value>,
     token_usage: TokenUsage,
+    last_token_usage: TokenUsage,
+    active_context_tokens: i64,
+    compact_window: CompactWindow,
+    world_state_baseline: Option<Value>,
+    active_compaction_item_id: Option<String>,
+    active_compaction_automatic: bool,
 }
 
 #[derive(Debug, Default)]
@@ -360,6 +395,7 @@ impl ThreadManager {
             "thread/metadata/update" => (self.thread_metadata_update(&params)?, Vec::new()),
             "thread/inject_items" => (self.thread_inject_items(&params)?, Vec::new()),
             "thread/rollback" => (self.thread_rollback(&params)?, Vec::new()),
+            "thread/compact/start" => self.thread_compact_start(&params)?,
             "thread/unsubscribe" => self.thread_unsubscribe(connection_id, &params)?,
             "thread/approveGuardianDeniedAction" => (
                 self.thread_approve_guardian_denied_action(&params)?,
@@ -409,6 +445,7 @@ impl ThreadManager {
             "thread/metadata/update" => validate!(ThreadMetadataUpdateResponse),
             "thread/inject_items" => validate!(ThreadInjectItemsResponse),
             "thread/rollback" => validate!(ThreadRollbackResponse),
+            "thread/compact/start" => validate!(ThreadCompactStartResponse),
             "thread/unsubscribe" => validate!(ThreadUnsubscribeResponse),
             "thread/approveGuardianDeniedAction" => {
                 validate!(ThreadApproveGuardianDeniedActionResponse)
@@ -490,6 +527,10 @@ impl ThreadManager {
                 .unwrap_or(false),
             history_mode: "legacy".into(),
             model_provider,
+            model_context_window: resolve_model_context_window(
+                &self.inner.defaults.model_context_windows,
+                &model,
+            ),
             model,
             cwd,
             cli_version: self.inner.defaults.cli_version.clone(),
@@ -605,12 +646,19 @@ impl ThreadManager {
             .as_deref()
             .map(response_items_from_rollout)
             .unwrap_or_else(|| source.injected_items.clone());
-        let inherited_token_usage = copied_rollout_items
+        let inherited_projection = copied_rollout_items
             .as_deref()
             .map(project_turns)
-            .transpose()?
-            .map(|projection| projection.token_usage)
+            .transpose()?;
+        let inherited_token_usage = inherited_projection
+            .as_ref()
+            .map(|projection| projection.token_usage.clone())
             .unwrap_or_else(|| source.token_usage.clone());
+        let inherited_last_token_usage = inherited_projection
+            .as_ref()
+            .map(|projection| projection.last_token_usage.clone())
+            .unwrap_or_else(|| source.last_token_usage.clone());
+        let inherited_context = copied_rollout_items.as_deref().map(reconstruct_context);
         let mut record = source.record;
         record.id = id.clone();
         record.forked_from_id = Some(source_id);
@@ -650,6 +698,15 @@ impl ThreadManager {
         }
         loaded.injected_items = inherited_items;
         loaded.token_usage = inherited_token_usage;
+        loaded.last_token_usage = inherited_last_token_usage;
+        loaded.active_context_tokens = inherited_projection
+            .as_ref()
+            .map(|projection| projection.active_context_tokens)
+            .unwrap_or_else(|| estimate_history_tokens(&loaded.injected_items));
+        if let Some(context) = inherited_context {
+            loaded.compact_window = context.window;
+            loaded.world_state_baseline = context.world_state_baseline;
+        }
         loaded.turns = turns;
         self.persist_loaded(&mut loaded)?;
         state.loaded.insert(id.clone(), loaded.clone());
@@ -1060,7 +1117,7 @@ impl ThreadManager {
             }
             appender.sync_data().map_err(state_error)?;
         }
-        loaded.injected_items.extend(items.iter().cloned());
+        extend_model_history(&mut loaded, items.iter().cloned());
         loaded.record.updated_at_ms = now_ms();
         loaded.record.recency_at_ms = Some(loaded.record.updated_at_ms);
         self.persist_loaded(&mut loaded)?;
@@ -1168,6 +1225,80 @@ impl ThreadManager {
         Ok(json!({}))
     }
 
+    fn thread_compact_start(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
+        let thread_id = required_string(params, "threadId")?;
+        validate_thread_id(&thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(&thread_id, &state)?;
+        if let Some(active_turn_id) = &loaded.active_turn_id {
+            return Err(RpcError::invalid_request(format!(
+                "thread already has an active turn: {active_turn_id}"
+            )));
+        }
+
+        let turn_id = Uuid::now_v7().to_string();
+        let item_id = Uuid::now_v7().to_string();
+        let now = now_ms();
+        let started_at = milliseconds_to_seconds(now);
+        let item = json!({"type": "contextCompaction", "id": item_id});
+        let turn = turn_value(
+            &turn_id,
+            vec![item.clone()],
+            "inProgress",
+            None,
+            Some(started_at),
+            None,
+            None,
+            "full",
+        );
+        self.append_compaction_start_records(&loaded, &turn_id, &item, now)?;
+        loaded.turns.push(turn.clone());
+        loaded.active_turn_id = Some(turn_id.clone());
+        loaded.active_compaction_item_id = Some(item_id);
+        loaded.active_compaction_automatic = false;
+        loaded.status = active_thread_status();
+        loaded.record.updated_at_ms = now;
+        loaded.record.recency_at_ms = Some(now);
+        self.persist_loaded(&mut loaded)?;
+        state.loaded.insert(thread_id.clone(), loaded);
+
+        let notification_turn = turn_value(
+            &turn_id,
+            Vec::new(),
+            "inProgress",
+            None,
+            Some(started_at),
+            None,
+            None,
+            "notLoaded",
+        );
+        let notifications = vec![
+            self.checked_notification_for(
+                &state,
+                &thread_id,
+                "turn/started",
+                json!({"threadId": thread_id, "turn": notification_turn}),
+            )?,
+            self.checked_notification_for(
+                &state,
+                &thread_id,
+                "item/started",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": item,
+                    "startedAtMs": now
+                }),
+            )?,
+            self.checked_global_notification(
+                &state,
+                "thread/status/changed",
+                json!({"threadId": thread_id, "status": active_thread_status()}),
+            )?,
+        ];
+        Ok((json!({}), notifications))
+    }
+
     fn turn_start(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
         let thread_id = required_string(params, "threadId")?;
         validate_thread_id(&thread_id)?;
@@ -1231,9 +1362,7 @@ impl ThreadManager {
                 .cloned(),
         });
         if !input.is_empty() {
-            loaded
-                .injected_items
-                .push(response_item_from_user_input(&input));
+            append_model_history(&mut loaded, response_item_from_user_input(&input));
         }
         if let Some(client_id) = client_id {
             loaded.accepted_client_messages.insert(
@@ -1471,9 +1600,7 @@ impl ThreadManager {
             });
             self.append_user_input_records(&loaded, turn_id, &item, &batch.input, now)?;
             upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
-            loaded
-                .injected_items
-                .push(response_item_from_user_input(&batch.input));
+            append_model_history(&mut loaded, response_item_from_user_input(&batch.input));
             notification_items.push((item, now));
         }
         if !notification_items.is_empty() {
@@ -1526,6 +1653,7 @@ impl ThreadManager {
                 "turn is not active: {turn_id}"
             )));
         }
+        let model_context_window = loaded.record.model_context_window;
         Ok(TurnExecutionSnapshot {
             thread_id: thread_id.into(),
             turn_id: turn_id.into(),
@@ -1535,7 +1663,201 @@ impl ThreadManager {
             reasoning_summary: loaded.record.reasoning_summary,
             service_tier: loaded.record.service_tier,
             history: loaded.injected_items,
+            model_context_window,
+            active_context_tokens: loaded.active_context_tokens,
+            auto_compact_token_limit: None,
         })
+    }
+
+    pub fn should_auto_compact(&self, thread_id: &str, turn_id: &str) -> RpcResult<bool> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        if loaded.active_compaction_item_id.is_some() {
+            return Ok(false);
+        }
+        Ok(context_window_status(
+            loaded.active_context_tokens,
+            loaded.record.model_context_window,
+            None,
+        )
+        .token_limit_reached)
+    }
+
+    pub fn begin_auto_compaction(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> RpcResult<(CompactionExecutionSnapshot, Vec<RoutedNotification>)> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        if loaded.active_compaction_item_id.is_some() {
+            return Err(RpcError::invalid_request("compaction is already active"));
+        }
+        let item_id = Uuid::now_v7().to_string();
+        let item = json!({"type": "contextCompaction", "id": item_id});
+        let now = now_ms();
+        upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(item_lifecycle_event(
+                    "item_started",
+                    thread_id,
+                    turn_id,
+                    &item,
+                    "started_at_ms",
+                    now,
+                )?)
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        loaded.active_compaction_item_id = Some(item_id);
+        loaded.active_compaction_automatic = true;
+        let snapshot = compaction_snapshot(&loaded, turn_id)?;
+        state.loaded.insert(thread_id.into(), loaded);
+        let notification = self.checked_notification_for(
+            &state,
+            thread_id,
+            "item/started",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "item": item,
+                "startedAtMs": now
+            }),
+        )?;
+        Ok((snapshot, vec![notification]))
+    }
+
+    pub fn compaction_execution_snapshot(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> RpcResult<CompactionExecutionSnapshot> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        compaction_snapshot(&loaded, turn_id)
+    }
+
+    pub fn record_compaction_response_item(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        response_item: Value,
+    ) -> RpcResult<()> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        if loaded.active_compaction_item_id.is_none() {
+            return Err(RpcError::invalid_request("compaction is not active"));
+        }
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_response_item(response_item)
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        Ok(())
+    }
+
+    pub fn complete_compaction(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        summary_suffix: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        let item_id = loaded
+            .active_compaction_item_id
+            .clone()
+            .ok_or_else(|| RpcError::invalid_request("compaction is not active"))?;
+        let automatic = loaded.active_compaction_automatic;
+        let result = complete_compaction(
+            &loaded.injected_items,
+            summary_suffix,
+            &mut loaded.compact_window,
+        );
+        let item = json!({"type": "contextCompaction", "id": item_id});
+        let now = now_ms();
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_compacted(result.compacted_item)
+                .map_err(state_error)?;
+            appender
+                .append_event(item_lifecycle_event(
+                    "item_completed",
+                    thread_id,
+                    turn_id,
+                    &item,
+                    "completed_at_ms",
+                    now,
+                )?)
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        loaded.injected_items = result.replacement_history;
+        loaded.active_context_tokens = estimate_history_tokens(&loaded.injected_items);
+        loaded.world_state_baseline = None;
+        loaded.active_compaction_item_id = None;
+        loaded.active_compaction_automatic = false;
+        upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
+
+        let mut notifications = vec![
+            self.checked_notification_for(
+                &state,
+                thread_id,
+                "item/completed",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": item,
+                    "completedAtMs": now
+                }),
+            )?,
+            self.checked_notification_for(
+                &state,
+                thread_id,
+                "warning",
+                json!({
+                    "threadId": thread_id,
+                    "message": "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted."
+                }),
+            )?,
+        ];
+        if automatic {
+            state.loaded.insert(thread_id.into(), loaded);
+        } else {
+            self.finish_turn_locked(&mut loaded, turn_id, "completed", None, "completed")?;
+            notifications
+                .extend(self.terminal_turn_notifications(&state, thread_id, &loaded, turn_id)?);
+            self.store_or_unload_completed(&mut state, thread_id, loaded);
+        }
+        Ok(notifications)
+    }
+
+    pub fn record_world_state(&self, thread_id: &str, current: Value) -> RpcResult<bool> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        let Some(item) = world_state_rollout(loaded.world_state_baseline.as_ref(), &current) else {
+            return Ok(false);
+        };
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender.append_world_state(item).map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        loaded.world_state_baseline = Some(current);
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(true)
     }
 
     /// Project an added Responses item into the V2 timeline. Tool items that
@@ -1666,7 +1988,7 @@ impl ThreadManager {
                 .map_err(state_error)?;
             appender.sync_data().map_err(state_error)?;
         }
-        loaded.injected_items.push(response_item);
+        append_model_history(&mut loaded, response_item);
         state.loaded.insert(thread_id.into(), loaded);
         Ok(notifications)
     }
@@ -2099,6 +2421,11 @@ impl ThreadManager {
         let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
         require_active_turn(&loaded, turn_id)?;
         add_token_usage(&mut loaded.token_usage, &last);
+        loaded.last_token_usage = last.clone();
+        loaded.active_context_tokens = last.total_tokens.max(0);
+        loaded
+            .compact_window
+            .ensure_server_prefill(last.input_tokens);
         let token_usage = json!({
             "total": loaded.token_usage.as_v2_breakdown(),
             "last": last.as_v2_breakdown(),
@@ -2178,6 +2505,8 @@ impl ThreadManager {
             record.sandbox = sandbox.clone();
         }
         if let Some(model) = optional_string(params, "model") {
+            record.model_context_window =
+                resolve_model_context_window(&self.inner.defaults.model_context_windows, &model);
             record.model = model;
         }
         if params.get("serviceTier").is_some() {
@@ -2222,6 +2551,41 @@ impl ThreadManager {
         if let Some(item) = item {
             append_user_input_to_rollout(&appender, &loaded.record.id, turn_id, item, input, now)?;
         }
+        appender.sync_data().map_err(state_error)
+    }
+
+    fn append_compaction_start_records(
+        &self,
+        loaded: &LoadedThread,
+        turn_id: &str,
+        item: &Value,
+        now: u64,
+    ) -> RpcResult<()> {
+        let Some(appender) = rollout_appender(loaded)? else {
+            return Ok(());
+        };
+        appender
+            .append_event(json!({
+                "type": "task_started",
+                "turn_id": turn_id,
+                "started_at": milliseconds_to_seconds(now),
+                "model_context_window": loaded.record.model_context_window,
+                "collaboration_mode_kind": "default"
+            }))
+            .map_err(state_error)?;
+        appender
+            .append_turn_context(turn_context_value(&loaded.record, turn_id))
+            .map_err(state_error)?;
+        appender
+            .append_event(item_lifecycle_event(
+                "item_started",
+                &loaded.record.id,
+                turn_id,
+                item,
+                "started_at_ms",
+                now,
+            )?)
+            .map_err(state_error)?;
         appender.sync_data().map_err(state_error)
     }
 
@@ -2274,6 +2638,8 @@ impl ThreadManager {
         loaded.turns[index]["completedAt"] = json!(completed_at);
         loaded.turns[index]["durationMs"] = json!(duration_ms);
         loaded.active_turn_id = None;
+        loaded.active_compaction_item_id = None;
+        loaded.active_compaction_automatic = false;
         loaded
             .pending_inputs
             .retain(|input| input.turn_id != turn_id);
@@ -2484,6 +2850,16 @@ impl ThreadManager {
                         .append_response_item(item.clone())
                         .map_err(state_error)?;
                 }
+                RecoveredRolloutItemKind::Compacted(item) => {
+                    appender
+                        .append_compacted(item.clone())
+                        .map_err(state_error)?;
+                }
+                RecoveredRolloutItemKind::WorldState(item) => {
+                    appender
+                        .append_world_state(item.clone())
+                        .map_err(state_error)?;
+                }
                 RecoveredRolloutItemKind::EventMsg(event) => {
                     appender.append_event(event.clone()).map_err(state_error)?;
                 }
@@ -2499,6 +2875,7 @@ impl ThreadManager {
         state: &mut ManagerState,
     ) -> RpcResult<LoadedThread> {
         let legacy_turns = std::mem::take(&mut record.turns);
+        let compact_window = CompactWindow::new();
         let metadata = if record.ephemeral {
             None
         } else {
@@ -2513,7 +2890,10 @@ impl ThreadManager {
                 .rollout_appender(&rollout_path)
                 .map_err(state_error)?;
             appender
-                .ensure_canonical_session_meta(&record.id, canonical_session_meta(&record))
+                .ensure_canonical_session_meta(
+                    &record.id,
+                    canonical_session_meta(&record, &compact_window),
+                )
                 .map_err(state_error)?;
             for item in &injected_items {
                 appender
@@ -2528,6 +2908,7 @@ impl ThreadManager {
                 .map_err(state_error)?;
             Some(metadata)
         };
+        let active_context_tokens = estimate_history_tokens(&injected_items);
         let loaded = LoadedThread {
             record: record.clone(),
             metadata,
@@ -2540,6 +2921,12 @@ impl ThreadManager {
             guardian_approvals: Vec::new(),
             injected_items,
             token_usage: TokenUsage::default(),
+            last_token_usage: TokenUsage::default(),
+            active_context_tokens,
+            compact_window,
+            world_state_baseline: None,
+            active_compaction_item_id: None,
+            active_compaction_automatic: false,
         };
         state.loaded.insert(record.id.clone(), loaded.clone());
         Ok(loaded)
@@ -2563,7 +2950,8 @@ impl ThreadManager {
         if projection.turns.is_empty() && !record.turns.is_empty() {
             projection.turns = std::mem::take(&mut record.turns);
         }
-        let injected_items = recovery.response_items;
+        let context = reconstruct_context(&recovery.rollout_items);
+        let injected_items = context.history;
         let mut loaded = LoadedThread {
             record,
             metadata: Some(metadata),
@@ -2576,6 +2964,12 @@ impl ThreadManager {
             guardian_approvals: Vec::new(),
             injected_items,
             token_usage: projection.token_usage,
+            last_token_usage: projection.last_token_usage,
+            active_context_tokens: projection.active_context_tokens,
+            compact_window: context.window,
+            world_state_baseline: context.world_state_baseline,
+            active_compaction_item_id: None,
+            active_compaction_automatic: false,
         };
         // A process restart cannot safely resume an in-flight model/tool
         // operation. Codex exposes such persisted turns as interrupted instead
@@ -2618,6 +3012,12 @@ impl ThreadManager {
                 guardian_approvals: Vec::new(),
                 injected_items: Vec::new(),
                 token_usage: TokenUsage::default(),
+                last_token_usage: TokenUsage::default(),
+                active_context_tokens: 0,
+                compact_window: CompactWindow::new(),
+                world_state_baseline: None,
+                active_compaction_item_id: None,
+                active_compaction_automatic: false,
             },
             false,
         ))
@@ -2729,6 +3129,10 @@ impl ThreadManager {
                 .unwrap_or(&self.inner.defaults.model_provider)
                 .into(),
             model: self.inner.defaults.model.clone(),
+            model_context_window: resolve_model_context_window(
+                &self.inner.defaults.model_context_windows,
+                &self.inner.defaults.model,
+            ),
             cwd,
             cli_version: meta
                 .get("cli_version")
@@ -2791,6 +3195,10 @@ impl ThreadManager {
             history_mode: "legacy".into(),
             model_provider: self.inner.defaults.model_provider.clone(),
             model: self.inner.defaults.model.clone(),
+            model_context_window: resolve_model_context_window(
+                &self.inner.defaults.model_context_windows,
+                &self.inner.defaults.model,
+            ),
             cwd,
             cli_version: self.inner.defaults.cli_version.clone(),
             source: json!("appServer"),
@@ -3092,6 +3500,56 @@ fn active_thread_status() -> Value {
     json!({"type": "active", "activeFlags": []})
 }
 
+fn resolve_model_context_window(configured: &HashMap<String, i64>, model: &str) -> Option<i64> {
+    model_context_window(model).or_else(|| {
+        configured
+            .get(&model.to_ascii_lowercase())
+            .copied()
+            .filter(|value| *value > 0)
+    })
+}
+
+fn append_model_history(loaded: &mut LoadedThread, item: Value) {
+    let added_tokens = estimate_history_tokens(std::slice::from_ref(&item));
+    loaded.injected_items.push(item);
+    if loaded.last_token_usage.total_tokens > 0
+        && loaded.active_context_tokens >= loaded.last_token_usage.total_tokens
+    {
+        loaded.active_context_tokens = loaded.active_context_tokens.saturating_add(added_tokens);
+    } else {
+        loaded.active_context_tokens = estimate_history_tokens(&loaded.injected_items);
+    }
+}
+
+fn extend_model_history(loaded: &mut LoadedThread, items: impl IntoIterator<Item = Value>) {
+    for item in items {
+        append_model_history(loaded, item);
+    }
+}
+
+fn compaction_snapshot(
+    loaded: &LoadedThread,
+    turn_id: &str,
+) -> RpcResult<CompactionExecutionSnapshot> {
+    let item_id = loaded
+        .active_compaction_item_id
+        .clone()
+        .ok_or_else(|| RpcError::invalid_request("compaction is not active"))?;
+    Ok(CompactionExecutionSnapshot {
+        thread_id: loaded.record.id.clone(),
+        turn_id: turn_id.into(),
+        item_id,
+        model: loaded.record.model.clone(),
+        model_provider: loaded.record.model_provider.clone(),
+        reasoning_effort: loaded.record.reasoning_effort.clone(),
+        reasoning_summary: loaded.record.reasoning_summary.clone(),
+        service_tier: loaded.record.service_tier.clone(),
+        history: loaded.injected_items.clone(),
+        automatic: loaded.active_compaction_automatic,
+        model_context_window: loaded.record.model_context_window,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn turn_value(
     id: &str,
@@ -3240,6 +3698,10 @@ fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
             "summary": item.get("summary").cloned().unwrap_or_else(|| json!([])),
             "content": item.get("content").cloned().unwrap_or_else(|| json!([]))
         })),
+        Some("contextCompaction") => Ok(json!({
+            "type": "ContextCompaction",
+            "id": required_item_string(item, "id", "contextCompaction item")?
+        })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported ThreadItem conversion to core: {other}"
         ))),
@@ -3273,6 +3735,10 @@ fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
             "id": required_item_string(item, "id", "Reasoning item")?,
             "summary": item.get("summary").cloned().unwrap_or_else(|| json!([])),
             "content": item.get("content").cloned().unwrap_or_else(|| json!([]))
+        })),
+        Some("ContextCompaction") => Ok(json!({
+            "type": "contextCompaction",
+            "id": required_item_string(item, "id", "ContextCompaction item")?
         })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported core TurnItem conversion: {other}"
@@ -3541,6 +4007,22 @@ fn turn_error_to_core(error: &Value) -> Value {
 fn project_turns(items: &[RecoveredRolloutItem]) -> RpcResult<TurnProjection> {
     let mut projection = TurnProjection::default();
     for recovered in items {
+        if let RecoveredRolloutItemKind::ResponseItem(item) = &recovered.item {
+            projection.active_context_tokens = projection
+                .active_context_tokens
+                .saturating_add(estimate_history_tokens(std::slice::from_ref(item)));
+            continue;
+        }
+        if let RecoveredRolloutItemKind::Compacted(item) = &recovered.item {
+            let history = item
+                .get("replacement_history")
+                .or_else(|| item.get("replacementHistory"))
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            projection.active_context_tokens = estimate_history_tokens(&history);
+            continue;
+        }
         let RecoveredRolloutItemKind::EventMsg(event) = &recovered.item else {
             continue;
         };
@@ -3620,6 +4102,12 @@ fn project_turns(items: &[RecoveredRolloutItem]) -> RpcResult<TurnProjection> {
                     && let Ok(total) = serde_json::from_value::<TokenUsage>(total.clone())
                 {
                     projection.token_usage = total;
+                }
+                if let Some(last) = event.pointer("/info/last_token_usage")
+                    && let Ok(last) = serde_json::from_value::<TokenUsage>(last.clone())
+                {
+                    projection.active_context_tokens = last.total_tokens.max(0);
+                    projection.last_token_usage = last;
                 }
             }
             Some("turn_complete") => {
@@ -3726,13 +4214,23 @@ fn rollout_items_through_turn(
 }
 
 fn response_items_from_rollout(items: &[RecoveredRolloutItem]) -> Vec<Value> {
-    items
-        .iter()
-        .filter_map(|recovered| match &recovered.item {
-            RecoveredRolloutItemKind::ResponseItem(item) => Some(item.clone()),
-            _ => None,
-        })
-        .collect()
+    reconstruct_context(items).history
+}
+
+fn reconstruct_context(
+    items: &[RecoveredRolloutItem],
+) -> tietiezhi_agent_context::ContextReconstruction {
+    reconstruct(items.iter().filter_map(|recovered| match &recovered.item {
+        RecoveredRolloutItemKind::SessionMeta(item) => {
+            Some(ContextRecord::SessionMeta(item.clone()))
+        }
+        RecoveredRolloutItemKind::ResponseItem(item) => {
+            Some(ContextRecord::ResponseItem(item.clone()))
+        }
+        RecoveredRolloutItemKind::Compacted(item) => Some(ContextRecord::Compacted(item.clone())),
+        RecoveredRolloutItemKind::WorldState(item) => Some(ContextRecord::WorldState(item.clone())),
+        RecoveredRolloutItemKind::TurnContext(_) | RecoveredRolloutItemKind::EventMsg(_) => None,
+    }))
 }
 
 fn response_item_to_v2(item: &Value) -> RpcResult<Option<Value>> {
@@ -3914,7 +4412,7 @@ fn metadata_from_record(record: &ThreadRecord, rollout_path: PathBuf) -> RpcResu
     })
 }
 
-fn canonical_session_meta(record: &ThreadRecord) -> Value {
+fn canonical_session_meta(record: &ThreadRecord, compact_window: &CompactWindow) -> Value {
     let timestamp = i64::try_from(record.created_at_ms / 1_000)
         .ok()
         .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
@@ -3930,6 +4428,10 @@ fn canonical_session_meta(record: &ThreadRecord) -> Value {
         ("source".into(), record.source.clone()),
         ("model_provider".into(), json!(record.model_provider)),
         ("history_mode".into(), json!(record.history_mode)),
+        (
+            "context_window".into(),
+            json!({"window_id": compact_window.window_id.to_string()}),
+        ),
     ]);
     if let Some(value) = &record.forked_from_id {
         meta.insert("forked_from_id".into(), json!(value));
@@ -4303,6 +4805,8 @@ mod tests {
                     RecoveredRolloutItemKind::SessionMeta(_) => "session_meta",
                     RecoveredRolloutItemKind::TurnContext(_) => "turn_context",
                     RecoveredRolloutItemKind::ResponseItem(_) => "response_item",
+                    RecoveredRolloutItemKind::Compacted(_) => "compacted",
+                    RecoveredRolloutItemKind::WorldState(_) => "world_state",
                     RecoveredRolloutItemKind::EventMsg(event) => event["type"].as_str().unwrap(),
                 })
                 .collect::<Vec<_>>(),
@@ -5311,6 +5815,262 @@ mod tests {
                 .total_tokens,
             26
         );
+    }
+
+    #[test]
+    fn recovered_context_combines_server_usage_with_later_local_items() {
+        let local = json!({
+            "type":"message",
+            "role":"user",
+            "content":[{"type":"input_text","text":"later local input"}]
+        });
+        let local_tokens = estimate_history_tokens(std::slice::from_ref(&local));
+        let projection = project_turns(&[
+            RecoveredRolloutItem {
+                timestamp_ms: 1,
+                ordinal: 1,
+                item: RecoveredRolloutItemKind::ResponseItem(json!({
+                    "type":"message",
+                    "role":"assistant",
+                    "content":[{"type":"output_text","text":"sampled"}]
+                })),
+            },
+            RecoveredRolloutItem {
+                timestamp_ms: 2,
+                ordinal: 2,
+                item: RecoveredRolloutItemKind::EventMsg(json!({
+                    "type":"token_count",
+                    "info":{
+                        "total_token_usage":{
+                            "input_tokens":80,
+                            "cached_input_tokens":0,
+                            "cache_write_input_tokens":0,
+                            "output_tokens":20,
+                            "reasoning_output_tokens":0,
+                            "total_tokens":100
+                        },
+                        "last_token_usage":{
+                            "input_tokens":80,
+                            "cached_input_tokens":0,
+                            "cache_write_input_tokens":0,
+                            "output_tokens":20,
+                            "reasoning_output_tokens":0,
+                            "total_tokens":100
+                        }
+                    }
+                })),
+            },
+            RecoveredRolloutItem {
+                timestamp_ms: 3,
+                ordinal: 3,
+                item: RecoveredRolloutItemKind::ResponseItem(local),
+            },
+        ])
+        .unwrap();
+        assert_eq!(projection.active_context_tokens, 100 + local_tokens);
+        assert_eq!(projection.last_token_usage.total_tokens, 100);
+    }
+
+    #[test]
+    fn manual_compaction_uses_canonical_item_and_replacement_history() {
+        let (temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        manager
+            .dispatch(
+                "desktop",
+                request(
+                    2,
+                    "thread/inject_items",
+                    json!({
+                        "threadId": thread_id,
+                        "items": [{
+                            "type":"message",
+                            "role":"user",
+                            "content":[{"type":"input_text","text":"keep this requirement"}]
+                        }]
+                    }),
+                ),
+            )
+            .response
+            .get("result")
+            .unwrap();
+        let compact = manager.dispatch(
+            "desktop",
+            request(3, "thread/compact/start", json!({"threadId": thread_id})),
+        );
+        assert_eq!(result(&compact), &json!({}));
+        assert_eq!(
+            compact
+                .notifications
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            ["turn/started", "item/started", "thread/status/changed"]
+        );
+        assert_eq!(
+            compact.notifications[1].params["item"]["type"],
+            "contextCompaction"
+        );
+        let turn_id = compact.notifications[0].params["turn"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let snapshot = manager
+            .compaction_execution_snapshot(&thread_id, &turn_id)
+            .unwrap();
+        assert!(!snapshot.automatic);
+        assert_eq!(snapshot.history.len(), 1);
+        manager
+            .record_compaction_response_item(
+                &thread_id,
+                &turn_id,
+                json!({
+                    "type":"message",
+                    "id":"compact_response",
+                    "role":"assistant",
+                    "content":[{"type":"output_text","text":"handoff"}]
+                }),
+            )
+            .unwrap();
+        let completed = manager
+            .complete_compaction(&thread_id, &turn_id, "handoff")
+            .unwrap();
+        assert_eq!(
+            completed
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "item/completed",
+                "warning",
+                "turn/completed",
+                "thread/status/changed"
+            ]
+        );
+        let history = manager.injected_items(&thread_id).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0]["content"][0]["text"], "keep this requirement");
+        assert!(
+            history[1]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .ends_with("\nhandoff")
+        );
+        let metadata = manager.inner.store.thread(&thread_id).unwrap().unwrap();
+        let recovery = manager
+            .inner
+            .store
+            .recover_rollout(metadata.rollout_path)
+            .unwrap();
+        assert!(
+            recovery
+                .rollout_items
+                .iter()
+                .any(|item| matches!(item.item, RecoveredRolloutItemKind::Compacted(_)))
+        );
+        drop(manager);
+        let reopened = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "gpt-test".into(),
+                model_provider: "test-provider".into(),
+                cwd: temp.path().join("workspace"),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        reopened.dispatch(
+            "desktop",
+            request(4, "thread/resume", json!({"threadId":thread_id})),
+        );
+        assert_eq!(reopened.injected_items(&thread_id).unwrap(), history);
+    }
+
+    #[test]
+    fn auto_compaction_stays_inside_the_active_turn() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"continue","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_owned();
+        let (snapshot, started_notifications) =
+            manager.begin_auto_compaction(&thread_id, &turn_id).unwrap();
+        assert!(snapshot.automatic);
+        assert_eq!(started_notifications[0].method, "item/started");
+        let completed = manager
+            .complete_compaction(&thread_id, &turn_id, "auto summary")
+            .unwrap();
+        assert_eq!(
+            completed
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            ["item/completed", "warning"]
+        );
+        assert!(
+            manager
+                .turn_execution_snapshot(&thread_id, &turn_id)
+                .is_ok()
+        );
+        manager.complete_turn(&thread_id, &turn_id, None).unwrap();
+    }
+
+    #[test]
+    fn world_state_full_and_patch_baseline_survive_restart() {
+        let (temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let first = json!({"environment":{"cwd":"/one"},"agents":{"text":"rules"}});
+        let second = json!({"environment":{"cwd":"/two"}});
+        assert!(manager.record_world_state(&thread_id, first).unwrap());
+        assert!(
+            manager
+                .record_world_state(&thread_id, second.clone())
+                .unwrap()
+        );
+        assert!(
+            !manager
+                .record_world_state(&thread_id, second.clone())
+                .unwrap()
+        );
+        drop(manager);
+        let reopened = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "gpt-test".into(),
+                model_provider: "test-provider".into(),
+                cwd: temp.path().join("workspace"),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        reopened.dispatch(
+            "desktop",
+            request(2, "thread/resume", json!({"threadId":thread_id})),
+        );
+        assert!(!reopened.record_world_state(&thread_id, second).unwrap());
     }
 
     #[test]

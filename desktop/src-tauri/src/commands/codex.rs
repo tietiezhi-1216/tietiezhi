@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -6,8 +7,10 @@ use tietiezhi_agent_account::{
     AccountDispatchOutput, AccountNotification, AccountRpcError, AccountServerRequest,
     ImmediateLogin,
 };
+use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
-    DispatchOutput, RoutedNotification, RuntimeDefaults, ThreadManager, TurnExecutionSnapshot,
+    CompactionExecutionSnapshot, DispatchOutput, RoutedNotification, RuntimeDefaults,
+    ThreadManager, TurnExecutionSnapshot,
 };
 use tietiezhi_agent_model::{
     list_online_models, ModelError, OnlineModel, Reasoning, ResponseEvent, ResponsesApiRequest,
@@ -30,6 +33,22 @@ pub(crate) struct ExternalAuthTokens {
 
 fn runtime_defaults(app: &AppHandle) -> Result<RuntimeDefaults, String> {
     let settings = super::settings::read_settings(app)?;
+    let model_context_windows = settings
+        .providers
+        .iter()
+        .find(|provider| provider.id == settings.chat_provider_id)
+        .map(|provider| {
+            provider
+                .models
+                .iter()
+                .filter_map(|model| {
+                    let context_window = model.context_window?;
+                    let context_window = i64::try_from(context_window).ok()?;
+                    (context_window > 0).then(|| (model.id.to_ascii_lowercase(), context_window))
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
     let cwd = dirs::home_dir()
         .or_else(|| std::env::current_dir().ok())
         .ok_or_else(|| "无法定位默认工作目录".to_string())?;
@@ -62,6 +81,7 @@ fn runtime_defaults(app: &AppHandle) -> Result<RuntimeDefaults, String> {
         sandbox,
         reasoning_effort,
         service_tier: None,
+        model_context_windows,
         cli_version: env!("CARGO_PKG_VERSION").into(),
     })
 }
@@ -206,6 +226,17 @@ pub async fn codex_v2_request(
                 .map(str::to_owned),
         ) {
             launch_turn_executor(&app, &state, manager, thread_id, turn_id);
+        }
+    } else if method == "thread/compact/start" && output.response.get("error").is_none() {
+        let turn_id = output
+            .notifications
+            .iter()
+            .find(|notification| notification.method == "turn/started")
+            .and_then(|notification| notification.params.pointer("/turn/id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
+            launch_compaction_executor(&app, &state, manager, thread_id, turn_id);
         }
     }
     Ok(output)
@@ -815,6 +846,211 @@ fn account_notifications(notifications: Vec<AccountNotification>) -> Vec<RoutedN
         .collect()
 }
 
+fn launch_compaction_executor(
+    app: &AppHandle,
+    state: &AppState,
+    manager: ThreadManager,
+    thread_id: String,
+    turn_id: String,
+) {
+    let cancel = CancellationToken::new();
+    if let Ok(mut cancels) = state.codex_cancels.lock() {
+        if let Some((_, stale)) =
+            cancels.insert(thread_id.clone(), (turn_id.clone(), cancel.clone()))
+        {
+            stale.cancel();
+        }
+    }
+    let app = app.clone();
+    let http = state.http.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = async {
+            let snapshot = manager
+                .compaction_execution_snapshot(&thread_id, &turn_id)
+                .map_err(core_model_error)?;
+            run_compaction_snapshot(app.clone(), manager.clone(), http, snapshot, cancel.clone())
+                .await
+        }
+        .await;
+        if let Err(error) = result {
+            if !cancel.is_cancelled() {
+                fail_turn(&app, &manager, &thread_id, &turn_id, error);
+            }
+        }
+        let state = app.state::<AppState>();
+        if let Ok(mut cancels) = state.codex_cancels.lock() {
+            if cancels
+                .get(&thread_id)
+                .is_some_and(|(active_turn_id, _)| active_turn_id == &turn_id)
+            {
+                cancels.remove(&thread_id);
+            }
+        };
+    });
+}
+
+async fn run_compaction_snapshot(
+    app: AppHandle,
+    manager: ThreadManager,
+    http: reqwest::Client,
+    snapshot: CompactionExecutionSnapshot,
+    cancel: CancellationToken,
+) -> Result<(), ModelError> {
+    let resolved =
+        super::providers::resolve(&app, &snapshot.model_provider).map_err(ModelError::Transport)?;
+    let base_url = super::api_url(&resolved.base_url, "")
+        .trim_end_matches('/')
+        .to_owned();
+    let provider_id = resolved.id;
+    let provider_name = resolved.kind;
+    let mut bearer_token = app
+        .state::<AppState>()
+        .codex_external_auth
+        .lock()
+        .map_err(|_| ModelError::Consumer("Codex 外部账号状态锁已损坏".into()))?
+        .get(&provider_id)
+        .map(|tokens| tokens.access_token.clone())
+        .or(resolved.key);
+    let capability_key = format!("{provider_id}\n{base_url}");
+    let wire_api = resolved.wire_api;
+    let mut client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
+    ensure_responses_capability(&app, &capability_key, wire_api, &client).await?;
+
+    let mut history = compaction_prompt_history(&snapshot.history);
+    let mut summary_suffix = String::new();
+    let mut model_output_seen = false;
+    let mut auth_refresh_attempted = false;
+    let mut server_model = None;
+    loop {
+        let request = compaction_response_request(&snapshot, history.clone());
+        let stream = client.stream(&request, |event| {
+            let notifications = match event {
+                ResponseEvent::Created
+                | ResponseEvent::ServerReasoningIncluded(_)
+                | ResponseEvent::ModelsEtag(_)
+                | ResponseEvent::OutputTextDelta(_)
+                | ResponseEvent::ToolCallInputDelta { .. }
+                | ResponseEvent::ReasoningSummaryDelta { .. }
+                | ResponseEvent::ReasoningSummaryDone { .. }
+                | ResponseEvent::ReasoningContentDelta { .. }
+                | ResponseEvent::ReasoningSummaryPartAdded { .. } => Vec::new(),
+                ResponseEvent::Retrying { error, .. } => manager
+                    .error_notification(
+                        &snapshot.thread_id,
+                        &snapshot.turn_id,
+                        error.as_turn_error(),
+                        true,
+                    )
+                    .map_err(core_model_error)?,
+                ResponseEvent::OutputItemAdded(_) => {
+                    model_output_seen = true;
+                    Vec::new()
+                }
+                ResponseEvent::OutputItemDone(item) => {
+                    model_output_seen = true;
+                    if let Some(text) = assistant_response_text(&item) {
+                        summary_suffix = text;
+                    }
+                    manager
+                        .record_compaction_response_item(
+                            &snapshot.thread_id,
+                            &snapshot.turn_id,
+                            item,
+                        )
+                        .map_err(core_model_error)?;
+                    Vec::new()
+                }
+                ResponseEvent::ServerModel(model) => {
+                    if server_model.as_deref() == Some(model.as_str())
+                        || model.eq_ignore_ascii_case(&snapshot.model)
+                    {
+                        Vec::new()
+                    } else {
+                        server_model = Some(model.clone());
+                        manager
+                            .model_rerouted_notification(
+                                &snapshot.thread_id,
+                                &snapshot.turn_id,
+                                &snapshot.model,
+                                &model,
+                            )
+                            .map_err(core_model_error)?
+                    }
+                }
+                ResponseEvent::ModelVerifications(verifications) => manager
+                    .model_verification_notification(
+                        &snapshot.thread_id,
+                        &snapshot.turn_id,
+                        verifications,
+                    )
+                    .map_err(core_model_error)?,
+                ResponseEvent::TurnModerationMetadata(metadata) => manager
+                    .turn_moderation_metadata_notification(
+                        &snapshot.thread_id,
+                        &snapshot.turn_id,
+                        metadata,
+                    )
+                    .map_err(core_model_error)?,
+                ResponseEvent::SafetyBuffering(buffering) => manager
+                    .safety_buffering_notification(
+                        &snapshot.thread_id,
+                        &snapshot.turn_id,
+                        &snapshot.model,
+                        buffering.use_cases,
+                        buffering.reasons,
+                        buffering.show_buffering_ui,
+                        buffering.faster_model,
+                    )
+                    .map_err(core_model_error)?,
+                ResponseEvent::Completed { token_usage, .. } => {
+                    if let Some(usage) = token_usage {
+                        manager
+                            .record_token_usage(
+                                &snapshot.thread_id,
+                                &snapshot.turn_id,
+                                usage,
+                                snapshot.model_context_window,
+                            )
+                            .map_err(core_model_error)?
+                    } else {
+                        Vec::new()
+                    }
+                }
+            };
+            emit_notifications(&app, &notifications).map_err(ModelError::Consumer)
+        });
+        let result = tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            result = stream => result,
+        };
+        if matches!(result, Err(ModelError::Unauthorized { .. }))
+            && !auth_refresh_attempted
+            && !model_output_seen
+        {
+            if let Some(tokens) = refresh_external_auth(&app, &provider_id).await? {
+                auth_refresh_attempted = true;
+                bearer_token = Some(tokens.access_token);
+                client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
+                continue;
+            }
+        }
+        if matches!(result, Err(ModelError::ContextWindowExceeded)) && history.len() > 1 {
+            history.remove(0);
+            model_output_seen = false;
+            continue;
+        }
+        result?;
+        break;
+    }
+    if cancel.is_cancelled() {
+        return Ok(());
+    }
+    let notifications = manager
+        .complete_compaction(&snapshot.thread_id, &snapshot.turn_id, &summary_suffix)
+        .map_err(core_model_error)?;
+    emit_notifications(&app, &notifications).map_err(ModelError::Consumer)
+}
+
 fn launch_turn_executor(
     app: &AppHandle,
     state: &AppState,
@@ -889,7 +1125,8 @@ async fn run_turn_executor(
     let wire_api = resolved.wire_api;
     let mut client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
     ensure_responses_capability(&app, &capability_key, wire_api, &client).await?;
-    let mut projection = ResponseProjection::new(initial.model.clone());
+    let mut projection =
+        ResponseProjection::new(initial.model.clone(), initial.model_context_window);
     let mut can_drain_steered = false;
     let mut output_schema = None;
     let mut auth_refresh_attempted = false;
@@ -900,6 +1137,23 @@ async fn run_turn_executor(
             .map_err(core_model_error)?;
         emit_notifications(&app, &drained.notifications).map_err(ModelError::Consumer)?;
         can_drain_steered = true;
+        if manager
+            .should_auto_compact(&thread_id, &turn_id)
+            .map_err(core_model_error)?
+        {
+            let (snapshot, notifications) = manager
+                .begin_auto_compaction(&thread_id, &turn_id)
+                .map_err(core_model_error)?;
+            emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+            run_compaction_snapshot(
+                app.clone(),
+                manager.clone(),
+                http.clone(),
+                snapshot,
+                cancel.clone(),
+            )
+            .await?;
+        }
         let snapshot = manager
             .turn_execution_snapshot(&thread_id, &turn_id)
             .map_err(core_model_error)?;
@@ -1106,9 +1360,52 @@ fn response_request(
     request
 }
 
+fn compaction_response_request(
+    snapshot: &CompactionExecutionSnapshot,
+    history: Vec<Value>,
+) -> ResponsesApiRequest {
+    let mut request = ResponsesApiRequest::text(snapshot.model.clone(), history);
+    request.reasoning = snapshot.reasoning_effort.as_ref().map(|effort| Reasoning {
+        effort: Some(effort.clone()),
+        summary: snapshot
+            .reasoning_summary
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| Some("auto".into())),
+        context: None,
+    });
+    request.service_tier.clone_from(&snapshot.service_tier);
+    request.prompt_cache_key = Some(snapshot.thread_id.clone());
+    request
+}
+
+fn assistant_response_text(item: &Value) -> Option<String> {
+    if item.get("type").and_then(Value::as_str) != Some("message")
+        || item.get("role").and_then(Value::as_str) != Some("assistant")
+    {
+        return None;
+    }
+    let text = item
+        .get("content")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|content| {
+            matches!(
+                content.get("type").and_then(Value::as_str),
+                Some("output_text" | "text")
+            )
+        })
+        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(text)
+}
+
 #[derive(Debug)]
 struct ResponseProjection {
     requested_model: String,
+    model_context_window: Option<i64>,
     server_model: Option<String>,
     current_agent_item: Option<String>,
     current_reasoning_item: Option<String>,
@@ -1119,9 +1416,10 @@ struct ResponseProjection {
 }
 
 impl ResponseProjection {
-    fn new(requested_model: String) -> Self {
+    fn new(requested_model: String, model_context_window: Option<i64>) -> Self {
         Self {
             requested_model,
+            model_context_window,
             server_model: None,
             current_agent_item: None,
             current_reasoning_item: None,
@@ -1257,7 +1555,7 @@ impl ResponseProjection {
                     return Ok(Vec::new());
                 };
                 manager
-                    .record_token_usage(thread_id, turn_id, last, None)
+                    .record_token_usage(thread_id, turn_id, last, self.model_context_window)
                     .map_err(core_model_error)
             }
         }
@@ -1317,10 +1615,13 @@ fn fail_turn(
 #[cfg(test)]
 mod tests {
     use super::{
-        empty_rate_limits, format_micro, gateway_rate_limits, nonempty_or_unconfigured,
-        normalized_plan_type, ResponseProjection,
+        assistant_response_text, compaction_response_request, empty_rate_limits, format_micro,
+        gateway_rate_limits, nonempty_or_unconfigured, normalized_plan_type, ResponseProjection,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
+    use serde_json::json;
+    use tietiezhi_agent_context::SUMMARIZATION_PROMPT;
+    use tietiezhi_agent_core::CompactionExecutionSnapshot;
 
     #[test]
     fn empty_runtime_selection_is_explicitly_unconfigured() {
@@ -1331,7 +1632,7 @@ mod tests {
 
     #[test]
     fn response_projection_tracks_turn_scoped_server_state() {
-        let mut projection = ResponseProjection::new("gpt-requested".into());
+        let mut projection = ResponseProjection::new("gpt-requested".into(), Some(272_000));
         assert_eq!(projection.requested_model, "gpt-requested");
         assert!(!projection.reroute_emitted);
         assert!(!projection.verification_emitted);
@@ -1339,6 +1640,47 @@ mod tests {
         projection.needs_follow_up = true;
         assert!(projection.take_needs_follow_up());
         assert!(!projection.take_needs_follow_up());
+    }
+
+    #[test]
+    fn compaction_request_uses_private_summary_history_and_extracts_assistant_text() {
+        let history = vec![
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":"goal"}]}),
+            json!({"type":"message","role":"user","content":[{"type":"input_text","text":SUMMARIZATION_PROMPT.trim_end()}]}),
+        ];
+        let snapshot = CompactionExecutionSnapshot {
+            thread_id: "018f16f7-58ca-7f59-bb7f-6626b6630f6a".into(),
+            turn_id: "018f16f7-58ca-7f59-bb7f-6626b6630f6b".into(),
+            item_id: "item-compact".into(),
+            model: "gpt-5.6-sol".into(),
+            model_provider: "gateway".into(),
+            reasoning_effort: Some("high".into()),
+            reasoning_summary: None,
+            service_tier: Some("priority".into()),
+            history: Vec::new(),
+            automatic: true,
+            model_context_window: Some(272_000),
+        };
+        let request = compaction_response_request(&snapshot, history.clone());
+        assert_eq!(request.input, history);
+        assert_eq!(
+            request.prompt_cache_key.as_deref(),
+            Some(snapshot.thread_id.as_str())
+        );
+        assert_eq!(request.service_tier.as_deref(), Some("priority"));
+        assert_eq!(
+            assistant_response_text(&json!({
+                "type":"message",
+                "role":"assistant",
+                "content":[
+                    {"type":"output_text","text":"first"},
+                    {"type":"output_text","text":"second"}
+                ]
+            }))
+            .as_deref(),
+            Some("first\nsecond")
+        );
+        assert!(assistant_response_text(&json!({"type":"reasoning"})).is_none());
     }
 
     #[test]

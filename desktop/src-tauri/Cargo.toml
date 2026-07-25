@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tietiezhi-agent-account = { path = "../../crates/agent-account" }
+tietiezhi-agent-context = { path = "../../crates/agent-context" }
 tietiezhi-agent-core = { path = "../../crates/agent-core" }
 tietiezhi-agent-events = { path = "../../crates/agent-events" }
 tietiezhi-agent-model = { path = "../../crates/agent-model" }

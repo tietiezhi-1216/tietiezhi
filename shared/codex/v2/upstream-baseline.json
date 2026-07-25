@@ -412,9 +412,9 @@
       },
       {
         "method": "thread/compact/start",
-        "status": "pending",
+        "status": "implemented",
         "target": "R9",
-        "note": ""
+        "note": "crates/agent-core 与 desktop commands/codex.rs 实现异步手动压缩 Turn、contextCompaction Item、Responses 摘要和 canonical replacement history；docs/CODEX-CONTEXT.md"
       },
       {
         "method": "thread/delete",
@@ -874,9 +874,9 @@
       },
       {
         "method": "thread/compacted",
-        "status": "pending",
+        "status": "implemented",
         "target": "R9",
-        "note": ""
+        "note": "固定 Codex V2 已废弃并主动丢弃该通知；本实现同样不发布，以 contextCompaction Item started/completed 作为唯一可见生命周期；crates/agent-core 测试与 docs/CODEX-CONTEXT.md"
       },
       {
         "method": "thread/deleted",
@@ -1143,9 +1143,9 @@
     {
       "id": "R9",
       "name": "上下文系统",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R20 仍需注入 AGENTS、项目环境、Skills 和 Plugins 等具体 World State 内容；R21 接入分层配置与上游默认关闭的高级 TokenBudget 开关。",
+      "evidence": "crates/agent-context 历史/窗口/压缩/World State 测试；crates/agent-state canonical compacted/world_state 与 abort 恢复；crates/agent-core 手动/自动压缩和重启/Fork 测试；desktop commands/codex.rs 私有摘要请求与 Token Usage 接线；docs/CODEX-CONTEXT.md"
     },
     {
       "id": "R10",

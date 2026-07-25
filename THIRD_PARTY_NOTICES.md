@@ -59,3 +59,21 @@ R8 的账号生命周期、额度、外部令牌刷新和服务映射行为参�
 - `codex-rs/app-server-protocol/src/protocol/v2/account.rs`
 - `codex-rs/app-server-protocol/src/protocol/common.rs`
 - `codex-rs/app-server/src/message_processor.rs`
+
+R9 的历史规范化、上下文窗口、自动/手动压缩、World State 和 rollout 重建行为参考以下上游源码并在本仓库重新实现，没有链接或调用上游 crate：
+
+- `codex-rs/core/src/context_manager/history.rs`
+- `codex-rs/core/src/context_manager/normalize.rs`
+- `codex-rs/core/src/compact.rs`
+- `codex-rs/core/src/tasks/compact.rs`
+- `codex-rs/core/src/session/context_window.rs`
+- `codex-rs/core/src/session/token_budget.rs`
+- `codex-rs/core/src/state/auto_compact_window.rs`
+- `codex-rs/core/src/context/world_state/mod.rs`
+- `codex-rs/core/src/session/rollout_reconstruction.rs`
+- `codex-rs/protocol/src/protocol.rs`
+
+以下固定提示词文件从上述 Apache-2.0 版本逐字保留，以确保压缩行为与基线一致：
+
+- `crates/agent-context/prompts/compact.md` 来源于 `codex-rs/prompts/templates/compact/prompt.md`
+- `crates/agent-context/prompts/summary-prefix.md` 来源于 `codex-rs/prompts/templates/compact/summary_prefix.md`

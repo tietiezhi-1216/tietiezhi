@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 114 |
+| 待实现 | 112 |
 | 实现中 | 0 |
-| 已实现 | 47 |
+| 已实现 | 49 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -47,7 +47,7 @@
 | R6 | Turn 生命周期 | 已完成 | crates/agent-core；crates/agent-state canonical rollout ordinal 投影；docs/CODEX-TURNS.md；19 项 TurnManager 测试；崩溃中断、分叉顺序与 R5 rollout 迁移测试；cargo clippy -D warnings；pnpm 协议/迁移/typecheck/build 门禁 | R7 尚未接入 Responses API、模型增量 Item、usage、reasoning summary 和重试；当前 exactly-once 输入队列只提供执行器边界 |
 | R7 | Responses 模型层 | 已完成 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md | Gateway Responses 能力探测、在线模型目录、账号额度和 rate-limit 服务映射进入 R8；工具调用执行进入 R10-R13。 |
 | R8 | Gateway 对齐 | 已完成 | crates/agent-account 账号与反向请求测试；crates/agent-model Responses 探测与在线目录测试；desktop Gateway/Provider/额度适配；Gateway be473f1 路由与 Discovery 测试；docs/CODEX-GATEWAY.md | Gateway 不提供 Token 日聚合、Workspace Message、reset-credit 和加额邮件时使用协议显式的空能力、noCredit 或 Invalid Request；上下文压缩与工具执行分别进入 R9-R13。 |
-| R9 | 上下文系统 | 待开始 |  |  |
+| R9 | 上下文系统 | 已完成 | crates/agent-context 历史/窗口/压缩/World State 测试；crates/agent-state canonical compacted/world_state 与 abort 恢复；crates/agent-core 手动/自动压缩和重启/Fork 测试；desktop commands/codex.rs 私有摘要请求与 Token Usage 接线；docs/CODEX-CONTEXT.md | R20 仍需注入 AGENTS、项目环境、Skills 和 Plugins 等具体 World State 内容；R21 接入分层配置与上游默认关闭的高级 TokenBudget 开关。 |
 | R10 | 工具内核 | 待开始 |  |  |
 | R11 | 基础工具 | 待开始 |  |  |
 | R12 | Patch 与 Diff | 待开始 |  |  |
@@ -149,7 +149,7 @@
 | `skills/list` | 待实现 | R22 |  |
 | `thread/approveGuardianDeniedAction` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/archive` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
-| `thread/compact/start` | 待实现 | R9 |  |
+| `thread/compact/start` | 已实现 | R9 | crates/agent-core 与 desktop commands/codex.rs 实现异步手动压缩 Turn、contextCompaction Item、Responses 摘要和 canonical replacement history；docs/CODEX-CONTEXT.md |
 | `thread/delete` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/fork` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/goal/clear` | 待实现 | R25 |  |
@@ -240,7 +240,7 @@
 | `skills/changed` | 待实现 | R22 |  |
 | `thread/archived` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/closed` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
-| `thread/compacted` | 待实现 | R9 |  |
+| `thread/compacted` | 已实现 | R9 | 固定 Codex V2 已废弃并主动丢弃该通知；本实现同样不发布，以 contextCompaction Item started/completed 作为唯一可见生命周期；crates/agent-core 测试与 docs/CODEX-CONTEXT.md |
 | `thread/deleted` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/environment/connected` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/environment/disconnected` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |

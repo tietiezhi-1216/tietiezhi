@@ -180,6 +180,8 @@ pub enum RecoveredRolloutItemKind {
     SessionMeta(Value),
     TurnContext(Value),
     ResponseItem(Value),
+    Compacted(Value),
+    WorldState(Value),
     EventMsg(Value),
 }
 
@@ -515,6 +517,8 @@ enum RolloutItem {
     SessionMeta(Value),
     TurnContext(Value),
     ResponseItem(Value),
+    Compacted(Value),
+    WorldState(Value),
     LegacyCheckpoint(LegacyCheckpoint),
     EventMsg(Value),
 }
@@ -683,6 +687,14 @@ impl RolloutAppender {
         self.writer()?.append(RolloutItem::ResponseItem(item))
     }
 
+    pub fn append_compacted(&self, item: Value) -> StateResult<u64> {
+        self.writer()?.append(RolloutItem::Compacted(item))
+    }
+
+    pub fn append_world_state(&self, item: Value) -> StateResult<u64> {
+        self.writer()?.append(RolloutItem::WorldState(item))
+    }
+
     pub fn append_checkpoint(
         &self,
         thread_id: &str,
@@ -759,6 +771,10 @@ fn recover_rollout(path: &Path) -> StateResult<RolloutRecovery> {
             RolloutItem::ResponseItem(item) => {
                 Some(RecoveredRolloutItemKind::ResponseItem(item.clone()))
             }
+            RolloutItem::Compacted(item) => Some(RecoveredRolloutItemKind::Compacted(item.clone())),
+            RolloutItem::WorldState(item) => {
+                Some(RecoveredRolloutItemKind::WorldState(item.clone()))
+            }
             RolloutItem::EventMsg(event) => Some(RecoveredRolloutItemKind::EventMsg(event.clone())),
             RolloutItem::LegacyCheckpoint(_) => None,
         };
@@ -781,6 +797,16 @@ fn recover_rollout(path: &Path) -> StateResult<RolloutRecovery> {
             }
             RolloutItem::EventMsg(event) => events_since_checkpoint.push(event),
             RolloutItem::ResponseItem(item) => recovery.response_items.push(item),
+            RolloutItem::Compacted(item) => {
+                if let Some(replacement) = item
+                    .get("replacement_history")
+                    .or_else(|| item.get("replacementHistory"))
+                    .and_then(Value::as_array)
+                {
+                    recovery.response_items.clone_from(replacement);
+                }
+            }
+            RolloutItem::WorldState(_) => {}
             RolloutItem::TurnContext(_) => {}
             RolloutItem::SessionMeta(meta) => {
                 if recovery.session_thread_id.is_none() {
@@ -1042,6 +1068,47 @@ mod tests {
         assert!(matches!(
             recovered.rollout_items[3].item,
             RecoveredRolloutItemKind::EventMsg(_)
+        ));
+    }
+
+    #[test]
+    fn compacted_and_world_state_records_replace_the_compatibility_history() {
+        let temp = TempDir::new().unwrap();
+        let store = StateStore::open(temp.path().join("runtime")).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = temp.path().join("threads").join(&id).join("rollout.jsonl");
+        let appender = store.rollout_appender(&path).unwrap();
+        appender
+            .ensure_canonical_session_meta(&id, json!({"id":id,"session_id":id}))
+            .unwrap();
+        appender
+            .append_response_item(json!({"type":"message","role":"user","content":[]}))
+            .unwrap();
+        appender
+            .append_world_state(json!({"full":true,"state":{"environment":{"cwd":"/repo"}}}))
+            .unwrap();
+        appender
+            .append_compacted(json!({
+                "message":"summary",
+                "replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"summary"}]}]
+            }))
+            .unwrap();
+        appender
+            .append_response_item(json!({"type":"message","role":"user","content":[{"type":"input_text","text":"later"}]}))
+            .unwrap();
+        appender.sync_data().unwrap();
+
+        let recovered = store.recover_rollout(path).unwrap();
+        assert_eq!(recovered.response_items.len(), 2);
+        assert_eq!(recovered.response_items[0]["content"][0]["text"], "summary");
+        assert_eq!(recovered.response_items[1]["content"][0]["text"], "later");
+        assert!(matches!(
+            recovered.rollout_items[2].item,
+            RecoveredRolloutItemKind::WorldState(_)
+        ));
+        assert!(matches!(
+            recovered.rollout_items[3].item,
+            RecoveredRolloutItemKind::Compacted(_)
         ));
     }
 
