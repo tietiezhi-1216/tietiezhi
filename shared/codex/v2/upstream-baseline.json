@@ -590,9 +590,9 @@
       },
       {
         "method": "item/fileChange/requestApproval",
-        "status": "pending",
+        "status": "implemented",
         "target": "R12",
-        "note": ""
+        "note": "crates/agent-approval ServerRequestBroker V2 Schema 与四决策测试；desktop/src-tauri/src/commands/codex.rs"
       },
       {
         "method": "item/permissions/requestApproval",
@@ -754,15 +754,15 @@
       },
       {
         "method": "item/fileChange/outputDelta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R12",
-        "note": ""
+        "note": "crates/agent-core 兼容发布器与 V2 载荷测试；正常执行按 Codex 0.145.0 不发送废弃通知"
       },
       {
         "method": "item/fileChange/patchUpdated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R12",
-        "note": ""
+        "note": "crates/agent-core FileChange 增量投影；desktop Responses delta/最终预览；FileChange 生命周期测试"
       },
       {
         "method": "item/mcpToolCall/progress",
@@ -1000,9 +1000,9 @@
       },
       {
         "method": "turn/diff/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R12",
-        "note": ""
+        "note": "crates/agent-patch TurnDiffTracker；crates/agent-core V2 发布器；desktop apply_patch 成功路径"
       },
       {
         "method": "turn/moderationMetadata",
@@ -1164,9 +1164,9 @@
     {
       "id": "R12",
       "name": "Patch 与 Diff",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R14 仍需扩展完整 Approval Policy、精确会话授权缓存及命令/网络审批；R15-R17 仍需提供 OS 沙箱和网络隔离。",
+      "evidence": "crates/agent-patch Lark/流式解析与多文件原子事务；crates/agent-approval FileChange 反向请求；agent-tools apply_patch；agent-core FileChange/Turn Diff；docs/CODEX-PATCH.md"
     },
     {
       "id": "R13",

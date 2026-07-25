@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 111 |
+| 待实现 | 107 |
 | 实现中 | 0 |
-| 已实现 | 50 |
+| 已实现 | 54 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -50,7 +50,7 @@
 | R9 | 上下文系统 | 已完成 | crates/agent-context 历史/窗口/压缩/World State 测试；crates/agent-state canonical compacted/world_state 与 abort 恢复；crates/agent-core 手动/自动压缩和重启/Fork 测试；desktop commands/codex.rs 私有摘要请求与 Token Usage 接线；docs/CODEX-CONTEXT.md | R20 仍需注入 AGENTS、项目环境、Skills 和 Plugins 等具体 World State 内容；R21 接入分层配置与上游默认关闭的高级 TokenBudget 开关。 |
 | R10 | 工具内核 | 已完成 | crates/agent-tools Registry、Router、Lifecycle、模型结果、Dynamic Tool V2 和 RwLock 并发/取消测试；docs/CODEX-TOOLS.md | R11-R13 仍需注册基础工具、Apply Patch 与 Unified Exec；R14-R18 在同一内核接入审批、沙箱、网络与 ExecPolicy。 |
 | R11 | 基础工具 | 已完成 | crates/agent-tools 基础工具与 BM25 Tool Search；desktop Responses 工具闭环、steer 活动信号和模型能力门控；crates/agent-core 强类型 Sleep/ImageView/WebSearch Item；docs/CODEX-BUILTIN-TOOLS.md | R12/R13 仍需实现有文件或进程副作用的 Patch 与 Unified Exec；R14-R18 负责审批、沙箱、网络与 ExecPolicy，R19/R25 负责 MCP、Plan 和用户输入工具。 |
-| R12 | Patch 与 Diff | 待开始 |  |  |
+| R12 | Patch 与 Diff | 已完成 | crates/agent-patch Lark/流式解析与多文件原子事务；crates/agent-approval FileChange 反向请求；agent-tools apply_patch；agent-core FileChange/Turn Diff；docs/CODEX-PATCH.md | R14 仍需扩展完整 Approval Policy、精确会话授权缓存及命令/网络审批；R15-R17 仍需提供 OS 沙箱和网络隔离。 |
 | R13 | Unified Exec | 待开始 |  |  |
 | R14 | 审批策略 | 待开始 |  |  |
 | R15 | macOS 沙箱 | 待开始 |  |  |
@@ -188,7 +188,7 @@
 | `attestation/generate` | 待实现 | R36 |  |
 | `execCommandApproval` | 待实现 | R14 |  |
 | `item/commandExecution/requestApproval` | 待实现 | R13 |  |
-| `item/fileChange/requestApproval` | 待实现 | R12 |  |
+| `item/fileChange/requestApproval` | 已实现 | R12 | crates/agent-approval ServerRequestBroker V2 Schema 与四决策测试；desktop/src-tauri/src/commands/codex.rs |
 | `item/permissions/requestApproval` | 待实现 | R14 |  |
 | `item/tool/call` | 已实现 | R10 | crates/agent-tools 生成并校验精确 App Server V2 Dynamic Tool ServerRequest/Response，保持 thread/turn/call/namespace/tool/arguments；docs/CODEX-TOOLS.md |
 | `item/tool/requestUserInput` | 待实现 | R25 |  |
@@ -220,8 +220,8 @@
 | `item/commandExecution/outputDelta` | 待实现 | R13 |  |
 | `item/commandExecution/terminalInteraction` | 待实现 | R13 |  |
 | `item/completed` | 已实现 | R3 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
-| `item/fileChange/outputDelta` | 待实现 | R12 |  |
-| `item/fileChange/patchUpdated` | 待实现 | R12 |  |
+| `item/fileChange/outputDelta` | 已实现 | R12 | crates/agent-core 兼容发布器与 V2 载荷测试；正常执行按 Codex 0.145.0 不发送废弃通知 |
+| `item/fileChange/patchUpdated` | 已实现 | R12 | crates/agent-core FileChange 增量投影；desktop Responses delta/最终预览；FileChange 生命周期测试 |
 | `item/mcpToolCall/progress` | 待实现 | R19 |  |
 | `item/plan/delta` | 待实现 | R25 |  |
 | `item/reasoning/summaryPartAdded` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
@@ -261,7 +261,7 @@
 | `thread/tokenUsage/updated` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试；R7 增加 Thread 累积、token_count rollout 与重启恢复 |
 | `thread/unarchived` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `turn/completed` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
-| `turn/diff/updated` | 待实现 | R12 |  |
+| `turn/diff/updated` | 已实现 | R12 | crates/agent-patch TurnDiffTracker；crates/agent-core V2 发布器；desktop apply_patch 成功路径 |
 | `turn/moderationMetadata` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `turn/plan/updated` | 待实现 | R25 |  |
 | `turn/started` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |

@@ -578,6 +578,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -654,6 +660,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-approval"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tietiezhi-agent-protocol",
+ "tokio",
+]
+
+[[package]]
+name = "tietiezhi-agent-patch"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "similar",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "tietiezhi-agent-protocol"
 version = "0.1.0"
 dependencies = [
@@ -673,6 +699,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tietiezhi-agent-approval",
+ "tietiezhi-agent-patch",
  "tietiezhi-agent-protocol",
  "tokio",
  "tokio-util",
@@ -770,6 +798,17 @@ name = "unicode-segmentation"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
+
+[[package]]
+name = "uuid"
+version = "1.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
+dependencies = [
+ "getrandom",
+ "js-sys",
+ "wasm-bindgen",
+]
 
 [[package]]
 name = "version_check"

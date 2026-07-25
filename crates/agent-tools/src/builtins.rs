@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -8,6 +11,8 @@ use bm25::{Document, Language, SearchEngine, SearchEngineBuilder};
 use chrono::{SecondsFormat, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tietiezhi_agent_approval::FileChangeApprovalDecision;
+use tietiezhi_agent_patch::{PatchPlan, TurnDiffTracker};
 
 use crate::{
     ToolError, ToolFuture, ToolHandler, ToolInvocation, ToolName, ToolOutput, ToolPayload,
@@ -16,8 +21,42 @@ use crate::{
 
 const MAX_SLEEP_DURATION_MS: u64 = 12 * 60 * 60 * 1000;
 const TOOL_SEARCH_DEFAULT_LIMIT: usize = 8;
+const APPLY_PATCH_LARK_GRAMMAR: &str = r#"start: begin_patch hunk+ end_patch
+begin_patch: "*** Begin Patch" LF
+end_patch: "*** End Patch" LF?
+
+hunk: add_hunk | delete_hunk | update_hunk
+add_hunk: "*** Add File: " filename LF add_line+
+delete_hunk: "*** Delete File: " filename LF
+update_hunk: "*** Update File: " filename LF change_move? change?
+
+filename: /(.+)/
+add_line: "+" /(.*)/ LF -> line
+
+change_move: "*** Move to: " filename LF
+change: (change_context | change_line)+ eof_line?
+change_context: ("@@" | "@@ " /(.+)/) LF
+change_line: ("+" | "-" | " ") /(.*)/ LF
+eof_line: "*** End of File" LF
+
+%import common.LF
+"#;
 
 pub type ContextRemainingProvider = Arc<dyn Fn(&str, &str) -> Option<i64> + Send + Sync + 'static>;
+pub type FileChangeApprovalFuture =
+    Pin<Box<dyn Future<Output = Result<FileChangeApprovalDecision, ToolError>> + Send + 'static>>;
+pub type FileChangeApprover =
+    Arc<dyn Fn(FileChangeApprovalRequest) -> FileChangeApprovalFuture + Send + Sync + 'static>;
+
+#[derive(Debug, Clone)]
+pub struct FileChangeApprovalRequest {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+    pub reason: Option<String>,
+    pub grant_root: Option<String>,
+    pub cancellation: tokio_util::sync::CancellationToken,
+}
 
 pub fn current_time_handler() -> Arc<dyn ToolHandler> {
     Arc::new(CurrentTimeHandler)
@@ -47,6 +86,165 @@ pub fn tool_search_handler(
     source_descriptions: Vec<(String, Option<String>)>,
 ) -> Arc<dyn ToolHandler> {
     Arc::new(ToolSearchHandler::new(deferred_specs, source_descriptions))
+}
+
+pub fn apply_patch_handler(
+    cwd: PathBuf,
+    requires_approval: bool,
+    approver: Option<FileChangeApprover>,
+) -> Result<Arc<dyn ToolHandler>, ToolError> {
+    let tracker = TurnDiffTracker::new(&cwd)
+        .map_err(|error| ToolError::Handler(format!("initialize turn diff: {error}")))?;
+    Ok(Arc::new(ApplyPatchHandler {
+        cwd,
+        requires_approval,
+        approver,
+        tracker: Mutex::new(tracker),
+    }))
+}
+
+struct ApplyPatchHandler {
+    cwd: PathBuf,
+    requires_approval: bool,
+    approver: Option<FileChangeApprover>,
+    tracker: Mutex<TurnDiffTracker>,
+}
+
+impl ToolHandler for ApplyPatchHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain("apply_patch")
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::hosted(
+            self.tool_name(),
+            json!({
+                "type":"custom",
+                "name":"apply_patch",
+                "description":"The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON.",
+                "format":{
+                    "type":"grammar",
+                    "syntax":"lark",
+                    "definition":APPLY_PATCH_LARK_GRAMMAR
+                }
+            }),
+        )
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        let cwd = self.cwd.clone();
+        let requires_approval = self.requires_approval;
+        let approver = self.approver.clone();
+        let tracker = &self.tracker;
+        Box::pin(async move {
+            let ToolPayload::Custom { input } = &invocation.call.payload else {
+                return Err(ToolError::InvalidCall(
+                    "apply_patch requires freeform patch input".into(),
+                ));
+            };
+            let plan = match PatchPlan::preview(&cwd, input) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return Ok(file_change_output(
+                        &invocation.call.call_id,
+                        Vec::new(),
+                        "failed",
+                        None,
+                        false,
+                        error.to_string(),
+                    ));
+                }
+            };
+            let changes = plan.changes().to_vec();
+            if requires_approval {
+                let Some(approver) = approver else {
+                    return Ok(file_change_output(
+                        &invocation.call.call_id,
+                        changes,
+                        "failed",
+                        None,
+                        false,
+                        "file change approval channel is unavailable".into(),
+                    ));
+                };
+                let decision = approver(FileChangeApprovalRequest {
+                    thread_id: invocation.thread_id.clone(),
+                    turn_id: invocation.turn_id.clone(),
+                    item_id: invocation.call.call_id.clone(),
+                    reason: Some("apply patch to workspace files".into()),
+                    grant_root: None,
+                    cancellation: invocation.cancellation.clone(),
+                })
+                .await?;
+                if matches!(
+                    decision,
+                    FileChangeApprovalDecision::Decline | FileChangeApprovalDecision::Cancel
+                ) {
+                    if decision == FileChangeApprovalDecision::Cancel {
+                        invocation.cancellation.cancel();
+                    }
+                    return Ok(file_change_output(
+                        &invocation.call.call_id,
+                        changes,
+                        "declined",
+                        None,
+                        false,
+                        "Patch declined by user.".into(),
+                    ));
+                }
+            }
+            let applied = match plan.apply() {
+                Ok(applied) => applied,
+                Err(error) => {
+                    return Ok(file_change_output(
+                        &invocation.call.call_id,
+                        changes,
+                        "failed",
+                        None,
+                        false,
+                        error.to_string(),
+                    ));
+                }
+            };
+            let turn_diff = tracker
+                .lock()
+                .map_err(|_| ToolError::Handler("turn diff state lock poisoned".into()))?
+                .record(&plan);
+            Ok(file_change_output(
+                &invocation.call.call_id,
+                applied.changes,
+                "completed",
+                Some(turn_diff),
+                true,
+                applied.summary,
+            ))
+        })
+    }
+}
+
+fn file_change_output(
+    item_id: &str,
+    changes: Vec<tietiezhi_agent_patch::FileUpdateChange>,
+    status: &str,
+    turn_diff: Option<String>,
+    success: bool,
+    content: String,
+) -> ToolOutput {
+    let output = if success {
+        ToolOutput::success(Value::String(content))
+    } else {
+        ToolOutput::failure(Value::String(content))
+    };
+    output.with_metadata(json!({
+        "kind":"fileChange",
+        "item":{
+            "type":"fileChange",
+            "id":item_id,
+            "changes":changes,
+            "status":status
+        },
+        "turnDiff":turn_diff
+    }))
 }
 
 struct CurrentTimeHandler;
@@ -516,6 +714,22 @@ mod tests {
         }
     }
 
+    fn patch_invocation(patch: impl Into<String>) -> ToolInvocation {
+        ToolInvocation {
+            thread_id: "thread".into(),
+            turn_id: "turn".into(),
+            call: ToolCall {
+                tool_name: ToolName::plain("apply_patch"),
+                call_id: "patch-call".into(),
+                payload: ToolPayload::Custom {
+                    input: patch.into(),
+                },
+            },
+            cancellation: CancellationToken::new(),
+            input_activity: CancellationToken::new(),
+        }
+    }
+
     #[tokio::test]
     async fn current_time_and_context_remaining_match_codex_fragments() {
         let time = current_time_handler()
@@ -608,6 +822,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(output.content[0]["name"], "calendar_create");
+    }
+
+    #[tokio::test]
+    async fn apply_patch_uses_freeform_wire_and_returns_file_change_metadata() {
+        let temp = TempDir::new().unwrap();
+        let handler = apply_patch_handler(temp.path().to_path_buf(), false, None).unwrap();
+        assert_eq!(handler.spec().wire_override.unwrap()["type"], "custom");
+        let output = handler
+            .handle(patch_invocation(
+                "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch",
+            ))
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert_eq!(
+            tokio::fs::read_to_string(temp.path().join("hello.txt"))
+                .await
+                .unwrap(),
+            "hello\n"
+        );
+        let metadata = output.metadata.unwrap();
+        assert_eq!(metadata["item"]["type"], "fileChange");
+        assert_eq!(metadata["item"]["status"], "completed");
+        assert!(metadata["turnDiff"].as_str().unwrap().contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_decline_does_not_write() {
+        let temp = TempDir::new().unwrap();
+        let approver: FileChangeApprover =
+            Arc::new(|_| Box::pin(async { Ok(FileChangeApprovalDecision::Decline) }));
+        let handler = apply_patch_handler(temp.path().to_path_buf(), true, Some(approver)).unwrap();
+        let output = handler
+            .handle(patch_invocation(
+                "*** Begin Patch\n*** Add File: denied.txt\n+no\n*** End Patch",
+            ))
+            .await
+            .unwrap();
+        assert!(!output.success);
+        assert!(!temp.path().join("denied.txt").exists());
+        assert_eq!(output.metadata.unwrap()["item"]["status"], "declined");
     }
 
     #[test]

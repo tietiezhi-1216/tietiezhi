@@ -38,7 +38,7 @@ R11 对齐固定版本 `rust-v0.145.0` 的基础工具 Schema、Responses 工具
 
 ## 后续边界
 
-- R12 实现 `apply_patch` 与 File Change/Diff。
+- R12 已实现 `apply_patch` 与 File Change/Diff，见 `docs/CODEX-PATCH.md`。
 - R13 实现 `exec_command`、`write_stdin`、PTY 和后台进程。
 - R14-R18 实现审批、沙箱、网络和 ExecPolicy。
 - R19 将 MCP 工具注册为延迟或直接工具。

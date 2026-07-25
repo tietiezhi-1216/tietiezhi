@@ -3823,6 +3823,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4546,6 +4552,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-approval"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tietiezhi-agent-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "tietiezhi-agent-context"
 version = "0.1.0"
 dependencies = [
@@ -4591,6 +4607,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-patch"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "similar",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "tietiezhi-agent-protocol"
 version = "0.1.0"
 dependencies = [
@@ -4619,6 +4645,8 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "tietiezhi-agent-approval",
+ "tietiezhi-agent-patch",
  "tietiezhi-agent-protocol",
  "tokio",
  "tokio-util",
@@ -4654,11 +4682,14 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tauri-plugin-window-state",
+ "tempfile",
  "tietiezhi-agent-account",
+ "tietiezhi-agent-approval",
  "tietiezhi-agent-context",
  "tietiezhi-agent-core",
  "tietiezhi-agent-events",
  "tietiezhi-agent-model",
+ "tietiezhi-agent-patch",
  "tietiezhi-agent-protocol",
  "tietiezhi-agent-state",
  "tietiezhi-agent-tools",

@@ -15,10 +15,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tietiezhi-agent-account = { path = "../../crates/agent-account" }
+tietiezhi-agent-approval = { path = "../../crates/agent-approval" }
 tietiezhi-agent-context = { path = "../../crates/agent-context" }
 tietiezhi-agent-core = { path = "../../crates/agent-core" }
 tietiezhi-agent-events = { path = "../../crates/agent-events" }
 tietiezhi-agent-model = { path = "../../crates/agent-model" }
+tietiezhi-agent-patch = { path = "../../crates/agent-patch" }
 tietiezhi-agent-protocol = { path = "../../crates/agent-protocol" }
 tietiezhi-agent-state = { path = "../../crates/agent-state" }
 tietiezhi-agent-tools = { path = "../../crates/agent-tools" }
@@ -67,6 +69,7 @@ libc = "0.2"
 [dev-dependencies]
 # The SSE integration test runs a raw TCP mock relay.
 tokio = { version = "1", features = ["net", "io-util", "rt", "macros"] }
+tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"

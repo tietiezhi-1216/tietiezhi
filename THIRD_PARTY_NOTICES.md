@@ -103,3 +103,18 @@ R11 的基础工具、Tool Search、模型能力门控和强类型 Item 行为�
 - `codex-rs/core/src/web_search.rs`
 - `codex-rs/protocol/src/items.rs`
 - `codex-rs/ext/items/src/lib.rs`
+
+R12 的 Patch 语法、流式解析、宽容上下文匹配、FileChange 生命周期和 Diff 行为参考或移植以下 Apache-2.0 上游源码，没有链接或调用上游 crate：
+
+- `codex-rs/apply-patch/src/parser.rs` 移植到 `crates/agent-patch/src/parser.rs`，移除 `PathUri` 依赖并由本地工作区路径校验替代。
+- `codex-rs/apply-patch/src/streaming_parser.rs` 移植到 `crates/agent-patch/src/streaming_parser.rs`，保持增量语法状态机。
+- `codex-rs/apply-patch/src/seek_sequence.rs` 移植到 `crates/agent-patch/src/seek_sequence.rs`，保持逐级宽容匹配。
+- `codex-rs/apply-patch/src/lib.rs`
+- `codex-rs/core/src/tools/handlers/apply_patch.rs`
+- `codex-rs/core/src/tools/handlers/apply_patch_spec.rs`
+- `codex-rs/core/src/tools/handlers/apply_patch.lark`
+- `codex-rs/app-server/src/bespoke_event_handling.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/turn.rs`
+
+本项目在上游行为之上增加了全量预演、工作区与 symlink 逃逸校验、同文件系统 staging、备份回滚和多文件事务提交，以满足 R12 的原子写入门禁。

@@ -91,4 +91,6 @@ R10 已增加 `crates/agent-tools`，实现名称空间感知的 Registry、Rout
 
 R11 已接入 `clock.curr_time`、`clock.sleep`、`get_context_remaining`、`view_image`、托管 `web_search` 和 BM25 `tool_search`。Responses 工具调用会并行执行、按原调用顺序追加 Output、继续同一 Turn，并投影 Sleep、Image View、Web Search 强类型 Item；steer 输入可打断 sleep 而不取消 Turn。详细行为见 `docs/CODEX-BUILTIN-TOOLS.md`。
 
-R12-R13 仍需实现 Apply Patch 和 Unified Exec；R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责把上游默认关闭的高级 TokenBudget 配置暴露到分层配置；R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R12 已增加 `crates/agent-patch` 和 `crates/agent-approval` 的文件审批基础，完整实现 Lark Patch、增量预览、工作区路径约束、多文件事务、FileChange Item、Patch Updated 和累计 Turn Diff。废弃 `item/fileChange/outputDelta` 只保留兼容发布器，正常路径不发送。详细行为见 `docs/CODEX-PATCH.md`。
+
+R13 仍需实现 Unified Exec；R20 仍需生成 AGENTS、项目环境、插件等具体 World State 内容，R21 负责把上游默认关闭的高级 TokenBudget 配置暴露到分层配置；R14-R18 仍需分别完成完整审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

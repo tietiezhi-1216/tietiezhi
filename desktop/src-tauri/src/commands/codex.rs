@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,6 +7,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tietiezhi_agent_account::{
     AccountDispatchOutput, AccountNotification, AccountRpcError, AccountServerRequest,
     ImmediateLogin,
+};
+use tietiezhi_agent_approval::{
+    FileChangeApprovalDecision, FileChangeApprovalParams,
+    RoutedServerRequest as ApprovalServerRequest,
 };
 use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
@@ -19,8 +23,8 @@ use tietiezhi_agent_model::{
 };
 use tietiezhi_agent_protocol::{ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse};
 use tietiezhi_agent_tools::builtins::{
-    context_remaining_handler, current_time_handler, sleep_handler, view_image_handler,
-    web_search_handler,
+    apply_patch_handler, context_remaining_handler, current_time_handler, sleep_handler,
+    view_image_handler, web_search_handler, FileChangeApprovalRequest,
 };
 use tietiezhi_agent_tools::{ToolCall, ToolCallRuntime, ToolPayload, ToolRegistry, ToolRouter};
 use tokio_util::sync::CancellationToken;
@@ -135,15 +139,30 @@ fn emit_server_request(app: &AppHandle, request: &AccountServerRequest) -> Resul
         .map_err(|error| format!("发送 Codex Server Request 失败：{error}"))
 }
 
+fn emit_approval_server_request(
+    app: &AppHandle,
+    request: &ApprovalServerRequest,
+) -> Result<(), String> {
+    app.emit(CODEX_SERVER_REQUEST_EVENT, request)
+        .map_err(|error| format!("发送 Codex 审批请求失败：{error}"))
+}
+
 #[tauri::command]
 pub fn codex_v2_server_response(
     state: State<'_, AppState>,
     response: Value,
 ) -> Result<bool, String> {
-    state
+    if state
         .codex_account_requests
         .resolve(&response)
-        .map_err(account_rpc_error)
+        .map_err(account_rpc_error)?
+    {
+        return Ok(true);
+    }
+    state
+        .codex_approval_requests
+        .resolve(&response)
+        .map_err(|error| format!("Codex approval 状态错误：{error}"))
 }
 
 fn cancel_thread(state: &AppState, thread_id: &str, expected_turn_id: Option<&str>) {
@@ -1181,8 +1200,11 @@ async fn run_turn_executor(
     let wire_api = resolved.wire_api;
     let mut client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
     ensure_responses_capability(&app, &capability_key, wire_api, &client).await?;
-    let mut projection =
-        ResponseProjection::new(initial.model.clone(), initial.model_context_window);
+    let mut projection = ResponseProjection::new(
+        initial.model.clone(),
+        initial.model_context_window,
+        initial.cwd.clone(),
+    );
     let mut can_drain_steered = false;
     let mut output_schema = None;
     let mut auth_refresh_attempted = false;
@@ -1275,6 +1297,22 @@ async fn run_turn_executor(
                     .local_tool_item_started(&thread_id, &turn_id, item.clone())
                     .map_err(core_model_error)?;
                 emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                if item.get("type").and_then(Value::as_str) == Some("fileChange") {
+                    let changes = item
+                        .get("changes")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    let notifications = manager
+                        .file_change_patch_updated(
+                            &thread_id,
+                            &turn_id,
+                            item.get("id").and_then(Value::as_str).unwrap_or_default(),
+                            changes,
+                        )
+                        .map_err(core_model_error)?;
+                    emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                }
             }
             let executions = calls.into_iter().map(|(call, timeline_item)| {
                 let runtime = tool_runtime.clone();
@@ -1284,7 +1322,7 @@ async fn run_turn_executor(
                 let input_activity = input_activity.clone();
                 async move {
                     let output = runtime
-                        .handle_model_call_with_activity(
+                        .handle_model_call_result_with_activity(
                             thread_id,
                             turn_id,
                             call.clone(),
@@ -1296,19 +1334,55 @@ async fn run_turn_executor(
                 }
             });
             for (call, timeline_item, output) in futures_util::future::join_all(executions).await {
-                if let Some(item) = timeline_item {
+                let metadata_item = output
+                    .metadata
+                    .as_ref()
+                    .filter(|metadata| {
+                        metadata.get("kind").and_then(Value::as_str) == Some("fileChange")
+                    })
+                    .and_then(|metadata| metadata.get("item"))
+                    .cloned();
+                if let Some(item) = metadata_item.or(timeline_item) {
+                    if item.get("type").and_then(Value::as_str) == Some("fileChange") {
+                        let changes = item
+                            .get("changes")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let notifications = manager
+                            .file_change_patch_updated(
+                                &thread_id,
+                                &turn_id,
+                                item.get("id").and_then(Value::as_str).unwrap_or_default(),
+                                changes,
+                            )
+                            .map_err(core_model_error)?;
+                        emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                    }
                     let notifications = manager
                         .local_tool_item_completed(&thread_id, &turn_id, item)
                         .map_err(core_model_error)?;
                     emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
                 }
+                if let Some(diff) = output
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("turnDiff"))
+                    .and_then(Value::as_str)
+                {
+                    let notifications = manager
+                        .turn_diff_updated(&thread_id, &turn_id, diff)
+                        .map_err(core_model_error)?;
+                    emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                }
                 if matches!(call.payload, ToolPayload::ToolSearch { .. }) {
-                    if let Some(tools) = output.get("tools").and_then(Value::as_array) {
+                    if let Some(tools) = output.response_item.get("tools").and_then(Value::as_array)
+                    {
                         loaded_tool_specs.extend(tools.iter().cloned());
                     }
                 }
                 let notifications = manager
-                    .model_item_completed(&thread_id, &turn_id, output)
+                    .model_item_completed(&thread_id, &turn_id, output.response_item)
                     .map_err(core_model_error)?;
                 emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
             }
@@ -1526,6 +1600,95 @@ fn turn_tool_runtime(
             supports_original_image_detail(&snapshot.model),
         ));
     }
+    let requires_patch_approval = snapshot.approval_policy.as_str() != Some("never");
+    let approval_app = app.clone();
+    let approval_manager = manager.clone();
+    handlers.push(
+        apply_patch_handler(
+            snapshot.cwd.clone(),
+            requires_patch_approval,
+            requires_patch_approval.then(|| {
+                Arc::new(move |request: FileChangeApprovalRequest| {
+                    let app = approval_app.clone();
+                    let manager = approval_manager.clone();
+                    Box::pin(async move {
+                        let waiting = manager
+                            .set_thread_status(
+                                &request.thread_id,
+                                json!({"type":"active","activeFlags":["waitingOnApproval"]}),
+                            )
+                            .map_err(|error| {
+                                tietiezhi_agent_tools::ToolError::Handler(format!(
+                                    "set approval status: {error:?}"
+                                ))
+                            })?;
+                        emit_notifications(&app, &waiting)
+                            .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                        let state = app.state::<AppState>();
+                        let recipients = manager
+                            .thread_recipients(&request.thread_id)
+                            .map_err(|error| {
+                                tietiezhi_agent_tools::ToolError::Handler(format!(
+                                    "resolve approval recipients: {error:?}"
+                                ))
+                            })?;
+                        let started_at_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis()
+                            .min(i64::MAX as u128) as i64;
+                        let pending = state
+                            .codex_approval_requests
+                            .begin_file_change(
+                                recipients,
+                                FileChangeApprovalParams {
+                                    thread_id: request.thread_id.clone(),
+                                    turn_id: request.turn_id.clone(),
+                                    item_id: request.item_id.clone(),
+                                    reason: request.reason,
+                                    grant_root: request.grant_root,
+                                    started_at_ms,
+                                },
+                            )
+                            .map_err(|error| {
+                                tietiezhi_agent_tools::ToolError::Handler(error.to_string())
+                            })?;
+                        let request_id = pending.request.id.clone();
+                        emit_approval_server_request(&app, &pending.request)
+                            .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                        let decision = tokio::select! {
+                            result = pending.receiver => result
+                                .map_err(|_| tietiezhi_agent_tools::ToolError::Handler(
+                                    "file change approval channel closed".into()
+                                ))?
+                                .map_err(|error| tietiezhi_agent_tools::ToolError::Handler(error.to_string()))?,
+                            () = request.cancellation.cancelled() => {
+                                let _ = state.codex_approval_requests.cancel(&request_id);
+                                FileChangeApprovalDecision::Cancel
+                            }
+                        };
+                        let active = manager
+                            .set_thread_status(
+                                &request.thread_id,
+                                json!({"type":"active","activeFlags":[]}),
+                            )
+                            .map_err(|error| {
+                                tietiezhi_agent_tools::ToolError::Handler(format!(
+                                    "restore active status: {error:?}"
+                                ))
+                            })?;
+                        emit_notifications(&app, &active)
+                            .map_err(tietiezhi_agent_tools::ToolError::Handler)?;
+                        Ok(decision)
+                    })
+                        as tietiezhi_agent_tools::builtins::FileChangeApprovalFuture
+                }) as tietiezhi_agent_tools::builtins::FileChangeApprover
+            }),
+        )
+        .map_err(|error| {
+            ModelError::Consumer(format!("初始化 Codex apply_patch 失败：{error}"))
+        })?,
+    );
     let registry = ToolRegistry::new(handlers, Vec::new())
         .map_err(|error| ModelError::Consumer(format!("初始化 Codex 基础工具失败：{error}")))?;
     let router = Arc::new(ToolRouter::new(registry));
@@ -1546,6 +1709,17 @@ fn merge_tool_specs(base: &[Value], loaded: &[Value]) -> Vec<Value> {
 }
 
 fn local_tool_timeline_item(snapshot: &TurnExecutionSnapshot, call: &ToolCall) -> Option<Value> {
+    if call.tool_name.namespace.is_none() && call.tool_name.name == "apply_patch" {
+        if let ToolPayload::Custom { input } = &call.payload {
+            let plan = tietiezhi_agent_patch::PatchPlan::preview(&snapshot.cwd, input).ok()?;
+            return Some(json!({
+                "type":"fileChange",
+                "id":call.call_id,
+                "changes":plan.changes(),
+                "status":"inProgress"
+            }));
+        }
+    }
     let ToolPayload::Function { arguments } = &call.payload else {
         return None;
     };
@@ -1637,10 +1811,17 @@ struct ResponseProjection {
     needs_follow_up: bool,
     model_output_seen: bool,
     tool_calls: Vec<ToolCall>,
+    cwd: std::path::PathBuf,
+    patch_inputs: HashMap<String, String>,
+    patch_items_started: HashSet<String>,
 }
 
 impl ResponseProjection {
-    fn new(requested_model: String, model_context_window: Option<i64>) -> Self {
+    fn new(
+        requested_model: String,
+        model_context_window: Option<i64>,
+        cwd: std::path::PathBuf,
+    ) -> Self {
         Self {
             requested_model,
             model_context_window,
@@ -1652,6 +1833,9 @@ impl ResponseProjection {
             needs_follow_up: false,
             model_output_seen: false,
             tool_calls: Vec::new(),
+            cwd,
+            patch_inputs: HashMap::new(),
+            patch_items_started: HashSet::new(),
         }
     }
 
@@ -1729,9 +1913,20 @@ impl ResponseProjection {
                     .reasoning_text_delta(thread_id, turn_id, item_id, content_index, &delta)
                     .map_err(core_model_error)
             }
-            ResponseEvent::ToolCallInputDelta { .. } => {
+            ResponseEvent::ToolCallInputDelta {
+                item_id,
+                call_id,
+                delta,
+            } => {
                 self.model_output_seen = true;
-                Ok(Vec::new())
+                self.apply_patch_delta(
+                    manager,
+                    thread_id,
+                    turn_id,
+                    &item_id,
+                    call_id.as_deref(),
+                    &delta,
+                )
             }
             ResponseEvent::ServerModel(model) => {
                 if self.server_model.as_deref() == Some(model.as_str()) {
@@ -1809,6 +2004,56 @@ impl ResponseProjection {
         Ok(())
     }
 
+    fn apply_patch_delta(
+        &mut self,
+        manager: &ThreadManager,
+        thread_id: &str,
+        turn_id: &str,
+        response_item_id: &str,
+        call_id: Option<&str>,
+        delta: &str,
+    ) -> Result<Vec<RoutedNotification>, ModelError> {
+        let input = self
+            .patch_inputs
+            .entry(response_item_id.to_owned())
+            .or_default();
+        input.push_str(delta);
+        let Some(call_id) = call_id else {
+            return Ok(Vec::new());
+        };
+        let Ok(plan) = tietiezhi_agent_patch::PatchPlan::preview(&self.cwd, input) else {
+            return Ok(Vec::new());
+        };
+        let changes = serde_json::to_value(plan.changes())
+            .map_err(|error| ModelError::Consumer(error.to_string()))?
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut notifications = Vec::new();
+        if self.patch_items_started.insert(call_id.to_owned()) {
+            notifications.extend(
+                manager
+                    .local_tool_item_started(
+                        thread_id,
+                        turn_id,
+                        json!({
+                            "type":"fileChange",
+                            "id":call_id,
+                            "changes":changes,
+                            "status":"inProgress"
+                        }),
+                    )
+                    .map_err(core_model_error)?,
+            );
+        }
+        notifications.extend(
+            manager
+                .file_change_patch_updated(thread_id, turn_id, call_id, changes)
+                .map_err(core_model_error)?,
+        );
+        Ok(notifications)
+    }
+
     fn reasoning_item(&self) -> Result<&str, ModelError> {
         self.current_reasoning_item.as_deref().ok_or_else(|| {
             ModelError::Consumer("reasoning delta arrived before reasoning item".into())
@@ -1856,12 +2101,15 @@ mod tests {
     use super::{
         assistant_response_text, compaction_response_request, empty_rate_limits, format_micro,
         gateway_rate_limits, local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured,
-        normalized_plan_type, response_request, ResponseProjection,
+        normalized_plan_type, response_request, ResponseEvent, ResponseProjection,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
     use serde_json::json;
+    use tempfile::TempDir;
     use tietiezhi_agent_context::SUMMARIZATION_PROMPT;
-    use tietiezhi_agent_core::{CompactionExecutionSnapshot, TurnExecutionSnapshot};
+    use tietiezhi_agent_core::{
+        CompactionExecutionSnapshot, RuntimeDefaults, ThreadManager, TurnExecutionSnapshot,
+    };
 
     #[test]
     fn empty_runtime_selection_is_explicitly_unconfigured() {
@@ -1872,7 +2120,8 @@ mod tests {
 
     #[test]
     fn response_projection_tracks_turn_scoped_server_state() {
-        let mut projection = ResponseProjection::new("gpt-requested".into(), Some(272_000));
+        let mut projection =
+            ResponseProjection::new("gpt-requested".into(), Some(272_000), ".".into());
         assert_eq!(projection.requested_model, "gpt-requested");
         assert!(!projection.reroute_emitted);
         assert!(!projection.verification_emitted);
@@ -1897,6 +2146,64 @@ mod tests {
     }
 
     #[test]
+    fn streamed_apply_patch_input_publishes_file_change_preview() {
+        let temp = TempDir::new().unwrap();
+        let cwd = temp.path().join("workspace");
+        std::fs::create_dir(&cwd).unwrap();
+        let manager = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "gpt-test".into(),
+                model_provider: "test".into(),
+                cwd: cwd.clone(),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        let started = manager.dispatch(
+            "desktop",
+            json!({"id":1,"method":"thread/start","params":{}}),
+        );
+        let thread_id = started.response["result"]["thread"]["id"].as_str().unwrap();
+        let turn = manager.dispatch(
+            "desktop",
+            json!({
+                "id":2,
+                "method":"turn/start",
+                "params":{
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"edit","textElements":[]}]
+                }
+            }),
+        );
+        let turn_id = turn.response["result"]["turn"]["id"].as_str().unwrap();
+        let mut projection = ResponseProjection::new("gpt-test".into(), None, cwd.clone());
+        let notifications = projection
+            .apply(
+                &manager,
+                thread_id,
+                turn_id,
+                ResponseEvent::ToolCallInputDelta {
+                    item_id: "output_1".into(),
+                    call_id: Some("call_patch".into()),
+                    delta: "*** Begin Patch\n*** Add File: preview.txt\n+preview\n*** End Patch"
+                        .into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            ["item/started", "item/fileChange/patchUpdated"]
+        );
+        assert_eq!(notifications[1].params["changes"][0]["path"], "preview.txt");
+        assert!(!cwd.join("preview.txt").exists());
+    }
+
+    #[test]
     fn responses_request_includes_deduplicated_tool_specs() {
         let snapshot = TurnExecutionSnapshot {
             thread_id: "018f16f7-58ca-7f59-bb7f-6626b6630f6a".into(),
@@ -1904,6 +2211,7 @@ mod tests {
             cwd: std::path::PathBuf::from("/tmp/project"),
             model: "gpt-5.6-sol".into(),
             model_provider: "gateway".into(),
+            approval_policy: json!("on-request"),
             reasoning_effort: Some("high".into()),
             reasoning_summary: None,
             service_tier: Some("priority".into()),

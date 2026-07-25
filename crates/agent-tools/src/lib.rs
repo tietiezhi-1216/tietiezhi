@@ -180,6 +180,7 @@ pub fn dynamic_tool_response_output(response: Value) -> Result<ToolOutput, ToolE
     Ok(ToolOutput {
         success,
         content: response,
+        metadata: None,
     })
 }
 
@@ -187,6 +188,7 @@ pub fn dynamic_tool_response_output(response: Value) -> Result<ToolOutput, ToolE
 pub struct ToolOutput {
     pub content: Value,
     pub success: bool,
+    pub metadata: Option<Value>,
 }
 
 impl ToolOutput {
@@ -194,7 +196,21 @@ impl ToolOutput {
         Self {
             content,
             success: true,
+            metadata: None,
         }
+    }
+
+    pub fn failure(content: Value) -> Self {
+        Self {
+            content,
+            success: false,
+            metadata: None,
+        }
+    }
+
+    pub fn with_metadata(mut self, metadata: Value) -> Self {
+        self.metadata = Some(metadata);
+        self
     }
 
     pub fn aborted(call_id: &str, elapsed_seconds: f32) -> Self {
@@ -205,6 +221,7 @@ impl ToolOutput {
                 "elapsedSeconds": elapsed_seconds.max(0.1)
             }),
             success: false,
+            metadata: None,
         }
     }
 
@@ -230,6 +247,12 @@ impl ToolOutput {
             }),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolModelCallResult {
+    pub response_item: Value,
+    pub metadata: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -574,6 +597,25 @@ impl ToolCallRuntime {
         cancellation: CancellationToken,
         input_activity: CancellationToken,
     ) -> Value {
+        self.handle_model_call_result_with_activity(
+            thread_id,
+            turn_id,
+            call,
+            cancellation,
+            input_activity,
+        )
+        .await
+        .response_item
+    }
+
+    pub async fn handle_model_call_result_with_activity(
+        &self,
+        thread_id: impl Into<String>,
+        turn_id: impl Into<String>,
+        call: ToolCall,
+        cancellation: CancellationToken,
+        input_activity: CancellationToken,
+    ) -> ToolModelCallResult {
         match self
             .handle_with_activity(
                 thread_id,
@@ -584,12 +626,21 @@ impl ToolCallRuntime {
             )
             .await
         {
-            Ok(output) => output.to_response_item(&call),
-            Err(error) => ToolOutput {
-                content: Value::String(error.to_string()),
-                success: false,
+            Ok(output) => ToolModelCallResult {
+                response_item: output.to_response_item(&call),
+                metadata: output.metadata,
+            },
+            Err(error) => {
+                let output = ToolOutput {
+                    content: Value::String(error.to_string()),
+                    success: false,
+                    metadata: None,
+                };
+                ToolModelCallResult {
+                    response_item: output.to_response_item(&call),
+                    metadata: None,
+                }
             }
-            .to_response_item(&call),
         }
     }
 

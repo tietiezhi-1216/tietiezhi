@@ -149,6 +149,7 @@ pub struct TurnExecutionSnapshot {
     pub cwd: PathBuf,
     pub model: String,
     pub model_provider: String,
+    pub approval_policy: Value,
     pub reasoning_effort: Option<String>,
     pub reasoning_summary: Option<Value>,
     pub service_tier: Option<String>,
@@ -1661,6 +1662,7 @@ impl ThreadManager {
             cwd: loaded.record.cwd,
             model: loaded.record.model,
             model_provider: loaded.record.model_provider,
+            approval_policy: loaded.record.approval_policy,
             reasoning_effort: loaded.record.reasoning_effort,
             reasoning_summary: loaded.record.reasoning_summary,
             service_tier: loaded.record.service_tier,
@@ -2134,6 +2136,88 @@ impl ThreadManager {
             }),
         )?);
         Ok(notifications)
+    }
+
+    pub fn file_change_patch_updated(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        changes: Vec<Value>,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.update_streaming_item(thread_id, turn_id, item_id, |item| {
+            if item.get("type").and_then(Value::as_str) != Some("fileChange") {
+                return Err(RpcError::invalid("streaming item is not a file change"));
+            }
+            item["changes"] = Value::Array(changes.clone());
+            Ok(())
+        })?;
+        self.model_delta_notification(
+            thread_id,
+            "item/fileChange/patchUpdated",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "changes": changes
+            }),
+        )
+    }
+
+    /// Compatibility implementation for the deprecated V2 notification.
+    /// New executions use canonical FileChange items and `patchUpdated`.
+    pub fn file_change_output_delta(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        delta: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.model_delta_notification(
+            thread_id,
+            "item/fileChange/outputDelta",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "delta": delta
+            }),
+        )
+    }
+
+    pub fn turn_diff_updated(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        diff: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            "turn/diff/updated",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "diff": diff
+            }),
+        )?])
+    }
+
+    pub fn thread_recipients(&self, thread_id: &str) -> RpcResult<Vec<String>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        self.loaded_thread_locked(thread_id, &state)?;
+        let mut recipients = state
+            .subscribers
+            .get(thread_id)
+            .map(|subscribers| subscribers.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        recipients.sort();
+        Ok(recipients)
     }
 
     pub fn agent_message_delta(
@@ -3863,6 +3947,12 @@ fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
             "action": web_search_action_to_core(item.get("action")),
             "results": item.get("results").cloned().unwrap_or(Value::Null)
         })),
+        Some("fileChange") => Ok(json!({
+            "type": "FileChange",
+            "id": required_item_string(item, "id", "fileChange item")?,
+            "changes": item.get("changes").cloned().unwrap_or_else(|| json!([])),
+            "status": item.get("status").cloned().unwrap_or_else(|| json!("inProgress"))
+        })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported ThreadItem conversion to core: {other}"
         ))),
@@ -3919,6 +4009,12 @@ fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
             "query": item.get("query").cloned().unwrap_or_else(|| json!("")),
             "action": web_search_action_to_v2(item.get("action")),
             "results": item.get("results").cloned().unwrap_or(Value::Null)
+        })),
+        Some("FileChange") => Ok(json!({
+            "type": "fileChange",
+            "id": required_item_string(item, "id", "FileChange item")?,
+            "changes": item.get("changes").cloned().unwrap_or_else(|| json!([])),
+            "status": item.get("status").cloned().unwrap_or_else(|| json!("inProgress"))
         })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported core TurnItem conversion: {other}"
@@ -6396,5 +6492,85 @@ mod tests {
         );
         assert_eq!(output.response["error"]["code"], -32602);
         assert!(output.notifications.is_empty());
+    }
+
+    #[test]
+    fn file_change_lifecycle_patch_delta_and_turn_diff_match_v2() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"].as_str().unwrap();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"edit","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap();
+        let item = json!({
+            "type":"fileChange",
+            "id":"patch_1",
+            "changes":[],
+            "status":"inProgress"
+        });
+        manager
+            .local_tool_item_started(thread_id, turn_id, item)
+            .unwrap();
+        let change = json!({
+            "path":"src/lib.rs",
+            "kind":{"type":"update","move_path":null},
+            "diff":"@@ -1 +1 @@\n-old\n+new\n"
+        });
+        let patch = manager
+            .file_change_patch_updated(thread_id, turn_id, "patch_1", vec![change])
+            .unwrap();
+        assert_eq!(patch[0].method, "item/fileChange/patchUpdated");
+        let legacy = manager
+            .file_change_output_delta(thread_id, turn_id, "patch_1", "M src/lib.rs\n")
+            .unwrap();
+        assert_eq!(legacy[0].method, "item/fileChange/outputDelta");
+        let diff = manager
+            .turn_diff_updated(thread_id, turn_id, "diff --git a/src/lib.rs b/src/lib.rs")
+            .unwrap();
+        assert_eq!(diff[0].method, "turn/diff/updated");
+        assert_eq!(manager.thread_recipients(thread_id).unwrap(), ["desktop"]);
+        let completed = manager
+            .local_tool_item_completed(
+                thread_id,
+                turn_id,
+                json!({
+                    "type":"fileChange",
+                    "id":"patch_1",
+                    "changes":[{
+                        "path":"src/lib.rs",
+                        "kind":{"type":"update","move_path":null},
+                        "diff":"@@ -1 +1 @@\n-old\n+new\n"
+                    }],
+                    "status":"completed"
+                }),
+            )
+            .unwrap();
+        assert_eq!(completed[0].method, "item/completed");
+        manager.complete_turn(thread_id, turn_id, None).unwrap();
+        let read = manager.dispatch(
+            "desktop",
+            request(
+                3,
+                "thread/read",
+                json!({"threadId":thread_id,"includeTurns":true}),
+            ),
+        );
+        let items = result(&read)["thread"]["turns"][0]["items"]
+            .as_array()
+            .unwrap();
+        let file_change = items
+            .iter()
+            .find(|item| item["type"] == "fileChange")
+            .unwrap_or_else(|| panic!("missing file change in {items:?}"));
+        assert_eq!(file_change["status"], "completed");
     }
 }
