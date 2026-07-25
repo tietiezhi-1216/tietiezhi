@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 pub const PROXY_ACTIVE_ENV_KEY: &str = "CODEX_NETWORK_PROXY_ACTIVE";
 pub const PROXY_ATTRIBUTION_TOKEN_ENV_KEY: &str = "CODEX_NETWORK_PROXY_ATTRIBUTION";
+pub const PROXY_ALLOW_LOCAL_BINDING_ENV_KEY: &str = "CODEX_NETWORK_ALLOW_LOCAL_BINDING";
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -255,6 +256,7 @@ impl NetworkRuntime {
             .proxy
             .get_or_try_init(|| start_proxy(Arc::clone(&self.inner)))
             .await?;
+        let allow_local_binding = request.policy.allow_local_binding;
         let token = Uuid::new_v4().simple().to_string();
         self.inner
             .contexts
@@ -282,6 +284,14 @@ impl NetworkRuntime {
         }
         env.insert(PROXY_ACTIVE_ENV_KEY.into(), Some("1".into()));
         env.insert(PROXY_ATTRIBUTION_TOKEN_ENV_KEY.into(), Some(token.clone()));
+        env.insert(
+            PROXY_ALLOW_LOCAL_BINDING_ENV_KEY.into(),
+            Some(if allow_local_binding {
+                "1".into()
+            } else {
+                "0".into()
+            }),
+        );
         Ok(PreparedNetwork {
             token,
             runtime: Arc::downgrade(&self.inner),
@@ -308,8 +318,12 @@ pub enum NetworkError {
 }
 
 async fn start_proxy(runtime: Arc<RuntimeInner>) -> Result<ProxyState, NetworkError> {
-    let http = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let socks = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    #[cfg(windows)]
+    let (http_port, socks_port) = (3128, 1080);
+    #[cfg(not(windows))]
+    let (http_port, socks_port) = (0, 0);
+    let http = bind_managed_listener(http_port).await?;
+    let socks = bind_managed_listener(socks_port).await?;
     let http_addr = http.local_addr()?;
     let socks_addr = socks.local_addr()?;
     let shutdown = runtime.shutdown.clone();
@@ -321,6 +335,17 @@ async fn start_proxy(runtime: Arc<RuntimeInner>) -> Result<ProxyState, NetworkEr
         http_addr,
         socks_addr,
     })
+}
+
+async fn bind_managed_listener(port: u16) -> io::Result<TcpListener> {
+    match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+        Ok(listener) => Ok(listener),
+        #[cfg(windows)]
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn accept_loop(

@@ -63,38 +63,37 @@ static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 static PREPARED_AUDITS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Serialize, Deserialize)]
-struct WindowsSandboxRequest {
-    command: Vec<String>,
-    cwd: PathBuf,
+pub(super) struct WindowsSandboxRequest {
+    pub(super) command: Vec<String>,
+    pub(super) cwd: PathBuf,
     #[serde(default, skip_serializing)]
-    env: HashMap<String, String>,
-    policy: SandboxPolicy,
+    pub(super) env: HashMap<String, String>,
+    pub(super) policy: SandboxPolicy,
     #[serde(default)]
-    prepared: bool,
+    pub(super) prepared: bool,
 }
 
 pub(super) fn wrap_command(
     command: Vec<String>,
     cwd: &Path,
-    _env: &HashMap<String, String>,
+    env: &HashMap<String, String>,
     policy: &SandboxPolicy,
 ) -> Result<Vec<String>, SandboxError> {
-    let run_audit = should_run_audit(cwd, _env, policy);
-    if let Err(error) = prepare_access(cwd, _env, policy, run_audit) {
+    let proxy_ports = super::managed_proxy_ports(env)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let allow_local_binding = env
+        .get("CODEX_NETWORK_ALLOW_LOCAL_BINDING")
+        .is_some_and(|value| value == "1");
+    super::windows_setup::ensure_ready(&proxy_ports, allow_local_binding)
+        .map_err(|error| SandboxError::InvalidPolicy(error.to_string()))?;
+    let run_audit = should_run_audit(cwd, env, policy);
+    if let Err(error) = prepare_access(cwd, env, policy, run_audit) {
         if run_audit {
             clear_prepared_audits();
         }
         return Err(SandboxError::InvalidPolicy(error));
     }
-    let executable = if cfg!(debug_assertions) {
-        std::env::var_os("TIETIEZHI_WINDOWS_SANDBOX_WRAPPER")
-            .map(PathBuf::from)
-            .map(Ok)
-            .unwrap_or_else(std::env::current_exe)
-    } else {
-        std::env::current_exe()
-    }
-    .map_err(|error| SandboxError::InvalidPolicy(error.to_string()))?;
     let request = WindowsSandboxRequest {
         command,
         cwd: normalize_absolute(cwd)?,
@@ -111,34 +110,41 @@ pub(super) fn wrap_command(
         .open(&path)
         .and_then(|mut file| std::io::Write::write_all(&mut file, &bytes))
         .map_err(|error| SandboxError::InvalidPolicy(error.to_string()))?;
-    Ok(vec![
-        executable.to_string_lossy().into_owned(),
-        WRAPPER_ARG.into(),
-        path.to_string_lossy().into_owned(),
-    ])
+    super::windows_setup::launcher_command(&path)
+        .map_err(|error| SandboxError::InvalidPolicy(error.to_string()))
 }
 
 pub(super) fn run_wrapper_if_requested() -> bool {
     let mut args = std::env::args_os();
     let _executable = args.next();
-    if args.next().as_deref() != Some(std::ffi::OsStr::new(WRAPPER_ARG)) {
+    let mode = args.next();
+    let inline =
+        mode.as_deref() == Some(std::ffi::OsStr::new("--tietiezhi-windows-sandbox-inline"));
+    if !inline && mode.as_deref() != Some(std::ffi::OsStr::new(WRAPPER_ARG)) {
         return false;
     }
-    let Some(path) = args.next().map(PathBuf::from) else {
-        eprintln!("windows sandbox request path is missing");
-        std::process::exit(1);
-    };
-    let result = fs::read(&path)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| {
-            serde_json::from_slice::<WindowsSandboxRequest>(&bytes)
-                .map_err(|error| error.to_string())
-        })
-        .map(|mut request| {
-            request.env = std::env::vars().collect();
-            request
-        });
-    let _ = fs::remove_file(&path);
+    let result = if inline {
+        super::windows_setup::inline_request()
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| bytes.ok_or_else(|| "inline sandbox request is missing".into()))
+    } else {
+        let Some(path) = args.next().map(PathBuf::from) else {
+            eprintln!("windows sandbox request path is missing");
+            std::process::exit(1);
+        };
+        let result = fs::read(&path).map_err(|error| error.to_string());
+        let _ = fs::remove_file(&path);
+        result
+    }
+    .and_then(|bytes| {
+        serde_json::from_slice::<WindowsSandboxRequest>(&bytes).map_err(|error| error.to_string())
+    })
+    .map(|mut request| {
+        request.env = std::env::vars()
+            .filter(|(name, _)| name != "TIETIEZHI_WINDOWS_SANDBOX_REQUEST")
+            .collect();
+        request
+    });
     let exit_code = result.and_then(run_request).unwrap_or_else(|error| {
         eprintln!("windows sandbox failed: {error}");
         1
@@ -266,12 +272,35 @@ fn prepare_access(
             .iter()
             .map(|sid| LocalSid::new(sid))
             .collect::<Result<Vec<_>, _>>()?;
+        let identity_sid_strings =
+            super::windows_setup::identity_sids().map_err(|error| error.to_string())?;
+        let identity_sids = identity_sid_strings
+            .iter()
+            .map(|sid| LocalSid::new(sid))
+            .collect::<Result<Vec<_>, _>>()?;
+        for sid in &sids {
+            ensure_read_access(cwd, sid.as_ptr())?;
+        }
+        for sid in &identity_sids {
+            ensure_read_access(cwd, sid.as_ptr())?;
+        }
         for (root, sid) in roots.iter().zip(&sids) {
             ensure_write_access(root, sid.as_ptr())?;
             for protected in PROTECTED_METADATA_NAMES {
                 let path = root.join(protected);
                 if path.exists() {
                     ensure_deny_write(&path, sid.as_ptr())?;
+                }
+            }
+        }
+        for root in &roots {
+            for sid in &identity_sids {
+                ensure_write_access(root, sid.as_ptr())?;
+                for protected in PROTECTED_METADATA_NAMES {
+                    let path = root.join(protected);
+                    if path.exists() {
+                        ensure_deny_write(&path, sid.as_ptr())?;
+                    }
                 }
             }
         }
@@ -690,6 +719,15 @@ unsafe fn ensure_write_access(path: &Path, sid: *mut c_void) -> Result<(), Strin
     )
 }
 
+unsafe fn ensure_read_access(path: &Path, sid: *mut c_void) -> Result<(), String> {
+    update_acl(
+        path,
+        sid,
+        FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+        SET_ACCESS,
+    )
+}
+
 unsafe fn ensure_deny_write(path: &Path, sid: *mut c_void) -> Result<(), String> {
     update_acl(
         path,
@@ -863,7 +901,7 @@ fn argv_to_command_line(argv: &[String]) -> String {
         .join(" ")
 }
 
-fn quote_windows_arg(arg: &str) -> String {
+pub(super) fn quote_windows_arg(arg: &str) -> String {
     if !arg.is_empty() && !arg.chars().any(|ch| ch.is_whitespace() || ch == '"') {
         return arg.to_string();
     }

@@ -207,8 +207,16 @@ R17 的域名规则、私网目标拒绝、代理归因、HTTP/SOCKS5 出口和�
 - `codex-rs/core/src/network_policy_decision.rs`
 - `codex-rs/protocol/src/network_policy.rs`
 - `codex-rs/sandboxing/src/seatbelt.rs`
+- `codex-rs/windows-sandbox-rs/src/setup.rs`
+- `codex-rs/windows-sandbox-rs/src/identity.rs`
+- `codex-rs/windows-sandbox-rs/src/dpapi.rs`
+- `codex-rs/windows-sandbox-rs/src/wfp.rs`
+- `codex-rs/windows-sandbox-rs/src/wfp/filter_specs.rs`
+- `codex-rs/windows-sandbox-rs/src/bin/setup_main/win.rs`
+- `codex-rs/windows-sandbox-rs/src/bin/setup_main/win/firewall.rs`
+- `codex-rs/windows-sandbox-rs/src/bin/setup_main/win/sandbox_users.rs`
 
-本地实现增加与现有 `PersistentApprovalStore`、Unified Exec 和 App Server `command/exec` 的适配；模型 API、Hosted Web Search 和用户 shell 不通过命令代理。
+本地实现增加与现有 `PersistentApprovalStore`、Unified Exec 和 App Server `command/exec` 的适配；Windows 使用源码自重入的 UAC helper、Offline/Online 本地身份、DPAPI 凭据、按 Offline SID 限定的 Firewall 代理端口规则和持久 WFP filters。模型 API、Hosted Web Search 和用户 shell 不通过命令代理。
 
 R18 的绝对路径、Shell/PowerShell 解析、安全命令分类和 Starlark ExecPolicy 从以下 Apache-2.0 上游源码移植，没有链接、调用或打包上游二进制：
 

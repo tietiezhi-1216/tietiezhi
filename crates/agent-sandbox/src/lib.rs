@@ -11,6 +11,8 @@ use serde_json::Value;
 
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_setup;
 
 #[cfg(target_os = "macos")]
 const SEATBELT_EXECUTABLE: &str = "/usr/bin/sandbox-exec";
@@ -239,12 +241,6 @@ pub fn sandbox_command(
     }
     #[cfg(windows)]
     {
-        if policy.network_access() && !managed_proxy_ports(inherited_env).is_empty() {
-            return Err(SandboxError::InvalidPolicy(
-                "managed network access requires the elevated Windows sandbox identity and WFP backend; refusing a proxy environment that could be bypassed"
-                    .into(),
-            ));
-        }
         let command = windows::wrap_command(command, cwd, inherited_env, policy)?;
         Ok(SandboxInvocation {
             command,
@@ -265,11 +261,41 @@ pub fn sandbox_command(
 pub fn run_windows_sandbox_wrapper_if_requested() -> bool {
     #[cfg(windows)]
     {
+        if windows_setup::run_helper_if_requested() {
+            return true;
+        }
         windows::run_wrapper_if_requested()
     }
     #[cfg(not(windows))]
     {
         false
+    }
+}
+
+pub fn windows_sandbox_readiness() -> &'static str {
+    #[cfg(windows)]
+    {
+        windows_setup::readiness()
+    }
+    #[cfg(not(windows))]
+    {
+        "notConfigured"
+    }
+}
+
+pub fn setup_windows_sandbox(
+    proxy_ports: &[u16],
+    allow_local_binding: bool,
+) -> Result<(), SandboxError> {
+    #[cfg(windows)]
+    {
+        windows_setup::run_setup_for_current_process(proxy_ports, allow_local_binding)
+            .map_err(|error| SandboxError::InvalidPolicy(error.to_string()))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (proxy_ports, allow_local_binding);
+        Err(SandboxError::UnsupportedPlatform)
     }
 }
 

@@ -1191,7 +1191,7 @@
       "id": "R12",
       "name": "Patch 与 Diff",
       "status": "completed",
-      "risk": "R14 仍需扩展完整 Approval Policy、精确会话授权缓存及命令/网络审批；R15-R17 仍需提供 OS 沙箱和网络隔离。",
+      "risk": "apply_patch intentionally rejects binary payloads and preserves unrelated user changes; platform enforcement is delegated to the completed R15-R17 sandbox layers.",
       "evidence": "crates/agent-patch Lark/流式解析与多文件原子事务；crates/agent-approval FileChange 反向请求；agent-tools apply_patch；agent-core FileChange/Turn Diff；docs/CODEX-PATCH.md"
     },
     {
@@ -1205,14 +1205,14 @@
       "id": "R14",
       "name": "审批策略",
       "status": "completed",
-      "risk": "R15/R16 尚需把审批决策绑定到真实 OS 沙箱，R17/R18 尚需消费持久网络与 ExecPolicy Amendment；关闭 granular 类别已 fail-closed。",
+      "risk": "Approval policy never widens the OS sandbox by itself; permanent grants remain explicit policy amendments while acceptForSession stays exact and Thread-scoped.",
       "evidence": "crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md"
     },
     {
       "id": "R15",
       "name": "macOS 沙箱",
       "status": "completed",
-      "risk": "Windows 隔离由 R16 实现；域名代理、连接审批和网络审计由 R17 实现；R21 再提供完整分层 Permission Profile 配置。",
+      "risk": "R21 provides the layered Permission Profile configuration; macOS network isolation remains tied to the managed proxy listener lifecycle.",
       "evidence": "crates/agent-sandbox 实现固定 /usr/bin/sandbox-exec、read-only/workspace-write/danger/external、可写根、受保护元数据、临时目录、网络开关和 symlink 安全；agent-exec Pipe/PTY、Unified Exec、command/exec 与 apply_patch 共用策略；10 项沙箱测试、7 项 exec 测试和 20 项工具测试覆盖真实 macOS 拒绝。"
     },
     {
@@ -1225,22 +1225,22 @@
     {
       "id": "R17",
       "name": "网络策略",
-      "status": "in_progress",
-      "risk": "Windows managed network currently fails closed; source-built elevated sandbox identity and Firewall/WFP proxy allowlist remain required before R39 release.",
-      "evidence": "crates/agent-network；agent-tools restricted network integration；macOS Seatbelt proxy-only tests；desktop command approval adapter；docs/CODEX-NETWORK.md"
+      "status": "completed",
+      "risk": "Windows setup requires administrator consent and fails closed when enterprise policy prevents local Firewall/WFP rules; proxy port drift is reconciled before execution.",
+      "evidence": "crates/agent-network attributed proxy; crates/agent-sandbox elevated Offline/Online identity, DPAPI, Firewall and persistent WFP; agent-tools/Unified Exec integration; Windows proxy-only escape test; desktop App Server setup/readiness; docs/CODEX-NETWORK.md"
     },
     {
       "id": "R18",
       "name": "ExecPolicy",
       "status": "completed",
-      "risk": "R21 still needs layered project/profile policy discovery and Requirements enforcement; R17 Windows elevated/WFP network isolation remains a release blocker.",
+      "risk": "R21 provides layered project/profile policy discovery and Requirements enforcement; ExecPolicy itself remains advisory to approval and cannot bypass the completed OS sandbox.",
       "evidence": "crates/agent-absolute-path; crates/agent-shell-command; crates/agent-execpolicy; crates/agent-tools dynamic pre-spawn policy; desktop persisted rules/default.rules; docs/CODEX-EXECPOLICY.md; 26 absolute-path, 141 shell, 13 execpolicy and 23 tool tests"
     },
     {
       "id": "R19",
       "name": "MCP 完整实现",
       "status": "completed",
-      "risk": "OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 still needs plugin-supplied MCP lifecycle, and R17 Windows WFP isolation remains a release blocker.",
+      "risk": "OAuth discovery and refresh use rmcp 2.2.0 behind a mutex and OS credential store; R24 supplies plugin-owned MCP lifecycle.",
       "evidence": "crates/agent-mcp; desktop MCP App Server V2 dispatch and DesktopMcpHost; agent-core mcpToolCall persistence; source-built stdio interoperability fixture; Elicitation SSR test; docs/CODEX-MCP.md"
     },
     {

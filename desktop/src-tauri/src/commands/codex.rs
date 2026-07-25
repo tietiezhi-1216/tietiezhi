@@ -7740,7 +7740,7 @@ fn dispatch_windows_sandbox(
         "windowsSandbox/readiness" => dispatch_success(
             request,
             json!({
-                "status":if cfg!(windows) { "ready" } else { "notConfigured" }
+                "status":tietiezhi_agent_sandbox::windows_sandbox_readiness()
             }),
         ),
         "windowsSandbox/setupStart" => {
@@ -7748,7 +7748,16 @@ fn dispatch_windows_sandbox(
                 .pointer("/params/mode")
                 .and_then(Value::as_str)
                 .unwrap_or("unelevated");
-            let success = cfg!(windows);
+            #[cfg(not(test))]
+            let setup_result = tietiezhi_agent_sandbox::setup_windows_sandbox(&[1080, 3128], false);
+            #[cfg(test)]
+            let setup_result: Result<(), tietiezhi_agent_sandbox::SandboxError> = if cfg!(windows) {
+                Ok(())
+            } else {
+                Err(tietiezhi_agent_sandbox::SandboxError::UnsupportedPlatform)
+            };
+            let success = setup_result.is_ok();
+            let setup_error = setup_result.err().map(|error| error.to_string());
             let cwd = request
                 .pointer("/params/cwd")
                 .and_then(Value::as_str)
@@ -7782,9 +7791,7 @@ fn dispatch_windows_sandbox(
                 params: json!({
                     "mode":mode,
                     "success":success,
-                    "error":(!success).then_some(
-                        "Windows sandbox setup is only available on Windows"
-                    )
+                    "error":setup_error
                 }),
             });
             for notification in &notifications {
@@ -9164,7 +9171,7 @@ mod tests {
         assert_eq!(
             readiness.response["result"]["status"],
             if cfg!(windows) {
-                "ready"
+                tietiezhi_agent_sandbox::windows_sandbox_readiness()
             } else {
                 "notConfigured"
             }

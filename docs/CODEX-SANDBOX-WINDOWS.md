@@ -2,8 +2,10 @@
 
 ## 范围
 
-R16 在仓库源码中实现 Windows Restricted Token 沙箱，不下载、运行或打包 Codex 二进制。桌面程序和测试 runner 都从自身源码构建的可执行文件重新进入 wrapper，随后创建受限子进程。
+R16 在仓库源码中实现 Windows Restricted Token 沙箱，R17 增加与 pinned Codex 一致的提升权限身份与网络边界。不下载、运行或打包 Codex 二进制。桌面程序和测试 runner 都从自身源码构建的可执行文件重新进入 launcher/wrapper，随后创建受限子进程。
 
+- UAC setup helper 创建 `TietiezhiSandboxOffline`、`TietiezhiSandboxOnline` 和内部本地组，密码随机轮换并用机器域 DPAPI 加密。
+- restricted network 由 Offline 身份执行；direct network 使用 Online 身份。身份 token 之上仍应用 `CreateRestrictedToken`。
 - `CreateRestrictedToken` 使用 `DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED`。
 - 路径能力使用稳定、路径隔离的 capability SID。
 - 工作区和显式可写根通过 ACL 授权，`.git`、`.agents`、`.codex` 始终拒绝写入。
@@ -28,6 +30,7 @@ R16 在仓库源码中实现 Windows Restricted Token 沙箱，不下载、运�
 - 完成通过 `windowsSandbox/setupCompleted` 通知。
 - 不完整审计或发现世界可写路径时先发送 `windows/worldWritableWarning`。
 - Windows 上 restricted policy 的 `SandboxAvailability` 为 `restricted`，不再降级为不可用。
+- readiness 只有在版本化 marker、加密身份、Firewall 和 WFP 均准备完成时返回 `ready`；旧版本返回 `updateRequired`。
 
 ## 验证
 
@@ -38,6 +41,7 @@ Windows 测试覆盖：
 - 原用户目录 sibling 读取拒绝。
 - Job 关闭后后代进程不能存活。
 - `agent-exec` 的 Pipe 与 ConPTY 都通过源码构建 wrapper 执行。
+- Offline 身份只可访问 setup marker 中的 managed loopback 代理端口，不能直连另一个本地端口。
 - readiness、setup、warning 和 completed 通知通过固定 V2 Schema。
 
-GitHub Windows runner 执行 `agent-sandbox`、`agent-exec`、桌面 Rust 测试和 NSIS 构建；macOS 本地和 CI 继续验证 Seatbelt 路径。R17 已增加域名网络规则、代理归因和连接审批。unelevated token 无法可靠阻止代理绕过，因此 Windows managed network 当前失败关闭；elevated identity 与 Firewall/WFP 是 R39 发布前必须关闭的安全风险。
+GitHub Windows runner 执行提升权限身份、Firewall/WFP 代理唯一出口、`agent-sandbox`、`agent-exec`、桌面 Rust 测试和 NSIS 构建；macOS 本地和 CI 继续验证 Seatbelt 路径。UAC 取消或企业策略阻止本地 Firewall 生效时 setup 失败，restricted command 不降级执行。

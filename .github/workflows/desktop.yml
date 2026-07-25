@@ -192,6 +192,10 @@ jobs:
       - name: Codex PTY and unified exec tests
         run: cargo test --manifest-path ../crates/agent-exec/Cargo.toml
 
+      - name: Windows elevated identity, Firewall, and WFP escape tests
+        if: matrix.platform == 'windows'
+        run: cargo test --manifest-path ../crates/agent-exec/Cargo.toml --test windows_sandbox -- --test-threads=1
+
       - name: Codex platform sandbox tests
         run: cargo test --manifest-path ../crates/agent-sandbox/Cargo.toml
 

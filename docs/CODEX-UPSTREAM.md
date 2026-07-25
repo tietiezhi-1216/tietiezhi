@@ -142,4 +142,4 @@ R34 已将 Automations 接到相同 Thread、Turn、Responses、工具和 Rollou
 
 R35 已源码实现 Remote Control 生命周期、配对/撤销、精确 Thread 授权、远程 steer/interrupt/approval 和请求幂等，并将专有远程服务映射到 Tietiezhi 自有 Device Fabric。Realtime 直接实现固定版 Codex 的 WebSocket/WebRTC、PCM16、转写/音频/Item 通知及无重放断线恢复，详细行为见 `docs/CODEX-REMOTE-REALTIME.md`。
 
-R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R17 已补齐 Windows elevated Offline/Online identity、DPAPI、Firewall 代理端口补集规则和持久 WFP filters；真实 Windows runner 验证代理唯一出口。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
