@@ -368,3 +368,5 @@ R29 的 Git 基线、分支校验、状态读取与桌面 Worktree 行为参考�
 - `codex-rs/core/src/git_info_tests.rs`
 
 本地实现位于 `crates/agent-git`，增加 `.worktreeinclude`、alternate-index Snapshot、Restore、Handoff 和旧任务接管；只调用系统 Git，不调用、链接或分发上游 Codex 二进制。
+
+R30 的集成终端复用 R13 已登记的 Apache-2.0 PTY、Unified Exec 和 App Server command exec 源码映射。新增 Thread 会话目录与 React 文本终端位于 `desktop/src-tauri/src/commands/terminal.rs` 和 `desktop/src/features/chat/integrated-terminal-panel.tsx`，不包含或分发上游二进制。

@@ -1312,9 +1312,9 @@
     {
       "id": "R30",
       "name": "集成终端",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "集成终端使用安全的文本 VT 投影而非完整 GPU 终端模拟器；复杂全屏 TUI 的像素级呈现留给外部终端，stdin/resize/进程语义已完整。",
+      "evidence": "R13 crates/agent-exec PTY/ConPTY、stdin、resize、poll 和进程树测试；desktop terminal Thread 会话命令、多标签文本终端、任务删除清理与 SSR 门禁；docs/CODEX-INTEGRATED-TERMINAL.md"
     },
     {
       "id": "R31",

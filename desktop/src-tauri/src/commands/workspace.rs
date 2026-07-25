@@ -627,6 +627,8 @@ fn workspace_error(error: impl std::fmt::Display) -> String {
 /// mode-specific worktrees are also unregistered during migration.
 pub(crate) fn cleanup_task_workspaces(app: &AppHandle, project_id: &str, task_root: &Path) {
     if let Some(task_id) = task_root.file_name().and_then(|value| value.to_str()) {
+        let state = app.state::<crate::AppState>();
+        super::terminal::terminate_task_terminals(&state, task_id);
         if let Ok(runtime) = workspace_runtime(app) {
             let _ = runtime.cleanup(task_id);
         }

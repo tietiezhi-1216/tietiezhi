@@ -524,6 +524,19 @@ export function installTauriMock(): void {
       snapshotId: string;
       createdAtMs: number;
     }>,
+    terminalSessions: new Map<
+      string,
+      {
+        id: string;
+        taskId: string;
+        title: string;
+        cwd: string;
+        createdAtMs: number;
+        running: boolean;
+        exitCode: number | null;
+        output: string;
+      }
+    >(),
     automations: new Map<string, AutomationDocument>([
       [exampleAutomation.id, exampleAutomation],
     ]),
@@ -1724,6 +1737,64 @@ public class Hello {
       return handoff;
     },
     transfer_task_workspace_file: (a) => String(a.path),
+    terminal_list: (a) =>
+      [...state.terminalSessions.values()].filter(
+        (session) => session.taskId === a.taskId,
+      ),
+    terminal_start: (a) => {
+      const id = crypto.randomUUID();
+      const session = {
+        id,
+        taskId: String(a.taskId),
+        title: `Terminal ${state.terminalSessions.size + 1}`,
+        cwd: "/mock/tasks/shared-worktree",
+        createdAtMs: Date.now(),
+        running: true,
+        exitCode: null,
+        output: "Tietiezhi mock terminal\n$ ",
+      };
+      state.terminalSessions.set(id, session);
+      return session;
+    },
+    terminal_read: (a) => {
+      const session = state.terminalSessions.get(String(a.sessionId));
+      if (!session || session.taskId !== a.taskId) throw "终端会话不存在";
+      const cursor = Number(a.cursor ?? 0);
+      const data = session.output.slice(cursor);
+      return {
+        chunks: data
+          ? [
+              {
+                cursor: session.output.length,
+                stream: "stdout",
+                data,
+                capReached: false,
+              },
+            ]
+          : [],
+        nextCursor: session.output.length,
+        running: session.running,
+        exitCode: session.exitCode,
+        timedOut: false,
+      };
+    },
+    terminal_write: (a) => {
+      const session = state.terminalSessions.get(String(a.sessionId));
+      if (!session || !session.running) throw "终端会话已退出";
+      const command = String(a.data).trim();
+      session.output += `${command}\nmock: ${command || "input"}\n$ `;
+    },
+    terminal_resize: () => undefined,
+    terminal_terminate: (a) => {
+      const session = state.terminalSessions.get(String(a.sessionId));
+      if (!session) throw "终端会话不存在";
+      session.running = false;
+      session.exitCode = 130;
+      session.output += "^C\n";
+    },
+    terminal_close: (a) => {
+      state.terminalSessions.delete(String(a.sessionId));
+    },
 
     "plugin:app|version": () => "0.0.0-mock",
     "plugin:event|listen": () => 0,

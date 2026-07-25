@@ -704,6 +704,83 @@ export function transferTaskWorkspaceFile(args: {
   return invoke<string>("transfer_task_workspace_file", args);
 }
 
+export interface TerminalSession {
+  id: string;
+  taskId: string;
+  title: string;
+  cwd: string;
+  createdAtMs: number;
+  running: boolean;
+  exitCode: number | null;
+}
+
+export interface TerminalOutputChunk {
+  cursor: number;
+  stream: "stdout" | "stderr";
+  data: string;
+  capReached: boolean;
+}
+
+export interface TerminalReadResult {
+  chunks: TerminalOutputChunk[];
+  nextCursor: number;
+  running: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+}
+
+export function terminalList(taskId: string): Promise<TerminalSession[]> {
+  return invoke<TerminalSession[]>("terminal_list", { taskId });
+}
+
+export function terminalStart(args: {
+  taskId: string;
+  rows?: number;
+  cols?: number;
+}): Promise<TerminalSession> {
+  return invoke<TerminalSession>("terminal_start", args);
+}
+
+export function terminalRead(args: {
+  taskId: string;
+  sessionId: string;
+  cursor: number;
+  waitMs?: number;
+}): Promise<TerminalReadResult> {
+  return invoke<TerminalReadResult>("terminal_read", args);
+}
+
+export function terminalWrite(args: {
+  taskId: string;
+  sessionId: string;
+  data: string;
+}): Promise<void> {
+  return invoke("terminal_write", args);
+}
+
+export function terminalResize(args: {
+  taskId: string;
+  sessionId: string;
+  rows: number;
+  cols: number;
+}): Promise<void> {
+  return invoke("terminal_resize", args);
+}
+
+export function terminalTerminate(args: {
+  taskId: string;
+  sessionId: string;
+}): Promise<void> {
+  return invoke("terminal_terminate", args);
+}
+
+export function terminalClose(args: {
+  taskId: string;
+  sessionId: string;
+}): Promise<void> {
+  return invoke("terminal_close", args);
+}
+
 export interface SaveConversationResult {
   updatedAt: number;
   title: string;

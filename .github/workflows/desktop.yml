@@ -114,6 +114,9 @@ jobs:
       - name: Check Local and Worktree environment UI
         run: pnpm test:workspace-environment-ui
 
+      - name: Check integrated Thread terminal UI
+        run: pnpm test:integrated-terminal-ui
+
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
 

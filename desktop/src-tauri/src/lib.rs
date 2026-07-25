@@ -63,6 +63,8 @@ pub struct AppState {
         Mutex<Option<tietiezhi_agent_approval::PersistentApprovalStore>>,
     /// PTY and pipe sessions shared by App Server command methods and model tools.
     pub(crate) codex_exec: tietiezhi_agent_exec::ExecManager,
+    /// User-visible terminal sessions grouped by Thread and backed by codex_exec.
+    pub(crate) terminal_sessions: Mutex<HashMap<String, commands::terminal::TerminalRecord>>,
     /// Source-compatible Starlark command policy and safe-command classifier.
     pub(crate) codex_execpolicy: tietiezhi_agent_execpolicy::ExecPolicyRuntime,
     /// Shared, execution-attributed HTTP/SOCKS network sandbox proxy.
@@ -125,6 +127,7 @@ pub fn run() {
             codex_session_approvals: tietiezhi_agent_approval::SessionApprovalStore::default(),
             codex_persistent_approvals: Mutex::new(None),
             codex_exec: tietiezhi_agent_exec::ExecManager::default(),
+            terminal_sessions: Mutex::new(HashMap::new()),
             codex_execpolicy: tietiezhi_agent_execpolicy::ExecPolicyRuntime::default(),
             codex_network: tietiezhi_agent_network::NetworkRuntime::default(),
             codex_guardian: Mutex::new(tietiezhi_agent_review::GuardianCircuitBreaker::default()),
@@ -246,6 +249,13 @@ pub fn run() {
             commands::workspace::restore_task_workspace_snapshot,
             commands::workspace::handoff_task_workspace,
             commands::workspace::transfer_task_workspace_file,
+            commands::terminal::terminal_list,
+            commands::terminal::terminal_start,
+            commands::terminal::terminal_read,
+            commands::terminal::terminal_write,
+            commands::terminal::terminal_resize,
+            commands::terminal::terminal_terminate,
+            commands::terminal::terminal_close,
             commands::assets::pick_chat_files,
             commands::assets::pick_chat_folder,
             commands::assets::inspect_chat_asset_paths,

@@ -46,6 +46,8 @@ import { PermissionPrompt } from "@/features/chat/permission-prompt";
 import { ProjectSelect } from "@/features/chat/project-select";
 import { StarterSuggestions } from "@/features/chat/starter-suggestions";
 import { ToolCallCard } from "@/features/chat/tool-call-card";
+import { IntegratedTerminalPanel } from "@/features/chat/integrated-terminal-panel";
+import { WorkspaceModePanel } from "@/features/chat/workspace-mode-panel";
 import {
   dictationToggle,
   errorMessage,
@@ -923,6 +925,11 @@ export function ChatPage() {
           <div className="bg-muted/70 relative z-10 mx-3 -mb-2 flex h-10 items-start rounded-t-xl border px-1.5 pt-1 shadow-sm">
             <ProjectSelect />
           </div>
+        )}
+
+        {activeId != null && <WorkspaceModePanel />}
+        {activeId != null && taskMode === "code" && (
+          <IntegratedTerminalPanel taskId={activeId} />
         )}
 
         <ChatComposerSurface dragActive={dragActive}>

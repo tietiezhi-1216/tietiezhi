@@ -68,7 +68,7 @@
 | R27 | Guardian 与 Review | 已完成 | crates/agent-review; crates/agent-core review lifecycle and guardian audit rollout; desktop Responses executor and approval integration; docs/CODEX-REVIEW-GUARDIAN.md | Guardian is an untrusted model reviewer and never expands Sandbox or durable approval scope; failures and timeouts fail closed. Review shares the selected environment but disables Web, image, Goal/Plan and collaboration tools. |
 | R28 | Memory | 已完成 | crates/agent-memory Chronicle 作业/文件/引用/工具/迁移测试；crates/agent-core Thread memory mode、污染恢复与 memoryCitation；desktop Responses、额度阈值和实验请求接线；docs/CODEX-MEMORY.md | Chronicle 仅使用当前 Responses Provider；实验 Memory 方法未写入固定 stable Schema，R38 前继续保留协议兼容测试。 |
 | R29 | Git 与 Worktree | 已完成 | crates/agent-git detached Worktree、.worktreeinclude、Snapshot/Restore/Handoff、清理与旧工作区接管测试；desktop 共享环境命令、提示词和 SSR/migration UI 门禁；docs/CODEX-GIT-WORKTREES.md | Local 环境会直接修改用户项目，UI 与审批必须持续明确展示；Windows worktree 与长路径仍由跨平台 CI 和 R37 soak 覆盖。 |
-| R30 | 集成终端 | 待开始 |  |  |
+| R30 | 集成终端 | 已完成 | R13 crates/agent-exec PTY/ConPTY、stdin、resize、poll 和进程树测试；desktop terminal Thread 会话命令、多标签文本终端、任务删除清理与 SSR 门禁；docs/CODEX-INTEGRATED-TERMINAL.md | 集成终端使用安全的文本 VT 投影而非完整 GPU 终端模拟器；复杂全屏 TUI 的像素级呈现留给外部终端，stdin/resize/进程语义已完整。 |
 | R31 | Desktop 时间线 | 待开始 |  |  |
 | R32 | Diff 与 Git UI | 待开始 |  |  |
 | R33 | Apps 与连接器 | 待开始 |  |  |
