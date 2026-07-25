@@ -69,6 +69,7 @@ jobs:
             crates/agent-events
             crates/agent-state
             crates/agent-core
+            crates/agent-model
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -81,6 +82,9 @@ jobs:
 
       - name: Check Codex protocol snapshots
         run: pnpm check:codex-schema
+
+      - name: Check Codex model catalog
+        run: pnpm check:codex-models
 
       - name: Typecheck Codex protocol
         run: pnpm test:codex-protocol-ts
@@ -102,6 +106,9 @@ jobs:
 
       - name: Codex thread runtime tests
         run: cargo test --manifest-path ../crates/agent-core/Cargo.toml
+
+      - name: Codex Responses model tests
+        run: cargo test --manifest-path ../crates/agent-model/Cargo.toml
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

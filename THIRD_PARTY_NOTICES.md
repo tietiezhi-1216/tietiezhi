@@ -39,3 +39,15 @@ R6 的 Turn 生命周期、输入转换和 rollout 投影行为参考以下上�
 - `codex-rs/protocol/src/items.rs`
 - `codex-rs/protocol/src/protocol.rs`
 - `codex-rs/protocol/src/user_input.rs`
+
+R7 的 Responses 请求、SSE、重试、Token Usage 和模型目录行为参考以下上游源码并在本仓库重新实现，没有链接或调用上游 crate：
+
+- `codex-rs/codex-api/src/common.rs`
+- `codex-rs/codex-api/src/sse/responses.rs`
+- `codex-rs/core/src/client.rs`
+- `codex-rs/core/src/responses_retry.rs`
+- `codex-rs/core/src/session/turn.rs`
+- `codex-rs/model-provider-info/src/lib.rs`
+- `codex-rs/models-manager/models.json`
+- `codex-rs/app-server/src/models.rs`
+- `codex-rs/app-server/src/bespoke_event_handling.rs`

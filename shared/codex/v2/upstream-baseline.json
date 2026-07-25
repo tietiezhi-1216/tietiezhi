@@ -292,9 +292,9 @@
       },
       {
         "method": "model/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R7",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "modelProvider/capabilities/read",
@@ -664,9 +664,9 @@
       },
       {
         "method": "error",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "externalAgentConfig/import/completed",
@@ -718,9 +718,9 @@
       },
       {
         "method": "item/agentMessage/delta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "item/autoApprovalReview/completed",
@@ -778,21 +778,21 @@
       },
       {
         "method": "item/reasoning/summaryPartAdded",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "item/reasoning/summaryTextDelta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "item/reasoning/textDelta",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "item/started",
@@ -814,21 +814,21 @@
       },
       {
         "method": "model/rerouted",
-        "status": "pending",
+        "status": "implemented",
         "target": "R7",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "model/safetyBuffering/updated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R7",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "model/verification",
-        "status": "pending",
+        "status": "implemented",
         "target": "R7",
-        "note": ""
+        "note": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
       },
       {
         "method": "process/exited",
@@ -984,7 +984,7 @@
         "method": "thread/tokenUsage/updated",
         "status": "implemented",
         "target": "R5",
-        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试"
+        "note": "crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试；R7 增加 Thread 累积、token_count rollout 与重启恢复"
       },
       {
         "method": "thread/unarchived",
@@ -1129,9 +1129,9 @@
     {
       "id": "R7",
       "name": "Responses 模型层",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Gateway Responses 能力探测、在线模型目录、账号额度和 rate-limit 服务映射进入 R8；工具调用执行进入 R10-R13。",
+      "evidence": "crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md"
     },
     {
       "id": "R8",

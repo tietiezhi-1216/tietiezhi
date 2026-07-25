@@ -13,8 +13,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tietiezhi_agent_model::{ModelError, TokenUsage, list_models};
 use tietiezhi_agent_protocol::{
-    ClientRequest, JSONRPCRequest, JSONRPCResponse, ServerNotification,
+    ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse, ServerNotification,
     ThreadApproveGuardianDeniedActionResponse, ThreadArchiveResponse, ThreadDeleteResponse,
     ThreadForkResponse, ThreadInjectItemsResponse, ThreadItem, ThreadListResponse,
     ThreadLoadedListResponse, ThreadMetadataUpdateResponse, ThreadReadResponse,
@@ -125,6 +126,26 @@ pub struct TurnInputBatch {
     pub output_schema: Option<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnInputDrain {
+    pub batches: Vec<TurnInputBatch>,
+    pub notifications: Vec<RoutedNotification>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnExecutionSnapshot {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub model: String,
+    pub model_provider: String,
+    pub reasoning_effort: Option<String>,
+    pub reasoning_summary: Option<Value>,
+    pub service_tier: Option<String>,
+    pub history: Vec<Value>,
+}
+
 #[derive(Debug, Clone)]
 struct AcceptedClientMessage {
     turn_id: String,
@@ -136,6 +157,7 @@ struct TurnProjection {
     turns: Vec<Value>,
     active_turn_id: Option<String>,
     accepted_client_messages: HashMap<String, AcceptedClientMessage>,
+    token_usage: TokenUsage,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +172,7 @@ struct LoadedThread {
     unload_when_idle: bool,
     guardian_approvals: Vec<Value>,
     injected_items: Vec<Value>,
+    token_usage: TokenUsage,
 }
 
 #[derive(Debug, Default)]
@@ -323,6 +346,7 @@ impl ThreadManager {
         let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
 
         let (result, notifications) = match method {
+            "model/list" => (self.model_list(&params)?, Vec::new()),
             "thread/start" => self.thread_start(connection_id, &params)?,
             "thread/resume" => self.thread_resume(connection_id, &params)?,
             "thread/fork" => self.thread_fork(connection_id, &params)?,
@@ -371,6 +395,7 @@ impl ThreadManager {
             };
         }
         match method {
+            "model/list" => validate!(ModelListResponse),
             "thread/start" => validate!(ThreadStartResponse),
             "thread/resume" => validate!(ThreadResumeResponse),
             "thread/fork" => validate!(ThreadForkResponse),
@@ -393,6 +418,42 @@ impl ThreadManager {
             "turn/interrupt" => validate!(TurnInterruptResponse),
             _ => Err(RpcError::method_not_found(method)),
         }
+    }
+
+    fn model_list(&self, params: &Value) -> RpcResult<Value> {
+        let cursor = params
+            .get("cursor")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| RpcError::invalid("cursor must be a string"))
+            })
+            .transpose()?;
+        let limit = params
+            .get("limit")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| RpcError::invalid("limit must be an unsigned 32-bit integer"))
+            })
+            .transpose()?;
+        let include_hidden = params
+            .get("includeHidden")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| RpcError::invalid("includeHidden must be a boolean"))
+            })
+            .transpose()?
+            .unwrap_or(false);
+        list_models(cursor, limit, include_hidden).map_err(|error| match error {
+            ModelError::InvalidRequest { message } => RpcError::invalid_request(message),
+            error => RpcError::internal(format!("failed to load model catalog: {error}")),
+        })
     }
 
     fn thread_start(
@@ -544,6 +605,12 @@ impl ThreadManager {
             .as_deref()
             .map(response_items_from_rollout)
             .unwrap_or_else(|| source.injected_items.clone());
+        let inherited_token_usage = copied_rollout_items
+            .as_deref()
+            .map(project_turns)
+            .transpose()?
+            .map(|projection| projection.token_usage)
+            .unwrap_or_else(|| source.token_usage.clone());
         let mut record = source.record;
         record.id = id.clone();
         record.forked_from_id = Some(source_id);
@@ -582,6 +649,7 @@ impl ThreadManager {
             self.append_turn_snapshots(&loaded, &turns)?;
         }
         loaded.injected_items = inherited_items;
+        loaded.token_usage = inherited_token_usage;
         loaded.turns = turns;
         self.persist_loaded(&mut loaded)?;
         state.loaded.insert(id.clone(), loaded.clone());
@@ -1162,6 +1230,11 @@ impl ThreadManager {
                 .filter(|value| !value.is_null())
                 .cloned(),
         });
+        if !input.is_empty() {
+            loaded
+                .injected_items
+                .push(response_item_from_user_input(&input));
+        }
         if let Some(client_id) = client_id {
             loaded.accepted_client_messages.insert(
                 client_id,
@@ -1267,15 +1340,12 @@ impl ThreadManager {
             )));
         }
 
-        let now = now_ms();
         let item = json!({
             "type": "userMessage",
             "id": Uuid::now_v7().to_string(),
             "clientId": client_id,
             "content": input
         });
-        self.append_user_input_records(&loaded, &active_turn_id, &item, &input, now)?;
-        upsert_turn_item(&mut loaded.turns, &active_turn_id, item.clone())?;
         loaded.pending_inputs.push(TurnInputBatch {
             thread_id: thread_id.clone(),
             turn_id: active_turn_id.clone(),
@@ -1293,36 +1363,13 @@ impl ThreadManager {
                 },
             );
         }
+        let now = now_ms();
         loaded.record.updated_at_ms = now;
         loaded.record.recency_at_ms = Some(now);
         self.persist_loaded(&mut loaded)?;
         state.loaded.insert(thread_id.clone(), loaded);
 
-        let notifications = vec![
-            self.checked_notification_for(
-                &state,
-                &thread_id,
-                "item/started",
-                json!({
-                    "threadId": thread_id,
-                    "turnId": active_turn_id,
-                    "item": item,
-                    "startedAtMs": now
-                }),
-            )?,
-            self.checked_notification_for(
-                &state,
-                &thread_id,
-                "item/completed",
-                json!({
-                    "threadId": thread_id,
-                    "turnId": active_turn_id,
-                    "item": item,
-                    "completedAtMs": now
-                }),
-            )?,
-        ];
-        Ok((json!({"turnId": active_turn_id}), notifications))
+        Ok((json!({"turnId": active_turn_id}), Vec::new()))
     }
 
     fn turn_interrupt(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
@@ -1371,23 +1418,500 @@ impl ThreadManager {
         thread_id: &str,
         turn_id: &str,
     ) -> RpcResult<Vec<TurnInputBatch>> {
+        Ok(self.drain_turn_inputs(thread_id, turn_id, true)?.batches)
+    }
+
+    /// Drain pending input and record newly steered user messages immediately
+    /// before the next sampling request, matching Codex's input queue order.
+    pub fn drain_turn_inputs(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        include_steered: bool,
+    ) -> RpcResult<TurnInputDrain> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        let recorded_item_ids = loaded
+            .turns
+            .iter()
+            .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+            .and_then(|turn| turn.get("items"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect::<HashSet<_>>();
+        let (matching, retained): (Vec<_>, Vec<_>) =
+            loaded.pending_inputs.drain(..).partition(|input| {
+                input.turn_id == turn_id
+                    && (include_steered
+                        || input
+                            .item_id
+                            .as_ref()
+                            .is_none_or(|item_id| recorded_item_ids.contains(item_id)))
+            });
+        loaded.pending_inputs = retained;
+        let mut notification_items = Vec::new();
+        for batch in &matching {
+            let Some(item_id) = batch.item_id.as_deref() else {
+                continue;
+            };
+            if turn_contains_item(&loaded.turns, turn_id, item_id) {
+                continue;
+            }
+            let now = now_ms();
+            let item = json!({
+                "type": "userMessage",
+                "id": item_id,
+                "clientId": batch.client_user_message_id,
+                "content": batch.input
+            });
+            self.append_user_input_records(&loaded, turn_id, &item, &batch.input, now)?;
+            upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
+            loaded
+                .injected_items
+                .push(response_item_from_user_input(&batch.input));
+            notification_items.push((item, now));
+        }
+        if !notification_items.is_empty() {
+            loaded.record.updated_at_ms = now_ms();
+            loaded.record.recency_at_ms = Some(loaded.record.updated_at_ms);
+            self.persist_loaded(&mut loaded)?;
+        }
+        state.loaded.insert(thread_id.into(), loaded);
+        let mut notifications = Vec::with_capacity(notification_items.len() * 2);
+        for (item, now) in notification_items {
+            notifications.push(self.checked_notification_for(
+                &state,
+                thread_id,
+                "item/started",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": item,
+                    "startedAtMs": now
+                }),
+            )?);
+            notifications.push(self.checked_notification_for(
+                &state,
+                thread_id,
+                "item/completed",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": item,
+                    "completedAtMs": now
+                }),
+            )?);
+        }
+        Ok(TurnInputDrain {
+            batches: matching,
+            notifications,
+        })
+    }
+
+    pub fn turn_execution_snapshot(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> RpcResult<TurnExecutionSnapshot> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        if loaded.active_turn_id.as_deref() != Some(turn_id) {
+            return Err(RpcError::invalid_request(format!(
+                "turn is not active: {turn_id}"
+            )));
+        }
+        Ok(TurnExecutionSnapshot {
+            thread_id: thread_id.into(),
+            turn_id: turn_id.into(),
+            model: loaded.record.model,
+            model_provider: loaded.record.model_provider,
+            reasoning_effort: loaded.record.reasoning_effort,
+            reasoning_summary: loaded.record.reasoning_summary,
+            service_tier: loaded.record.service_tier,
+            history: loaded.injected_items,
+        })
+    }
+
+    /// Project an added Responses item into the V2 timeline. Tool items that
+    /// belong to later milestones stay in canonical model history but do not
+    /// claim a partially implemented V2 lifecycle.
+    pub fn model_item_started(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        response_item: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let Some(item) = response_item_to_v2(&response_item)? else {
+            return Ok(Vec::new());
+        };
+        let item_id = required_item_string(&item, "id", "model item")?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        if turn_contains_item(&loaded.turns, turn_id, item_id) {
+            return Ok(Vec::new());
+        }
+        let now = now_ms();
+        upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(item_lifecycle_event(
+                    "item_started",
+                    thread_id,
+                    turn_id,
+                    &item,
+                    "started_at_ms",
+                    now,
+                )?)
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            "item/started",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "item": item,
+                "startedAtMs": now
+            }),
+        )?])
+    }
+
+    pub fn model_item_completed(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        response_item: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let projected = response_item_to_v2(&response_item)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        let now = now_ms();
+        let mut notifications = Vec::new();
+        if let Some(item) = projected {
+            let item_id = required_item_string(&item, "id", "model item")?;
+            if !turn_contains_item(&loaded.turns, turn_id, item_id) {
+                upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
+                notifications.push(self.checked_notification_for(
+                    &state,
+                    thread_id,
+                    "item/started",
+                    json!({
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                        "item": item,
+                        "startedAtMs": now
+                    }),
+                )?);
+            } else {
+                upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
+            }
+            notifications.push(self.checked_notification_for(
+                &state,
+                thread_id,
+                "item/completed",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": item,
+                    "completedAtMs": now
+                }),
+            )?);
+            if let Some(appender) = rollout_appender(&loaded)? {
+                if notifications
+                    .first()
+                    .is_some_and(|notification| notification.method == "item/started")
+                {
+                    appender
+                        .append_event(item_lifecycle_event(
+                            "item_started",
+                            thread_id,
+                            turn_id,
+                            &item,
+                            "started_at_ms",
+                            now,
+                        )?)
+                        .map_err(state_error)?;
+                }
+                appender
+                    .append_response_item(response_item.clone())
+                    .map_err(state_error)?;
+                appender
+                    .append_event(item_lifecycle_event(
+                        "item_completed",
+                        thread_id,
+                        turn_id,
+                        &item,
+                        "completed_at_ms",
+                        now,
+                    )?)
+                    .map_err(state_error)?;
+                appender.sync_data().map_err(state_error)?;
+            }
+        } else if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_response_item(response_item.clone())
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        loaded.injected_items.push(response_item);
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(notifications)
+    }
+
+    pub fn agent_message_delta(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        delta: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.update_streaming_item(thread_id, turn_id, item_id, |item| {
+            if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
+                return Err(RpcError::invalid("streaming item is not an agent message"));
+            }
+            let text = item
+                .get_mut("text")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_owned();
+            item["text"] = json!(format!("{text}{delta}"));
+            Ok(())
+        })?;
+        self.model_delta_notification(
+            thread_id,
+            "item/agentMessage/delta",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "delta": delta
+            }),
+        )
+    }
+
+    pub fn reasoning_summary_part_added(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        summary_index: i64,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        let index = nonnegative_index(summary_index, "summaryIndex")?;
+        self.update_streaming_item(thread_id, turn_id, item_id, |item| {
+            ensure_reasoning_strings(item, "summary", index)?;
+            Ok(())
+        })?;
+        self.model_delta_notification(
+            thread_id,
+            "item/reasoning/summaryPartAdded",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "summaryIndex": summary_index
+            }),
+        )
+    }
+
+    pub fn reasoning_summary_delta(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        summary_index: i64,
+        delta: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        let index = nonnegative_index(summary_index, "summaryIndex")?;
+        self.update_streaming_item(thread_id, turn_id, item_id, |item| {
+            let strings = ensure_reasoning_strings(item, "summary", index)?;
+            let current = strings[index].as_str().unwrap_or_default();
+            strings[index] = json!(format!("{current}{delta}"));
+            Ok(())
+        })?;
+        self.model_delta_notification(
+            thread_id,
+            "item/reasoning/summaryTextDelta",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "summaryIndex": summary_index,
+                "delta": delta
+            }),
+        )
+    }
+
+    pub fn reasoning_summary_done(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        summary_index: i64,
+        text: &str,
+    ) -> RpcResult<()> {
+        let index = nonnegative_index(summary_index, "summaryIndex")?;
+        self.update_streaming_item(thread_id, turn_id, item_id, |item| {
+            let strings = ensure_reasoning_strings(item, "summary", index)?;
+            strings[index] = json!(text);
+            Ok(())
+        })
+    }
+
+    pub fn reasoning_text_delta(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        content_index: i64,
+        delta: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        let index = nonnegative_index(content_index, "contentIndex")?;
+        self.update_streaming_item(thread_id, turn_id, item_id, |item| {
+            let strings = ensure_reasoning_strings(item, "content", index)?;
+            let current = strings[index].as_str().unwrap_or_default();
+            strings[index] = json!(format!("{current}{delta}"));
+            Ok(())
+        })?;
+        self.model_delta_notification(
+            thread_id,
+            "item/reasoning/textDelta",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "itemId": item_id,
+                "contentIndex": content_index,
+                "delta": delta
+            }),
+        )
+    }
+
+    pub fn model_rerouted_notification(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        from_model: &str,
+        to_model: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.model_delta_notification(
+            thread_id,
+            "model/rerouted",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "fromModel": from_model,
+                "toModel": to_model,
+                "reason": "highRiskCyberActivity"
+            }),
+        )
+    }
+
+    pub fn model_verification_notification(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        verifications: Vec<String>,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.model_delta_notification(
+            thread_id,
+            "model/verification",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "verifications": verifications
+            }),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn safety_buffering_notification(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        model: &str,
+        use_cases: Vec<String>,
+        reasons: Vec<String>,
+        show_buffering_ui: bool,
+        faster_model: Option<String>,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.model_delta_notification(
+            thread_id,
+            "model/safetyBuffering/updated",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "model": model,
+                "useCases": use_cases,
+                "reasons": reasons,
+                "showBufferingUi": show_buffering_ui,
+                "fasterModel": faster_model
+            }),
+        )
+    }
+
+    pub fn error_notification(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        error: Value,
+        will_retry: bool,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        self.model_delta_notification(
+            thread_id,
+            "error",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "error": error,
+                "willRetry": will_retry
+            }),
+        )
+    }
+
+    fn model_delta_notification(
+        &self,
+        thread_id: &str,
+        method: &str,
+        params: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        let state = self.state()?;
+        self.loaded_thread_locked(thread_id, &state)?;
+        Ok(vec![self.checked_notification_for(
+            &state, thread_id, method, params,
+        )?])
+    }
+
+    fn update_streaming_item<F>(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item_id: &str,
+        update: F,
+    ) -> RpcResult<()>
+    where
+        F: FnOnce(&mut Value) -> RpcResult<()>,
+    {
         validate_thread_id(thread_id)?;
         let mut state = self.state()?;
         let loaded = state
             .loaded
             .get_mut(thread_id)
             .ok_or_else(|| RpcError::invalid(format!("thread not loaded: {thread_id}")))?;
-        if loaded.active_turn_id.as_deref() != Some(turn_id) {
-            return Err(RpcError::invalid_request(format!(
-                "turn is not active: {turn_id}"
-            )));
-        }
-        let (matching, retained): (Vec<_>, Vec<_>) = loaded
-            .pending_inputs
-            .drain(..)
-            .partition(|input| input.turn_id == turn_id);
-        loaded.pending_inputs = retained;
-        Ok(matching)
+        require_active_turn(loaded, turn_id)?;
+        let item = turn_item_mut(&mut loaded.turns, turn_id, item_id)?;
+        update(item)
     }
 
     /// Complete or fail the active Turn through the same terminal state path
@@ -1416,6 +1940,31 @@ impl ThreadManager {
             self.terminal_turn_notifications(&state, thread_id, &loaded, turn_id)?;
         self.store_or_unload_completed(&mut state, thread_id, loaded);
         Ok(notifications)
+    }
+
+    /// Finish the active turn only when same-turn steering has not queued more
+    /// user input. This closes the check/complete race inside the runtime lock.
+    pub fn complete_turn_if_no_pending(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> RpcResult<Option<Vec<RoutedNotification>>> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        if loaded
+            .pending_inputs
+            .iter()
+            .any(|input| input.turn_id == turn_id)
+        {
+            return Ok(None);
+        }
+        self.finish_turn_locked(&mut loaded, turn_id, "completed", None, "completed")?;
+        let notifications =
+            self.terminal_turn_notifications(&state, thread_id, &loaded, turn_id)?;
+        self.store_or_unload_completed(&mut state, thread_id, loaded);
+        Ok(Some(notifications))
     }
 
     pub fn turn_moderation_metadata_notification(
@@ -1526,6 +2075,50 @@ impl ThreadManager {
     ) -> RpcResult<Vec<RoutedNotification>> {
         self.require_loaded(thread_id)?;
         let state = self.state()?;
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            "thread/tokenUsage/updated",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "tokenUsage": token_usage
+            }),
+        )?])
+    }
+
+    pub fn record_token_usage(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        last: TokenUsage,
+        model_context_window: Option<i64>,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        add_token_usage(&mut loaded.token_usage, &last);
+        let token_usage = json!({
+            "total": loaded.token_usage.as_v2_breakdown(),
+            "last": last.as_v2_breakdown(),
+            "modelContextWindow": model_context_window
+        });
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(json!({
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": loaded.token_usage,
+                        "last_token_usage": last,
+                        "model_context_window": model_context_window
+                    },
+                    "rate_limits": Value::Null
+                }))
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        state.loaded.insert(thread_id.into(), loaded);
         Ok(vec![self.checked_notification_for(
             &state,
             thread_id,
@@ -1946,6 +2539,7 @@ impl ThreadManager {
             unload_when_idle: false,
             guardian_approvals: Vec::new(),
             injected_items,
+            token_usage: TokenUsage::default(),
         };
         state.loaded.insert(record.id.clone(), loaded.clone());
         Ok(loaded)
@@ -1981,6 +2575,7 @@ impl ThreadManager {
             unload_when_idle: false,
             guardian_approvals: Vec::new(),
             injected_items,
+            token_usage: projection.token_usage,
         };
         // A process restart cannot safely resume an in-flight model/tool
         // operation. Codex exposes such persisted turns as interrupted instead
@@ -2022,6 +2617,7 @@ impl ThreadManager {
                 unload_when_idle: false,
                 guardian_approvals: Vec::new(),
                 injected_items: Vec::new(),
+                token_usage: TokenUsage::default(),
             },
             false,
         ))
@@ -2631,6 +3227,19 @@ fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
                 .map(v2_input_to_core)
                 .collect::<RpcResult<Vec<_>>>()?
         })),
+        Some("agentMessage") => Ok(json!({
+            "type": "AgentMessage",
+            "id": required_item_string(item, "id", "agentMessage item")?,
+            "text": item.get("text").cloned().unwrap_or_else(|| json!("")),
+            "phase": item.get("phase").cloned().unwrap_or(Value::Null),
+            "memory_citation": item.get("memoryCitation").cloned().unwrap_or(Value::Null)
+        })),
+        Some("reasoning") => Ok(json!({
+            "type": "Reasoning",
+            "id": required_item_string(item, "id", "reasoning item")?,
+            "summary": item.get("summary").cloned().unwrap_or_else(|| json!([])),
+            "content": item.get("content").cloned().unwrap_or_else(|| json!([]))
+        })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported ThreadItem conversion to core: {other}"
         ))),
@@ -2651,6 +3260,19 @@ fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
                 .iter()
                 .map(core_input_to_v2)
                 .collect::<RpcResult<Vec<_>>>()?
+        })),
+        Some("AgentMessage") => Ok(json!({
+            "type": "agentMessage",
+            "id": required_item_string(item, "id", "AgentMessage item")?,
+            "text": item.get("text").cloned().unwrap_or_else(|| json!("")),
+            "phase": item.get("phase").cloned().unwrap_or(Value::Null),
+            "memoryCitation": item.get("memory_citation").cloned().unwrap_or(Value::Null)
+        })),
+        Some("Reasoning") => Ok(json!({
+            "type": "reasoning",
+            "id": required_item_string(item, "id", "Reasoning item")?,
+            "summary": item.get("summary").cloned().unwrap_or_else(|| json!([])),
+            "content": item.get("content").cloned().unwrap_or_else(|| json!([]))
         })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported core TurnItem conversion: {other}"
@@ -2993,6 +3615,13 @@ fn project_turns(items: &[RecoveredRolloutItem]) -> RpcResult<TurnProjection> {
                     });
                 }
             }
+            Some("token_count") => {
+                if let Some(total) = event.pointer("/info/total_token_usage")
+                    && let Ok(total) = serde_json::from_value::<TokenUsage>(total.clone())
+                {
+                    projection.token_usage = total;
+                }
+            }
             Some("turn_complete") => {
                 let Some(turn_id) = event.get("turn_id").and_then(Value::as_str) else {
                     continue;
@@ -3104,6 +3733,131 @@ fn response_items_from_rollout(items: &[RecoveredRolloutItem]) -> Vec<Value> {
             _ => None,
         })
         .collect()
+}
+
+fn response_item_to_v2(item: &Value) -> RpcResult<Option<Value>> {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") if item.get("role").and_then(Value::as_str) == Some("assistant") => {
+            let text = item
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|content| {
+                    matches!(
+                        content.get("type").and_then(Value::as_str),
+                        Some("output_text" | "text")
+                    )
+                })
+                .filter_map(|content| content.get("text").and_then(Value::as_str))
+                .collect::<String>();
+            Ok(Some(json!({
+                "type": "agentMessage",
+                "id": required_item_string(item, "id", "assistant response item")?,
+                "text": text,
+                "phase": item.get("phase").cloned().unwrap_or(Value::Null),
+                "memoryCitation": Value::Null
+            })))
+        }
+        Some("reasoning") => {
+            let summary = response_text_parts(item.get("summary"), "summary_text");
+            let content = response_text_parts(item.get("content"), "reasoning_text");
+            Ok(Some(json!({
+                "type": "reasoning",
+                "id": required_item_string(item, "id", "reasoning response item")?,
+                "summary": summary,
+                "content": content
+            })))
+        }
+        Some(_) => Ok(None),
+        None => Err(RpcError::invalid("ResponseItem type is required")),
+    }
+}
+
+fn response_text_parts(value: Option<&Value>, expected_type: &str) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some(expected_type))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn add_token_usage(total: &mut TokenUsage, last: &TokenUsage) {
+    total.input_tokens += last.input_tokens;
+    total.cached_input_tokens += last.cached_input_tokens;
+    total.cache_write_input_tokens += last.cache_write_input_tokens;
+    total.output_tokens += last.output_tokens;
+    total.reasoning_output_tokens += last.reasoning_output_tokens;
+    total.total_tokens += last.total_tokens;
+}
+
+fn require_active_turn(loaded: &LoadedThread, turn_id: &str) -> RpcResult<()> {
+    if loaded.active_turn_id.as_deref() == Some(turn_id) {
+        Ok(())
+    } else {
+        Err(RpcError::invalid_request(format!(
+            "turn is not active: {turn_id}"
+        )))
+    }
+}
+
+fn turn_contains_item(turns: &[Value], turn_id: &str, item_id: &str) -> bool {
+    turns
+        .iter()
+        .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+        .and_then(|turn| turn.get("items"))
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("id").and_then(Value::as_str) == Some(item_id))
+        })
+}
+
+fn turn_item_mut<'a>(
+    turns: &'a mut [Value],
+    turn_id: &str,
+    item_id: &str,
+) -> RpcResult<&'a mut Value> {
+    find_turn_mut(turns, turn_id)
+        .and_then(|turn| turn.get_mut("items"))
+        .and_then(Value::as_array_mut)
+        .and_then(|items| {
+            items
+                .iter_mut()
+                .find(|item| item.get("id").and_then(Value::as_str) == Some(item_id))
+        })
+        .ok_or_else(|| RpcError::invalid(format!("item not found: {item_id}")))
+}
+
+fn nonnegative_index(value: i64, name: &str) -> RpcResult<usize> {
+    usize::try_from(value).map_err(|_| RpcError::invalid(format!("{name} must be nonnegative")))
+}
+
+fn ensure_reasoning_strings<'a>(
+    item: &'a mut Value,
+    key: &str,
+    index: usize,
+) -> RpcResult<&'a mut Vec<Value>> {
+    if item.get("type").and_then(Value::as_str) != Some("reasoning") {
+        return Err(RpcError::invalid("streaming item is not reasoning"));
+    }
+    let values = item
+        .get_mut(key)
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| RpcError::internal(format!("reasoning {key} must be an array")))?;
+    while values.len() <= index {
+        values.push(json!(""));
+    }
+    if values.iter().any(|value| !value.is_string()) {
+        return Err(RpcError::internal(format!(
+            "reasoning {key} must contain strings"
+        )));
+    }
+    Ok(values)
 }
 
 fn upsert_turn_item(turns: &mut [Value], turn_id: &str, item: Value) -> RpcResult<()> {
@@ -4046,12 +4800,20 @@ mod tests {
         });
         let steered = manager.dispatch("desktop", request(3, "turn/steer", steer_params.clone()));
         assert_eq!(result(&steered)["turnId"], turn_id);
-        assert_eq!(steered.notifications.len(), 2);
+        assert!(steered.notifications.is_empty());
         assert!(serde_json::from_value::<TurnSteerResponse>(result(&steered).clone()).is_ok());
-        let pending = manager.take_turn_inputs(&thread_id, &turn_id).unwrap();
-        assert_eq!(pending.len(), 2);
+        let initial = manager
+            .drain_turn_inputs(&thread_id, &turn_id, false)
+            .unwrap();
+        assert_eq!(initial.batches.len(), 1);
+        assert!(initial.notifications.is_empty());
+        let drained = manager
+            .drain_turn_inputs(&thread_id, &turn_id, true)
+            .unwrap();
+        assert_eq!(drained.batches.len(), 1);
+        assert_eq!(drained.notifications.len(), 2);
         assert_eq!(
-            pending[1].client_user_message_id.as_deref(),
+            drained.batches[0].client_user_message_id.as_deref(),
             Some("steer-1")
         );
 
@@ -4348,6 +5110,207 @@ mod tests {
             ),
         );
         assert_eq!(empty_steer.response["error"]["code"], -32600);
+    }
+
+    #[test]
+    fn model_list_uses_pinned_catalog_and_codex_cursor_rules() {
+        let (_temp, manager) = manager();
+        let first = manager.dispatch(
+            "desktop",
+            request(1, "model/list", json!({"limit": 2, "includeHidden": false})),
+        );
+        assert_eq!(result(&first)["data"][0]["id"], "gpt-5.6-sol");
+        assert_eq!(result(&first)["data"][0]["isDefault"], true);
+        assert_eq!(result(&first)["nextCursor"], "2");
+        let hidden = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "model/list",
+                json!({"cursor": "4", "includeHidden": true}),
+            ),
+        );
+        assert_eq!(result(&hidden)["data"][0]["id"], "gpt-5.4");
+        let invalid = manager.dispatch(
+            "desktop",
+            request(3, "model/list", json!({"cursor": "not-a-number"})),
+        );
+        assert_eq!(invalid.response["error"]["code"], -32600);
+    }
+
+    #[test]
+    fn responses_items_deltas_usage_and_model_metadata_follow_v2() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{"type":"text","text":"hello","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_owned();
+        let snapshot = manager
+            .turn_execution_snapshot(&thread_id, &turn_id)
+            .unwrap();
+        assert_eq!(snapshot.model, "gpt-test");
+        assert_eq!(snapshot.history.len(), 1);
+        assert_eq!(snapshot.history[0]["role"], "user");
+
+        let reasoning = json!({
+            "type":"reasoning",
+            "id":"reasoning_1",
+            "summary":[],
+            "content":[]
+        });
+        assert_eq!(
+            manager
+                .model_item_started(&thread_id, &turn_id, reasoning.clone())
+                .unwrap()[0]
+                .method,
+            "item/started"
+        );
+        assert_eq!(
+            manager
+                .reasoning_summary_part_added(&thread_id, &turn_id, "reasoning_1", 0)
+                .unwrap()[0]
+                .method,
+            "item/reasoning/summaryPartAdded"
+        );
+        manager
+            .reasoning_summary_delta(&thread_id, &turn_id, "reasoning_1", 0, "summary")
+            .unwrap();
+        manager
+            .reasoning_text_delta(&thread_id, &turn_id, "reasoning_1", 0, "private")
+            .unwrap();
+        let completed_reasoning = json!({
+            "type":"reasoning",
+            "id":"reasoning_1",
+            "summary":[{"type":"summary_text","text":"summary"}],
+            "content":[{"type":"reasoning_text","text":"private"}]
+        });
+        manager
+            .model_item_completed(&thread_id, &turn_id, completed_reasoning)
+            .unwrap();
+
+        let message = json!({
+            "type":"message",
+            "id":"message_1",
+            "role":"assistant",
+            "content":[]
+        });
+        manager
+            .model_item_started(&thread_id, &turn_id, message)
+            .unwrap();
+        let delta = manager
+            .agent_message_delta(&thread_id, &turn_id, "message_1", "answer")
+            .unwrap();
+        assert_eq!(delta[0].method, "item/agentMessage/delta");
+        let completed_message = json!({
+            "type":"message",
+            "id":"message_1",
+            "role":"assistant",
+            "content":[{"type":"output_text","text":"answer"}]
+        });
+        let completed = manager
+            .model_item_completed(&thread_id, &turn_id, completed_message)
+            .unwrap();
+        assert_eq!(completed[0].method, "item/completed");
+
+        assert_eq!(
+            manager
+                .model_rerouted_notification(&thread_id, &turn_id, "gpt-test", "gpt-rerouted")
+                .unwrap()[0]
+                .method,
+            "model/rerouted"
+        );
+        assert_eq!(
+            manager
+                .model_verification_notification(
+                    &thread_id,
+                    &turn_id,
+                    vec!["trustedAccessForCyber".into()]
+                )
+                .unwrap()[0]
+                .method,
+            "model/verification"
+        );
+        assert_eq!(
+            manager
+                .safety_buffering_notification(
+                    &thread_id,
+                    &turn_id,
+                    "gpt-test",
+                    vec!["cyber".into()],
+                    vec!["policy".into()],
+                    true,
+                    Some("gpt-fast".into())
+                )
+                .unwrap()[0]
+                .method,
+            "model/safetyBuffering/updated"
+        );
+        let usage = TokenUsage {
+            input_tokens: 10,
+            cached_input_tokens: 2,
+            cache_write_input_tokens: 1,
+            output_tokens: 3,
+            reasoning_output_tokens: 1,
+            total_tokens: 13,
+        };
+        let first_usage = manager
+            .record_token_usage(&thread_id, &turn_id, usage.clone(), None)
+            .unwrap();
+        assert_eq!(first_usage[0].method, "thread/tokenUsage/updated");
+        assert_eq!(
+            first_usage[0].params["tokenUsage"]["total"]["totalTokens"],
+            13
+        );
+        let second_usage = manager
+            .record_token_usage(&thread_id, &turn_id, usage, None)
+            .unwrap();
+        assert_eq!(
+            second_usage[0].params["tokenUsage"]["total"]["totalTokens"],
+            26
+        );
+        manager.complete_turn(&thread_id, &turn_id, None).unwrap();
+        let read = manager.dispatch(
+            "desktop",
+            request(
+                3,
+                "thread/read",
+                json!({"threadId":thread_id,"includeTurns":true}),
+            ),
+        );
+        let items = result(&read)["thread"]["turns"][0]["items"]
+            .as_array()
+            .unwrap();
+        assert_eq!(items[1]["type"], "reasoning");
+        assert_eq!(items[1]["summary"][0], "summary");
+        assert_eq!(items[2]["type"], "agentMessage");
+        assert_eq!(items[2]["text"], "answer");
+        assert_eq!(manager.injected_items(&thread_id).unwrap().len(), 3);
+        let metadata = manager.inner.store.thread(&thread_id).unwrap().unwrap();
+        let recovery = manager
+            .inner
+            .store
+            .recover_rollout(metadata.rollout_path)
+            .unwrap();
+        assert_eq!(
+            project_turns(&recovery.rollout_items)
+                .unwrap()
+                .token_usage
+                .total_tokens,
+            26
+        );
     }
 
     #[test]

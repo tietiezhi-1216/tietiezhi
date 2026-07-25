@@ -48,7 +48,7 @@ SQLite `canonical_json` 不再保存 Turn 快照。Thread 的 Turn、Item、活�
 
 ## R7 接口
 
-`take_turn_inputs(thread_id, turn_id)` 以 exactly-once 内存队列把已接受的 Start/Steer 输入交给 R7 Responses 执行器；`complete_turn` 将执行结果送回统一终态路径。崩溃后不重建该执行队列，只恢复为 interrupted 历史。
+`drain_turn_inputs(thread_id, turn_id, include_steered)` 以 exactly-once 内存队列把已接受输入交给 R7 Responses 执行器。首次采样只取 Start 输入；后续采样才记录并消费 Steer 输入，避免把运行中追加的用户消息错误地排在当前模型输出之前。`complete_turn` 将执行结果送回统一终态路径。崩溃后不重建该执行队列，只恢复为 interrupted 历史。
 
 ## 验证
 

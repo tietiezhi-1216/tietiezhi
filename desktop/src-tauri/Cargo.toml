@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tietiezhi-agent-core = { path = "../../crates/agent-core" }
 tietiezhi-agent-events = { path = "../../crates/agent-events" }
+tietiezhi-agent-model = { path = "../../crates/agent-model" }
 tietiezhi-agent-state = { path = "../../crates/agent-state" }
 tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }
 serde = { version = "1", features = ["derive"] }

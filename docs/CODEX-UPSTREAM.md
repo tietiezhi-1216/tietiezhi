@@ -31,7 +31,7 @@
 | Thread/Turn/Item 映射 | `codex-rs/app-server-protocol/src/protocol` | `crates/agent-protocol`、`crates/agent-events`、`desktop/src-tauri/src/agent/events.rs` | R2-R3 |
 | Thread 管理 | `codex-rs/core/src/codex_thread.rs`、`thread_manager.rs` | `crates/agent-core` | R5-R6 |
 | Turn 任务状态机 | `codex-rs/core/src/tasks`、`state/turn.rs` | `crates/agent-core` | R6 |
-| Responses 客户端 | `codex-rs/core/src/client.rs`、`model-provider` | `crates/agent-model` | R7 |
+| Responses 客户端 | `codex-rs/codex-api/src/common.rs`、`codex-api/src/sse/responses.rs`、`core/src/client.rs`、`responses_retry.rs`、`models-manager/models.json` | `crates/agent-model`、`crates/agent-core`、`desktop/src-tauri/src/commands/codex.rs` | R7 |
 | 上下文与压缩 | `codex-rs/core/src/context_manager`、`compact*.rs` | `crates/agent-context` | R9 |
 | 工具注册和调度 | `codex-rs/core/src/tools/registry.rs`、`router.rs`、`orchestrator.rs` | `crates/agent-tools` | R10 |
 | 工具并发 | `codex-rs/core/src/tools/parallel.rs` | `crates/agent-tools` | R10 |
@@ -79,4 +79,6 @@ R5 已增加 `crates/agent-core` 源码级 `ThreadManager`、Tauri V2 请求入�
 
 R6 已实现 `turn/start`、`turn/steer`、`turn/interrupt`、三类 Turn 通知和 User Message 的 Item 生命周期。Turn 不再保存到 SQLite 快照，而是从 canonical `task_started`、`turn_context`、Responses `response_item`、Core `TurnItem` 与终态事件恢复；崩溃中的活动 Turn 只中断一次且不重放输入。详细行为见 `docs/CODEX-TURNS.md`。
 
-R7 仍需把 exactly-once Turn 输入队列接入 Responses API、SSE、模型 Item 增量、usage、reasoning summary 和重试。R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。
+R7 已增加 `crates/agent-model`，实现 `/v1/responses` 请求、HTTP/SSE、错误分类、请求与流重试、reasoning/agent message 增量、Thread Token Usage 累积、模型重路由/校验/safety buffering，以及固定模型目录和分页。Tauri Turn 执行器支持取消、`end_turn: false` 继续采样和 Steer 延迟入历史，详细行为见 `docs/CODEX-MODEL.md`。
+
+R8 仍需完成 Gateway `/v1/responses` 服务映射、账号与额度错误、在线模型目录和 provider wire capability；R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

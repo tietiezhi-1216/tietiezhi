@@ -2999,6 +2999,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
+
+[[package]]
 name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4391,6 +4397,7 @@ dependencies = [
  "base64 0.22.1",
  "serde",
  "serde_json",
+ "tietiezhi-agent-model",
  "tietiezhi-agent-protocol",
  "tietiezhi-agent-state",
  "time",
@@ -4402,6 +4409,20 @@ name = "tietiezhi-agent-events"
 version = "0.1.0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "tietiezhi-agent-model"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "regex-lite",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -4456,6 +4477,7 @@ dependencies = [
  "tauri-plugin-window-state",
  "tietiezhi-agent-core",
  "tietiezhi-agent-events",
+ "tietiezhi-agent-model",
  "tietiezhi-agent-state",
  "tokio",
  "tokio-tungstenite",

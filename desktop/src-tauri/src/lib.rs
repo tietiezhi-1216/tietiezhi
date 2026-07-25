@@ -30,6 +30,8 @@ pub struct AppState {
     pub(crate) device_fabric: commands::devices::DeviceFabric,
     /// Lazily initialized source-native App Server V2 runtime.
     pub(crate) codex_core: Mutex<Option<tietiezhi_agent_core::ThreadManager>>,
+    /// In-flight Responses turns, keyed by source-native thread id.
+    pub(crate) codex_cancels: Mutex<HashMap<String, (String, CancellationToken)>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -67,6 +69,7 @@ pub fn run() {
             mcp: mcp::McpManager::default(),
             device_fabric: commands::devices::DeviceFabric::default(),
             codex_core: Mutex::new(None),
+            codex_cancels: Mutex::new(HashMap::new()),
         })
         .manage(commands::hotkey::HotkeyState::default())
         .setup(|app| {
