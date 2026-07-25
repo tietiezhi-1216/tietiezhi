@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AppMessageHost } from "@/components/app-message";
 import { ThemeProvider } from "@/components/theme-provider";
 import App from "@/App";
 import "@/index.css";
@@ -21,6 +22,7 @@ async function bootstrap() {
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
             <App />
+            <AppMessageHost />
           </TooltipProvider>
         </QueryClientProvider>
       </ThemeProvider>

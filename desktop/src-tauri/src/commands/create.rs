@@ -164,11 +164,7 @@ pub async fn generate_create_image(
         .await
         .map_err(|error| format!("读取图片生成响应失败：{error}"))?;
     if !status.is_success() {
-        return Err(format!(
-            "图片模型返回 HTTP {}：{}",
-            status.as_u16(),
-            response_error_message(&raw),
-        ));
+        return Err(super::provider_http_error("图片模型", status, &raw));
     }
 
     let parsed: ImageResponse = serde_json::from_str(&raw)
@@ -290,11 +286,7 @@ async fn run_video_generation(
         .await
         .map_err(|error| format!("读取视频生成响应失败：{error}"))?;
     if !status.is_success() {
-        return Err(format!(
-            "视频模型返回 HTTP {}：{}",
-            status.as_u16(),
-            response_error_message(&raw),
-        ));
+        return Err(super::provider_http_error("视频模型", status, &raw));
     }
     let mut job: VideoJob = serde_json::from_str(&raw)
         .map_err(|_| format!("视频模型响应格式不正确：{}", snippet(&raw)))?;
@@ -356,10 +348,10 @@ async fn run_video_generation(
             .await
             .map_err(|error| format!("读取视频生成进度失败：{error}"))?;
         if !status.is_success() {
-            return Err(format!(
-                "查询视频生成进度失败，HTTP {}：{}",
-                status.as_u16(),
-                response_error_message(&raw),
+            return Err(super::provider_http_error(
+                "查询视频生成进度失败",
+                status,
+                &raw,
             ));
         }
         job = serde_json::from_str(&raw)
@@ -439,11 +431,7 @@ async fn download_generated_video(
     if !response.status().is_success() {
         let status = response.status();
         let raw = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "下载生成视频失败，HTTP {}：{}",
-            status.as_u16(),
-            response_error_message(&raw),
-        ));
+        return Err(super::provider_http_error("下载生成视频失败", status, &raw));
     }
     if response
         .content_length()
@@ -822,19 +810,6 @@ fn video_job_error(job: &VideoJob) -> String {
         .unwrap_or_else(|| "视频生成失败，供应商没有返回具体原因".into())
 }
 
-fn response_error_message(raw: &str) -> String {
-    serde_json::from_str::<Value>(raw)
-        .ok()
-        .and_then(|value| {
-            value
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .or_else(|| value.get("message").and_then(Value::as_str))
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| snippet(raw))
-}
-
 fn checked_create_asset_path(app: &AppHandle, file_path: &str) -> Result<PathBuf, String> {
     let root = create_assets_dir(app)?;
     let root = dunce::canonicalize(&root).map_err(|error| format!("无法定位作品目录：{error}"))?;
@@ -878,13 +853,5 @@ mod tests {
         let encoded = base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nmock");
         let bytes = decode_image_data(&encoded).unwrap();
         assert_eq!(detect_image_format(&bytes).unwrap(), ("image/png", "png"));
-    }
-
-    #[test]
-    fn parses_structured_error_messages() {
-        assert_eq!(
-            response_error_message(r#"{"error":{"message":"bad request"}}"#),
-            "bad request"
-        );
     }
 }

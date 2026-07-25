@@ -9,6 +9,7 @@ import {
   generateCreateImage,
   generateCreateVideo,
 } from "@/lib/api";
+import { notifyActionableGatewayError } from "@/lib/gateway-feedback";
 
 export type CreateView = "inspiration" | "generations" | "assets";
 export type CreateMode = "image" | "video";
@@ -254,6 +255,12 @@ function taskErrorMessage(error: unknown): string {
   return message || "生成失败，请稍后重试";
 }
 
+function reportGenerationError(error: unknown): string {
+  const detail = taskErrorMessage(error);
+  notifyActionableGatewayError(detail);
+  return detail;
+}
+
 function normalizeDraft(value: unknown, mode: CreateMode): CreateDraft {
   const fallback = cloneDefaultDraft(mode);
   if (!isRecord(value)) return fallback;
@@ -409,7 +416,11 @@ export const useCreateStore = create<CreateState>()(
                 return;
               }
               if (event.type === "error") {
-                updateTask({ status: "error", progress: 0, error: event.message });
+                updateTask({
+                  status: "error",
+                  progress: 0,
+                  error: reportGenerationError(event.message),
+                });
                 return;
               }
 
@@ -458,7 +469,7 @@ export const useCreateStore = create<CreateState>()(
           updateTask({
             status: "error",
             progress: 0,
-            error: taskErrorMessage(error),
+            error: reportGenerationError(error),
           });
         }
       };

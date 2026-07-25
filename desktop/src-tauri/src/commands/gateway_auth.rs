@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
@@ -12,6 +15,193 @@ use super::settings::read_settings;
 use crate::{secrets, AppState};
 
 const CLIENT_ID: &str = "tietiezhi-desktop";
+const CALLBACK_HTML_TEMPLATE: &str = r##"<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#07080d">
+  <title>已连接铁铁汁</title>
+  <link rel="icon" href="data:image/png;base64,__APP_ICON__">
+  <style>
+    :root { color-scheme: dark; font-family: "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      color: #f7f8fb;
+      background:
+        radial-gradient(circle at 18% 18%, rgba(90, 216, 255, .18), transparent 32rem),
+        radial-gradient(circle at 82% 76%, rgba(118, 87, 255, .2), transparent 34rem),
+        #07080d;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      opacity: .24;
+      background-image:
+        radial-gradient(circle, rgba(255, 255, 255, .8) 0 1px, transparent 1.2px),
+        radial-gradient(circle, rgba(139, 223, 255, .65) 0 1px, transparent 1.2px);
+      background-position: 0 0, 36px 52px;
+      background-size: 92px 92px, 136px 136px;
+      mask-image: linear-gradient(to bottom, black, transparent 92%);
+    }
+    main {
+      position: relative;
+      width: min(92vw, 500px);
+      padding: 42px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 30px;
+      background: linear-gradient(145deg, rgba(28, 31, 43, .82), rgba(12, 14, 21, .72));
+      box-shadow: inset 0 1px rgba(255, 255, 255, .1), 0 32px 100px rgba(0, 0, 0, .52);
+      backdrop-filter: blur(28px);
+    }
+    main::after {
+      content: "";
+      position: absolute;
+      width: 220px;
+      height: 220px;
+      top: -150px;
+      right: -80px;
+      border-radius: 999px;
+      background: rgba(90, 216, 255, .18);
+      filter: blur(18px);
+    }
+    .brand {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 38px;
+      color: rgba(255, 255, 255, .78);
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+    .brand img {
+      width: 42px;
+      height: 42px;
+      border-radius: 13px;
+      filter: drop-shadow(0 8px 18px rgba(90, 216, 255, .22));
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 18px;
+      padding: 7px 11px;
+      border: 1px solid rgba(90, 216, 255, .22);
+      border-radius: 999px;
+      color: #b9efff;
+      background: rgba(90, 216, 255, .08);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .status i {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: #75e3ff;
+      box-shadow: 0 0 16px #75e3ff;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 7vw, 45px);
+      line-height: 1.08;
+      letter-spacing: -.045em;
+    }
+    p {
+      max-width: 380px;
+      margin: 16px 0 30px;
+      color: rgba(240, 243, 250, .62);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+    button {
+      width: 100%;
+      min-height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      border: 0;
+      border-radius: 17px;
+      color: #090b12;
+      background: linear-gradient(120deg, #bdf2ff, #d8ccff);
+      box-shadow: 0 14px 34px rgba(105, 204, 255, .2);
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 750;
+      transition: transform .2s ease, box-shadow .2s ease, opacity .2s ease;
+    }
+    button:hover { transform: translateY(-2px); box-shadow: 0 18px 42px rgba(105, 204, 255, .28); }
+    button:active { transform: translateY(0); }
+    button:focus-visible { outline: 3px solid rgba(139, 223, 255, .42); outline-offset: 3px; }
+    button:disabled { cursor: wait; opacity: .72; transform: none; }
+    button svg { width: 18px; height: 18px; }
+    .hint {
+      margin: 18px 0 0;
+      text-align: center;
+      color: rgba(240, 243, 250, .38);
+      font-size: 12px;
+    }
+    @media (max-width: 560px) {
+      main { padding: 30px 24px; border-radius: 24px; }
+      .brand { margin-bottom: 30px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      button { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">
+      <img src="data:image/png;base64,__APP_ICON__" alt="">
+      <span>Tietiezhi Desktop</span>
+    </div>
+    <div class="status"><i></i><span>安全连接已建立</span></div>
+    <h1>已连接铁铁汁</h1>
+    <p>账号授权已经完成。返回桌面端后即可继续使用中转站账号、模型和额度服务。</p>
+    <button id="return-button" type="button">
+      <span id="return-label">返回铁铁汁</span>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <div class="hint" id="return-hint">也可以关闭此页面，手动返回桌面端</div>
+  </main>
+  <script>
+    const button = document.getElementById("return-button");
+    const label = document.getElementById("return-label");
+    const hint = document.getElementById("return-hint");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      label.textContent = "正在返回…";
+      try {
+        const response = await fetch("/return", { cache: "no-store" });
+        if (!response.ok) throw new Error("focus request failed");
+        label.textContent = "已返回铁铁汁";
+        hint.textContent = "此页面现在可以安全关闭";
+        window.setTimeout(() => window.close(), 500);
+      } catch {
+        button.disabled = false;
+        label.textContent = "重新返回铁铁汁";
+        hint.textContent = "未能自动切换，请手动返回桌面端";
+      }
+    });
+  </script>
+</body>
+</html>"##;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -236,6 +426,7 @@ pub async fn gateway_account(
         });
     }
     let Some(session_token) = secrets::get_gateway_session(&provider_id)? else {
+        clear_gateway_secrets(&provider_id)?;
         return Ok(GatewayAccountView {
             provider_id,
             supported: true,
@@ -308,7 +499,7 @@ pub async fn gateway_login(
         .append_pair("state", &state_value);
     open_system_browser(authorize_url.as_str())?;
 
-    let (code, returned_state) = wait_for_callback(listener).await?;
+    let (code, returned_state) = wait_for_callback(listener, app.clone()).await?;
     if returned_state != state_value {
         return Err("登录状态校验失败，请重试".into());
     }
@@ -600,7 +791,10 @@ fn validate_discovery(expected_issuer: &str, discovery: &Discovery) -> Result<()
     Ok(())
 }
 
-async fn wait_for_callback(listener: TcpListener) -> Result<(String, String), String> {
+async fn wait_for_callback(
+    listener: TcpListener,
+    app: AppHandle,
+) -> Result<(String, String), String> {
     let (mut stream, _) = tokio::time::timeout(Duration::from_secs(180), listener.accept())
         .await
         .map_err(|_| "登录等待超时，请重试".to_string())?
@@ -629,14 +823,62 @@ async fn wait_for_callback(listener: TcpListener) -> Result<(String, String), St
         .find(|(key, _)| key == "state")
         .map(|(_, value)| value.into_owned())
         .unwrap_or_default();
-    let html = "<!doctype html><meta charset=\"utf-8\"><title>登录成功</title><main><h1>已连接铁铁汁</h1><p>可以关闭此页面并返回桌面端。</p></main>";
+    let html = callback_html();
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Security-Policy: default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         html.len(),
         html
     );
     let _ = stream.write_all(response.as_bytes()).await;
+    tokio::spawn(wait_for_return_to_app(listener, app));
     Ok((code, state))
+}
+
+fn callback_html() -> String {
+    let icon = STANDARD.encode(include_bytes!("../../icons/128x128.png"));
+    CALLBACK_HTML_TEMPLATE.replace("__APP_ICON__", &icon)
+}
+
+async fn wait_for_return_to_app(listener: TcpListener, app: AppHandle) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
+            return;
+        };
+        let Ok(Ok((mut stream, _))) = tokio::time::timeout(remaining, listener.accept()).await
+        else {
+            return;
+        };
+        let mut buffer = vec![0u8; 2048];
+        let Ok(size) = stream.read(&mut buffer).await else {
+            continue;
+        };
+        let request = String::from_utf8_lossy(&buffer[..size]);
+        let target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or_default();
+        if target.split('?').next() != Some("/return") {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            continue;
+        }
+        let _ = stream
+            .write_all(
+                b"HTTP/1.1 204 No Content\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+            )
+            .await;
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return;
+    }
 }
 
 fn open_system_browser(url: &str) -> Result<(), String> {
@@ -716,6 +958,9 @@ pub(crate) fn gateway_api_key(provider_id: &str, base_url: &str) -> Result<Optio
     if secrets::get_gateway_issuer(provider_id)?.as_deref() != Some(issuer.as_str()) {
         return Ok(None);
     }
+    if secrets::get_gateway_session(provider_id)?.is_none() {
+        return Ok(None);
+    }
     secrets::get_gateway_api_key(provider_id)
 }
 
@@ -730,7 +975,18 @@ fn api_error(message: String, fallback: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{gateway_root, validate_discovery, Discovery, GatewayQuotaView};
+    use super::{callback_html, gateway_root, validate_discovery, Discovery, GatewayQuotaView};
+
+    #[test]
+    fn login_callback_page_has_branding_and_return_action() {
+        let html = callback_html();
+
+        assert!(html.contains("Tietiezhi Desktop"));
+        assert!(html.contains("返回铁铁汁"));
+        assert!(html.contains("fetch(\"/return\""));
+        assert!(html.contains("data:image/png;base64,"));
+        assert!(!html.contains("__APP_ICON__"));
+    }
 
     #[test]
     fn derives_gateway_root() {

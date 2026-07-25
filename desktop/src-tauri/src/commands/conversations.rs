@@ -107,6 +107,8 @@ pub struct StoredMessage {
     pub context_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_automatic: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_during_turn: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens_before: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

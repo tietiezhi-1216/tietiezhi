@@ -25,6 +25,7 @@ import type {
 } from "@/lib/api";
 import { useProjectStore } from "@/stores/projects";
 import type { TaskMode } from "@/lib/task-mode";
+import { notifyActionableGatewayError } from "@/lib/gateway-feedback";
 
 interface ItemBase {
   id: number;
@@ -87,6 +88,7 @@ export type ChatItem =
       action: "compaction" | "usage";
       summary?: string;
       automatic: boolean;
+      duringTurn: boolean;
       tokensBefore: number;
       tokensAfter: number;
       contextWindow: number;
@@ -189,6 +191,7 @@ const toItems = (messages: StoredMessage[]): ChatItem[] =>
         action: m.contextAction ?? "usage",
         summary: m.contextSummary,
         automatic: m.contextAutomatic ?? false,
+        duringTurn: m.contextDuringTurn ?? false,
         tokensBefore: m.contextTokensBefore ?? 0,
         tokensAfter: m.contextTokensAfter ?? m.contextTokensBefore ?? 0,
         contextWindow: m.contextWindow ?? 256 * 1024,
@@ -278,6 +281,7 @@ const toStored = (items: ChatItem[]): StoredMessage[] =>
         contextAction: it.action,
         contextSummary: it.summary,
         contextAutomatic: it.automatic,
+        contextDuringTurn: it.duringTurn,
         contextTokensBefore: it.tokensBefore,
         contextTokensAfter: it.tokensAfter,
         contextWindow: it.contextWindow,
@@ -414,6 +418,23 @@ const legacyErrorSummary = (detail: string): string => {
   if (/超时|timeout/i.test(detail)) return "模型服务响应超时";
   return "模型服务请求失败";
 };
+
+const notifyStandaloneGatewayFailure = (failure: {
+  message: string;
+  detail: string;
+  code?: string;
+  status?: number;
+}): boolean =>
+  notifyActionableGatewayError(
+    [
+      failure.message,
+      failure.detail,
+      failure.code,
+      failure.status ? `HTTP ${failure.status}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
 
 /**
  * All conversation file writes/deletes are chained onto one queue so they
@@ -562,6 +583,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
       retryable: boolean;
       retries: number;
     }) => {
+      if (notifyStandaloneGatewayFailure(failure)) return;
       changed = true;
       set((state) => ({
         items: [
@@ -632,6 +654,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
                     action: "compaction",
                     summary: event.summary,
                     automatic: event.automatic,
+                    duringTurn: event.duringTurn,
                     tokensBefore: event.estimatedTokensBefore,
                     tokensAfter: event.estimatedTokensAfter,
                     contextWindow: event.contextWindow,
@@ -651,6 +674,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
                     kind: "context",
                     action: "usage",
                     automatic: false,
+                    duringTurn: false,
                     tokensBefore: event.estimatedTokens,
                     tokensAfter: event.estimatedTokens,
                     contextWindow: event.contextWindow,
@@ -983,6 +1007,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
         retries: number;
       }) => {
         failed = true;
+        if (notifyStandaloneGatewayFailure(failure)) return;
         appendItem({
           id: nextId++,
           kind: "error",
@@ -1148,21 +1173,29 @@ export const useChatStore = create<ChatState>()((set, get) => {
               }
               case "contextCompacted": {
                 set((state) => {
-                  const currentUserIndex = state.items.findIndex(
-                    (item) => item.id === userItem.id,
-                  );
-                  if (currentUserIndex < 0) return { streamActivity: null };
                   const contextItem: ChatItem = {
                     id: nextId++,
                     kind: "context",
                     action: "compaction",
                     summary: event.summary,
                     automatic: event.automatic,
+                    duringTurn: event.duringTurn,
                     tokensBefore: event.estimatedTokensBefore,
                     tokensAfter: event.estimatedTokensAfter,
                     contextWindow: event.contextWindow,
                     createdAt: Date.now(),
                   };
+                  if (event.duringTurn) {
+                    return {
+                      streamActivity: null,
+                      streamRetry: null,
+                      items: [...state.items, contextItem],
+                    };
+                  }
+                  const currentUserIndex = state.items.findIndex(
+                    (item) => item.id === userItem.id,
+                  );
+                  if (currentUserIndex < 0) return { streamActivity: null };
                   return {
                     streamActivity: null,
                     streamRetry: null,

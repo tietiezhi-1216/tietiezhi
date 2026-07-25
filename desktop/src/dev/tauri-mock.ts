@@ -15,7 +15,9 @@ import type {
   DeviceCore,
   ModelInfo,
   Provider,
+  TietiezhiConfig,
   TietiezhiDevice,
+  TietiezhiTimelineMessage,
 } from "@/lib/api";
 
 const createMockAutomation = (): AutomationDocument => {
@@ -365,6 +367,40 @@ export function installTauriMock(): void {
         { description: "处理 PDF：拆分、合并、抽取文本", body: "# PDF 技能\n\n使用……", enabled: true },
       ],
     ]),
+    tietiezhiConfig: {
+      version: 1,
+      systemPrompt: "",
+      skills: ["pdf-tools"],
+      mcpServers: ["mcp-fs"],
+      tools: [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_dir",
+        "glob",
+        "grep",
+        "skill",
+        "device_call",
+      ],
+      permissionMode: "ask",
+      memoryEnabled: true,
+    } as TietiezhiConfig,
+    tietiezhiFiles: new Map<string, string>([
+      [
+        "SOUL.md",
+        "# 铁铁汁\n\n- 自然、直接，不说空泛的宣传语。\n- 执行操作前确认目标，不伪造执行结果。\n",
+      ],
+      [
+        "USER.md",
+        "# 关于我\n\n## 称呼\n\n铁铁\n\n## 偏好\n\n喜欢直接、清晰的回答。\n",
+      ],
+      [
+        "MEMORY.md",
+        "# 长期记忆\n\n## 重要事实\n\n- Tietiezhi 是当前主要项目。\n",
+      ],
+      ["notes/产品想法.md", "# 产品想法\n\n把个人 Agent 的入口做得更明确。\n"],
+    ]),
+    tietiezhiTimeline: [] as TietiezhiTimelineMessage[],
     keys: {} as Record<string, string>,
     projects: [
       {
@@ -772,6 +808,69 @@ export function installTauriMock(): void {
       if (s) s.enabled = a.enabled as boolean;
     },
     import_skill: () => ({ name: "imported-skill", description: "导入的技能", enabled: true }),
+    get_tietiezhi_config: () => structuredClone(state.tietiezhiConfig),
+    save_tietiezhi_config: (a) => {
+      state.tietiezhiConfig = structuredClone(a.config as TietiezhiConfig);
+      return structuredClone(state.tietiezhiConfig);
+    },
+    list_tietiezhi_files: () => {
+      const directories = new Set<string>(["memory", "notes", "uploads"]);
+      for (const path of state.tietiezhiFiles.keys()) {
+        const parts = path.split("/");
+        for (let index = 1; index < parts.length; index += 1) {
+          directories.add(parts.slice(0, index).join("/"));
+        }
+      }
+      const directoryEntries = [...directories].map((path) => ({
+        path,
+        name: path.split("/").pop() ?? path,
+        isDirectory: true,
+        size: 0,
+        modifiedAt: Date.now() - 60_000,
+        protected: false,
+      }));
+      const fileEntries = [...state.tietiezhiFiles].map(([path, content]) => ({
+        path,
+        name: path.split("/").pop() ?? path,
+        isDirectory: false,
+        size: new Blob([content]).size,
+        modifiedAt: Date.now() - 30_000,
+        protected: ["SOUL.md", "USER.md", "MEMORY.md"].includes(path),
+      }));
+      return [...directoryEntries, ...fileEntries].sort((left, right) =>
+        left.path.localeCompare(right.path),
+      );
+    },
+    read_tietiezhi_file: (a) => {
+      const content = state.tietiezhiFiles.get(String(a.path));
+      if (content == null) throw "文件不存在";
+      return content;
+    },
+    write_tietiezhi_file: (a) => {
+      state.tietiezhiFiles.set(String(a.path), String(a.content));
+    },
+    delete_tietiezhi_file: (a) => {
+      state.tietiezhiFiles.delete(String(a.path));
+    },
+    tietiezhi_home_overview: () => ({
+      path: "/Users/demo/Library/Application Support/com.tietiezhi.tietiezhi/tietiezhi",
+      fileCount: state.tietiezhiFiles.size,
+      memoryFileCount: [...state.tietiezhiFiles.keys()].filter(
+        (path) => path === "MEMORY.md" || path.startsWith("memory/"),
+      ).length,
+      totalSize: [...state.tietiezhiFiles.values()].reduce(
+        (total, content) => total + new Blob([content]).size,
+        0,
+      ),
+      timelineCount: state.tietiezhiTimeline.length,
+    }),
+    reveal_tietiezhi_home: () => {},
+    load_tietiezhi_timeline: () => structuredClone(state.tietiezhiTimeline),
+    save_tietiezhi_timeline: (a) => {
+      state.tietiezhiTimeline = structuredClone(
+        a.messages as TietiezhiTimelineMessage[],
+      ).slice(-200);
+    },
     mcp_server_status: () =>
       state.settings.mcpServers.map((s) => ({
         id: s.id,
@@ -1252,6 +1351,7 @@ export function installTauriMock(): void {
             message: {
               type: "contextCompacted",
               automatic: false,
+              duringTurn: false,
               summary: "## 目标\n- 继续当前工作区任务\n\n## 下一步\n1. 根据用户下一条消息继续",
               estimatedTokensBefore: 48_320,
               estimatedTokensAfter: 1_280,

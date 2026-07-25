@@ -25,9 +25,11 @@ export function ContextNotice({ item }: { item: ContextItem }) {
       : 0;
   const title =
     item.action === "compaction"
-      ? item.automatic
-        ? "已自动压缩上下文"
-        : "已压缩上下文"
+      ? item.duringTurn
+        ? "已整理执行上下文"
+        : item.automatic
+          ? "已自动压缩上下文"
+          : "已压缩上下文"
       : "上下文使用情况";
 
   return (

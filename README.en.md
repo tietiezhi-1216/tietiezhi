@@ -49,6 +49,7 @@ Every desktop app, mobile device, server process, or lightweight node should be 
 | Local agents | Streaming conversations, multi-step tool use, custom system prompts, and reusable agent profiles |
 | Tools and permissions | File, editing, search, shell, and fetch tools with Ask, Auto, and Full Access permission modes |
 | Skills and MCP | Import Markdown-based Skills and connect stdio or Streamable HTTP MCP servers |
+| Tietiezhi control center | Manage identity instructions, readable Markdown memory, Skill/MCP assignments, Home files, and dedicated tool permissions in one panel |
 | Projects and workspaces | One task shares context across Work for research/deliverables and Code for terminal/test workflows; isolated spaces support explicit file handoff |
 | Context management | Uses a 256K window and persists an anchored summary at about 80%; `/compact` compacts early and `/context` shows estimated usage |
 | Device interconnection | Manage local and remote Cores in Tietiezhi, discover online devices, and invoke approved capabilities through `device_call` |
@@ -68,9 +69,9 @@ Every desktop app, mobile device, server process, or lightweight node should be 
 
 1. Download the installer for your platform from the [website](https://tietiezhi-1216.github.io/tietiezhi/) or [GitHub Releases](https://github.com/tietiezhi-1216/tietiezhi/releases/latest).
 2. Open **Settings → Providers**. Use Tietiezhi Gateway or add your own OpenAI-compatible `baseURL` and API key.
-3. Add a remote Core in **Tietiezhi**, select a target device, and inspect its exposed capabilities.
+3. In **Tietiezhi**, select a target device and use the top-right control center to configure identity, memory, Skills, MCP, and Home files.
 4. Sync and select a model, then create a task in **Workspace**. Select a local project directory when needed and switch between Work and Code for the current goal.
-5. Add agent profiles, Skills, MCP servers, and tool permissions as needed.
+5. Maintain reusable agent profiles, Skills, and MCP servers in global Settings.
 
 > Tietiezhi never bundles your private API key. Charges and data-processing terms for third-party models are determined by their providers.
 

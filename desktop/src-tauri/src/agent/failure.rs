@@ -120,7 +120,7 @@ impl ChatFailure {
     pub fn http(status: StatusCode, body: String, retry_after_ms: Option<u64>) -> Self {
         let status_code = status.as_u16();
         let parsed = serde_json::from_str::<Value>(&body).ok();
-        let code = parsed
+        let upstream_code = parsed
             .as_ref()
             .and_then(|value| {
                 value
@@ -129,6 +129,25 @@ impl ChatFailure {
                     .and_then(Value::as_str)
             })
             .map(str::to_owned);
+        let upstream_message = parsed
+            .as_ref()
+            .and_then(|value| {
+                value
+                    .pointer("/error/message")
+                    .or_else(|| value.get("message"))
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or_default();
+        let normalized_message = upstream_message.to_ascii_lowercase();
+        let code = if normalized_message.contains("api key quota exceeded") {
+            Some("api_key_quota_exceeded".into())
+        } else if normalized_message.contains("insufficient balance") {
+            Some("insufficient_balance".into())
+        } else if normalized_message.contains("account disabled") {
+            Some("account_disabled".into())
+        } else {
+            upstream_code
+        };
         let formatted_body = parsed
             .as_ref()
             .and_then(|value| serde_json::to_string_pretty(value).ok())
@@ -139,17 +158,36 @@ impl ChatFailure {
             format!("模型服务返回 HTTP {status_code}\n\n{formatted_body}")
         };
         let retryable = matches!(status_code, 408 | 425 | 429 | 500 | 502 | 503 | 504);
-        let (summary, reason) = match status_code {
-            400 | 422 => ("请求未被模型服务接受", "请求参数有误"),
-            401 => ("模型服务认证失败", "认证失败"),
-            403 => ("模型服务拒绝访问", "访问被拒绝"),
-            404 => ("模型或接口不存在", "服务不存在"),
-            408 => ("模型服务响应超时", "响应超时"),
-            425 => ("模型服务暂未就绪", "服务尚未就绪"),
-            429 => ("请求过于频繁", "请求过于频繁"),
-            500 => ("模型服务暂时不可用", "服务内部错误"),
-            502 | 503 | 504 => ("模型服务暂时不可用", "服务暂时不可用"),
-            _ => ("模型服务请求失败", "请求失败"),
+        let (summary, reason) = match code.as_deref() {
+            Some("api_key_quota_exceeded") => ("API Key 额度已用尽", "Key 额度已用尽"),
+            Some("insufficient_balance") => ("当前额度不足", "额度不足"),
+            Some("account_disabled") => ("当前账号已停用", "账号已停用"),
+            _ => match status_code {
+                400 | 422 => ("请求未被模型服务接受", "请求参数有误"),
+                401 => ("模型服务认证失败", "认证失败"),
+                402 => ("当前额度不足", "额度不足"),
+                403 => ("模型服务拒绝访问", "访问被拒绝"),
+                404 => ("模型或接口不存在", "服务不存在"),
+                408 => ("模型服务响应超时", "响应超时"),
+                425 => ("模型服务暂未就绪", "服务尚未就绪"),
+                429 => ("请求过于频繁", "请求过于频繁"),
+                500 => ("模型服务暂时不可用", "服务内部错误"),
+                502 | 503 | 504 => ("模型服务暂时不可用", "服务暂时不可用"),
+                _ => ("模型服务请求失败", "请求失败"),
+            },
+        };
+        let detail = match code.as_deref() {
+            Some("api_key_quota_exceeded") => {
+                "API Key 额度已用尽，请调整 Key 限额或更换可用的 API Key".into()
+            }
+            Some("insufficient_balance") => "当前额度不足，请充值或购买套餐后重试".into(),
+            Some("account_disabled") => "当前账号已停用，请联系管理员处理".into(),
+            _ => match status_code {
+                401 => "认证状态已失效，请重新登录中转站或检查供应商 API Key".into(),
+                402 => "当前额度不足，请充值或购买套餐后重试".into(),
+                403 => "当前账号或 API Key 无权使用该模型".into(),
+                _ => detail,
+            },
         };
 
         Self {
@@ -205,7 +243,7 @@ mod tests {
                 ChatFailure::http(StatusCode::from_u16(status).unwrap(), String::new(), None);
             assert!(failure.retryable, "HTTP {status} should be retryable");
         }
-        for status in [400, 401, 403, 404, 422] {
+        for status in [400, 401, 402, 403, 404, 422] {
             let failure =
                 ChatFailure::http(StatusCode::from_u16(status).unwrap(), String::new(), None);
             assert!(!failure.retryable, "HTTP {status} should not be retryable");
@@ -222,6 +260,50 @@ mod tests {
         assert_eq!(failure.code.as_deref(), Some("do_request_failed"));
         assert!(failure.detail.contains("all nodes failed"));
         assert_eq!(failure.retry_reason(), "服务暂时不可用（503）");
+    }
+
+    #[test]
+    fn insufficient_balance_is_user_facing() {
+        let failure = ChatFailure::http(
+            StatusCode::PAYMENT_REQUIRED,
+            r#"{"error":{"code":"unauthorized","message":"insufficient balance"}}"#.into(),
+            None,
+        );
+
+        assert_eq!(failure.summary, "当前额度不足");
+        assert_eq!(failure.detail, "当前额度不足，请充值或购买套餐后重试");
+        assert_eq!(failure.code.as_deref(), Some("insufficient_balance"));
+        assert!(!failure.retryable);
+    }
+
+    #[test]
+    fn api_key_quota_is_distinct_from_account_balance() {
+        let failure = ChatFailure::http(
+            StatusCode::PAYMENT_REQUIRED,
+            r#"{"error":{"code":"unauthorized","message":"api key quota exceeded"}}"#.into(),
+            None,
+        );
+
+        assert_eq!(failure.summary, "API Key 额度已用尽");
+        assert_eq!(
+            failure.detail,
+            "API Key 额度已用尽，请调整 Key 限额或更换可用的 API Key"
+        );
+        assert_eq!(failure.code.as_deref(), Some("api_key_quota_exceeded"));
+        assert!(!failure.retryable);
+    }
+
+    #[test]
+    fn disabled_account_is_user_facing() {
+        let failure = ChatFailure::http(
+            StatusCode::FORBIDDEN,
+            r#"{"error":{"code":"unauthorized","message":"account disabled"}}"#.into(),
+            None,
+        );
+
+        assert_eq!(failure.summary, "当前账号已停用");
+        assert_eq!(failure.detail, "当前账号已停用，请联系管理员处理");
+        assert_eq!(failure.code.as_deref(), Some("account_disabled"));
     }
 
     #[test]

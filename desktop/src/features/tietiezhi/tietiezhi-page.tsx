@@ -31,10 +31,12 @@ import {
   chatCancel,
   errorMessage,
   listConnectedDevices,
+  loadTietiezhiTimeline,
   loadSettings,
   permissionRespond,
   pickChatFiles,
   pickChatFolder,
+  saveTietiezhiTimeline,
   tietiezhiStream,
 } from "@/lib/api";
 import type {
@@ -43,36 +45,32 @@ import type {
   ChatContentPart,
   ChatEvent,
   ChatMessage,
+  TietiezhiTimelineMessage,
 } from "@/lib/api";
+import { notifyActionableGatewayError } from "@/lib/gateway-feedback";
 import { modelInputModalities } from "@/lib/model-capabilities";
 import { useTietiezhiStore } from "@/stores/tietiezhi";
 
 const TIMELINE_KEY = "tietiezhi-main-timeline";
-
-interface TimelineMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  createdAt: number;
-  attachments?: ChatAttachment[];
-}
 
 interface PendingPermission {
   id: string;
   description: string;
 }
 
-function readTimeline(): TimelineMessage[] {
+function readLegacyTimeline(): TietiezhiTimelineMessage[] {
   try {
     const value = JSON.parse(localStorage.getItem(TIMELINE_KEY) ?? "[]") as unknown;
-    return Array.isArray(value) ? (value as TimelineMessage[]).slice(-200) : [];
+    return Array.isArray(value) ? (value as TietiezhiTimelineMessage[]).slice(-200) : [];
   } catch {
     return [];
   }
 }
 
-function persistTimeline(messages: TimelineMessage[]): void {
-  const compact = messages.slice(-200).map((message) => ({
+function compactTimeline(
+  messages: TietiezhiTimelineMessage[],
+): TietiezhiTimelineMessage[] {
+  return messages.slice(-200).map((message) => ({
     ...message,
     attachments: message.attachments?.map((asset) => ({
       id: asset.id,
@@ -85,14 +83,9 @@ function persistTimeline(messages: TimelineMessage[]): void {
       truncated: asset.truncated,
     })),
   }));
-  try {
-    localStorage.setItem(TIMELINE_KEY, JSON.stringify(compact));
-  } catch {
-    // The in-memory timeline remains usable if the browser storage quota is full.
-  }
 }
 
-function messageContent(message: TimelineMessage): ChatMessage["content"] {
+function messageContent(message: TietiezhiTimelineMessage): ChatMessage["content"] {
   const attachments = message.attachments ?? [];
   const context = attachments
     .filter((asset) => attachmentKind(asset) !== "image")
@@ -145,7 +138,7 @@ export function TietiezhiPage() {
     ? modelInputModalities(selectedModel).includes("image")
     : false;
 
-  const [messages, setMessages] = useState<TimelineMessage[]>(readTimeline);
+  const [messages, setMessages] = useState<TietiezhiTimelineMessage[]>([]);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [attachmentError, setAttachmentError] = useState("");
@@ -155,6 +148,7 @@ export function TietiezhiPage() {
   const [error, setError] = useState("");
   const [permission, setPermission] = useState<PendingPermission | null>(null);
   const requestIdRef = useRef<number | null>(null);
+  const timelineReadyRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const hasUnsupportedImages =
     !supportsImageInput && attachments.some((asset) => attachmentKind(asset) === "image");
@@ -163,7 +157,39 @@ export function TietiezhiPage() {
     : attachmentError;
 
   useEffect(() => {
-    persistTimeline(messages);
+    let active = true;
+    void (async () => {
+      try {
+        let stored = await loadTietiezhiTimeline();
+        if (stored.length === 0) {
+          const legacy = readLegacyTimeline();
+          if (legacy.length > 0) {
+            await saveTietiezhiTimeline(compactTimeline(legacy));
+            localStorage.removeItem(TIMELINE_KEY);
+            stored = legacy;
+          }
+        }
+        if (active) setMessages(stored);
+      } catch {
+        if (active) setMessages(readLegacyTimeline());
+      } finally {
+        if (active) timelineReadyRef.current = true;
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!timelineReadyRef.current) return;
+    const timeout = window.setTimeout(() => {
+      void saveTietiezhiTimeline(compactTimeline(messages));
+    }, 300);
+    return () => window.clearTimeout(timeout);
+  }, [messages]);
+
+  useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages, status, permission]);
 
@@ -179,10 +205,10 @@ export function TietiezhiPage() {
         );
         break;
       case "toolCallStart":
-        setStatus("正在操作设备…");
+        setStatus("正在调用工具…");
         break;
       case "toolProgress":
-        setStatus("正在操作设备…");
+        setStatus("正在执行操作…");
         break;
       case "toolResult":
         setStatus("");
@@ -195,7 +221,22 @@ export function TietiezhiPage() {
         setStatus("正在重新连接模型…");
         break;
       case "error":
-        setError(event.message);
+        if (
+          notifyActionableGatewayError(
+            [
+              event.message,
+              event.detail,
+              event.code,
+              event.status ? `HTTP ${event.status}` : "",
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          )
+        ) {
+          setError("");
+        } else {
+          setError(event.message);
+        }
         setStatus("");
         setStreaming(false);
         requestIdRef.current = null;
@@ -273,7 +314,7 @@ export function TietiezhiPage() {
       return;
     }
     const pendingAttachments = attachments;
-    const userMessage: TimelineMessage = {
+    const userMessage: TietiezhiTimelineMessage = {
       id: crypto.randomUUID(),
       role: "user",
       content: text,
@@ -281,7 +322,7 @@ export function TietiezhiPage() {
       attachments: pendingAttachments,
     };
     const assistantId = crypto.randomUUID();
-    const assistantMessage: TimelineMessage = {
+    const assistantMessage: TietiezhiTimelineMessage = {
       id: assistantId,
       role: "assistant",
       content: "",
@@ -310,7 +351,11 @@ export function TietiezhiPage() {
         onEvent: (event) => handleEvent(event, assistantId),
       });
     } catch (cause) {
-      setError(errorMessage(cause));
+      if (notifyActionableGatewayError(cause)) {
+        setError("");
+      } else {
+        setError(errorMessage(cause));
+      }
       setStreaming(false);
       setStatus("");
       requestIdRef.current = null;
@@ -325,7 +370,7 @@ export function TietiezhiPage() {
     if (!permission) return;
     void permissionRespond(permission.id, decision);
     setPermission(null);
-    setStatus(decision === "allow" ? "正在操作设备…" : "已取消设备操作");
+    setStatus(decision === "allow" ? "正在执行操作…" : "已取消操作");
   };
 
   const composer = (

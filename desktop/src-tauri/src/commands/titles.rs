@@ -71,11 +71,7 @@ pub async fn generate_conversation_title(
         .await
         .map_err(|error| format!("读取标题响应失败：{error}"))?;
     if !status.is_success() {
-        return Err(format!(
-            "模型服务返回 HTTP {}：{}",
-            status.as_u16(),
-            snippet(&raw)
-        ));
+        return Err(super::provider_http_error("模型服务", status, &raw));
     }
     let value: Value =
         serde_json::from_str(&raw).map_err(|_| format!("标题响应格式异常：{}", snippet(&raw)))?;

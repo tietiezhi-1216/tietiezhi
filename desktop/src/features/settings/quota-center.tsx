@@ -41,6 +41,7 @@ import {
   type GatewayPackageOrder,
 } from "@/lib/api";
 import { SettingsSection } from "@/features/settings/settings-section";
+import { notifyGatewayError } from "@/lib/gateway-feedback";
 
 type PaymentProvider = "alipay" | "wechat";
 
@@ -96,6 +97,7 @@ export function QuotaCenter() {
         queryClient.invalidateQueries({ queryKey: ["gateway-package-catalog", provider?.id] }),
       ]);
     },
+    onError: (error) => notifyGatewayError(error, "中转站登录失败"),
   });
   const createOrder = useMutation({
     mutationFn: ({
@@ -110,6 +112,7 @@ export function QuotaCenter() {
       setOrderStartedAt(Date.now());
       setSelectedPackage(null);
     },
+    onError: (error) => notifyGatewayError(error, "创建订单失败"),
   });
   const orderQuery = useQuery({
     queryKey: ["gateway-package-order", provider?.id, activeOrder?.orderNo],
@@ -130,6 +133,30 @@ export function QuotaCenter() {
       queryClient.invalidateQueries({ queryKey: ["gateway-account", provider.id] }),
     ]);
   }, [orderQuery.data?.status, provider, queryClient]);
+
+  useEffect(() => {
+    if (accountQuery.isError) {
+      notifyGatewayError(accountQuery.error, "读取登录状态失败");
+    }
+  }, [accountQuery.error, accountQuery.errorUpdatedAt, accountQuery.isError]);
+
+  useEffect(() => {
+    if (quotaQuery.isError) {
+      notifyGatewayError(quotaQuery.error, "读取额度失败");
+    }
+  }, [quotaQuery.error, quotaQuery.errorUpdatedAt, quotaQuery.isError]);
+
+  useEffect(() => {
+    if (catalogQuery.isError) {
+      notifyGatewayError(catalogQuery.error, "读取套餐目录失败");
+    }
+  }, [catalogQuery.error, catalogQuery.errorUpdatedAt, catalogQuery.isError]);
+
+  useEffect(() => {
+    if (orderQuery.isError) {
+      notifyGatewayError(orderQuery.error, "查询订单状态失败");
+    }
+  }, [orderQuery.error, orderQuery.errorUpdatedAt, orderQuery.isError]);
 
   const channels = catalogQuery.data?.paymentChannels;
   const openPurchase = (item: GatewayCatalogPackage) => {
@@ -152,15 +179,12 @@ export function QuotaCenter() {
     return (
       <SettingsSection
         title="登录中转站"
-        description="登录是可选的。登录后可以查看额度、套餐和消费记录，也可以直接购买套餐。"
+        description="登录后可以使用官方中转站模型，并查看额度、套餐和消费记录。"
       >
         <Button className="w-fit" disabled={login.isPending} onClick={() => login.mutate()}>
           {login.isPending ? <Loader2 className="animate-spin" /> : <LogIn />}
           登录当前中转站
         </Button>
-        {login.isError && (
-          <p className="text-destructive text-sm">{String(login.error)}</p>
-        )}
       </SettingsSection>
     );
   }
@@ -186,39 +210,44 @@ export function QuotaCenter() {
           </Button>
         }
       >
-        {quotaQuery.isError ? (
-          <Alert variant="destructive">
-            <AlertTitle>额度读取失败</AlertTitle>
-            <AlertDescription>{String(quotaQuery.error)}</AlertDescription>
-          </Alert>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Card size="sm">
-              <CardHeader>
-                <CardDescription>可用余额</CardDescription>
-                <CardTitle className="text-xl">
-                  {quota ? formatYuan(quota.wallet.balanceMicro) : "读取中"}
-                </CardTitle>
-              </CardHeader>
-            </Card>
-            <Card size="sm">
-              <CardHeader>
-                <CardDescription>累计充值</CardDescription>
-                <CardTitle className="text-xl">
-                  {quota ? formatYuan(quota.wallet.totalTopupMicro) : "读取中"}
-                </CardTitle>
-              </CardHeader>
-            </Card>
-            <Card size="sm">
-              <CardHeader>
-                <CardDescription>累计消费</CardDescription>
-                <CardTitle className="text-xl">
-                  {quota ? formatYuan(quota.wallet.totalSpendMicro) : "读取中"}
-                </CardTitle>
-              </CardHeader>
-            </Card>
-          </div>
-        )}
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Card size="sm">
+            <CardHeader>
+              <CardDescription>可用余额</CardDescription>
+              <CardTitle className="text-xl">
+                {quotaQuery.isError
+                  ? "读取失败"
+                  : quota
+                    ? formatYuan(quota.wallet.balanceMicro)
+                    : "读取中"}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+          <Card size="sm">
+            <CardHeader>
+              <CardDescription>累计充值</CardDescription>
+              <CardTitle className="text-xl">
+                {quotaQuery.isError
+                  ? "读取失败"
+                  : quota
+                    ? formatYuan(quota.wallet.totalTopupMicro)
+                    : "读取中"}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+          <Card size="sm">
+            <CardHeader>
+              <CardDescription>累计消费</CardDescription>
+              <CardTitle className="text-xl">
+                {quotaQuery.isError
+                  ? "读取失败"
+                  : quota
+                    ? formatYuan(quota.wallet.totalSpendMicro)
+                    : "读取中"}
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        </div>
       </SettingsSection>
 
       {activeOrder && (
@@ -265,12 +294,6 @@ export function QuotaCenter() {
       <Separator />
 
       <SettingsSection title="购买套餐" description="确认套餐和支付方式后，将在系统浏览器完成付款。">
-        {catalogQuery.isError && (
-          <Alert variant="destructive">
-            <AlertTitle>套餐目录读取失败</AlertTitle>
-            <AlertDescription>{String(catalogQuery.error)}</AlertDescription>
-          </Alert>
-        )}
         <div className="grid gap-3 sm:grid-cols-2">
           {catalogQuery.data?.items.map((item) => (
             <Card key={item.id} size="sm">
@@ -368,9 +391,6 @@ export function QuotaCenter() {
               <li>在系统浏览器完成付款</li>
               <li>Tietiezhi 查询到账并刷新额度</li>
             </ol>
-            {createOrder.isError && (
-              <p className="text-destructive text-sm">{String(createOrder.error)}</p>
-            )}
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>

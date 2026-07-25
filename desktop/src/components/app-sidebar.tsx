@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
 import {
   Archive,
   BriefcaseBusiness,
@@ -13,7 +12,6 @@ import {
   Pin,
   PinOff,
   Plus,
-  Settings,
   SquarePen,
   Trash2,
 } from "lucide-react";
@@ -51,16 +49,12 @@ import {
 } from "@/components/ui/sidebar";
 import { ProductAreaSwitcher } from "@/components/product-area-switcher";
 import { GatewayAccountButton } from "@/components/gateway-account-button";
-import { Separator } from "@/components/ui/separator";
 import {
-  dictationHotkey,
   errorMessage,
-  loadSettings,
   pickWorkspaceDir,
   revealProject,
 } from "@/lib/api";
 import type { ConversationMeta } from "@/lib/api";
-import { formatShortcut } from "@/lib/shortcut";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat";
 import { useProjectStore } from "@/stores/projects";
@@ -78,7 +72,6 @@ const IS_MACOS = navigator.userAgent.includes("Mac");
 
 export function AppSidebar() {
   const { state: sidebarState } = useSidebar();
-  const openSettings = useUiStore((state) => state.openSettings);
   const setSidebarWidth = useUiStore((state) => state.setSidebarWidth);
   const expandedProjects = useUiStore((state) => state.expandedProjects);
   const setProjectExpanded = useUiStore((state) => state.setProjectExpanded);
@@ -428,19 +421,8 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="gap-1">
+      <SidebarFooter>
         <GatewayAccountButton />
-        <Separator className="my-0.5" />
-        <DictationStatus onClick={() => openSettings("dictationModel")} />
-        <Separator className="my-0.5" />
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => openSettings()}>
-              <Settings />
-              <span>设置</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
       </SidebarFooter>
 
       <Dialog
@@ -594,40 +576,5 @@ function TaskRow({
         </div>
       </div>
     </SidebarMenuItem>
-  );
-}
-
-function DictationStatus({ onClick }: { onClick: () => void }) {
-  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: loadSettings });
-  const hotkeyQuery = useQuery({
-    queryKey: ["dictationHotkey"],
-    queryFn: dictationHotkey,
-  });
-
-  const settings = settingsQuery.data;
-  const ready = Boolean(settings?.asrProviderId && settings?.asrModel);
-  const model = settings?.asrModel ?? "";
-
-  return (
-    <button
-      onClick={onClick}
-      className="hover:bg-sidebar-accent group flex flex-col gap-1.5 rounded-md px-2 py-2 text-left transition-colors"
-    >
-      <div className="flex items-center gap-2">
-        <span
-          className={cn(
-            "size-1.5 shrink-0 rounded-full",
-            ready ? "bg-emerald-500" : "bg-muted-foreground/40",
-          )}
-        />
-        <span className="text-xs font-medium">语音听写</span>
-        <kbd className="text-muted-foreground bg-muted ml-auto rounded px-1.5 py-0.5 font-sans text-[10px] leading-none">
-          {formatShortcut(hotkeyQuery.data ?? "Alt+Space")}
-        </kbd>
-      </div>
-      <span className="text-muted-foreground truncate pl-3.5 text-[11px] leading-none">
-        {ready ? `就绪 · ${model}` : "未配置识别模型"}
-      </span>
-    </button>
   );
 }

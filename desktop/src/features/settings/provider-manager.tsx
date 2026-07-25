@@ -35,6 +35,7 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { message } from "@/components/app-message";
 import {
   Dialog,
   DialogContent,
@@ -78,6 +79,7 @@ import {
   modelReasoning,
 } from "@/lib/model-capabilities";
 import { SettingsSection } from "@/features/settings/settings-section";
+import { notifyGatewayError } from "@/lib/gateway-feedback";
 
 const TYPE_LABELS: Record<ProviderType, string> = {
   openai: "OpenAI 兼容",
@@ -516,6 +518,7 @@ export function ProviderManager() {
     enabled: Boolean(builtInProvider),
     retry: false,
   });
+  const gatewayLoggedIn = Boolean(gatewayAccountQuery.data?.loggedIn);
   const gatewayLoginMutation = useMutation({
     mutationFn: async () => {
       if (!builtInProvider) throw new Error("未找到 Tietiezhi Gateway");
@@ -532,7 +535,9 @@ export function ProviderManager() {
       void queryClient.invalidateQueries({
         queryKey: ["gateway-account", builtInProvider?.id],
       });
+      message.success("中转站登录成功");
     },
+    onError: (error) => notifyGatewayError(error, "中转站登录失败"),
   });
   const gatewayLogoutMutation = useMutation({
     mutationFn: async () => {
@@ -545,6 +550,7 @@ export function ProviderManager() {
         queryKey: ["gateway-account", builtInProvider?.id],
       });
     },
+    onError: (error) => notifyGatewayError(error, "退出登录失败"),
   });
   const refreshBuiltIn = useMutation({
     mutationFn: async () => {
@@ -555,11 +561,26 @@ export function ProviderManager() {
         kind: builtInProvider.type,
       });
     },
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      message.success("模型列表已刷新");
+    },
+    onError: (error) => notifyGatewayError(error, "刷新模型列表失败"),
   });
 
+  const refreshBuiltInModels = () => {
+    if (!gatewayLoggedIn) {
+      message.warning(
+        "请先登录中转站",
+        "登录后即可刷新模型并使用当前账号额度。",
+      );
+      return;
+    }
+    refreshBuiltIn.mutate();
+  };
+
   const editProvider = async (provider: ProviderView) => {
-    const key = await providerKey(provider.id).catch(() => null);
+    const key = provider.builtIn ? null : await providerKey(provider.id).catch(() => null);
     setDraft({ ...toDraft(provider), apiKey: key ?? "" });
   };
 
@@ -581,8 +602,8 @@ export function ProviderManager() {
                   {gatewayAccountQuery.data?.loggedIn
                     ? gatewayAccountQuery.data.account?.email
                     : gatewayAccountQuery.data?.supported === false
-                      ? "当前中转站未提供账号登录；仍可使用"
-                      : "登录后使用当前中转站账号；不登录仍可使用"}
+                      ? "当前中转站未提供账号登录"
+                      : "登录后刷新模型并使用当前账号额度"}
                 </span>
               </div>
               {gatewayAccountQuery.data?.loggedIn ? (
@@ -624,8 +645,8 @@ export function ProviderManager() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={refreshBuiltIn.isPending}
-                onClick={() => refreshBuiltIn.mutate()}
+                disabled={refreshBuiltIn.isPending || gatewayAccountQuery.isLoading}
+                onClick={refreshBuiltInModels}
               >
                 <RefreshCw className={refreshBuiltIn.isPending ? "animate-spin" : undefined} />
                 刷新模型列表
@@ -639,20 +660,6 @@ export function ProviderManager() {
                 <Settings2 />
               </Button>
             </div>
-            {refreshBuiltIn.isError && (
-              <Alert variant="destructive">
-                <AlertTitle>刷新模型列表失败</AlertTitle>
-                <AlertDescription>{errorMessage(refreshBuiltIn.error)}</AlertDescription>
-              </Alert>
-            )}
-            {gatewayLoginMutation.isError && (
-              <Alert variant="destructive">
-                <AlertTitle>登录失败</AlertTitle>
-                <AlertDescription>
-                  {errorMessage(gatewayLoginMutation.error)}
-                </AlertDescription>
-              </Alert>
-            )}
           </div>
         )}
 
@@ -865,11 +872,13 @@ function ProviderFormDialog({
               />
             </div>
 
-            <ApiKeyField
-              value={draft.apiKey}
-              hasKey={draft.hasKey}
-              onChange={(apiKey) => patch({ apiKey })}
-            />
+            {!draft.builtIn && (
+              <ApiKeyField
+                value={draft.apiKey}
+                hasKey={draft.hasKey}
+                onChange={(apiKey) => patch({ apiKey })}
+              />
+            )}
 
             {draft.models.length > 0 && (
               <div className="flex flex-col gap-2">

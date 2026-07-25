@@ -65,6 +65,7 @@ import {
   modelHasCapability,
   modelInputModalities,
 } from "@/lib/model-capabilities";
+import { gatewayFeedback, notifyGatewayError } from "@/lib/gateway-feedback";
 import { getTaskMode } from "@/lib/task-mode";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat";
@@ -148,6 +149,7 @@ export function ChatPage() {
       void queryClient.invalidateQueries({ queryKey: ["settings"] });
       void queryClient.invalidateQueries({ queryKey: ["providers"] });
     },
+    onError: (error) => notifyGatewayError(error, "检查模型渠道失败"),
   });
   const chatOptions = useMemo(
     () =>
@@ -199,6 +201,9 @@ export function ChatPage() {
   const startupRefreshFailedWithoutCache =
     chatOptions.length === 0 && startupRefresh.isError;
   const setupError = settingsQuery.error ?? startupRefresh.error;
+  const setupFeedback = setupError
+    ? gatewayFeedback(setupError, "渠道检查失败")
+    : null;
   const readiness =
     settingsQuery.isError || startupRefreshFailedWithoutCache
       ? "error"
@@ -217,7 +222,7 @@ export function ChatPage() {
               : "choose-model";
   const setupTitle =
     readiness === "error"
-      ? "渠道检查失败"
+      ? setupFeedback?.title ?? "渠道检查失败"
       : readiness === "loading"
         ? "正在检查渠道…"
         : readiness === "no-provider"
@@ -227,7 +232,7 @@ export function ChatPage() {
             : "模型已到位，就等你选择";
   const setupDescription =
     readiness === "error"
-      ? errorMessage(setupError)
+      ? setupFeedback?.description ?? "请稍后重试。"
       : readiness === "loading"
         ? "铁铁汁正在确认连接状态"
         : readiness === "no-provider"

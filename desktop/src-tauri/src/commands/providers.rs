@@ -7,8 +7,8 @@ use super::models::{
     ModelCapability, ModelInfo, ModelModality, ReasoningEffort, ReasoningMode, ReasoningProfile,
     ReasoningTransport,
 };
-use super::settings::{read_settings, Provider, BUILTIN_PROVIDER_API_KEY};
-use super::{api_url, snippet};
+use super::settings::{read_settings, Provider};
+use super::{api_url, provider_http_error, snippet};
 use crate::{secrets, AppState};
 
 /// A provider as sent to the frontend: the same fields plus whether a key is
@@ -52,6 +52,18 @@ fn apply_provider_reasoning(model: &mut ModelInfo, reasoning: ProviderReasoning)
     });
 }
 
+fn select_provider_api_key(
+    gateway_key: Option<String>,
+    stored_provider_key: Option<String>,
+    built_in: bool,
+) -> Result<Option<String>, String> {
+    match gateway_key {
+        Some(key) => Ok(Some(key)),
+        None if built_in => Err("请先登录中转站".into()),
+        None => Ok(stored_provider_key),
+    }
+}
+
 /// Curated fallback catalog per provider type, used when the provider has no
 /// `/v1/models` route (Xiaomi MiMo does not document one).
 fn fallback_models(kind: &str) -> Vec<ModelInfo> {
@@ -85,13 +97,13 @@ pub(crate) fn resolve(app: &AppHandle, provider_id: &str) -> Result<Resolved, St
         .find(|p| p.id == provider_id)
         .ok_or("未找到所选供应商，请到「设置」检查")?;
 
-    let key = super::gateway_auth::gateway_api_key(provider_id, &provider.base_url)?
-        .or(secrets::get_provider_key(provider_id)?)
-        .or_else(|| {
-            provider
-                .built_in
-                .then(|| BUILTIN_PROVIDER_API_KEY.to_owned())
-        });
+    let gateway_key = super::gateway_auth::gateway_api_key(provider_id, &provider.base_url)?;
+    let stored_provider_key = if provider.built_in {
+        None
+    } else {
+        secrets::get_provider_key(provider_id)?
+    };
+    let key = select_provider_api_key(gateway_key, stored_provider_key, provider.built_in)?;
 
     Ok(Resolved {
         base_url: provider.base_url.clone(),
@@ -116,7 +128,7 @@ pub fn list_providers(app: AppHandle) -> Result<Vec<ProviderView>, String> {
         .providers
         .into_iter()
         .map(|p| {
-            let has_key = secrets::get_provider_key(&p.id)?.is_some();
+            let has_key = !p.built_in && secrets::get_provider_key(&p.id)?.is_some();
             Ok(ProviderView {
                 provider: p,
                 has_key,
@@ -154,7 +166,9 @@ pub fn upsert_provider(
     }
     super::settings::save_settings(app.clone(), settings)?;
 
-    if let Some(key) = api_key
+    if provider.built_in {
+        secrets::delete_provider_key(&provider.id)?;
+    } else if let Some(key) = api_key
         .map(|k| k.trim().to_owned())
         .filter(|k| !k.is_empty())
     {
@@ -214,21 +228,23 @@ pub async fn fetch_provider_models(
         .filter(|k| !k.trim().is_empty())
         .or_else(|| stored.as_ref().map(|p| p.kind.clone()))
         .unwrap_or_else(|| "openai".into());
-    let key = match api_key
-        .map(|k| k.trim().to_owned())
-        .filter(|k| !k.is_empty())
-    {
-        Some(k) => Some(k),
-        None => {
-            super::gateway_auth::gateway_api_key(&id, &base)?.or(secrets::get_provider_key(&id)?)
+    let built_in = stored.as_ref().is_some_and(|provider| provider.built_in);
+    let key = if built_in {
+        let gateway_key = super::gateway_auth::gateway_api_key(&id, &base)?;
+        select_provider_api_key(gateway_key, None, true)?
+    } else {
+        match api_key
+            .map(|k| k.trim().to_owned())
+            .filter(|k| !k.is_empty())
+        {
+            Some(key) => Some(key),
+            None => {
+                let gateway_key = super::gateway_auth::gateway_api_key(&id, &base)?;
+                let stored_provider_key = secrets::get_provider_key(&id)?;
+                select_provider_api_key(gateway_key, stored_provider_key, false)?
+            }
         }
     };
-    let key = key.or_else(|| {
-        stored
-            .as_ref()
-            .is_some_and(|provider| provider.built_in)
-            .then(|| BUILTIN_PROVIDER_API_KEY.to_owned())
-    });
 
     let mut models = fetch_models(&state.http, &base, key.as_deref(), &kind).await?;
 
@@ -290,11 +306,7 @@ pub(crate) async fn fetch_models(
         if !fb.is_empty() {
             return Ok(fb);
         }
-        return Err(format!(
-            "供应商返回 HTTP {}：{}",
-            status.as_u16(),
-            snippet(&body)
-        ));
+        return Err(provider_http_error("供应商", status, &body));
     }
 
     #[derive(Deserialize)]
@@ -465,12 +477,21 @@ mod builtin_tests {
     use super::*;
 
     #[test]
-    fn built_in_provider_has_a_public_client_credential() {
-        assert_eq!(
-            super::super::settings::BUILTIN_PROVIDER_ID,
-            "builtin-official"
+    fn built_in_provider_requires_login() {
+        let selected = select_provider_api_key(None, Some("stale-provider-key".into()), true);
+
+        assert_eq!(selected.unwrap_err(), "请先登录中转站");
+    }
+
+    #[test]
+    fn gateway_account_key_has_highest_priority() {
+        let selected = select_provider_api_key(
+            Some("account-key".into()),
+            Some("stored-provider-key".into()),
+            true,
         );
-        assert!(!BUILTIN_PROVIDER_API_KEY.trim().is_empty());
+
+        assert_eq!(selected.unwrap().as_deref(), Some("account-key"));
     }
 
     #[test]

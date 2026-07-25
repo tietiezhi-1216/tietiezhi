@@ -18,6 +18,7 @@ import { CreatePage } from "@/features/create/create-page";
 import { ProductAreaPlaceholder } from "@/features/product-area-placeholder";
 import { TietiezhiPage } from "@/features/tietiezhi/tietiezhi-page";
 import { TietiezhiDeviceControl } from "@/features/tietiezhi/device-control";
+import { TietiezhiControlCenter } from "@/features/tietiezhi/tietiezhi-control-center";
 import { SettingsDialog } from "@/features/settings/settings-dialog";
 import { useChatStore } from "@/stores/chat";
 import { useProjectStore } from "@/stores/projects";
@@ -168,7 +169,12 @@ function AppHeader({
             <AgentSelect />
           </>
         )}
-        {productArea === "tietiezhi" && <TietiezhiDeviceControl />}
+        {productArea === "tietiezhi" && (
+          <>
+            <TietiezhiDeviceControl />
+            <TietiezhiControlCenter />
+          </>
+        )}
         <UpdateReadyButton />
         {!workspace && (
           <Button

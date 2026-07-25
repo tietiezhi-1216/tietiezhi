@@ -49,6 +49,7 @@ Tietiezhi（铁铁汁）是一个以 **设备 × 模型互联**为核心的开�
 | 本地 Agent | 支持流式对话、连续工具调用、自定义系统提示词和独立 Agent 配置 |
 | 工具与权限 | 内置文件读写、编辑、搜索、命令执行与网络获取工具；提供询问、自动和完全授权三种权限模式 |
 | Skills 与 MCP | 支持导入 Markdown Skills，并连接 stdio 或 Streamable HTTP MCP 服务 |
+| 铁铁汁控制中心 | 在独立面板中管理身份指令、可读 Markdown 长期记忆、Skills / MCP 分配、Home 文件和专属工具权限 |
 | 项目与工作区 | 一个任务共享消息与上下文；Work 面向研究与成果、Code 面向终端与测试，两种模式使用隔离空间并支持显式成果交接 |
 | 上下文管理 | 统一采用 256K 窗口，在约 80% 时自动生成并持久化锚定摘要；也可使用 `/compact` 提前压缩、`/context` 查看占用 |
 | 设备互联 | Tietiezhi 页面管理本机和远程 Core，发现在线设备，并通过 `device_call` 调用经过授权的设备能力 |
@@ -68,9 +69,9 @@ Tietiezhi（铁铁汁）是一个以 **设备 × 模型互联**为核心的开�
 
 1. 从[官网](https://tietiezhi-1216.github.io/tietiezhi/)或 [GitHub Releases](https://github.com/tietiezhi-1216/tietiezhi/releases/latest) 下载适合系统的安装包。
 2. 打开「设置 → 供应商」，使用 Tietiezhi Gateway，或添加你自己的 OpenAI 兼容 `baseURL` 与 API Key。
-3. 在「Tietiezhi」中添加远程 Core，选择目标设备并检查它公开的能力。
+3. 在「Tietiezhi」中选择目标设备，并从右上角控制中心配置身份、记忆、Skills、MCP 与 Home 文件。
 4. 同步并选择模型，在「工作区」新建任务；需要处理本地项目时选择项目目录，再按目标切换 Work / Code。
-5. 按需配置 Agent、Skills、MCP 与工具权限。
+5. 在全局设置中维护可复用的 Agent、Skills 与 MCP 资源库。
 
 > Tietiezhi 不内置你的私人 API Key。使用第三方模型产生的费用和数据处理规则由对应服务商决定。
 

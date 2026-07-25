@@ -14,7 +14,7 @@ use tauri::{AppHandle, State};
 
 use super::chat::{stream_to_channel, ChatEvent, ChatMessage};
 use super::models::{classify, ModelKind};
-use super::{api_url, providers, snippet};
+use super::{api_url, provider_http_error, providers, snippet};
 use crate::AppState;
 
 /// Transcribe a Base64-encoded WAV recording. `language` is one of
@@ -118,11 +118,7 @@ async fn transcribe_mimo(
         .await
         .map_err(|e| format!("读取响应失败：{e}"))?;
     if !status.is_success() {
-        return Err(format!(
-            "语音识别返回 HTTP {}：{}",
-            status.as_u16(),
-            snippet(&text)
-        ));
+        return Err(provider_http_error("语音识别", status, &text));
     }
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|_| format!("语音识别响应异常：{}", snippet(&text)))?;
@@ -168,11 +164,7 @@ async fn transcribe_whisper(
         .await
         .map_err(|e| format!("读取响应失败：{e}"))?;
     if !status.is_success() {
-        return Err(format!(
-            "语音识别返回 HTTP {}：{}",
-            status.as_u16(),
-            snippet(&text)
-        ));
+        return Err(provider_http_error("语音识别", status, &text));
     }
     let json: serde_json::Value =
         serde_json::from_str(&text).map_err(|_| format!("语音识别响应异常：{}", snippet(&text)))?;

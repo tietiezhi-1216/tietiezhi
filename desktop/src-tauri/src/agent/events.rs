@@ -73,6 +73,7 @@ pub enum ChatEvent {
     },
     ContextCompacted {
         automatic: bool,
+        during_turn: bool,
         summary: String,
         estimated_tokens_before: u64,
         estimated_tokens_after: u64,
@@ -174,6 +175,7 @@ mod tests {
 
         let v = serde_json::to_value(ChatEvent::ContextCompacted {
             automatic: true,
+            during_turn: false,
             summary: "summary".into(),
             estimated_tokens_before: 210_000,
             estimated_tokens_after: 4_000,
@@ -182,5 +184,6 @@ mod tests {
         .unwrap();
         assert_eq!(v["type"], "contextCompacted");
         assert_eq!(v["estimatedTokensBefore"], 210_000);
+        assert_eq!(v["duringTurn"], false);
     }
 }

@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
-use std::time::Instant;
 
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -11,8 +10,9 @@ use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::context::{
-    build_compaction_transcript, compaction_threshold, estimate_payload_tokens, should_compact,
-    summary_message, truncate_summary, ContextAction, DEFAULT_CONTEXT_WINDOW_TOKENS,
+    build_compaction_transcript, build_execution_compaction_transcript, compaction_threshold,
+    estimate_payload_tokens, should_compact, summary_message, truncate_summary, ContextAction,
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
 };
 use super::events::ChatEvent;
 use super::failure::{retry_delay_ms, ChatFailure};
@@ -25,19 +25,9 @@ use crate::mcp::{self, McpManager, McpServerConfig};
 use crate::permission::{needs_approval, Decision, PermissionBroker, PermissionMode};
 use crate::tools::{self, ToolCtx};
 
-pub const MAX_ITERATIONS: usize = 20;
 const MODEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
-const TURN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const MAX_IDENTICAL_TOOL_CALLS: u8 = 3;
-
-struct CancelOnDrop(CancellationToken);
-
-impl Drop for CancelOnDrop {
-    fn drop(&mut self) {
-        self.0.cancel();
-    }
-}
 
 /// The fully-resolved execution environment for one agent chat turn.
 pub struct AgentEnv {
@@ -512,6 +502,35 @@ async fn compact_messages(
     if messages.is_empty() {
         return Err(ChatFailure::message("当前任务还没有可压缩的对话上下文"));
     }
+    let transcript = build_compaction_transcript(messages);
+    compact_transcript(
+        http,
+        base_url,
+        api_key,
+        model,
+        &transcript,
+        automatic,
+        estimated_tokens,
+        context_window,
+        cancel,
+        on_event,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn compact_transcript(
+    http: &reqwest::Client,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+    transcript: &[Value],
+    automatic: bool,
+    estimated_tokens: u64,
+    context_window: u64,
+    cancel: &CancellationToken,
+    on_event: &Channel<ChatEvent>,
+) -> Result<Option<String>, ChatFailure> {
     on_event
         .send(ChatEvent::ContextCompactionStarted {
             automatic,
@@ -520,13 +539,12 @@ async fn compact_messages(
         })
         .map_err(|error| ChatFailure::channel(format!("推送上下文压缩状态失败：{error}")))?;
 
-    let transcript = build_compaction_transcript(messages);
     let outcome = stream_with_retries(
         http,
         base_url,
         api_key,
         model,
-        &transcript,
+        transcript,
         &[],
         None,
         ReasoningEffort::Auto,
@@ -564,17 +582,6 @@ pub async fn run_agent_loop(
     cancel: &CancellationToken,
     on_event: &Channel<ChatEvent>,
 ) -> Result<bool, ChatFailure> {
-    let turn_started = Instant::now();
-    let turn_cancel = cancel.child_token();
-    let _turn_guard = CancelOnDrop(turn_cancel.clone());
-    let deadline_cancel = turn_cancel.clone();
-    tokio::spawn(async move {
-        tokio::select! {
-            _ = deadline_cancel.cancelled() => {}
-            _ = tokio::time::sleep(TURN_TIMEOUT) => deadline_cancel.cancel(),
-        }
-    });
-
     // MCP is a client-side bridge implemented through native function calling.
     // Unknown and explicitly unsupported models run as plain chat instead of
     // receiving a request body they may reject with HTTP 400.
@@ -643,7 +650,7 @@ pub async fn run_agent_loop(
             false,
             estimated_tokens,
             context_window,
-            &turn_cancel,
+            cancel,
             on_event,
         )
         .await?
@@ -656,6 +663,7 @@ pub async fn run_agent_loop(
         on_event
             .send(ChatEvent::ContextCompacted {
                 automatic: false,
+                during_turn: false,
                 summary,
                 estimated_tokens_before: estimated_tokens,
                 estimated_tokens_after,
@@ -686,7 +694,7 @@ pub async fn run_agent_loop(
             true,
             estimated_tokens,
             context_window,
-            &turn_cancel,
+            cancel,
             on_event,
         )
         .await?
@@ -704,6 +712,7 @@ pub async fn run_agent_loop(
         on_event
             .send(ChatEvent::ContextCompacted {
                 automatic: true,
+                during_turn: false,
                 summary,
                 estimated_tokens_before: estimated_tokens,
                 estimated_tokens_after,
@@ -715,7 +724,49 @@ pub async fn run_agent_loop(
     let mut last_tool_signature = String::new();
     let mut identical_tool_calls = 0_u8;
 
-    for _ in 0..MAX_ITERATIONS {
+    loop {
+        if context_action == ContextAction::Chat {
+            let estimated_tokens = estimate_payload_tokens(&transcript, &tool_specs);
+            if should_compact(estimated_tokens, context_window) {
+                let compaction_transcript = build_execution_compaction_transcript(&transcript);
+                let Some(summary) = compact_transcript(
+                    http,
+                    base_url,
+                    api_key,
+                    model,
+                    &compaction_transcript,
+                    true,
+                    estimated_tokens,
+                    context_window,
+                    cancel,
+                    on_event,
+                )
+                .await?
+                else {
+                    return Ok(true);
+                };
+                transcript = agent_transcript(&system_prompt, &[summary_message(&summary)]);
+                let estimated_tokens_after = estimate_payload_tokens(&transcript, &tool_specs);
+                if should_compact(estimated_tokens_after, context_window) {
+                    return Err(ChatFailure::message(format!(
+                        "整理执行上下文后仍预计占用 {estimated_tokens_after} Token，请减少工具或 MCP 定义"
+                    )));
+                }
+                on_event
+                    .send(ChatEvent::ContextCompacted {
+                        automatic: true,
+                        during_turn: true,
+                        summary,
+                        estimated_tokens_before: estimated_tokens,
+                        estimated_tokens_after,
+                        context_window,
+                    })
+                    .map_err(|error| {
+                        ChatFailure::channel(format!("推送执行上下文整理结果失败：{error}"))
+                    })?;
+            }
+        }
+
         let outcome = stream_with_retries(
             http,
             base_url,
@@ -726,17 +777,12 @@ pub async fn run_agent_loop(
             model_info.and_then(ModelInfo::effective_reasoning),
             reasoning_effort,
             true,
-            &turn_cancel,
+            cancel,
             on_event,
         )
         .await?;
         if outcome.cancelled {
-            if cancel.is_cancelled() {
-                return Ok(true);
-            }
-            return Err(ChatFailure::message(
-                "任务执行已超过 15 分钟，已停止当前工具和相关进程。请缩小任务范围后继续",
-            ));
+            return Ok(true);
         }
         if outcome.tool_calls.is_empty() {
             return Ok(false);
@@ -753,13 +799,8 @@ pub async fn run_agent_loop(
         }));
 
         for call in &outcome.tool_calls {
-            if turn_cancel.is_cancelled() {
-                if cancel.is_cancelled() {
-                    return Ok(true);
-                }
-                return Err(ChatFailure::message(
-                    "任务执行已超过 15 分钟，已停止当前工具和相关进程。请缩小任务范围后继续",
-                ));
+            if cancel.is_cancelled() {
+                return Ok(true);
             }
             let args = call.parsed_args();
             let signature = format!("{}\0{}", call.name, args);
@@ -842,22 +883,17 @@ pub async fn run_agent_loop(
                         args: args.clone(),
                     })
                     .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
-                match broker.wait(&perm_id, rx, &turn_cancel).await {
+                match broker.wait(&perm_id, rx, cancel).await {
                     Decision::Allow => {}
                     Decision::AllowAlways => broker.allow_for_session(request_id, &call.name),
                     Decision::Deny => allowed = false,
                 }
-                if turn_cancel.is_cancelled() {
-                    if cancel.is_cancelled() {
-                        return Ok(true);
-                    }
-                    return Err(ChatFailure::message(
-                        "任务执行已超过 15 分钟，已停止等待操作授权",
-                    ));
+                if cancel.is_cancelled() {
+                    return Ok(true);
                 }
             }
 
-            let tool_started = Instant::now();
+            let tool_started = std::time::Instant::now();
             let (output, is_error, exit_code, timed_out, cancelled, truncated) = if !allowed {
                 (
                     "用户拒绝了此操作".to_string(),
@@ -871,7 +907,7 @@ pub async fn run_agent_loop(
                 match env.mcp_configs.iter().find(|c| c.id == server_id) {
                     Some(cfg) => {
                         let call_result = tokio::select! {
-                            _ = turn_cancel.cancelled() => None,
+                            _ = cancel.cancelled() => None,
                             result = mcp_manager.call_tool(cfg, tool, &args) => Some(result),
                         };
                         match call_result {
@@ -897,7 +933,7 @@ pub async fn run_agent_loop(
                     http: http.clone(),
                     workspace: env.workspace.clone(),
                     available_skills: env.available_skills.clone(),
-                    cancel: turn_cancel.clone(),
+                    cancel: cancel.clone(),
                     call_id: call.id.clone(),
                     on_event: on_event.clone(),
                 };
@@ -934,16 +970,11 @@ pub async fn run_agent_loop(
                 "content": output,
             }));
 
-            if cancelled && turn_started.elapsed() >= TURN_TIMEOUT && !cancel.is_cancelled() {
-                return Err(ChatFailure::message(
-                    "任务执行已超过 15 分钟，已停止当前工具和相关进程。请缩小任务范围后继续",
-                ));
+            if cancelled && cancel.is_cancelled() {
+                return Ok(true);
             }
         }
     }
-    Err(ChatFailure::message(format!(
-        "已达到最大工具调用轮数（{MAX_ITERATIONS}），请新建任务继续"
-    )))
 }
 
 #[cfg(test)]

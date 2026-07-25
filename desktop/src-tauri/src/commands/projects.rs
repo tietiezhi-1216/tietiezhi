@@ -11,7 +11,7 @@ use walkdir::{DirEntry, WalkDir};
 
 use super::models::ModelKind;
 use super::workspace::TaskMode;
-use super::{api_url, providers, settings, snippet};
+use super::{api_url, provider_http_error, providers, settings, snippet};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -351,11 +351,7 @@ pub async fn refresh_project_recommendations(
         .await
         .map_err(|error| format!("读取任务建议失败：{error}"))?;
     if !status.is_success() {
-        return Err(format!(
-            "建议模型返回 HTTP {}：{}",
-            status.as_u16(),
-            snippet(&raw)
-        ));
+        return Err(provider_http_error("建议模型", status, &raw));
     }
     let value: Value =
         serde_json::from_str(&raw).map_err(|_| format!("建议响应格式异常：{}", snippet(&raw)))?;

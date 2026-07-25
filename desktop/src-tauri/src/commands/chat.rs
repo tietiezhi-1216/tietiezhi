@@ -2,12 +2,12 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
 
 use super::models::{classify, ModelInfo, ModelKind, ModelModality, ReasoningEffort};
 use super::workspace::TaskMode;
-use super::{api_url, providers, snippet};
+use super::{api_url, providers};
 use crate::agent::context::ContextAction;
 use crate::agent::failure::ChatFailure;
 use crate::AppState;
@@ -214,9 +214,8 @@ pub async fn chat_stream(
     Ok(())
 }
 
-/// The single Tietiezhi companion timeline. It uses the configured chat model
-/// but exposes only the cross-device tool, keeping this surface separate from
-/// project Work/Code tools and workspaces.
+/// The single Tietiezhi companion timeline. Its dedicated control-center
+/// configuration resolves the Home, memory, Skills, MCP and safe tools.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn tietiezhi_stream(
@@ -240,8 +239,8 @@ pub async fn tietiezhi_stream(
         if settings.chat_provider_id.trim().is_empty() || settings.chat_model.trim().is_empty() {
             return Err(ChatFailure::message("请先在设置中配置对话模型"));
         }
-        let resolved = providers::resolve(&app, &settings.chat_provider_id)
-            .map_err(ChatFailure::message)?;
+        let resolved =
+            providers::resolve(&app, &settings.chat_provider_id).map_err(ChatFailure::message)?;
         let model = settings.chat_model;
         let model_info = resolved
             .models
@@ -249,24 +248,8 @@ pub async fn tietiezhi_stream(
             .find(|candidate| candidate.id == model);
         ensure_chat_model(&model, model_info).map_err(ChatFailure::message)?;
 
-        let workspace = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| ChatFailure::message(format!("无法定位数据目录：{error}")))?
-            .join("tietiezhi");
-        std::fs::create_dir_all(&workspace)
-            .map_err(|error| ChatFailure::message(format!("创建铁铁汁空间失败：{error}")))?;
-        let system_prompt = format!(
-            "你是铁铁汁，一个长期陪伴用户的个人 Agent。保持自然、简洁，不使用产品宣传语。\n\n当前用户在右上角选择的目标设备是“{device_name}”，设备 ID 必须原样使用：{device_id}。当用户明确要求查看或操作设备时，只能调用 device_call；不要编造设备状态或声称未执行的操作已经完成。普通交流无需调用工具。"
-        );
-        let env = crate::agent::loop_::AgentEnv {
-            system_prompt,
-            allowed_tools: vec!["device_call".into()],
-            available_skills: Vec::new(),
-            permission_mode: crate::permission::PermissionMode::Ask,
-            mcp_configs: Vec::new(),
-            workspace,
-        };
+        let env = super::tietiezhi::resolve_env(&app, &device_id, &device_name)
+            .map_err(ChatFailure::message)?;
         let reasoning_effort = ReasoningEffort::from_setting(&settings.chat_reasoning_effort);
         let _ = on_event.send(ChatEvent::Started {
             model: model.clone(),
@@ -424,11 +407,7 @@ async fn run_stream(
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "中转站返回 HTTP {}：{}",
-            status.as_u16(),
-            snippet(&body)
-        ));
+        return Err(super::provider_http_error("模型服务", status, &body));
     }
 
     let mut stream = resp.bytes_stream();

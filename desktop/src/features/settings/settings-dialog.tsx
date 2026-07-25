@@ -24,6 +24,7 @@ import { AppIcon } from "@/components/app-icon";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { loadSettings, saveSettings } from "@/lib/api";
@@ -120,53 +121,57 @@ export function SettingsDialog() {
         showCloseButton
         className="flex h-[760px] max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-5xl"
       >
-        <nav className="bg-muted/30 flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r p-3">
-          <DialogTitle className="px-2 pt-1 text-sm font-semibold">设置</DialogTitle>
-          {GROUPS.map((group) => (
-            <div key={group.label} className="flex flex-col gap-1">
-              <span className="text-muted-foreground px-2 pb-0.5 text-[11px] font-medium">
-                {group.label}
-              </span>
-              {group.items.map((c) => (
-                <button
-                  key={c.key}
-                  onClick={() => setCategory(c.key)}
-                  className={cn(
-                    "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors",
-                    category === c.key
-                      ? "bg-accent text-accent-foreground font-medium"
-                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                  )}
-                >
-                  <c.icon className="size-4 shrink-0" />
-                  <span>{c.label}</span>
-                </button>
-              ))}
-            </div>
-          ))}
-        </nav>
+        <ScrollArea className="bg-muted/30 w-56 shrink-0 border-r">
+          <nav className="flex min-h-full flex-col gap-4 p-3">
+            <DialogTitle className="px-2 pt-1 text-sm font-semibold">设置</DialogTitle>
+            {GROUPS.map((group) => (
+              <div key={group.label} className="flex flex-col gap-1">
+                <span className="text-muted-foreground px-2 pb-0.5 text-[11px] font-medium">
+                  {group.label}
+                </span>
+                {group.items.map((c) => (
+                  <button
+                    key={c.key}
+                    onClick={() => setCategory(c.key)}
+                    className={cn(
+                      "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors",
+                      category === c.key
+                        ? "bg-accent text-accent-foreground font-medium"
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                    )}
+                  >
+                    <c.icon className="size-4 shrink-0" />
+                    <span>{c.label}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
+        </ScrollArea>
 
         <div className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-14 shrink-0 items-center border-b px-7">
             <h2 className="text-base font-semibold">{categoryLabel(category)}</h2>
           </header>
-          <div className="flex-1 overflow-y-auto px-7 py-6">
-            {category === "providers" && <ProviderManager />}
-            {category === "quota" && <QuotaCenter />}
-            {category === "titleModel" && <TitleModelSection />}
-            {category === "systemPrompt" && <SystemPromptSection />}
-            {category === "skills" && <SkillsSection />}
-            {category === "mcp" && <McpSection />}
-            {category === "permissions" && <PermissionSection />}
-            {category === "suggestions" && <SuggestionsSection />}
-            {category === "dictationModel" && <DictationModelSection />}
-            {category === "dictationHotkey" && <DictationHotkeySection />}
-            {category === "dictationPrompt" && <DictationPromptSection />}
-            {category === "archives" && <ArchivedTasksSection />}
-            {category === "appearance" && <AppearanceSection />}
-            {category === "update" && <UpdateCard />}
-            {category === "about" && <AboutSection />}
-          </div>
+          <ScrollArea className="min-h-0 flex-1">
+            <div className="px-7 py-6">
+              {category === "providers" && <ProviderManager />}
+              {category === "quota" && <QuotaCenter />}
+              {category === "titleModel" && <TitleModelSection />}
+              {category === "systemPrompt" && <SystemPromptSection />}
+              {category === "skills" && <SkillsSection />}
+              {category === "mcp" && <McpSection />}
+              {category === "permissions" && <PermissionSection />}
+              {category === "suggestions" && <SuggestionsSection />}
+              {category === "dictationModel" && <DictationModelSection />}
+              {category === "dictationHotkey" && <DictationHotkeySection />}
+              {category === "dictationPrompt" && <DictationPromptSection />}
+              {category === "archives" && <ArchivedTasksSection />}
+              {category === "appearance" && <AppearanceSection />}
+              {category === "update" && <UpdateCard />}
+              {category === "about" && <AboutSection />}
+            </div>
+          </ScrollArea>
         </div>
       </DialogContent>
     </Dialog>

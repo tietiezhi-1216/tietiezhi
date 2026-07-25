@@ -11,9 +11,6 @@ pub(crate) const BUILTIN_PROVIDER_ID: &str = "builtin-official";
 pub(crate) const BUILTIN_PROVIDER_NAME: &str = "Tietiezhi Gateway";
 pub(crate) const BUILTIN_PROVIDER_URL: &str = "https://tietiezhi.vip/v1";
 const LEGACY_BUILTIN_PROVIDER_URL: &str = "https://api.terln.com/v1";
-// Public client credential for the free built-in gateway. This is intentionally
-// distributed with the app and must not be used for private or paid accounts.
-pub(crate) const BUILTIN_PROVIDER_API_KEY: &str = "sk-terln-fiMX4TCzhvzVLruPLZGoN9JxdjADgTPU";
 
 /// A model provider (relay / vendor). API keys never live here — they go to the
 /// OS credential store, keyed by the provider id.

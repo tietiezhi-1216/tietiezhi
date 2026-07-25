@@ -424,6 +424,44 @@ export interface ChatAttachment {
   truncated?: boolean;
 }
 
+export interface TietiezhiConfig {
+  version: number;
+  systemPrompt: string;
+  /** Exact skill names assigned to Tietiezhi; empty means none. */
+  skills: string[];
+  /** Exact MCP server ids assigned to Tietiezhi; empty means none. */
+  mcpServers: string[];
+  /** Explicit safe builtin-tool allowlist; never interpreted as all tools. */
+  tools: string[];
+  permissionMode: PermissionMode;
+  memoryEnabled: boolean;
+}
+
+export interface TietiezhiTimelineMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  attachments?: ChatAttachment[];
+}
+
+export interface TietiezhiFileEntry {
+  path: string;
+  name: string;
+  isDirectory: boolean;
+  size: number;
+  modifiedAt: number;
+  protected: boolean;
+}
+
+export interface TietiezhiHomeOverview {
+  path: string;
+  fileCount: number;
+  memoryFileCount: number;
+  totalSize: number;
+  timelineCount: number;
+}
+
 export type ChatContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
@@ -472,6 +510,7 @@ export interface StoredMessage {
   contextAction?: "compaction" | "usage";
   contextSummary?: string;
   contextAutomatic?: boolean;
+  contextDuringTurn?: boolean;
   contextTokensBefore?: number;
   contextTokensAfter?: number;
   contextWindow?: number;
@@ -606,6 +645,7 @@ export type ChatEvent =
   | {
       type: "contextCompacted";
       automatic: boolean;
+      duringTurn: boolean;
       summary: string;
       estimatedTokensBefore: number;
       estimatedTokensAfter: number;
@@ -856,6 +896,50 @@ export function tietiezhiStream(args: TietiezhiStreamArgs): Promise<void> {
     messages: args.messages,
     onEvent: channel,
   });
+}
+
+export function getTietiezhiConfig(): Promise<TietiezhiConfig> {
+  return invoke<TietiezhiConfig>("get_tietiezhi_config");
+}
+
+export function saveTietiezhiConfig(
+  config: TietiezhiConfig,
+): Promise<TietiezhiConfig> {
+  return invoke<TietiezhiConfig>("save_tietiezhi_config", { config });
+}
+
+export function listTietiezhiFiles(): Promise<TietiezhiFileEntry[]> {
+  return invoke<TietiezhiFileEntry[]>("list_tietiezhi_files");
+}
+
+export function readTietiezhiFile(path: string): Promise<string> {
+  return invoke<string>("read_tietiezhi_file", { path });
+}
+
+export function writeTietiezhiFile(path: string, content: string): Promise<void> {
+  return invoke("write_tietiezhi_file", { path, content });
+}
+
+export function deleteTietiezhiFile(path: string): Promise<void> {
+  return invoke("delete_tietiezhi_file", { path });
+}
+
+export function getTietiezhiHomeOverview(): Promise<TietiezhiHomeOverview> {
+  return invoke<TietiezhiHomeOverview>("tietiezhi_home_overview");
+}
+
+export function revealTietiezhiHome(): Promise<void> {
+  return invoke("reveal_tietiezhi_home");
+}
+
+export function loadTietiezhiTimeline(): Promise<TietiezhiTimelineMessage[]> {
+  return invoke<TietiezhiTimelineMessage[]>("load_tietiezhi_timeline");
+}
+
+export function saveTietiezhiTimeline(
+  messages: TietiezhiTimelineMessage[],
+): Promise<void> {
+  return invoke("save_tietiezhi_timeline", { messages });
 }
 
 export function pickChatFiles(imagesOnly = false): Promise<ChatAttachment[]> {
