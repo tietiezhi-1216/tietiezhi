@@ -18,6 +18,11 @@ use tietiezhi_agent_approval::{
     PersistentApprovalRule, PersistentApprovalStore, RoutedServerRequest as ApprovalServerRequest,
     UserInputRequestParams,
 };
+use tietiezhi_agent_collab::{
+    AgentStatus as CollabAgentStatus, CollaborationConfig, CollaborationError, CollaborationHost,
+    CollaborationRuntime, CollaborationTools, ForkTurns, HostFuture, MailboxMessage, SpawnRequest,
+    SpawnedAgent,
+};
 use tietiezhi_agent_config::{
     build_world_state, load_project_instructions, strip_internal_world_state_metadata, ConfigPaths,
     ConfigRuntime, ProjectInstructionConfig, WorldStateInput,
@@ -25,7 +30,7 @@ use tietiezhi_agent_config::{
 use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
     CompactionExecutionSnapshot, DispatchOutput, RoutedNotification, RuntimeDefaults,
-    ThreadManager, TurnExecutionSnapshot,
+    SubagentThreadConfig, ThreadManager, TurnExecutionSnapshot,
 };
 use tietiezhi_agent_execpolicy::{
     ApprovalPolicy as ExecApprovalPolicy, EvaluationContext as ExecEvaluationContext,
@@ -67,6 +72,7 @@ use tietiezhi_agent_tools::{
     ToolRouter,
 };
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::AppState;
 
@@ -165,6 +171,124 @@ fn thread_manager(app: &AppHandle, state: &AppState) -> Result<ThreadManager, St
     Ok(manager)
 }
 
+fn collaboration_runtime(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<CollaborationRuntime, String> {
+    let mut slot = state
+        .codex_collab
+        .lock()
+        .map_err(|_| "Codex Collaboration 状态锁已损坏".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Ok(runtime.clone());
+    }
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let runtime = CollaborationRuntime::open(
+        app_data.join("agent-runtime").join("collaboration"),
+        CollaborationConfig::default(),
+    )
+    .map_err(|error| format!("初始化 Codex Collaboration 失败：{error}"))?;
+    *slot = Some(runtime.clone());
+    Ok(runtime)
+}
+
+fn collaboration_config_for(app: &AppHandle, cwd: &std::path::Path) -> CollaborationConfig {
+    let config_root = app
+        .path()
+        .app_config_dir()
+        .ok()
+        .map(|path| path.join("codex"));
+    let effective = config_root.and_then(|config_root| {
+        ConfigRuntime::new(ConfigPaths {
+            user_config: config_root.join("config.toml"),
+            system_config: system_codex_config_path(),
+            requirements: system_codex_requirements_path(),
+        })
+        .dispatch(
+            "config/read",
+            &json!({"cwd":cwd.to_string_lossy(),"includeLayers":false}),
+        )
+        .ok()
+        .map(|dispatch| dispatch.result)
+    });
+    let max_concurrent_threads = effective
+        .as_ref()
+        .and_then(|config| {
+            config
+                .pointer("/config/agents/max_concurrent_threads_per_session")
+                .or_else(|| {
+                    config.pointer(
+                        "/config/features/multi_agent_v2/max_concurrent_threads_per_session",
+                    )
+                })
+        })
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(tietiezhi_agent_collab::DEFAULT_MAX_CONCURRENT_THREADS);
+    let max_depth = effective
+        .as_ref()
+        .and_then(|config| config.pointer("/config/agents/max_depth"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(tietiezhi_agent_collab::DEFAULT_MAX_DEPTH);
+    CollaborationConfig {
+        max_concurrent_threads,
+        max_depth,
+    }
+}
+
+fn ensure_collaboration_agent(
+    app: &AppHandle,
+    manager: &ThreadManager,
+    runtime: &CollaborationRuntime,
+    thread_id: &str,
+    cwd: &std::path::Path,
+) -> Result<(), ModelError> {
+    let mut chain = Vec::new();
+    let mut cursor = thread_id.to_owned();
+    loop {
+        let identity = manager
+            .collaboration_identity(&cursor)
+            .map_err(core_model_error)?;
+        let parent = identity.parent_thread_id.clone();
+        chain.push(identity);
+        let Some(parent) = parent else {
+            break;
+        };
+        cursor = parent;
+    }
+    chain.reverse();
+    let root = chain
+        .first()
+        .ok_or_else(|| ModelError::Consumer("empty collaboration identity chain".into()))?;
+    runtime
+        .register_root_with_config(&root.thread_id, collaboration_config_for(app, cwd))
+        .map_err(|error| ModelError::Consumer(error.to_string()))?;
+    for identity in chain.into_iter().skip(1) {
+        runtime
+            .register_existing(
+                &identity.thread_id,
+                identity
+                    .parent_thread_id
+                    .as_deref()
+                    .ok_or_else(|| ModelError::Consumer("subagent has no parent thread".into()))?,
+                identity
+                    .agent_path
+                    .as_deref()
+                    .ok_or_else(|| ModelError::Consumer("subagent has no agent path".into()))?,
+                identity.agent_nickname,
+                identity.agent_role,
+                CollabAgentStatus::running(),
+            )
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+    }
+    Ok(())
+}
+
 fn persistent_approval_store(
     app: &AppHandle,
     state: &AppState,
@@ -237,6 +361,26 @@ fn cancel_thread(state: &AppState, thread_id: &str, expected_turn_id: Option<&st
             }
         }
     }
+    let descendants = state
+        .codex_collab
+        .lock()
+        .ok()
+        .and_then(|runtime| runtime.as_ref().cloned())
+        .map(|runtime| {
+            let descendants = runtime.descendants(thread_id);
+            for descendant in &descendants {
+                let _ = runtime.update_status(descendant, CollabAgentStatus::interrupted());
+            }
+            descendants
+        })
+        .unwrap_or_default();
+    if let Ok(cancels) = state.codex_cancels.lock() {
+        for descendant in descendants {
+            if let Some((_, cancel)) = cancels.get(&descendant) {
+                cancel.cancel();
+            }
+        }
+    }
 }
 
 fn signal_turn_input_activity(state: &AppState, thread_id: &str, turn_id: &str) {
@@ -264,6 +408,335 @@ fn turn_input_activity_token(app: &AppHandle, thread_id: &str, turn_id: &str) ->
                 .map(|(_, token)| token.clone())
         })
         .unwrap_or_default()
+}
+
+#[derive(Clone)]
+struct DesktopCollaborationHost {
+    app: AppHandle,
+    manager: ThreadManager,
+}
+
+impl DesktopCollaborationHost {
+    fn dispatch_unemitted(&self, method: &str, params: Value) -> Result<Value, CollaborationError> {
+        let output = self.manager.dispatch(
+            "internal-collaboration",
+            json!({
+                "id":Uuid::new_v4().to_string(),
+                "method":method,
+                "params":params
+            }),
+        );
+        if let Some(error) = output.response.get("error") {
+            return Err(CollaborationError::Host(
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("internal collaboration request failed")
+                    .into(),
+            ));
+        }
+        Ok(output
+            .response
+            .get("result")
+            .cloned()
+            .unwrap_or(Value::Null))
+    }
+
+    fn dispatch(&self, method: &str, params: Value) -> Result<Value, CollaborationError> {
+        let output = self.manager.dispatch(
+            "internal-collaboration",
+            json!({"id":Uuid::new_v4().to_string(),"method":method,"params":params}),
+        );
+        if let Some(error) = output.response.get("error") {
+            return Err(CollaborationError::Host(
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("internal collaboration request failed")
+                    .into(),
+            ));
+        }
+        emit_notifications(&self.app, &output.notifications).map_err(CollaborationError::Host)?;
+        Ok(output
+            .response
+            .get("result")
+            .cloned()
+            .unwrap_or(Value::Null))
+    }
+
+    fn start_turn(
+        &self,
+        thread_id: &str,
+        message: &str,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+        service_tier: Option<String>,
+    ) -> Result<(), CollaborationError> {
+        let result = self.dispatch(
+            "turn/start",
+            json!({
+                "threadId":thread_id,
+                "input":[{
+                    "type":"text",
+                    "text":message,
+                    "textElements":[]
+                }],
+                "model":model,
+                "effort":reasoning_effort,
+                "serviceTier":service_tier
+            }),
+        )?;
+        let turn_id = result
+            .pointer("/turn/id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CollaborationError::Host("turn/start did not return a turn id".into())
+            })?;
+        let state = self.app.state::<AppState>();
+        launch_turn_executor(
+            &self.app,
+            &state,
+            self.manager.clone(),
+            thread_id.into(),
+            turn_id.into(),
+        );
+        Ok(())
+    }
+}
+
+impl CollaborationHost for DesktopCollaborationHost {
+    fn spawn<'a>(
+        &'a self,
+        request: SpawnRequest,
+    ) -> HostFuture<'a, Result<SpawnedAgent, CollaborationError>> {
+        Box::pin(async move {
+            let parent = self
+                .manager
+                .turn_execution_snapshot(
+                    &request.author_thread_id,
+                    self.manager
+                        .active_turn_id(&request.author_thread_id)
+                        .map_err(|error| CollaborationError::Host(format!("{error:?}")))?
+                        .as_deref()
+                        .ok_or_else(|| {
+                            CollaborationError::Host("parent agent has no active turn".into())
+                        })?,
+                )
+                .map_err(|error| CollaborationError::Host(format!("{error:?}")))?;
+            let effective_model = request.model.clone().or_else(|| Some(parent.model.clone()));
+            let effective_reasoning_effort = request
+                .reasoning_effort
+                .clone()
+                .or_else(|| parent.reasoning_effort.clone());
+            let effective_service_tier = request
+                .service_tier
+                .clone()
+                .or_else(|| parent.service_tier.clone());
+            let forked_history = !matches!(request.fork_turns, ForkTurns::None);
+            let inherited_history = match request.fork_turns {
+                ForkTurns::None => Vec::new(),
+                ForkTurns::All => sanitize_collaboration_fork_history(parent.history.clone()),
+                ForkTurns::Last(turns) => sanitize_collaboration_fork_history(
+                    self.manager
+                        .response_history_tail(&request.author_thread_id, turns)
+                        .map_err(|error| CollaborationError::Host(format!("{error:?}")))?,
+                ),
+            };
+            let result = self.dispatch_unemitted(
+                "thread/start",
+                json!({
+                    "model":effective_model,
+                    "modelProvider":parent.model_provider,
+                    "serviceTier":effective_service_tier,
+                    "cwd":parent.cwd,
+                    "approvalPolicy":parent.approval_policy,
+                    "sandbox":sandbox_start_mode(&parent.sandbox),
+                    "baseInstructions":parent.base_instructions,
+                    "developerInstructions":parent.developer_instructions,
+                    "threadSource":"subagent"
+                }),
+            )?;
+            let thread_id = result
+                .pointer("/thread/id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    CollaborationError::Host("thread creation did not return a thread id".into())
+                })?
+                .to_owned();
+            let depth = request
+                .agent_path
+                .split('/')
+                .filter(|segment| !segment.is_empty())
+                .count()
+                .saturating_sub(1);
+            self.manager
+                .configure_subagent_thread(
+                    &thread_id,
+                    SubagentThreadConfig {
+                        parent_thread_id: request.author_thread_id.clone(),
+                        agent_path: request.agent_path.clone(),
+                        agent_nickname: None,
+                        agent_role: request.agent_type.clone(),
+                        depth,
+                        forked_history,
+                    },
+                )
+                .map_err(|error| CollaborationError::Host(format!("{error:?}")))?;
+            if !inherited_history.is_empty() {
+                self.dispatch(
+                    "thread/inject_items",
+                    json!({"threadId":thread_id,"items":inherited_history}),
+                )?;
+            }
+            let thread = self.dispatch_unemitted(
+                "thread/read",
+                json!({"threadId":thread_id,"includeTurns":false}),
+            )?;
+            emit_notifications(
+                &self.app,
+                &[RoutedNotification {
+                    recipients: self
+                        .manager
+                        .connection_recipients()
+                        .map_err(|error| CollaborationError::Host(format!("{error:?}")))?,
+                    method: "thread/started".into(),
+                    params: json!({"thread":thread["thread"].clone()}),
+                }],
+            )
+            .map_err(CollaborationError::Host)?;
+            Ok(SpawnedAgent {
+                thread_id,
+                nickname: None,
+                effective_model,
+                effective_reasoning_effort,
+                effective_service_tier,
+            })
+        })
+    }
+
+    fn start<'a>(
+        &'a self,
+        target_thread_id: &'a str,
+        message: &'a str,
+        model: Option<String>,
+        reasoning_effort: Option<String>,
+        service_tier: Option<String>,
+    ) -> HostFuture<'a, Result<(), CollaborationError>> {
+        Box::pin(async move {
+            self.start_turn(
+                target_thread_id,
+                message,
+                model,
+                reasoning_effort,
+                service_tier,
+            )
+        })
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        target_thread_id: &'a str,
+        message: MailboxMessage,
+    ) -> HostFuture<'a, Result<(), CollaborationError>> {
+        Box::pin(async move {
+            let content = format!(
+                "<agent_message author=\"{}\">{}</agent_message>",
+                message.author, message.message
+            );
+            if let Some(turn_id) = self
+                .manager
+                .active_turn_id(target_thread_id)
+                .map_err(|error| CollaborationError::Host(format!("{error:?}")))?
+            {
+                self.dispatch(
+                    "turn/steer",
+                    json!({
+                        "threadId":target_thread_id,
+                        "expectedTurnId":turn_id,
+                        "input":[{"type":"text","text":content,"textElements":[]}]
+                    }),
+                )?;
+                signal_turn_input_activity(
+                    &self.app.state::<AppState>(),
+                    target_thread_id,
+                    &turn_id,
+                );
+            } else if message.trigger_turn {
+                self.start_turn(target_thread_id, &content, None, None, None)?;
+            } else {
+                self.dispatch(
+                    "thread/inject_items",
+                    json!({
+                        "threadId":target_thread_id,
+                        "items":[{
+                            "type":"message",
+                            "role":"user",
+                            "content":[{"type":"input_text","text":content}]
+                        }]
+                    }),
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    fn interrupt<'a>(
+        &'a self,
+        target_thread_id: &'a str,
+    ) -> HostFuture<'a, Result<(), CollaborationError>> {
+        Box::pin(async move {
+            if let Some(turn_id) = self
+                .manager
+                .active_turn_id(target_thread_id)
+                .map_err(|error| CollaborationError::Host(format!("{error:?}")))?
+            {
+                self.dispatch(
+                    "turn/interrupt",
+                    json!({"threadId":target_thread_id,"turnId":turn_id}),
+                )?;
+                cancel_thread(
+                    &self.app.state::<AppState>(),
+                    target_thread_id,
+                    Some(&turn_id),
+                );
+            }
+            Ok(())
+        })
+    }
+}
+
+fn sandbox_start_mode(sandbox: &Value) -> Value {
+    match sandbox.get("type").and_then(Value::as_str) {
+        Some("dangerFullAccess") => json!("danger-full-access"),
+        Some("readOnly") => json!("read-only"),
+        _ => json!("workspace-write"),
+    }
+}
+
+fn sanitize_collaboration_fork_history(mut history: Vec<Value>) -> Vec<Value> {
+    let dangling_spawn = history
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, item)| {
+            item.get("type").and_then(Value::as_str) == Some("function_call")
+                && item.get("name").and_then(Value::as_str) == Some("spawn_agent")
+        })
+        .and_then(|(index, item)| {
+            let call_id = item.get("call_id").and_then(Value::as_str)?;
+            let has_output = history[index + 1..].iter().any(|candidate| {
+                candidate.get("call_id").and_then(Value::as_str) == Some(call_id)
+                    && matches!(
+                        candidate.get("type").and_then(Value::as_str),
+                        Some("function_call_output" | "custom_tool_call_output")
+                    )
+            });
+            (!has_output).then_some(index)
+        });
+    if let Some(index) = dangling_spawn {
+        history.remove(index);
+    }
+    history
 }
 
 /// Dispatch one App Server V2 request without embedding an upstream binary.
@@ -2753,12 +3226,101 @@ fn launch_turn_executor(
             cancel.clone(),
         )
         .await;
-        if let Err(error) = result {
+        if let Err(error) = &result {
             if !cancel.is_cancelled() {
-                fail_turn(&app, &manager, &thread_id, &turn_id, error);
+                fail_turn(
+                    &app,
+                    &manager,
+                    &thread_id,
+                    &turn_id,
+                    ModelError::Consumer(error.to_string()),
+                );
             }
         }
         let state = app.state::<AppState>();
+        let collaboration_identity = manager.collaboration_identity(&thread_id).ok();
+        if collaboration_identity
+            .as_ref()
+            .is_some_and(|identity| identity.parent_thread_id.is_some())
+        {
+            if let Ok(runtime) = collaboration_runtime(&app, &state) {
+                let status = if cancel.is_cancelled() {
+                    CollabAgentStatus::interrupted()
+                } else if let Err(error) = &result {
+                    CollabAgentStatus::errored(error.to_string())
+                } else {
+                    CollabAgentStatus::completed(
+                        manager.latest_agent_message(&thread_id).ok().flatten(),
+                    )
+                };
+                let _ = runtime.update_status(&thread_id, status.clone());
+                if let Some(parent_thread_id) = collaboration_identity
+                    .as_ref()
+                    .and_then(|identity| identity.parent_thread_id.as_deref())
+                {
+                    let summary = serde_json::to_string(&status)
+                        .unwrap_or_else(|_| "{\"status\":\"errored\"}".into());
+                    if let Ok(message) = runtime.record_message(
+                        &thread_id,
+                        parent_thread_id,
+                        &format!(
+                            "Agent {} reached final status: {summary}",
+                            collaboration_identity
+                                .as_ref()
+                                .and_then(|identity| identity.agent_path.as_deref())
+                                .unwrap_or(&thread_id)
+                        ),
+                        false,
+                    ) {
+                        let host = DesktopCollaborationHost {
+                            app: app.clone(),
+                            manager: manager.clone(),
+                        };
+                        if host
+                            .deliver(parent_thread_id, message.clone())
+                            .await
+                            .is_ok()
+                        {
+                            let _ = runtime.discard_message(parent_thread_id, &message.id);
+                        }
+                    }
+                }
+            }
+            let read = manager.dispatch(
+                "internal-collaboration",
+                json!({
+                    "id":Uuid::new_v4().to_string(),
+                    "method":"thread/read",
+                    "params":{"threadId":thread_id,"includeTurns":false}
+                }),
+            );
+            if let Some(cwd) = read
+                .response
+                .pointer("/result/thread/cwd")
+                .and_then(Value::as_str)
+            {
+                let identity = collaboration_identity.as_ref().expect("checked above");
+                let _ = run_hooks(
+                    &app,
+                    &manager,
+                    HookRequest {
+                        event_name: HookEventName::SubagentStop,
+                        thread_id: thread_id.clone(),
+                        turn_id: Some(turn_id.clone()),
+                        cwd: cwd.into(),
+                        matcher: identity.agent_role.clone(),
+                        payload: json!({
+                            "agentPath":identity.agent_path,
+                            "parentThreadId":identity.parent_thread_id,
+                            "agentRole":identity.agent_role,
+                            "cancelled":cancel.is_cancelled(),
+                            "error":result.as_ref().err().map(ToString::to_string)
+                        }),
+                    },
+                )
+                .await;
+            }
+        }
         if let Ok(mut cancels) = state.codex_cancels.lock() {
             if cancels
                 .get(&thread_id)
@@ -2789,6 +3351,29 @@ async fn run_turn_executor(
     let initial = manager
         .turn_execution_snapshot(&thread_id, &turn_id)
         .map_err(core_model_error)?;
+    let collaboration_identity = manager
+        .collaboration_identity(&thread_id)
+        .map_err(core_model_error)?;
+    if collaboration_identity.parent_thread_id.is_some() {
+        let dispatch = run_hooks(
+            &app,
+            &manager,
+            HookRequest {
+                event_name: HookEventName::SubagentStart,
+                thread_id: thread_id.clone(),
+                turn_id: Some(turn_id.clone()),
+                cwd: initial.cwd.clone(),
+                matcher: collaboration_identity.agent_role.clone(),
+                payload: json!({
+                    "agentPath":collaboration_identity.agent_path,
+                    "parentThreadId":collaboration_identity.parent_thread_id,
+                    "agentRole":collaboration_identity.agent_role
+                }),
+            },
+        )
+        .await?;
+        ensure_hook_allows(&dispatch)?;
+    }
     let hook_runtime =
         hooks_runtime(&app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
     if hook_runtime.mark_session_start(&thread_id) {
@@ -3084,7 +3669,17 @@ async fn run_turn_executor(
                     .and_then(|metadata| metadata.get("deferItemCompletion"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                if let Some(item) = metadata_item.or(timeline_item) {
+                let collaboration_item = output
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| collaboration_timeline_item(&call, metadata));
+                let timeline_item = timeline_item.map(|mut item| {
+                    if item.get("type").and_then(Value::as_str) == Some("collabAgentToolCall") {
+                        item["status"] = json!("failed");
+                    }
+                    item
+                });
+                if let Some(item) = metadata_item.or(collaboration_item).or(timeline_item) {
                     if item.get("type").and_then(Value::as_str) == Some("fileChange") {
                         let changes = item
                             .get("changes")
@@ -3104,6 +3699,30 @@ async fn run_turn_executor(
                     if !defer_item_completion {
                         let notifications = manager
                             .local_tool_item_completed(&thread_id, &turn_id, item)
+                            .map_err(core_model_error)?;
+                        emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                    }
+                }
+                if let Some(activity) = output
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.pointer("/codexCollaboration/activity"))
+                    .filter(|activity| !activity.is_null())
+                {
+                    if let (Some(kind), Some(agent_thread_id), Some(agent_path)) = (
+                        activity.get("kind").and_then(Value::as_str),
+                        activity.get("agentThreadId").and_then(Value::as_str),
+                        activity.get("agentPath").and_then(Value::as_str),
+                    ) {
+                        let activity_item = json!({
+                            "type":"subAgentActivity",
+                            "id":call.call_id,
+                            "kind":kind,
+                            "agentThreadId":agent_thread_id,
+                            "agentPath":agent_path
+                        });
+                        let notifications = manager
+                            .local_tool_item_completed(&thread_id, &turn_id, activity_item)
                             .map_err(core_model_error)?;
                         emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
                     }
@@ -3478,6 +4097,25 @@ async fn turn_tool_runtime(
         web_search_handler(),
         update_plan_handler(),
     ];
+    let collaboration =
+        collaboration_runtime(app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
+    ensure_collaboration_agent(
+        app,
+        manager,
+        &collaboration,
+        &snapshot.thread_id,
+        &snapshot.cwd,
+    )?;
+    handlers.extend(
+        CollaborationTools::new(
+            collaboration,
+            Arc::new(DesktopCollaborationHost {
+                app: app.clone(),
+                manager: manager.clone(),
+            }),
+        )
+        .handlers(),
+    );
     let user_input_app = app.clone();
     let user_input_manager = manager.clone();
     handlers.push(request_user_input_handler(Arc::new(
@@ -3485,6 +4123,18 @@ async fn turn_tool_runtime(
             let app = user_input_app.clone();
             let manager = user_input_manager.clone();
             Box::pin(async move {
+                if manager
+                    .collaboration_identity(&request.thread_id)
+                    .map_err(|error| {
+                        tietiezhi_agent_tools::ToolError::Handler(format!("{error:?}"))
+                    })?
+                    .parent_thread_id
+                    .is_some()
+                {
+                    return Err(tietiezhi_agent_tools::ToolError::InvalidCall(
+                        "request_user_input is not available to subagents".into(),
+                    ));
+                }
                 let waiting = manager
                     .set_thread_status(
                         &request.thread_id,
@@ -4709,6 +5359,20 @@ fn local_tool_timeline_item(snapshot: &TurnExecutionSnapshot, call: &ToolCall) -
         return None;
     };
     let arguments: Value = serde_json::from_str(arguments).ok()?;
+    if let Some(tool) = collaboration_tool_name(&call.tool_name.name) {
+        return Some(json!({
+            "type":"collabAgentToolCall",
+            "id":call.call_id,
+            "tool":tool,
+            "status":"inProgress",
+            "senderThreadId":snapshot.thread_id,
+            "receiverThreadIds":[],
+            "prompt":arguments.get("message").and_then(Value::as_str),
+            "model":arguments.get("model").and_then(Value::as_str),
+            "reasoningEffort":arguments.get("reasoning_effort").and_then(Value::as_str),
+            "agentsStates":{}
+        }));
+    }
     match (
         call.tool_name.namespace.as_deref(),
         call.tool_name.name.as_str(),
@@ -4771,6 +5435,65 @@ fn local_tool_timeline_item(snapshot: &TurnExecutionSnapshot, call: &ToolCall) -
         }
         _ => None,
     }
+}
+
+fn collaboration_tool_name(name: &str) -> Option<&'static str> {
+    match name {
+        "spawn_agent" => Some("spawnAgent"),
+        "send_message" => Some("sendInput"),
+        "followup_task" => Some("resumeAgent"),
+        "wait_agent" => Some("wait"),
+        "interrupt_agent" => Some("closeAgent"),
+        _ => None,
+    }
+}
+
+fn collaboration_timeline_item(call: &ToolCall, metadata: &Value) -> Option<Value> {
+    let collaboration = metadata.get("codexCollaboration")?;
+    let tool = collaboration
+        .get("tool")
+        .and_then(Value::as_str)
+        .or_else(|| collaboration_tool_name(&call.tool_name.name))?;
+    let receiver_thread_ids = collaboration
+        .get("receiverThreadIds")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let agents_states = collaboration
+        .get("agentsStates")
+        .cloned()
+        .or_else(|| {
+            collaboration
+                .pointer("/activity/previousStatus")
+                .filter(|status| !status.is_null())
+                .and_then(|status| {
+                    receiver_thread_ids
+                        .as_array()
+                        .and_then(|ids| ids.first())
+                        .and_then(Value::as_str)
+                        .map(|thread_id| {
+                            Value::Object(serde_json::Map::from_iter([(
+                                thread_id.into(),
+                                status.clone(),
+                            )]))
+                        })
+                })
+        })
+        .unwrap_or_else(|| json!({}));
+    Some(json!({
+        "type":"collabAgentToolCall",
+        "id":call.call_id,
+        "tool":tool,
+        "status":"completed",
+        "senderThreadId":collaboration
+            .get("senderThreadId")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "receiverThreadIds":receiver_thread_ids,
+        "prompt":collaboration.get("prompt").cloned().unwrap_or(Value::Null),
+        "model":Value::Null,
+        "reasoningEffort":Value::Null,
+        "agentsStates":agents_states
+    }))
 }
 
 fn compaction_response_request(
@@ -5119,11 +5842,12 @@ fn fail_turn(
 #[cfg(test)]
 mod tests {
     use super::{
-        assistant_response_text, compaction_response_request, dispatch_windows_sandbox,
-        empty_rate_limits, format_micro, gateway_rate_limits, local_tool_timeline_item,
-        merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, parse_plugin_mcp_source,
-        permission_profile_list, permission_profile_to_tool, permission_profile_to_v2,
-        plugin_enablement_edits, response_request, ConfigPaths, ConfigRuntime, PluginMcpSource,
+        assistant_response_text, collaboration_timeline_item, compaction_response_request,
+        dispatch_windows_sandbox, empty_rate_limits, format_micro, gateway_rate_limits,
+        local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type,
+        parse_plugin_mcp_source, permission_profile_list, permission_profile_to_tool,
+        permission_profile_to_v2, plugin_enablement_edits, response_request,
+        sanitize_collaboration_fork_history, ConfigPaths, ConfigRuntime, PluginMcpSource,
         ResponseEvent, ResponseProjection, SkillsPaths, SkillsRuntime,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
@@ -5133,6 +5857,7 @@ mod tests {
     use tietiezhi_agent_core::{
         CompactionExecutionSnapshot, RuntimeDefaults, ThreadManager, TurnExecutionSnapshot,
     };
+    use tietiezhi_agent_tools::{ToolCall, ToolPayload};
 
     #[test]
     fn empty_runtime_selection_is_explicitly_unconfigured() {
@@ -5261,6 +5986,76 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].tool_name.namespace.as_deref(), Some("clock"));
         assert_eq!(calls[0].tool_name.name, "sleep");
+    }
+
+    #[test]
+    fn collaboration_metadata_projects_protocol_exact_items() {
+        let call = ToolCall {
+            tool_name: tietiezhi_agent_tools::ToolName::plain("spawn_agent"),
+            call_id: "call_spawn".into(),
+            payload: ToolPayload::Function {
+                arguments: r#"{"message":"inspect","task_name":"worker"}"#.into(),
+            },
+        };
+        let item = collaboration_timeline_item(
+            &call,
+            &json!({
+                "codexCollaboration":{
+                    "tool":"spawnAgent",
+                    "senderThreadId":"018f16f7-58ca-7f59-bb7f-6626b6630f6a",
+                    "receiverThreadIds":["018f16f7-58ca-7f59-bb7f-6626b6630f6b"],
+                    "prompt":"inspect",
+                    "agentsStates":{
+                        "018f16f7-58ca-7f59-bb7f-6626b6630f6b":{
+                            "status":"running",
+                            "message":null
+                        }
+                    }
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(item["type"], "collabAgentToolCall");
+        assert_eq!(item["tool"], "spawnAgent");
+        assert_eq!(item["status"], "completed");
+        assert!(serde_json::from_value::<tietiezhi_agent_protocol::ThreadItem>(item).is_ok());
+        let activity = json!({
+            "type":"subAgentActivity",
+            "id":"call_spawn",
+            "kind":"started",
+            "agentThreadId":"018f16f7-58ca-7f59-bb7f-6626b6630f6b",
+            "agentPath":"/root/worker"
+        });
+        assert!(serde_json::from_value::<tietiezhi_agent_protocol::ThreadItem>(activity).is_ok());
+    }
+
+    #[test]
+    fn collaboration_fork_drops_only_the_dangling_spawn_call() {
+        let history = vec![
+            json!({"type":"message","role":"user","content":[]}),
+            json!({
+                "type":"function_call",
+                "name":"spawn_agent",
+                "call_id":"old",
+                "arguments":"{}"
+            }),
+            json!({
+                "type":"function_call_output",
+                "call_id":"old",
+                "output":"{}"
+            }),
+            json!({
+                "type":"function_call",
+                "name":"spawn_agent",
+                "call_id":"current",
+                "arguments":"{}"
+            }),
+        ];
+
+        let forked = sanitize_collaboration_fork_history(history);
+        assert_eq!(forked.len(), 3);
+        assert_eq!(forked[1]["call_id"], "old");
+        assert_eq!(forked[2]["call_id"], "old");
     }
 
     #[test]

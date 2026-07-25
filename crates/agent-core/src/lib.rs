@@ -109,6 +109,12 @@ struct ThreadRecord {
     cli_version: String,
     source: Value,
     thread_source: Option<Value>,
+    #[serde(default)]
+    agent_path: Option<String>,
+    #[serde(default)]
+    agent_nickname: Option<String>,
+    #[serde(default)]
+    agent_role: Option<String>,
     git_info: Option<GitInfo>,
     name: Option<String>,
     approval_policy: Value,
@@ -147,6 +153,27 @@ pub struct TurnInputBatch {
 pub struct TurnInputDrain {
     pub batches: Vec<TurnInputBatch>,
     pub notifications: Vec<RoutedNotification>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CollaborationIdentity {
+    pub thread_id: String,
+    pub parent_thread_id: Option<String>,
+    pub agent_path: Option<String>,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentThreadConfig {
+    pub parent_thread_id: String,
+    pub agent_path: String,
+    pub agent_nickname: Option<String>,
+    pub agent_role: Option<String>,
+    pub depth: usize,
+    pub forked_history: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -541,11 +568,17 @@ impl ThreadManager {
         let sandbox = self.resolve_sandbox(params.get("sandbox"), &cwd)?;
         let service_tier = optional_nullable_string(params, "serviceTier")
             .unwrap_or_else(|| self.inner.defaults.service_tier.clone());
+        let thread_source = params
+            .get("threadSource")
+            .filter(|value| !value.is_null())
+            .cloned();
+        let (parent_thread_id, agent_path, agent_nickname, agent_role) =
+            collaboration_fields(thread_source.as_ref());
         let record = ThreadRecord {
             id: id.clone(),
             session_id: id.clone(),
             forked_from_id: None,
-            parent_thread_id: None,
+            parent_thread_id: parent_thread_id.clone(),
             preview: String::new(),
             ephemeral: params
                 .get("ephemeral")
@@ -562,11 +595,15 @@ impl ThreadManager {
             developer_instructions: optional_string(params, "developerInstructions"),
             cwd,
             cli_version: self.inner.defaults.cli_version.clone(),
-            source: json!("appServer"),
-            thread_source: params
-                .get("threadSource")
-                .filter(|value| !value.is_null())
-                .cloned(),
+            source: if parent_thread_id.is_some() {
+                json!("subagent")
+            } else {
+                json!("appServer")
+            },
+            thread_source,
+            agent_path,
+            agent_nickname,
+            agent_role,
             git_info: None,
             name: None,
             approval_policy,
@@ -707,6 +744,15 @@ impl ThreadManager {
         self.apply_open_overrides(&mut record, params)?;
         if let Some(source) = params.get("threadSource").filter(|value| !value.is_null()) {
             record.thread_source = Some(source.clone());
+            let (parent_thread_id, agent_path, agent_nickname, agent_role) =
+                collaboration_fields(record.thread_source.as_ref());
+            record.parent_thread_id = parent_thread_id;
+            record.agent_path = agent_path;
+            record.agent_nickname = agent_nickname;
+            record.agent_role = agent_role;
+            if record.parent_thread_id.is_some() {
+                record.source = json!("subagent");
+            }
         }
         let mut loaded = self.create_loaded_thread(record, Vec::new(), &mut state)?;
         if let Some(items) = copied_rollout_items.as_deref() {
@@ -2167,11 +2213,10 @@ impl ThreadManager {
         let Some(item) = response_item_to_v2(&response_item)? else {
             return Ok(Vec::new());
         };
-        let item_id = required_item_string(&item, "id", "model item")?;
         let mut state = self.state()?;
         let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
         require_active_turn(&loaded, turn_id)?;
-        if turn_contains_item(&loaded.turns, turn_id, item_id) {
+        if turn_contains_typed_item(&loaded.turns, turn_id, &item) {
             return Ok(Vec::new());
         }
         let now = now_ms();
@@ -2296,11 +2341,10 @@ impl ThreadManager {
         validate_thread_id(thread_id)?;
         serde_json::from_value::<ThreadItem>(item.clone())
             .map_err(|error| RpcError::invalid(format!("invalid local tool item: {error}")))?;
-        let item_id = required_item_string(&item, "id", "local tool item")?;
         let mut state = self.state()?;
         let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
         require_active_turn(&loaded, turn_id)?;
-        if turn_contains_item(&loaded.turns, turn_id, item_id) {
+        if turn_contains_typed_item(&loaded.turns, turn_id, &item) {
             return Ok(Vec::new());
         }
         let now = now_ms();
@@ -2341,12 +2385,11 @@ impl ThreadManager {
         validate_thread_id(thread_id)?;
         serde_json::from_value::<ThreadItem>(item.clone())
             .map_err(|error| RpcError::invalid(format!("invalid local tool item: {error}")))?;
-        let item_id = required_item_string(&item, "id", "local tool item")?;
         let mut state = self.state()?;
         let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
         require_active_turn(&loaded, turn_id)?;
         let now = now_ms();
-        let started = !turn_contains_item(&loaded.turns, turn_id, item_id);
+        let started = !turn_contains_typed_item(&loaded.turns, turn_id, &item);
         upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
         if let Some(appender) = rollout_appender(&loaded)? {
             if started {
@@ -2540,6 +2583,140 @@ impl ThreadManager {
             .unwrap_or_default();
         recipients.sort();
         Ok(recipients)
+    }
+
+    pub fn collaboration_identity(&self, thread_id: &str) -> RpcResult<CollaborationIdentity> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        Ok(CollaborationIdentity {
+            thread_id: thread_id.into(),
+            parent_thread_id: loaded.record.parent_thread_id.clone(),
+            agent_path: loaded.record.agent_path.clone(),
+            agent_nickname: loaded.record.agent_nickname.clone(),
+            agent_role: loaded.record.agent_role.clone(),
+        })
+    }
+
+    pub fn configure_subagent_thread(
+        &self,
+        thread_id: &str,
+        config: SubagentThreadConfig,
+    ) -> RpcResult<()> {
+        validate_thread_id(thread_id)?;
+        validate_thread_id(&config.parent_thread_id)?;
+        if !config.agent_path.starts_with("/root/") {
+            return Err(RpcError::invalid(
+                "subagent path must be a descendant of /root",
+            ));
+        }
+        let mut state = self.state()?;
+        self.loaded_thread_locked(&config.parent_thread_id, &state)?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        loaded.record.source = json!({
+            "subAgent":{
+                "thread_spawn":{
+                    "parent_thread_id":config.parent_thread_id,
+                    "depth":i32::try_from(config.depth).unwrap_or(i32::MAX),
+                    "agent_path":config.agent_path,
+                    "agent_nickname":config.agent_nickname,
+                    "agent_role":config.agent_role
+                }
+            }
+        });
+        loaded.record.parent_thread_id = Some(config.parent_thread_id.clone());
+        loaded.record.forked_from_id = config
+            .forked_history
+            .then(|| config.parent_thread_id.clone());
+        loaded.record.agent_path = Some(config.agent_path.clone());
+        loaded.record.agent_nickname = config.agent_nickname.clone();
+        loaded.record.agent_role = config.agent_role.clone();
+        loaded.record.thread_source = Some(json!("subagent"));
+        loaded.record.updated_at_ms = now_ms();
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(json!({
+                    "type":"collaboration_identity_updated",
+                    "thread_id":thread_id,
+                    "parent_thread_id":config.parent_thread_id,
+                    "agent_path":config.agent_path,
+                    "agent_nickname":config.agent_nickname,
+                    "agent_role":config.agent_role,
+                    "depth":config.depth,
+                    "forked_history":config.forked_history
+                }))
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        self.persist_loaded(&mut loaded)?;
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(())
+    }
+
+    pub fn latest_agent_message(&self, thread_id: &str) -> RpcResult<Option<String>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        Ok(loaded
+            .turns
+            .iter()
+            .rev()
+            .flat_map(|turn| {
+                turn.get("items")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .rev()
+            })
+            .find(|item| item.get("type").and_then(Value::as_str) == Some("agentMessage"))
+            .and_then(|item| item.get("text"))
+            .and_then(Value::as_str)
+            .map(str::to_owned))
+    }
+
+    pub fn response_history_tail(
+        &self,
+        thread_id: &str,
+        turn_count: usize,
+    ) -> RpcResult<Vec<Value>> {
+        validate_thread_id(thread_id)?;
+        if turn_count == 0 {
+            return Err(RpcError::invalid("turn_count must be positive"));
+        }
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        let metadata = loaded
+            .metadata
+            .as_ref()
+            .ok_or_else(|| RpcError::invalid("ephemeral threads do not have a rollout"))?;
+        let recovery = self
+            .inner
+            .store
+            .recover_rollout(&metadata.rollout_path)
+            .map_err(state_error)?;
+        let starts = recovery
+            .rollout_items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| match &item.item {
+                RecoveredRolloutItemKind::EventMsg(event)
+                    if matches!(
+                        event.get("type").and_then(Value::as_str),
+                        Some("task_started" | "turn_started")
+                    ) =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let start = starts
+            .get(starts.len().saturating_sub(turn_count))
+            .copied()
+            .unwrap_or(0);
+        Ok(response_items_from_rollout(
+            &recovery.rollout_items[start..],
+        ))
     }
 
     pub fn connection_recipients(&self) -> RpcResult<Vec<String>> {
@@ -3728,6 +3905,7 @@ impl ThreadManager {
             .map_err(state_error)?;
         apply_latest_turn_context(&mut record, &recovery.rollout_items);
         apply_latest_goal(&mut record, &recovery.rollout_items);
+        apply_latest_collaboration_identity(&mut record, &recovery.rollout_items);
         let mut projection = project_turns(&recovery.rollout_items)?;
         if projection.turns.is_empty() && !record.turns.is_empty() {
             projection.turns = std::mem::take(&mut record.turns);
@@ -3869,6 +4047,7 @@ impl ThreadManager {
             )?;
             apply_latest_turn_context(&mut record, &recovery.rollout_items);
             apply_latest_goal(&mut record, &recovery.rollout_items);
+            apply_latest_collaboration_identity(&mut record, &recovery.rollout_items);
             let context = reconstruct_context(&recovery.rollout_items);
             if let Some(world_state) = context.world_state_baseline.as_ref() {
                 record.developer_instructions = world_state
@@ -3957,6 +4136,21 @@ impl ThreadManager {
                 .get("thread_source")
                 .filter(|value| !value.is_null())
                 .cloned(),
+            agent_path: meta
+                .pointer("/thread_source/subagent/thread_spawn/agent_path")
+                .or_else(|| meta.pointer("/thread_source/subAgent/thread_spawn/agent_path"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            agent_nickname: meta
+                .pointer("/thread_source/subagent/thread_spawn/agent_nickname")
+                .or_else(|| meta.pointer("/thread_source/subAgent/thread_spawn/agent_nickname"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            agent_role: meta
+                .pointer("/thread_source/subagent/thread_spawn/agent_role")
+                .or_else(|| meta.pointer("/thread_source/subAgent/thread_spawn/agent_role"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             git_info,
             name: None,
             approval_policy: self.inner.defaults.approval_policy.clone(),
@@ -4016,6 +4210,9 @@ impl ThreadManager {
             cli_version: self.inner.defaults.cli_version.clone(),
             source: json!("appServer"),
             thread_source: None,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
             git_info: None,
             name: (!metadata.title.is_empty()).then(|| metadata.title.clone()),
             approval_policy: self.inner.defaults.approval_policy.clone(),
@@ -4147,8 +4344,8 @@ impl ThreadManager {
             "cliVersion": record.cli_version,
             "source": record.source,
             "threadSource": record.thread_source,
-            "agentNickname": Value::Null,
-            "agentRole": Value::Null,
+            "agentNickname": record.agent_nickname,
+            "agentRole": record.agent_role,
             "gitInfo": record.git_info,
             "name": record.name,
             "turns": turns
@@ -5247,6 +5444,58 @@ fn apply_latest_goal(record: &mut ThreadRecord, items: &[RecoveredRolloutItem]) 
     }
 }
 
+fn apply_latest_collaboration_identity(record: &mut ThreadRecord, items: &[RecoveredRolloutItem]) {
+    let Some(event) = items.iter().rev().find_map(|item| match &item.item {
+        RecoveredRolloutItemKind::EventMsg(event)
+            if event.get("type").and_then(Value::as_str)
+                == Some("collaboration_identity_updated") =>
+        {
+            Some(event)
+        }
+        _ => None,
+    }) else {
+        return;
+    };
+    record.parent_thread_id = event
+        .get("parent_thread_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    record.agent_path = event
+        .get("agent_path")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    record.agent_nickname = event
+        .get("agent_nickname")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    record.agent_role = event
+        .get("agent_role")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if event
+        .get("forked_history")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        record.forked_from_id = record.parent_thread_id.clone();
+    }
+    if record.parent_thread_id.is_some() {
+        let depth = event.get("depth").and_then(Value::as_u64).unwrap_or(1);
+        record.source = json!({
+            "subAgent":{
+                "thread_spawn":{
+                    "parent_thread_id":record.parent_thread_id,
+                    "depth":depth,
+                    "agent_path":record.agent_path,
+                    "agent_nickname":record.agent_nickname,
+                    "agent_role":record.agent_role
+                }
+            }
+        });
+        record.thread_source = Some(json!("subagent"));
+    }
+}
+
 fn response_item_to_v2(item: &Value) -> RpcResult<Option<Value>> {
     match item.get("type").and_then(Value::as_str) {
         Some("message") if item.get("role").and_then(Value::as_str) == Some("assistant") => {
@@ -5500,6 +5749,22 @@ fn turn_contains_item(turns: &[Value], turn_id: &str, item_id: &str) -> bool {
         })
 }
 
+fn turn_contains_typed_item(turns: &[Value], turn_id: &str, item: &Value) -> bool {
+    let item_id = item.get("id").and_then(Value::as_str);
+    let item_type = item.get("type").and_then(Value::as_str);
+    turns
+        .iter()
+        .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+        .and_then(|turn| turn.get("items"))
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|candidate| {
+                candidate.get("id").and_then(Value::as_str) == item_id
+                    && candidate.get("type").and_then(Value::as_str) == item_type
+            })
+        })
+}
+
 fn turn_item_mut<'a>(
     turns: &'a mut [Value],
     turn_id: &str,
@@ -5550,14 +5815,18 @@ fn upsert_turn_item(turns: &mut [Value], turn_id: &str, item: Value) -> RpcResul
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(|| RpcError::internal("ThreadItem id is required"))?;
+    let item_type = item
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::internal("ThreadItem type is required"))?;
     let items = turn
         .get_mut("items")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| RpcError::internal("Turn items must be an array"))?;
-    if let Some(existing) = items
-        .iter_mut()
-        .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(item_id))
-    {
+    if let Some(existing) = items.iter_mut().find(|candidate| {
+        candidate.get("id").and_then(Value::as_str) == Some(item_id)
+            && candidate.get("type").and_then(Value::as_str) == Some(item_type)
+    }) {
         *existing = item;
     } else {
         items.push(item);
@@ -5645,6 +5914,31 @@ fn canonical_session_meta(record: &ThreadRecord, compact_window: &CompactWindow)
 
 fn snake_optional_string(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_owned)
+}
+
+fn collaboration_fields(
+    source: Option<&Value>,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
+    let spawn = source
+        .and_then(|source| source.get("subAgent").or_else(|| source.get("subagent")))
+        .and_then(|subagent| subagent.get("thread_spawn"));
+    let field = |name: &str| {
+        spawn
+            .and_then(|spawn| spawn.get(name))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    (
+        field("parent_thread_id"),
+        field("agent_path"),
+        field("agent_nickname"),
+        field("agent_role").or_else(|| field("agent_type")),
+    )
 }
 
 fn required_string(params: &Value, key: &str) -> RpcResult<String> {
@@ -5824,6 +6118,63 @@ mod tests {
 
     fn start(manager: &ThreadManager, connection: &str) -> DispatchOutput {
         manager.dispatch(connection, request(1, "thread/start", json!({})))
+    }
+
+    #[test]
+    fn subagent_identity_is_persisted_and_projected_on_thread() {
+        let (temp, manager) = manager();
+        let parent = start(&manager, "desktop");
+        let parent_id = result(&parent)["thread"]["id"].as_str().unwrap().to_owned();
+        let child = manager.dispatch(
+            "internal-collaboration",
+            request(2, "thread/start", json!({"threadSource":"subagent"})),
+        );
+        let child_id = result(&child)["thread"]["id"].as_str().unwrap().to_owned();
+        manager
+            .configure_subagent_thread(
+                &child_id,
+                SubagentThreadConfig {
+                    parent_thread_id: parent_id.clone(),
+                    agent_path: "/root/worker".into(),
+                    agent_nickname: Some("Worker".into()),
+                    agent_role: Some("default".into()),
+                    depth: 1,
+                    forked_history: false,
+                },
+            )
+            .unwrap();
+        let identity = manager.collaboration_identity(&child_id).unwrap();
+        assert_eq!(
+            identity.parent_thread_id.as_deref(),
+            Some(parent_id.as_str())
+        );
+        assert_eq!(identity.agent_path.as_deref(), Some("/root/worker"));
+        drop(manager);
+
+        let reopened = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "gpt-test".into(),
+                model_provider: "test-provider".into(),
+                cwd: temp.path().join("workspace"),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        let resumed = reopened.dispatch(
+            "desktop",
+            request(3, "thread/resume", json!({"threadId":child_id})),
+        );
+        let thread = &result(&resumed)["thread"];
+        assert_eq!(thread["parentThreadId"], parent_id);
+        assert_eq!(
+            thread["source"]["subAgent"]["thread_spawn"]["parent_thread_id"],
+            parent_id
+        );
+        assert_eq!(thread["threadSource"], "subagent");
+        assert_eq!(thread["agentNickname"], "Worker");
+        assert_eq!(thread["agentRole"], "default");
     }
 
     #[test]

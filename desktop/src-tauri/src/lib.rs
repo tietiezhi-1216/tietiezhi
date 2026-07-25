@@ -33,6 +33,8 @@ pub struct AppState {
     pub(crate) device_fabric: commands::devices::DeviceFabric,
     /// Lazily initialized source-native App Server V2 runtime.
     pub(crate) codex_core: Mutex<Option<tietiezhi_agent_core::ThreadManager>>,
+    /// Root-scoped MultiAgentV2 graph, mailboxes, and activity stream.
+    pub(crate) codex_collab: Mutex<Option<tietiezhi_agent_collab::CollaborationRuntime>>,
     /// In-flight Responses turns, keyed by source-native thread id.
     pub(crate) codex_cancels: Mutex<HashMap<String, (String, CancellationToken)>>,
     /// Input-activity signals used by steer-aware tools such as `clock.sleep`.
@@ -105,6 +107,7 @@ pub fn run() {
             codex_mcp_requests: Arc::new(mcp::ElicitationBroker::default()),
             device_fabric: commands::devices::DeviceFabric::default(),
             codex_core: Mutex::new(None),
+            codex_collab: Mutex::new(None),
             codex_cancels: Mutex::new(HashMap::new()),
             codex_input_activity: Mutex::new(HashMap::new()),
             codex_wire_capabilities: Mutex::new(HashMap::new()),

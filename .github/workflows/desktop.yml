@@ -65,6 +65,7 @@ jobs:
             crates/agent-events
             crates/agent-state
             crates/agent-core
+            crates/agent-collab
             crates/agent-config
             crates/agent-skills
             crates/agent-hooks
@@ -121,6 +122,9 @@ jobs:
 
       - name: Codex thread runtime tests
         run: cargo test --manifest-path ../crates/agent-core/Cargo.toml
+
+      - name: Codex MultiAgentV2 collaboration tests
+        run: cargo test --manifest-path ../crates/agent-collab/Cargo.toml
 
       - name: Codex context and compaction tests
         run: cargo test --manifest-path ../crates/agent-context/Cargo.toml

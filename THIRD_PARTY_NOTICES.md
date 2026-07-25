@@ -307,3 +307,16 @@ R25 的 Plan、用户输入和 Thread Goal 行为参考以下 Apache-2.0 上游�
 - `codex-rs/protocol/src/protocol.rs`
 
 本地实现复用统一 Tool Runtime、Server Request Broker 和 canonical rollout，不调用、链接或分发上游 Codex 二进制。
+
+R26 的 MultiAgentV2 工具、Agent Path、控制图、输入邮箱、状态观察和 App Server Item 投影参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/core/src/agent`
+- `codex-rs/core/src/agent_communication.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`
+- `codex-rs/core/src/tools/handlers/multi_agents_v2`
+- `codex-rs/protocol/src/agent_path.rs`
+- `codex-rs/protocol/src/items.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+- `codex-rs/app-server/src/bespoke_event_handling.rs`
+
+本地实现位于 `crates/agent-collab`，通过 `agent-core` ThreadManager 和桌面 Responses Tool Runtime 执行，不调用、链接或分发上游 Codex 二进制。

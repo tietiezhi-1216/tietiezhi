@@ -115,4 +115,6 @@ R24 已增加 `crates/agent-plugins`，实现本地/Git Marketplace、原子安�
 
 R25 已实现 `update_plan`、`request_user_input` 和 Thread Goal。Plan 使用正式 Turn 通知，用户输入通过可取消的反向 JSON-RPC 与 `waitingOnUserInput` 状态运行，Goal 进入 canonical metadata 与 rollout 并支持重建、Fork 和预算核算。详细行为见 `docs/CODEX-PLAN-GOALS.md`。
 
+R26 已增加 `crates/agent-collab`，实现 MultiAgentV2 canonical Agent Path、子 Thread 图、并发/深度限制、`spawn_agent`、消息、follow-up、等待、打断、列表、父子取消和终态回传。协作操作投影为正式 `collabAgentToolCall` 与 `subAgentActivity` Item，详细行为见 `docs/CODEX-COLLABORATION.md`。
+
 R17 的 Windows elevated identity/Firewall/WFP 风险仍开放。现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能更新方法状态。

@@ -5691,6 +5691,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-collab"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tietiezhi-agent-tools",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "tietiezhi-agent-config"
 version = "0.1.0"
 dependencies = [
@@ -5963,6 +5975,7 @@ dependencies = [
  "tempfile",
  "tietiezhi-agent-account",
  "tietiezhi-agent-approval",
+ "tietiezhi-agent-collab",
  "tietiezhi-agent-config",
  "tietiezhi-agent-context",
  "tietiezhi-agent-core",

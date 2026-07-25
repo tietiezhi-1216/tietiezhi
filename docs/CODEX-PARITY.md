@@ -64,7 +64,7 @@
 | R23 | Hooks | 已完成 | crates/agent-hooks 发现/信任/命令/超时/输出解析测试；crates/agent-core hook notification 与 hookPrompt canonical persistence；desktop Session/Prompt/Tool/Permission/Compact/Stop 生命周期接线；docs/CODEX-HOOKS.md | prompt/agent handler declarations are retained as typed failed runs until the R26 model-backed collaboration runner is available；R24 injects plugin hook sources and provenance；project hook execution requires an exact trusted SHA-256 hash. |
 | R24 | Plugins | 已完成 | crates/agent-plugins; desktop/src-tauri/src/commands/codex.rs; docs/CODEX-PLUGINS.md | Apps execution remains assigned to R33; hosted OpenAI Share is mapped to local auditable storage. |
 | R25 | Plan 与用户输入 | 已完成 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md | The unified Item timeline consumes these notifications in R31; the current reverse-request component is SSR-verified. |
-| R26 | Collaboration | 待开始 |  |  |
+| R26 | Collaboration | 已完成 | crates/agent-collab; crates/agent-core/src/lib.rs CollaborationIdentity and response_history_tail; desktop/src-tauri/src/commands/codex.rs DesktopCollaborationHost and protocol-exact Item projection; docs/CODEX-COLLABORATION.md | Subagents inherit the selected execution environment; Git Worktree isolation is applied by R29 rather than duplicating directories in the collaboration control plane. |
 | R27 | Guardian 与 Review | 待开始 |  |  |
 | R28 | Memory | 待开始 |  |  |
 | R29 | Git 与 Worktree | 待开始 |  |  |
