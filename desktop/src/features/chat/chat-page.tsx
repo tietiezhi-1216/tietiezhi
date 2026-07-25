@@ -40,6 +40,7 @@ import {
 } from "@/features/chat/chat-composer-surface";
 import { ContextCommandMenu } from "@/features/chat/context-command-menu";
 import { ContextNotice } from "@/features/chat/context-notice";
+import { CodexTimeline } from "@/features/chat/codex-timeline";
 import { MessageItem } from "@/features/chat/message-item";
 import { ModelSelect } from "@/features/chat/model-select";
 import { PermissionPrompt } from "@/features/chat/permission-prompt";
@@ -820,6 +821,7 @@ export function ChatPage() {
                   />
                 );
               })}
+              {activeId != null && <CodexTimeline threadId={activeId} />}
               <div
                 role="status"
                 aria-live="polite"

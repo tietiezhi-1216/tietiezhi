@@ -75,6 +75,10 @@ pub struct AppState {
     pub(crate) codex_memory: Mutex<Option<tietiezhi_agent_memory::MemoryRuntime>>,
     /// Unstable externally supplied ChatGPT tokens are intentionally memory-only.
     pub(crate) codex_external_auth: Mutex<HashMap<String, commands::codex::ExternalAuthTokens>>,
+    /// Connection-scoped desktop filesystem watch cancellation handles.
+    pub(crate) codex_fs_watches: Mutex<HashMap<String, CancellationToken>>,
+    /// Experimental fuzzy search session roots, scoped by App Server connection.
+    pub(crate) codex_fuzzy_sessions: Mutex<HashMap<String, Vec<std::path::PathBuf>>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -133,6 +137,8 @@ pub fn run() {
             codex_guardian: Mutex::new(tietiezhi_agent_review::GuardianCircuitBreaker::default()),
             codex_memory: Mutex::new(None),
             codex_external_auth: Mutex::new(HashMap::new()),
+            codex_fs_watches: Mutex::new(HashMap::new()),
+            codex_fuzzy_sessions: Mutex::new(HashMap::new()),
         })
         .manage(commands::hotkey::HotkeyState::default())
         .setup(|app| {

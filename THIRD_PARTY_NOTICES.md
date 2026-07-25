@@ -370,3 +370,15 @@ R29 的 Git 基线、分支校验、状态读取与桌面 Worktree 行为参考�
 本地实现位于 `crates/agent-git`，增加 `.worktreeinclude`、alternate-index Snapshot、Restore、Handoff 和旧任务接管；只调用系统 Git，不调用、链接或分发上游 Codex 二进制。
 
 R30 的集成终端复用 R13 已登记的 Apache-2.0 PTY、Unified Exec 和 App Server command exec 源码映射。新增 Thread 会话目录与 React 文本终端位于 `desktop/src-tauri/src/commands/terminal.rs` 和 `desktop/src/features/chat/integrated-terminal-panel.tsx`，不包含或分发上游二进制。
+
+R31 的强类型时间线、文件服务和模糊搜索行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/notification.rs`
+- `codex-rs/tui/src/chatwidget/replay.rs`
+- `codex-rs/tui/src/app/thread_events.rs`
+- `codex-rs/exec-server-protocol/src/protocol.rs`
+- `codex-rs/file-search/src`
+- `codex-rs/utils/fuzzy-match/src`
+
+本地实现位于 `desktop/src-tauri/src/commands/codex_fs.rs`、`desktop/src/stores/codex-timeline.ts` 和 `desktop/src/features/chat/codex-timeline.tsx`，不调用、链接或分发上游 Codex 二进制。

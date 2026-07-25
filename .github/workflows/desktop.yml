@@ -117,6 +117,9 @@ jobs:
       - name: Check integrated Thread terminal UI
         run: pnpm test:integrated-terminal-ui
 
+      - name: Check Codex typed timeline UI
+        run: pnpm test:codex-timeline-ui
+
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
 

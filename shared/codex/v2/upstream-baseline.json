@@ -178,63 +178,63 @@
       },
       {
         "method": "fs/copy",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fs/createDirectory",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fs/getMetadata",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fs/readDirectory",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fs/readFile",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fs/remove",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fs/unwatch",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fs/watch",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fs/writeFile",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fuzzyFileSearch",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "hooks/list",
@@ -699,21 +699,21 @@
       },
       {
         "method": "fs/changed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fuzzyFileSearch/sessionCompleted",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "fuzzyFileSearch/sessionUpdated",
-        "status": "pending",
+        "status": "implemented",
         "target": "R31",
-        "note": ""
+        "note": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
       },
       {
         "method": "guardianWarning",
@@ -1319,9 +1319,9 @@
     {
       "id": "R31",
       "name": "Desktop 时间线",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Legacy ChatItem 时间线仅在 R38 迁移完成后删除；文件能力不替代模型工具的 Approval 与 Sandbox。",
+      "evidence": "desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build"
     },
     {
       "id": "R32",

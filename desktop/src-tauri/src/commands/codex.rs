@@ -1283,6 +1283,19 @@ pub async fn codex_v2_request(
     if method == "permissionProfile/list" {
         return permission_profile_list(&request);
     }
+    if super::codex_fs::handles(&method) {
+        let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+        return match super::codex_fs::dispatch(&app, &state, &connection_id, &method, &params).await
+        {
+            Ok((result, notifications)) => {
+                let mut output = dispatch_success(&request, result)?;
+                output.notifications = notifications;
+                emit_notifications(&app, &output.notifications)?;
+                Ok(output)
+            }
+            Err(error) => Ok(dispatch_error(&request, -32602, error)),
+        };
+    }
     if matches!(
         method.as_str(),
         "mcpServer/oauth/login"

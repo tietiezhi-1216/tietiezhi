@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 40 |
+| 待实现 | 27 |
 | 实现中 | 0 |
-| 已实现 | 121 |
+| 已实现 | 134 |
 | 服务映射 | 9 |
 
 ## 阶段进度
@@ -69,7 +69,7 @@
 | R28 | Memory | 已完成 | crates/agent-memory Chronicle 作业/文件/引用/工具/迁移测试；crates/agent-core Thread memory mode、污染恢复与 memoryCitation；desktop Responses、额度阈值和实验请求接线；docs/CODEX-MEMORY.md | Chronicle 仅使用当前 Responses Provider；实验 Memory 方法未写入固定 stable Schema，R38 前继续保留协议兼容测试。 |
 | R29 | Git 与 Worktree | 已完成 | crates/agent-git detached Worktree、.worktreeinclude、Snapshot/Restore/Handoff、清理与旧工作区接管测试；desktop 共享环境命令、提示词和 SSR/migration UI 门禁；docs/CODEX-GIT-WORKTREES.md | Local 环境会直接修改用户项目，UI 与审批必须持续明确展示；Windows worktree 与长路径仍由跨平台 CI 和 R37 soak 覆盖。 |
 | R30 | 集成终端 | 已完成 | R13 crates/agent-exec PTY/ConPTY、stdin、resize、poll 和进程树测试；desktop terminal Thread 会话命令、多标签文本终端、任务删除清理与 SSR 门禁；docs/CODEX-INTEGRATED-TERMINAL.md | 集成终端使用安全的文本 VT 投影而非完整 GPU 终端模拟器；复杂全屏 TUI 的像素级呈现留给外部终端，stdin/resize/进程语义已完整。 |
-| R31 | Desktop 时间线 | 待开始 |  |  |
+| R31 | Desktop 时间线 | 已完成 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build | Legacy ChatItem 时间线仅在 R38 迁移完成后删除；文件能力不替代模型工具的 Approval 与 Sandbox。 |
 | R32 | Diff 与 Git UI | 待开始 |  |  |
 | R33 | Apps 与连接器 | 待开始 |  |  |
 | R34 | Automations | 待开始 |  |  |
@@ -110,16 +110,16 @@
 | `externalAgentConfig/import` | 待实现 | R38 |  |
 | `externalAgentConfig/import/readHistories` | 待实现 | R38 |  |
 | `feedback/upload` | 待实现 | R36 |  |
-| `fs/copy` | 待实现 | R31 |  |
-| `fs/createDirectory` | 待实现 | R31 |  |
-| `fs/getMetadata` | 待实现 | R31 |  |
-| `fs/readDirectory` | 待实现 | R31 |  |
-| `fs/readFile` | 待实现 | R31 |  |
-| `fs/remove` | 待实现 | R31 |  |
-| `fs/unwatch` | 待实现 | R31 |  |
-| `fs/watch` | 待实现 | R31 |  |
-| `fs/writeFile` | 待实现 | R31 |  |
-| `fuzzyFileSearch` | 待实现 | R31 |  |
+| `fs/copy` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fs/createDirectory` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fs/getMetadata` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fs/readDirectory` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fs/readFile` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fs/remove` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fs/unwatch` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fs/watch` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fs/writeFile` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fuzzyFileSearch` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `hooks/list` | 待实现 | R36 |  |
 | `initialize` | 待实现 | R2 |  |
 | `marketplace/add` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
@@ -208,9 +208,9 @@
 | `error` | 已实现 | R3 | crates/agent-model Responses HTTP/SSE、错误与重试测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md |
 | `externalAgentConfig/import/completed` | 待实现 | R38 |  |
 | `externalAgentConfig/import/progress` | 待实现 | R38 |  |
-| `fs/changed` | 待实现 | R31 |  |
-| `fuzzyFileSearch/sessionCompleted` | 待实现 | R31 |  |
-| `fuzzyFileSearch/sessionUpdated` | 待实现 | R31 |  |
+| `fs/changed` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fuzzyFileSearch/sessionCompleted` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
+| `fuzzyFileSearch/sessionUpdated` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `guardianWarning` | 已实现 | R27 | Protocol-exact Guardian lifecycle is persisted and emitted for command, patch, permissions, network, and destructive MCP review with fail-closed timeout and denial circuit breaker. |
 | `hook/completed` | 已实现 | R23 | crates/agent-hooks command runner/output parser/trust tests；crates/agent-core HookRun 和 hookPrompt V2 lifecycle；desktop Turn/Tool/Approval/Compact/Session 接线；docs/CODEX-HOOKS.md |
 | `hook/started` | 已实现 | R23 | crates/agent-hooks command runner/output parser/trust tests；crates/agent-core HookRun 和 hookPrompt V2 lifecycle；desktop Turn/Tool/Approval/Compact/Session 接线；docs/CODEX-HOOKS.md |

@@ -21,6 +21,7 @@ export type CodexV2ServerRequest = CodexServerRequest & {
 };
 
 export const CODEX_V2_SERVER_REQUEST_EVENT = "codex-v2-server-request";
+export const CODEX_V2_NOTIFICATION_EVENT = "codex-v2-notification";
 
 export interface CodexV2Response {
   id: CodexRequestId;

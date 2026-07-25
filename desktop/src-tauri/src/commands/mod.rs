@@ -4,6 +4,7 @@ pub mod automations;
 pub mod capsule;
 pub mod chat;
 pub mod codex;
+pub mod codex_fs;
 pub mod conversations;
 pub mod create;
 pub mod devices;
