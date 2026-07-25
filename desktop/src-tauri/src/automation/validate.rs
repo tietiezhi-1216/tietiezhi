@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::process::{Command, Stdio};
 
 use uuid::Uuid;
 
@@ -49,6 +50,26 @@ pub fn validate(document: &AutomationDocument, publish: bool) -> Vec<AutomationV
             "invalid_concurrency",
             "最大并发数必须在 1 到 64 之间",
         ));
+    }
+    if let Some(project_root) = document
+        .settings
+        .project_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+    {
+        let path = std::path::Path::new(project_root);
+        if !path.is_absolute() || !path.is_dir() {
+            issues.push(issue(
+                "invalid_project_root",
+                "项目目录必须是已存在的绝对目录",
+            ));
+        } else if publish && !is_git_work_tree(path) {
+            issues.push(issue(
+                "project_root_not_git",
+                "发布到项目目录的 Automation 必须使用 Git 工作树，以便每次运行创建独立 Worktree",
+            ));
+        }
     }
 
     let mut node_ids = HashSet::new();
@@ -171,9 +192,51 @@ pub fn validate(document: &AutomationDocument, publish: bool) -> Vec<AutomationV
         {
             issues.push(issue("missing_output", "发布版本至少需要一个输出节点"));
         }
+        for node in document
+            .nodes
+            .iter()
+            .filter(|node| !node.disabled && node.kind == "approval")
+        {
+            issues.push(node_issue(
+                "interactive_approval_forbidden",
+                "无人值守 Automation 不能包含人工审批节点；需要审批的工具会在 approvalPolicy=never 下失败",
+                &node.id,
+            ));
+        }
+        for node in document
+            .nodes
+            .iter()
+            .filter(|node| !node.disabled && node.kind == "scheduleTrigger")
+        {
+            if node
+                .config
+                .get("cron")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                issues.push(node_issue(
+                    "missing_cron",
+                    "定时触发器必须配置 Cron 表达式",
+                    &node.id,
+                ));
+            }
+        }
     }
 
     issues
+}
+
+fn is_git_work_tree(path: &std::path::Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
+        })
 }
 
 fn has_cycle(document: &AutomationDocument) -> bool {
@@ -293,6 +356,7 @@ mod tests {
                 max_duration_ms: 300_000,
                 max_concurrency: 4,
                 on_missed_schedule: MissedSchedulePolicy::Skip,
+                project_root: None,
             },
             created_at: 1,
             updated_at: 1,
@@ -341,5 +405,24 @@ mod tests {
         assert!(validate(&value, false)
             .iter()
             .any(|issue| issue.code == "invalid_node_config"));
+    }
+
+    #[test]
+    fn publish_requires_git_when_project_root_is_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut value = document();
+        value.settings.project_root = Some(directory.path().to_string_lossy().into_owned());
+        assert!(validate(&value, true)
+            .iter()
+            .any(|issue| issue.code == "project_root_not_git"));
+
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(directory.path())
+            .status()
+            .unwrap();
+        assert!(!validate(&value, true)
+            .iter()
+            .any(|issue| issue.code == "project_root_not_git"));
     }
 }

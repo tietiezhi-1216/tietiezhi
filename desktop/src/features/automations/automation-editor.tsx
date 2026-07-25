@@ -39,10 +39,15 @@ export function AutomationEditor() {
   const error = useAutomationStore((state) => state.error);
   const close = useAutomationStore((state) => state.close);
   const saveNow = useAutomationStore((state) => state.saveNow);
+  const publish = useAutomationStore((state) => state.publish);
+  const meta = useAutomationStore((state) =>
+    state.automations.find((item) => item.id === state.document?.id),
+  );
   const selectNode = useAutomationStore((state) => state.selectNode);
   const [panel, setPanel] = useState<EditorPanel>(null);
   const [validationOpen, setValidationOpen] = useState(false);
   const [validationLoading, setValidationLoading] = useState(false);
+  const [published, setPublished] = useState(false);
   const [validationIssues, setValidationIssues] = useState<
     AutomationValidationIssue[] | null
   >(null);
@@ -64,11 +69,25 @@ export function AutomationEditor() {
     setValidationOpen(true);
     setValidationLoading(true);
     setValidationIssues(null);
+    setPublished(false);
     try {
       await saveNow();
       const latest = useAutomationStore.getState().document;
       if (!latest || useAutomationStore.getState().saveState === "error") return;
-      setValidationIssues(await validateAutomation(latest, true));
+      const issues = await validateAutomation(latest, true);
+      setValidationIssues(issues);
+      if (issues.length === 0) {
+        const succeeded = await publish();
+        setPublished(succeeded);
+        if (!succeeded) {
+          setValidationIssues([
+            {
+              code: "publish_failed",
+              message: useAutomationStore.getState().error || "发布失败",
+            },
+          ]);
+        }
+      }
     } catch (validationError) {
       setValidationIssues([
         {
@@ -106,7 +125,9 @@ export function AutomationEditor() {
             <div className="flex items-center gap-2">
               <h1 className="truncate text-sm font-semibold">{document.name}</h1>
               <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px]">
-                草稿
+                {meta?.publishedRevision
+                  ? `已启用 r${meta.publishedRevision}`
+                  : "草稿"}
               </Badge>
             </div>
             <SaveStatus state={saveState} />
@@ -149,11 +170,16 @@ export function AutomationEditor() {
             <Button
               type="button"
               size="sm"
-              aria-label="发布检查"
+              aria-label="发布并启用"
+              disabled={validationLoading}
               onClick={() => void checkPublish()}
             >
-              <ShieldCheck />
-              <span className="hidden sm:inline">发布检查</span>
+              {validationLoading ? (
+                <LoaderCircle className="animate-spin" />
+              ) : (
+                <ShieldCheck />
+              )}
+              <span className="hidden sm:inline">发布并启用</span>
             </Button>
           </div>
         </header>
@@ -185,7 +211,7 @@ export function AutomationEditor() {
       <Dialog open={validationOpen} onOpenChange={setValidationOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>发布检查</DialogTitle>
+            <DialogTitle>{published ? "发布完成" : "发布检查"}</DialogTitle>
           </DialogHeader>
           {validationLoading ? (
             <div className="text-muted-foreground flex items-center gap-2 py-6 text-sm">
@@ -196,9 +222,13 @@ export function AutomationEditor() {
             <div className="flex gap-3 rounded-lg border border-emerald-500/25 bg-emerald-500/5 p-3">
               <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
               <div>
-                <p className="text-sm font-medium">结构检查通过</p>
+                <p className="text-sm font-medium">
+                  {published ? "Automation 已发布并启用" : "结构检查通过"}
+                </p>
                 <p className="text-muted-foreground mt-1 text-xs leading-5">
-                  草稿已满足触发器、输出和 DAG 约束。执行引擎将在下一阶段接入。
+                  {published
+                    ? "后续运行使用固定发布快照；修改草稿不会影响正在执行的版本。"
+                    : "草稿已满足触发器、输出和 DAG 约束。"}
                 </p>
               </div>
             </div>

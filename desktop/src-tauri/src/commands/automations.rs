@@ -1,6 +1,9 @@
+use serde_json::Value;
 use tauri::AppHandle;
 
-use crate::automation::{self, AutomationDocument, AutomationMeta, AutomationValidationIssue};
+use crate::automation::{
+    self, AutomationDocument, AutomationMeta, AutomationRun, AutomationValidationIssue,
+};
 
 #[tauri::command]
 pub fn list_automations(
@@ -50,5 +53,52 @@ pub fn archive_automation(
 
 #[tauri::command]
 pub fn delete_automation(app: AppHandle, id: String) -> Result<(), String> {
-    automation::store::delete(&app, &id)
+    automation::runtime::delete(&app, &id)
+}
+
+#[tauri::command]
+pub fn publish_automation(app: AppHandle, id: String) -> Result<AutomationMeta, String> {
+    automation::runtime::publish(&app, &id)
+}
+
+#[tauri::command]
+pub fn pause_automation(
+    app: AppHandle,
+    id: String,
+    paused: bool,
+) -> Result<AutomationMeta, String> {
+    automation::runtime::set_paused(&app, &id, paused)
+}
+
+#[tauri::command]
+pub async fn run_automation(
+    app: AppHandle,
+    id: String,
+    input: Option<Value>,
+) -> Result<AutomationRun, String> {
+    automation::runtime::start_run(
+        &app,
+        &id,
+        "manual",
+        input.unwrap_or_else(|| Value::Object(Default::default())),
+    )
+    .await
+}
+
+#[tauri::command]
+pub fn list_automation_runs(
+    app: AppHandle,
+    automation_id: Option<String>,
+    limit: Option<usize>,
+) -> Result<Vec<AutomationRun>, String> {
+    automation::store::list_runs(&app, automation_id.as_deref(), limit.unwrap_or(100))
+}
+
+#[tauri::command]
+pub fn cancel_automation_run(
+    app: AppHandle,
+    automation_id: String,
+    run_id: String,
+) -> Result<AutomationRun, String> {
+    automation::runtime::cancel_run(&app, &automation_id, &run_id)
 }

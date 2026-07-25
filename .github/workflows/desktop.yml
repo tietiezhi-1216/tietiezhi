@@ -127,6 +127,9 @@ jobs:
       - name: Check Codex Apps UI
         run: pnpm test:codex-apps-ui
 
+      - name: Check Codex Automations UI
+        run: pnpm test:codex-automations-ui
+
       - name: Check Codex approval UI
         run: pnpm test:codex-approval-ui
 

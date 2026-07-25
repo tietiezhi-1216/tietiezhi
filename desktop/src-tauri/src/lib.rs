@@ -154,6 +154,7 @@ pub fn run() {
             if let Err(error) = state.device_fabric.sync_from_store(&handle) {
                 eprintln!("[device] {error}");
             }
+            automation::runtime::start_scheduler(handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -164,6 +165,11 @@ pub fn run() {
             commands::automations::validate_automation,
             commands::automations::archive_automation,
             commands::automations::delete_automation,
+            commands::automations::publish_automation,
+            commands::automations::pause_automation,
+            commands::automations::run_automation,
+            commands::automations::list_automation_runs,
+            commands::automations::cancel_automation_run,
             commands::settings::load_settings,
             commands::settings::save_settings,
             commands::providers::list_providers,

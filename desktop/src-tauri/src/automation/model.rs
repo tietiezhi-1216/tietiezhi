@@ -75,6 +75,8 @@ pub struct AutomationSettings {
     pub max_duration_ms: u64,
     pub max_concurrency: u32,
     pub on_missed_schedule: MissedSchedulePolicy,
+    #[serde(default)]
+    pub project_root: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -97,6 +99,48 @@ pub struct AutomationMeta {
     pub updated_at: u64,
     #[serde(default)]
     pub archived_at: u64,
+    #[serde(default)]
+    pub published_revision: u32,
+    #[serde(default = "default_paused")]
+    pub paused: bool,
+    #[serde(default)]
+    pub last_run_at: u64,
+    #[serde(default)]
+    pub next_run_at: u64,
+    #[serde(default)]
+    pub last_run_status: String,
+}
+
+fn default_paused() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRun {
+    pub id: String,
+    pub automation_id: String,
+    pub revision: u32,
+    pub trigger: String,
+    pub status: AutomationRunStatus,
+    pub input: Value,
+    pub thread_id: String,
+    pub turn_id: String,
+    pub workspace_path: String,
+    pub started_at: u64,
+    pub finished_at: u64,
+    pub output: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AutomationRunStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Serialize)]

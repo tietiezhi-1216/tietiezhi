@@ -13,6 +13,7 @@ import {
   errorMessage,
   listAutomations,
   loadAutomation,
+  publishAutomation,
   saveAutomation,
 } from "@/lib/api";
 import type {
@@ -44,10 +45,12 @@ interface AutomationState {
   open: (id: string) => Promise<void>;
   close: () => Promise<void>;
   saveNow: () => Promise<void>;
+  publish: () => Promise<boolean>;
   archive: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   selectNode: (id: string | null) => void;
   updateDocumentInfo: (patch: Pick<Partial<AutomationDocument>, "name" | "description">) => void;
+  updateDocumentSettings: (patch: Partial<AutomationDocument["settings"]>) => void;
   addNode: (type: AutomationNodeType, position: { x: number; y: number }) => void;
   applyNodeChanges: (changes: NodeChange<AutomationCanvasNode>[]) => void;
   commitNodePositions: (
@@ -72,7 +75,7 @@ const newestFirst = (items: AutomationMeta[]): AutomationMeta[] =>
 
 const metaFromDocument = (
   document: AutomationDocument,
-  archivedAt = 0,
+  existing?: AutomationMeta,
 ): AutomationMeta => ({
   id: document.id,
   name: document.name,
@@ -85,7 +88,12 @@ const metaFromDocument = (
     )?.type ?? "",
   createdAt: document.createdAt,
   updatedAt: document.updatedAt,
-  archivedAt,
+  archivedAt: existing?.archivedAt ?? 0,
+  publishedRevision: existing?.publishedRevision ?? 0,
+  paused: existing?.paused ?? true,
+  lastRunAt: existing?.lastRunAt ?? 0,
+  nextRunAt: existing?.nextRunAt ?? 0,
+  lastRunStatus: existing?.lastRunStatus ?? "",
 });
 
 const scheduleSave = () => {
@@ -201,13 +209,12 @@ export const useAutomationStore = create<AutomationState>()((set, get) => {
           const visibleDocument = unchanged
             ? saved
             : { ...current, createdAt: saved.createdAt, updatedAt: saved.updatedAt };
-          const archivedAt =
-            get().automations.find((item) => item.id === saved.id)?.archivedAt ?? 0;
+          const existing = get().automations.find((item) => item.id === saved.id);
           set((state) => ({
             document: visibleDocument,
             saveState: unchanged ? "saved" : "dirty",
             automations: newestFirst([
-              metaFromDocument(visibleDocument, archivedAt),
+              metaFromDocument(visibleDocument, existing),
               ...state.automations.filter((item) => item.id !== saved.id),
             ]),
           }));
@@ -221,6 +228,32 @@ export const useAutomationStore = create<AutomationState>()((set, get) => {
         await operation;
       } finally {
         if (activeSave === operation) activeSave = null;
+      }
+    },
+
+    async publish() {
+      await get().saveNow();
+      const current = get().document;
+      if (!current || get().saveState === "error") return false;
+      set({ loading: true, error: "" });
+      try {
+        const meta = await publishAutomation(current.id);
+        const document = await loadAutomation(current.id);
+        editVersion = 0;
+        set((state) => ({
+          document,
+          saveState: "saved",
+          automations: newestFirst([
+            meta,
+            ...state.automations.filter((item) => item.id !== meta.id),
+          ]),
+        }));
+        return true;
+      } catch (error) {
+        set({ error: errorMessage(error) });
+        return false;
+      } finally {
+        set({ loading: false });
       }
     },
 
@@ -258,6 +291,13 @@ export const useAutomationStore = create<AutomationState>()((set, get) => {
 
     updateDocumentInfo(patch) {
       changeDocument((document) => ({ ...document, ...patch }));
+    },
+
+    updateDocumentSettings(patch) {
+      changeDocument((document) => ({
+        ...document,
+        settings: { ...document.settings, ...patch },
+      }));
     },
 
     addNode(type, position) {

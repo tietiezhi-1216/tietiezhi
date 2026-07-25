@@ -433,6 +433,7 @@ export interface AutomationSettings {
   maxDurationMs: number;
   maxConcurrency: number;
   onMissedSchedule: "skip" | "runLatest";
+  projectRoot?: string | null;
 }
 
 export interface AutomationDocument {
@@ -458,6 +459,34 @@ export interface AutomationMeta {
   createdAt: number;
   updatedAt: number;
   archivedAt: number;
+  publishedRevision: number;
+  paused: boolean;
+  lastRunAt: number;
+  nextRunAt: number;
+  lastRunStatus: string;
+}
+
+export type AutomationRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface AutomationRun {
+  id: string;
+  automationId: string;
+  revision: number;
+  trigger: string;
+  status: AutomationRunStatus;
+  input: JsonValue;
+  threadId: string;
+  turnId: string;
+  workspacePath: string;
+  startedAt: number;
+  finishedAt: number;
+  output?: string | null;
+  error?: string | null;
 }
 
 export interface AutomationValidationIssue {
@@ -1353,6 +1382,44 @@ export function archiveAutomation(
 
 export function deleteAutomation(id: string): Promise<void> {
   return invoke("delete_automation", { id });
+}
+
+export function publishAutomation(id: string): Promise<AutomationMeta> {
+  return invoke<AutomationMeta>("publish_automation", { id });
+}
+
+export function pauseAutomation(
+  id: string,
+  paused: boolean,
+): Promise<AutomationMeta> {
+  return invoke<AutomationMeta>("pause_automation", { id, paused });
+}
+
+export function runAutomation(
+  id: string,
+  input: JsonValue = {},
+): Promise<AutomationRun> {
+  return invoke<AutomationRun>("run_automation", { id, input });
+}
+
+export function listAutomationRuns(
+  automationId?: string,
+  limit = 100,
+): Promise<AutomationRun[]> {
+  return invoke<AutomationRun[]>("list_automation_runs", {
+    automationId: automationId || null,
+    limit,
+  });
+}
+
+export function cancelAutomationRun(
+  automationId: string,
+  runId: string,
+): Promise<AutomationRun> {
+  return invoke<AutomationRun>("cancel_automation_run", {
+    automationId,
+    runId,
+  });
 }
 
 // MARK: - Workspace / system prompt

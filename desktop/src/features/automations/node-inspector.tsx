@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Info, Settings2, Trash2, X } from "lucide-react";
+import { FolderOpen, Info, Settings2, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import type { AutomationValueBinding } from "@/lib/api";
+import { pickWorkspaceDir, type AutomationValueBinding } from "@/lib/api";
 import { getAutomationNodeDefinition } from "@/lib/automation";
 import { cn } from "@/lib/utils";
 import { useAutomationStore } from "@/stores/automations";
@@ -29,6 +29,9 @@ export function NodeInspector({ onClose }: { onClose?: () => void } = {}) {
   const document = useAutomationStore((state) => state.document);
   const selectedNodeId = useAutomationStore((state) => state.selectedNodeId);
   const updateDocumentInfo = useAutomationStore((state) => state.updateDocumentInfo);
+  const updateDocumentSettings = useAutomationStore(
+    (state) => state.updateDocumentSettings,
+  );
   const updateNode = useAutomationStore((state) => state.updateNode);
   const updateNodeConfig = useAutomationStore((state) => state.updateNodeConfig);
   const updateNodeInput = useAutomationStore((state) => state.updateNodeInput);
@@ -81,6 +84,105 @@ export function NodeInspector({ onClose }: { onClose?: () => void } = {}) {
               />
             </Field>
             <Separator />
+            <section className="space-y-4">
+              <SectionTitle>运行环境</SectionTitle>
+              <Field label="Git 项目目录" htmlFor="automation-project-root">
+                <div className="flex gap-2">
+                  <Input
+                    id="automation-project-root"
+                    value={document.settings.projectRoot ?? ""}
+                    placeholder="留空则使用独立空白工作区"
+                    onChange={(event) =>
+                      updateDocumentSettings({
+                        projectRoot: event.target.value || null,
+                      })
+                    }
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label="选择 Git 项目目录"
+                    onClick={() => {
+                      void pickWorkspaceDir().then((path) => {
+                        if (path) updateDocumentSettings({ projectRoot: path });
+                      });
+                    }}
+                  >
+                    <FolderOpen />
+                  </Button>
+                </div>
+                <p className="text-muted-foreground mt-1.5 text-[10px] leading-4">
+                  发布时验证 Git 工作树；每次运行从该项目创建隔离 Worktree。
+                </p>
+              </Field>
+              <Field label="时区" htmlFor="automation-timezone">
+                <Input
+                  id="automation-timezone"
+                  value={document.settings.timezone}
+                  placeholder="Asia/Shanghai"
+                  onChange={(event) =>
+                    updateDocumentSettings({ timezone: event.target.value })
+                  }
+                />
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="最长分钟" htmlFor="automation-duration">
+                  <Input
+                    id="automation-duration"
+                    type="number"
+                    min={1}
+                    max={1440}
+                    value={Math.max(
+                      1,
+                      Math.round(document.settings.maxDurationMs / 60_000),
+                    )}
+                    onChange={(event) =>
+                      updateDocumentSettings({
+                        maxDurationMs: Math.max(
+                          1,
+                          Math.min(1440, Number(event.target.value) || 1),
+                        ) * 60_000,
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="最大并发" htmlFor="automation-concurrency">
+                  <Input
+                    id="automation-concurrency"
+                    type="number"
+                    min={1}
+                    max={64}
+                    value={document.settings.maxConcurrency}
+                    onChange={(event) =>
+                      updateDocumentSettings({
+                        maxConcurrency: Math.max(
+                          1,
+                          Math.min(64, Number(event.target.value) || 1),
+                        ),
+                      })
+                    }
+                  />
+                </Field>
+              </div>
+              <Field label="错过定时任务">
+                <Select
+                  value={document.settings.onMissedSchedule}
+                  onValueChange={(value: "skip" | "runLatest") =>
+                    updateDocumentSettings({ onMissedSchedule: value })
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="skip">跳过已错过的运行</SelectItem>
+                    <SelectItem value="runLatest">立即补跑最近一次</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </section>
+            <Separator />
             <div className="grid grid-cols-2 gap-3">
               <Metric label="节点" value={String(document.nodes.length)} />
               <Metric label="连线" value={String(document.edges.length)} />
@@ -89,7 +191,11 @@ export function NodeInspector({ onClose }: { onClose?: () => void } = {}) {
             </div>
             <div className="bg-muted/50 text-muted-foreground flex gap-2 rounded-lg border p-3 text-xs leading-5">
               <Info className="mt-0.5 size-3.5 shrink-0" />
-              点击画布中的节点可编辑该步骤。草稿会在停止操作后自动保存。
+              <span>
+                点击画布中的节点可编辑该步骤。草稿会自动保存；无人值守运行固定使用
+                <code className="mx-1 font-mono">approvalPolicy=never</code>
+                ，需要交互审批的步骤会明确失败而不会绕过策略。
+              </span>
             </div>
           </div>
         </ScrollArea>

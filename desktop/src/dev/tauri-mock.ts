@@ -10,6 +10,7 @@
 import type {
   AutomationDocument,
   AutomationMeta,
+  AutomationRun,
   AutomationValidationIssue,
   ChatAttachment,
   DeviceCore,
@@ -83,6 +84,7 @@ const createMockAutomation = (): AutomationDocument => {
       maxDurationMs: 300_000,
       maxConcurrency: 4,
       onMissedSchedule: "skip",
+      projectRoot: null,
     },
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -92,6 +94,13 @@ const createMockAutomation = (): AutomationDocument => {
 const automationMeta = (
   automation: AutomationDocument,
   archivedAt = 0,
+  runtime: {
+    publishedRevision?: number;
+    paused?: boolean;
+    lastRunAt?: number;
+    nextRunAt?: number;
+    lastRunStatus?: string;
+  } = {},
 ): AutomationMeta => ({
   id: automation.id,
   name: automation.name,
@@ -105,6 +114,11 @@ const automationMeta = (
   createdAt: automation.createdAt,
   updatedAt: automation.updatedAt,
   archivedAt,
+  publishedRevision: runtime.publishedRevision ?? 0,
+  paused: runtime.paused ?? true,
+  lastRunAt: runtime.lastRunAt ?? 0,
+  nextRunAt: runtime.nextRunAt ?? 0,
+  lastRunStatus: runtime.lastRunStatus ?? "",
 });
 
 const validateMockAutomation = (
@@ -197,6 +211,15 @@ const validateMockAutomation = (
     }
     if (!automation.nodes.some((node) => !node.disabled && node.type === "output")) {
       issues.push({ code: "missing_output", message: "发布版本至少需要一个输出节点" });
+    }
+    for (const node of automation.nodes.filter(
+      (node) => !node.disabled && node.type === "approval",
+    )) {
+      issues.push({
+        code: "interactive_approval_forbidden",
+        message: "无人值守 Automation 不能包含人工审批节点",
+        nodeId: node.id,
+      });
     }
   }
   return issues;
@@ -561,6 +584,17 @@ export function installTauriMock(): void {
       [exampleAutomation.id, exampleAutomation],
     ]),
     automationArchivedAt: new Map<string, number>(),
+    automationRuntime: new Map<
+      string,
+      {
+        publishedRevision: number;
+        paused: boolean;
+        lastRunAt: number;
+        nextRunAt: number;
+        lastRunStatus: string;
+      }
+    >(),
+    automationRuns: [] as AutomationRun[],
     suggestionDecks: new Map<string, Record<string, unknown>>(),
     cancelled: new Set<number>(),
   };
@@ -794,6 +828,7 @@ export function installTauriMock(): void {
           automationMeta(
             automation,
             state.automationArchivedAt.get(automation.id) ?? 0,
+            state.automationRuntime.get(automation.id),
           ),
         )
         .filter((meta) => Boolean(a.includeArchived) || meta.archivedAt === 0)
@@ -829,6 +864,7 @@ export function installTauriMock(): void {
           maxDurationMs: 300_000,
           maxConcurrency: 4,
           onMissedSchedule: "skip",
+          projectRoot: null,
         },
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -858,11 +894,116 @@ export function installTauriMock(): void {
       if (!automation) throw "Automation 不存在或已被删除";
       const archivedAt = a.archived ? Date.now() : 0;
       state.automationArchivedAt.set(automation.id, archivedAt);
-      return automationMeta(automation, archivedAt);
+      return automationMeta(
+        automation,
+        archivedAt,
+        state.automationRuntime.get(automation.id),
+      );
     },
     delete_automation: (a) => {
       state.automationArchivedAt.delete(a.id as string);
+      state.automationRuntime.delete(a.id as string);
+      state.automationRuns = state.automationRuns.filter(
+        (run) => run.automationId !== a.id,
+      );
       state.automations.delete(a.id as string);
+    },
+    publish_automation: (a) => {
+      const id = a.id as string;
+      const automation = state.automations.get(id);
+      if (!automation) throw "Automation 不存在或已被删除";
+      const issues = validateMockAutomation(automation, true);
+      if (issues[0]) throw issues[0].message;
+      automation.revision = Math.max(1, automation.revision + 1);
+      automation.updatedAt = Date.now();
+      const runtime = {
+        publishedRevision: automation.revision,
+        paused: false,
+        lastRunAt: state.automationRuntime.get(id)?.lastRunAt ?? 0,
+        nextRunAt:
+          automation.nodes.some((node) => node.type === "scheduleTrigger")
+            ? Date.now() + 3_600_000
+            : 0,
+        lastRunStatus: state.automationRuntime.get(id)?.lastRunStatus ?? "",
+      };
+      state.automationRuntime.set(id, runtime);
+      return automationMeta(
+        automation,
+        state.automationArchivedAt.get(id) ?? 0,
+        runtime,
+      );
+    },
+    pause_automation: (a) => {
+      const id = a.id as string;
+      const automation = state.automations.get(id);
+      const runtime = state.automationRuntime.get(id);
+      if (!automation || !runtime) throw "Automation 尚未发布";
+      runtime.paused = Boolean(a.paused);
+      runtime.nextRunAt = runtime.paused ? 0 : Date.now() + 3_600_000;
+      return automationMeta(
+        automation,
+        state.automationArchivedAt.get(id) ?? 0,
+        runtime,
+      );
+    },
+    run_automation: (a) => {
+      const id = a.id as string;
+      const automation = state.automations.get(id);
+      const runtime = state.automationRuntime.get(id);
+      if (!automation || !runtime) throw "Automation 尚未发布";
+      const startedAt = Date.now();
+      const run: AutomationRun = {
+        id: crypto.randomUUID(),
+        automationId: id,
+        revision: runtime.publishedRevision,
+        trigger: "manual",
+        status: "running",
+        input: (a.input ?? {}) as AutomationRun["input"],
+        threadId: crypto.randomUUID(),
+        turnId: crypto.randomUUID(),
+        workspacePath: `/tmp/tietiezhi-automation/${id}`,
+        startedAt,
+        finishedAt: 0,
+        output: null,
+        error: null,
+      };
+      state.automationRuns.unshift(run);
+      runtime.lastRunAt = startedAt;
+      runtime.lastRunStatus = "running";
+      window.setTimeout(() => {
+        if (run.status !== "running") return;
+        run.status = "completed";
+        run.finishedAt = Date.now();
+        run.output = "已完成工作流执行，并将结果写入隔离 Worktree。";
+        runtime.lastRunAt = run.finishedAt;
+        runtime.lastRunStatus = "completed";
+      }, 1_200);
+      return structuredClone(run);
+    },
+    list_automation_runs: (a) =>
+      state.automationRuns
+        .filter(
+          (run) => !a.automationId || run.automationId === a.automationId,
+        )
+        .slice(0, Number(a.limit ?? 100))
+        .map((run) => structuredClone(run)),
+    cancel_automation_run: (a) => {
+      const run = state.automationRuns.find(
+        (candidate) =>
+          candidate.automationId === a.automationId && candidate.id === a.runId,
+      );
+      if (!run) throw "Automation 运行记录不存在";
+      if (run.status === "queued" || run.status === "running") {
+        run.status = "cancelled";
+        run.finishedAt = Date.now();
+        run.error = "cancelled by user";
+        const runtime = state.automationRuntime.get(run.automationId);
+        if (runtime) {
+          runtime.lastRunAt = run.finishedAt;
+          runtime.lastRunStatus = "cancelled";
+        }
+      }
+      return structuredClone(run);
     },
 
     // --- Agents / skills / MCP / workspace ---

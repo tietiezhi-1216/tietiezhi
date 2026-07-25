@@ -3,13 +3,13 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use super::model::{
-    AutomationDocument, AutomationMeta, AutomationNode, AutomationPosition, AutomationSettings,
-    MissedSchedulePolicy,
+    AutomationDocument, AutomationMeta, AutomationNode, AutomationPosition, AutomationRun,
+    AutomationRunStatus, AutomationSettings, MissedSchedulePolicy,
 };
 use super::validate;
 
@@ -47,6 +47,21 @@ fn index_path(app: &AppHandle) -> Result<PathBuf, String> {
 fn draft_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     validate_id(id)?;
     Ok(root(app)?.join(id).join("draft.json"))
+}
+
+fn published_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    validate_id(id)?;
+    Ok(root(app)?.join(id).join("published.json"))
+}
+
+fn runs_root(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    validate_id(id)?;
+    Ok(root(app)?.join(id).join("runs"))
+}
+
+fn run_path(app: &AppHandle, automation_id: &str, run_id: &str) -> Result<PathBuf, String> {
+    validate_id(run_id)?;
+    Ok(runs_root(app, automation_id)?.join(format!("{run_id}.json")))
 }
 
 fn validate_id(id: &str) -> Result<(), String> {
@@ -91,7 +106,10 @@ fn write_index(app: &AppHandle, index: &AutomationIndex) -> Result<(), String> {
     write_json_atomic(&index_path(app)?, index)
 }
 
-fn meta_from_document(document: &AutomationDocument, archived_at: u64) -> AutomationMeta {
+fn meta_from_document(
+    document: &AutomationDocument,
+    existing: Option<&AutomationMeta>,
+) -> AutomationMeta {
     let trigger_type = document
         .nodes
         .iter()
@@ -107,7 +125,16 @@ fn meta_from_document(document: &AutomationDocument, archived_at: u64) -> Automa
         trigger_type,
         created_at: document.created_at,
         updated_at: document.updated_at,
-        archived_at,
+        archived_at: existing.map(|item| item.archived_at).unwrap_or_default(),
+        published_revision: existing
+            .map(|item| item.published_revision)
+            .unwrap_or_default(),
+        paused: existing.map(|item| item.paused).unwrap_or(true),
+        last_run_at: existing.map(|item| item.last_run_at).unwrap_or_default(),
+        next_run_at: existing.map(|item| item.next_run_at).unwrap_or_default(),
+        last_run_status: existing
+            .map(|item| item.last_run_status.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -117,13 +144,16 @@ pub fn list(app: &AppHandle, include_archived: bool) -> Result<Vec<AutomationMet
     if !include_archived {
         items.retain(|item| item.archived_at == 0);
     }
-    items.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    items.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
     Ok(items)
 }
 
 pub fn load(app: &AppHandle, id: &str) -> Result<AutomationDocument, String> {
     let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
-    let path = draft_path(app, id)?;
+    load_document_unlocked(&draft_path(app, id)?)
+}
+
+fn load_document_unlocked(path: &Path) -> Result<AutomationDocument, String> {
     if !path.is_file() {
         return Err("Automation 不存在或已被删除".into());
     }
@@ -159,6 +189,7 @@ pub fn create(app: &AppHandle, name: &str) -> Result<AutomationDocument, String>
             max_duration_ms: 300_000,
             max_concurrency: 4,
             on_missed_schedule: MissedSchedulePolicy::Skip,
+            project_root: None,
         },
         created_at: timestamp,
         updated_at: timestamp,
@@ -167,7 +198,7 @@ pub fn create(app: &AppHandle, name: &str) -> Result<AutomationDocument, String>
 
     let mut index = read_index(app)?;
     index.version = 1;
-    index.automations.push(meta_from_document(&document, 0));
+    index.automations.push(meta_from_document(&document, None));
     if let Err(error) = write_index(app, &index) {
         let _ = std::fs::remove_dir_all(root(app)?.join(&id));
         return Err(error);
@@ -207,7 +238,7 @@ pub fn save(
         .iter_mut()
         .find(|item| item.id == document.id)
     {
-        *slot = meta_from_document(&document, existing.archived_at);
+        *slot = meta_from_document(&document, Some(&existing));
     }
     write_index(app, &index)?;
     Ok(document)
@@ -243,6 +274,195 @@ pub fn delete(app: &AppHandle, id: &str) -> Result<(), String> {
             .map_err(|error| format!("删除 Automation 文件失败：{error}"))?;
     }
     Ok(())
+}
+
+pub fn publish(app: &AppHandle, id: &str, next_run_at: u64) -> Result<AutomationMeta, String> {
+    let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
+    let mut document = load_document_unlocked(&draft_path(app, id)?)?;
+    let issues = validate::validate(&document, true);
+    if let Some(issue) = issues.first() {
+        return Err(issue.message.clone());
+    }
+    let mut index = read_index(app)?;
+    let item = index
+        .automations
+        .iter_mut()
+        .find(|item| item.id == id)
+        .ok_or_else(|| "Automation 不存在或已被删除".to_string())?;
+    document.revision = document.revision.saturating_add(1).max(1);
+    document.updated_at = now_ms();
+    write_json_atomic(&draft_path(app, id)?, &document)?;
+    write_json_atomic(&published_path(app, id)?, &document)?;
+    let existing = item.clone();
+    *item = meta_from_document(&document, Some(&existing));
+    item.published_revision = document.revision;
+    item.paused = false;
+    item.next_run_at = next_run_at;
+    let result = item.clone();
+    write_index(app, &index)?;
+    Ok(result)
+}
+
+pub fn set_paused(
+    app: &AppHandle,
+    id: &str,
+    paused: bool,
+    next_run_at: u64,
+) -> Result<AutomationMeta, String> {
+    let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
+    validate_id(id)?;
+    let mut index = read_index(app)?;
+    let item = index
+        .automations
+        .iter_mut()
+        .find(|item| item.id == id)
+        .ok_or_else(|| "Automation 不存在或已被删除".to_string())?;
+    if item.published_revision == 0 {
+        return Err("Automation 尚未发布".into());
+    }
+    item.paused = paused;
+    item.next_run_at = if paused { 0 } else { next_run_at };
+    let result = item.clone();
+    write_index(app, &index)?;
+    Ok(result)
+}
+
+pub fn load_published(app: &AppHandle, id: &str) -> Result<AutomationDocument, String> {
+    let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
+    let path = published_path(app, id)?;
+    if !path.is_file() {
+        return Err("Automation 尚未发布".into());
+    }
+    load_document_unlocked(&path)
+}
+
+pub fn save_run(app: &AppHandle, run: &AutomationRun) -> Result<(), String> {
+    let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
+    if !read_index(app)?
+        .automations
+        .iter()
+        .any(|item| item.id == run.automation_id)
+    {
+        return Err("Automation 不存在或已被删除".into());
+    }
+    write_json_atomic(&run_path(app, &run.automation_id, &run.id)?, run)
+}
+
+pub fn load_run(
+    app: &AppHandle,
+    automation_id: &str,
+    run_id: &str,
+) -> Result<AutomationRun, String> {
+    let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
+    read_run_unlocked(&run_path(app, automation_id, run_id)?)
+}
+
+fn read_run_unlocked(path: &Path) -> Result<AutomationRun, String> {
+    let raw =
+        std::fs::read_to_string(path).map_err(|error| format!("读取运行记录失败：{error}"))?;
+    serde_json::from_str(&raw).map_err(|error| format!("运行记录损坏：{error}"))
+}
+
+pub fn list_runs(
+    app: &AppHandle,
+    automation_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<AutomationRun>, String> {
+    let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
+    let index = read_index(app)?;
+    if let Some(id) = automation_id {
+        validate_id(id)?;
+    }
+    let ids = index
+        .automations
+        .iter()
+        .filter(|item| automation_id.is_none_or(|id| item.id == id))
+        .map(|item| item.id.as_str())
+        .collect::<Vec<_>>();
+    let mut runs = Vec::new();
+    for id in ids {
+        let directory = runs_root(app, id)?;
+        let entries = match std::fs::read_dir(directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("读取运行记录目录失败：{error}")),
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| format!("读取运行记录失败：{error}"))?;
+            if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(run) = read_run_unlocked(&entry.path()) {
+                runs.push(run);
+            }
+        }
+    }
+    runs.sort_by_key(|run| std::cmp::Reverse(run.started_at));
+    runs.truncate(limit.clamp(1, 500));
+    Ok(runs)
+}
+
+pub fn finish_run(
+    app: &AppHandle,
+    automation_id: &str,
+    run_id: &str,
+    status: AutomationRunStatus,
+    output: Option<String>,
+    error: Option<String>,
+) -> Result<AutomationRun, String> {
+    let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
+    let path = run_path(app, automation_id, run_id)?;
+    let mut run = read_run_unlocked(&path)?;
+    run.status = status;
+    run.finished_at = now_ms();
+    run.output = output;
+    run.error = error;
+    write_json_atomic(&path, &run)?;
+    let mut index = read_index(app)?;
+    if let Some(item) = index
+        .automations
+        .iter_mut()
+        .find(|item| item.id == automation_id)
+    {
+        item.last_run_at = run.finished_at;
+        item.last_run_status = serde_json::to_value(status)
+            .unwrap_or(Value::String("failed".into()))
+            .as_str()
+            .unwrap_or("failed")
+            .to_owned();
+    }
+    write_index(app, &index)?;
+    Ok(run)
+}
+
+pub fn update_next_run(
+    app: &AppHandle,
+    automation_id: &str,
+    next_run_at: u64,
+) -> Result<(), String> {
+    let _guard = store_lock().lock().map_err(|_| "自动化存储锁已损坏")?;
+    let mut index = read_index(app)?;
+    let item = index
+        .automations
+        .iter_mut()
+        .find(|item| item.id == automation_id)
+        .ok_or_else(|| "Automation 不存在或已被删除".to_string())?;
+    item.next_run_at = next_run_at;
+    write_index(app, &index)
+}
+
+pub fn run_workspace_path(
+    app: &AppHandle,
+    automation_id: &str,
+    run_id: &str,
+) -> Result<PathBuf, String> {
+    validate_id(automation_id)?;
+    validate_id(run_id)?;
+    Ok(root(app)?
+        .join(automation_id)
+        .join("runs")
+        .join(run_id)
+        .join("workspace"))
 }
 
 fn normalized_name(name: &str) -> Result<String, String> {

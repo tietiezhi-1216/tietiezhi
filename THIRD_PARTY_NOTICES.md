@@ -396,3 +396,13 @@ R33 的 Apps 目录、已安装连接器投影和 Dynamic Tool 生命周期参�
 - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
 
 本地实现位于 `crates/agent-apps` 和桌面 Dynamic Tool 宿主；设备能力调用使用 Tietiezhi 自有 Device Fabric，不调用、链接或分发上游 Codex 二进制。
+
+R34 的 Automation Thread 来源、无人值守 Turn 和生命周期行为参考以下 Apache-2.0 上游源码：
+
+- `codex-rs/protocol/src/protocol.rs`
+- `codex-rs/core/src/session`
+- `codex-rs/app-server/src/request_processors/turn_processor.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/turn.rs`
+
+调度器、发布快照、运行记录和桌面编排器是 Tietiezhi 自有实现，并复用本仓库的 Thread、Turn、Worktree、Sandbox 和 Approval Runtime；不调用、链接或分发上游 Codex 二进制。

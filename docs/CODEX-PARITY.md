@@ -72,7 +72,7 @@
 | R31 | Desktop 时间线 | 已完成 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build | Legacy ChatItem 时间线仅在 R38 迁移完成后删除；文件能力不替代模型工具的 Approval 与 Sandbox。 |
 | R32 | Diff 与 Git UI | 已完成 | crates/agent-git Diff/Stage/Unstage/Discard/Commit/Push/PR；desktop WorkspaceGitPanel；7 项 Git 测试；pnpm test:workspace-git-ui/typecheck/build；docs/CODEX-DIFF-GIT-UI.md | PR 链接当前仅支持 GitHub remote；Push 永不 force，Discard 仅操作显式选择路径。 |
 | R33 | Apps 与连接器 | 已完成 | crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-apps-panel.tsx; docs/CODEX-APPS.md | 插件 App 工具只有在其 MCP/宿主运行时存在时才可调用；目录不会把 synthetic 或隐藏工具误报为 callable。 |
-| R34 | Automations | 待开始 |  |  |
+| R34 | Automations | 已完成 | desktop/src-tauri/src/automation/runtime.rs; desktop/src-tauri/src/automation/store.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/automations/automation-list.tsx; docs/CODEX-AUTOMATIONS.md | 无人值守运行固定 approvalPolicy=never；交互审批节点禁止发布，必须审批的副作用会失败。指定项目必须是 Git 工作树，每个 Run 使用独立 Worktree。 |
 | R35 | 远程与实时 | 待开始 |  |  |
 | R36 | 运维能力 | 待开始 |  |  |
 | R37 | 稳定性工程 | 待开始 |  |  |

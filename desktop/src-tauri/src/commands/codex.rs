@@ -167,7 +167,7 @@ fn nonempty_or_unconfigured(value: String) -> String {
     }
 }
 
-fn thread_manager(app: &AppHandle, state: &AppState) -> Result<ThreadManager, String> {
+pub(crate) fn thread_manager(app: &AppHandle, state: &AppState) -> Result<ThreadManager, String> {
     let mut slot = state
         .codex_core
         .lock()
@@ -3912,7 +3912,7 @@ async fn run_compaction_snapshot(
     emit_notifications(&app, &notifications).map_err(ModelError::Consumer)
 }
 
-fn launch_turn_executor(
+pub(crate) fn launch_turn_executor(
     app: &AppHandle,
     state: &AppState,
     manager: ThreadManager,
@@ -4062,6 +4062,108 @@ fn launch_turn_executor(
             guardian.clear(&turn_id);
         };
     });
+}
+
+pub(crate) fn launch_automation_turn(
+    app: &AppHandle,
+    state: &AppState,
+    run_id: &str,
+    cwd: &std::path::Path,
+    prompt: String,
+) -> Result<(String, String), String> {
+    let manager = thread_manager(app, state)?;
+    let connection_id = format!("automation:{run_id}");
+    let thread = manager.dispatch(&connection_id, automation_thread_start_request(run_id, cwd));
+    if let Some(error) = thread.response.get("error") {
+        return Err(format!("创建 Automation Thread 失败：{error}"));
+    }
+    emit_notifications(app, &thread.notifications)?;
+    let thread_id = thread
+        .response
+        .pointer("/result/thread/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Automation Thread 响应缺少 thread id".to_string())?
+        .to_owned();
+    let turn = manager.dispatch(
+        &connection_id,
+        automation_turn_start_request(run_id, &thread_id, cwd, prompt),
+    );
+    if let Some(error) = turn.response.get("error") {
+        return Err(format!("创建 Automation Turn 失败：{error}"));
+    }
+    emit_notifications(app, &turn.notifications)?;
+    let turn_id = turn
+        .response
+        .pointer("/result/turn/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Automation Turn 响应缺少 turn id".to_string())?
+        .to_owned();
+    launch_turn_executor(app, state, manager, thread_id.clone(), turn_id.clone());
+    Ok((thread_id, turn_id))
+}
+
+fn automation_thread_start_request(run_id: &str, cwd: &std::path::Path) -> Value {
+    json!({
+        "id":format!("{run_id}:thread"),
+        "method":"thread/start",
+        "params":{
+            "cwd":cwd,
+            "approvalPolicy":"never",
+            "sandbox":"workspace-write",
+            "developerInstructions":"This is an unattended Automation run. Never request user input or approval. Execute only the published workflow. If a required operation cannot run under the active sandbox and approvalPolicy=never, stop and report the blocked step instead of bypassing policy.",
+            "threadSource":"automation",
+            "serviceName":"Tietiezhi Automation",
+            "ephemeral":false
+        }
+    })
+}
+
+fn automation_turn_start_request(
+    run_id: &str,
+    thread_id: &str,
+    cwd: &std::path::Path,
+    prompt: String,
+) -> Value {
+    json!({
+        "id":format!("{run_id}:turn"),
+        "method":"turn/start",
+        "params":{
+            "threadId":thread_id,
+            "clientUserMessageId":run_id,
+            "input":[{"type":"text","text":prompt,"textElements":[]}],
+            "cwd":cwd,
+            "approvalPolicy":"never",
+            "sandboxPolicy":{
+                "type":"workspaceWrite",
+                "writableRoots":[cwd],
+                "networkAccess":false,
+                "excludeTmpdirEnvVar":false,
+                "excludeSlashTmp":false
+            }
+        }
+    })
+}
+
+pub(crate) fn interrupt_automation_turn(
+    app: &AppHandle,
+    state: &AppState,
+    thread_id: &str,
+    turn_id: &str,
+) -> Result<(), String> {
+    let manager = thread_manager(app, state)?;
+    let output = manager.dispatch(
+        "automation",
+        json!({
+            "id":Uuid::new_v4().to_string(),
+            "method":"turn/interrupt",
+            "params":{"threadId":thread_id,"turnId":turn_id}
+        }),
+    );
+    if let Some(error) = output.response.get("error") {
+        return Err(format!("停止 Automation Turn 失败：{error}"));
+    }
+    cancel_thread(state, thread_id, Some(turn_id));
+    emit_notifications(app, &output.notifications)
 }
 
 fn finalize_interrupted_review(
@@ -7767,19 +7869,19 @@ fn fail_turn(
 #[cfg(test)]
 mod tests {
     use super::{
-        assistant_response_text, collaboration_timeline_item, compaction_response_request,
-        dispatch_windows_sandbox, empty_rate_limits, format_micro,
-        gateway_quota_allows_memory_startup, gateway_rate_limits, local_tool_timeline_item,
-        merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, parse_plugin_mcp_source,
-        permission_profile_list, permission_profile_to_tool, permission_profile_to_v2,
-        plugin_enablement_edits, response_request, review_tool_allowed,
+        assistant_response_text, automation_thread_start_request, automation_turn_start_request,
+        collaboration_timeline_item, compaction_response_request, dispatch_windows_sandbox,
+        empty_rate_limits, format_micro, gateway_quota_allows_memory_startup, gateway_rate_limits,
+        local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type,
+        parse_plugin_mcp_source, permission_profile_list, permission_profile_to_tool,
+        permission_profile_to_v2, plugin_enablement_edits, response_request, review_tool_allowed,
         sanitize_collaboration_fork_history, ConfigPaths, ConfigRuntime, PluginMcpSource,
         ResponseEvent, ResponseProjection, SkillsPaths, SkillsRuntime,
     };
     use crate::commands::gateway_auth::{
         GatewayOwnedPackage, GatewayPaymentChannels, GatewayQuotaView, GatewayWallet,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
     use tempfile::TempDir;
     use tietiezhi_agent_context::SUMMARIZATION_PROMPT;
     use tietiezhi_agent_core::{
@@ -8495,5 +8597,30 @@ mod tests {
             .find(|notification| notification.method == "windowsSandbox/setupCompleted")
             .unwrap();
         assert_eq!(completed.recipients, ["connection"]);
+    }
+
+    #[test]
+    fn automation_requests_are_unattended_v2_turns() {
+        let cwd = std::path::Path::new("/tmp/automation-worktree");
+        let thread = automation_thread_start_request("run-1", cwd);
+        let turn = automation_turn_start_request(
+            "run-1",
+            "01900000-0000-7000-8000-000000000001",
+            cwd,
+            "execute".into(),
+        );
+        assert_eq!(thread["method"], "thread/start");
+        assert_eq!(thread["params"]["approvalPolicy"], "never");
+        assert_eq!(thread["params"]["sandbox"], "workspace-write");
+        assert_eq!(thread["params"]["threadSource"], "automation");
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(turn["params"]["approvalPolicy"], "never");
+        assert_eq!(turn["params"]["sandboxPolicy"]["type"], "workspaceWrite");
+        assert_eq!(
+            turn["params"]["sandboxPolicy"]["networkAccess"],
+            Value::Bool(false)
+        );
+        assert!(serde_json::from_value::<tietiezhi_agent_protocol::ClientRequest>(thread).is_ok());
+        assert!(serde_json::from_value::<tietiezhi_agent_protocol::ClientRequest>(turn).is_ok());
     }
 }

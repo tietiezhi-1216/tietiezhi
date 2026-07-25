@@ -1344,9 +1344,9 @@
     {
       "id": "R34",
       "name": "Automations",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "无人值守运行固定 approvalPolicy=never；交互审批节点禁止发布，必须审批的副作用会失败。指定项目必须是 Git 工作树，每个 Run 使用独立 Worktree。",
+      "evidence": "desktop/src-tauri/src/automation/runtime.rs; desktop/src-tauri/src/automation/store.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/automations/automation-list.tsx; docs/CODEX-AUTOMATIONS.md"
     },
     {
       "id": "R35",
