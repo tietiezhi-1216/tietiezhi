@@ -9,6 +9,9 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(windows)]
+mod windows;
+
 #[cfg(target_os = "macos")]
 const SEATBELT_EXECUTABLE: &str = "/usr/bin/sandbox-exec";
 #[cfg(target_os = "macos")]
@@ -188,6 +191,12 @@ pub struct SandboxInvocation {
     pub applied: bool,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowsWorldWritableAudit {
+    pub paths: Vec<PathBuf>,
+    pub failed_scan: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SandboxError {
     #[error("sandbox command must not be empty")]
@@ -228,10 +237,48 @@ pub fn sandbox_command(
             applied: true,
         })
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        let command = windows::wrap_command(command, cwd, inherited_env, policy)?;
+        Ok(SandboxInvocation {
+            command,
+            applied: true,
+        })
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = (cwd, inherited_env);
         Err(SandboxError::UnsupportedPlatform)
+    }
+}
+
+/// Handles the source-built Windows sandbox wrapper before the desktop runtime starts.
+///
+/// Returns `false` for normal launches. A wrapper launch exits the process after
+/// forwarding the restricted child's exit code and therefore never returns.
+pub fn run_windows_sandbox_wrapper_if_requested() -> bool {
+    #[cfg(windows)]
+    {
+        windows::run_wrapper_if_requested()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+pub fn audit_windows_world_writable(
+    cwd: &Path,
+    inherited_env: &std::collections::HashMap<String, String>,
+) -> WindowsWorldWritableAudit {
+    #[cfg(windows)]
+    {
+        windows::audit_world_writable(cwd, inherited_env)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (cwd, inherited_env);
+        WindowsWorldWritableAudit::default()
     }
 }
 

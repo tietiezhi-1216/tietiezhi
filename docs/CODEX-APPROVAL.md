@@ -19,7 +19,7 @@ R14 在源码级 Runtime 中实现 Codex 的 Approval Policy 和反向 JSON-RPC�
 - `on-request` 在受限或尚不可用的沙箱需要升级时询问；外部沙箱和 unrestricted profile 不额外询问。
 - `never` 不显示审批，操作只能在既有权限中执行，失败直接返回模型。
 - `granular` 为 sandbox、规则、Skill、权限请求和 MCP elicitation 分别决定是否允许显示审批；关闭的类别直接拒绝，不静默扩大权限。
-- macOS 已由 R15 的 Seatbelt 实现真实 `Restricted/External/Unrestricted` 判定；Windows 在 R16 完成前仍按 `Unavailable` 失败关闭。
+- macOS 由 R15 Seatbelt、Windows 由 R16 Restricted Token/ACL/Job Object 实现真实 `Restricted/External/Unrestricted` 判定；其他未实现平台按 `Unavailable` 失败关闭。
 - R18 的 ExecPolicy 负责可信只读分类和命令规则；R14 不使用字符串黑名单模拟安全解析。
 
 ## 授权作用域

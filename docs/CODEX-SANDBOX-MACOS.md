@@ -54,4 +54,4 @@ R15 在仓库源码中实现 macOS Seatbelt，不调用或打包 Codex 二进制
 - `agent-exec` Pipe 与 PTY 都实际继承 Seatbelt。
 - 只读且 `never` 时 Patch 被拒绝且不写盘。
 
-R16 在同一 `SandboxPolicy` API 下实现 Windows Restricted Token、ACL、Job Object 与 ConPTY 隔离；R17 再增加域名级网络代理和连接审批。
+R16 已在同一 `SandboxPolicy` API 下实现 Windows Restricted Token、ACL、Job Object 与 ConPTY 隔离，详见 `docs/CODEX-SANDBOX-WINDOWS.md`；R17 再增加域名级网络代理和连接审批。

@@ -271,6 +271,14 @@ pub async fn codex_v2_request(
     if method == "permissionProfile/list" {
         return permission_profile_list(&request);
     }
+    if matches!(
+        method.as_str(),
+        "windowsSandbox/readiness" | "windowsSandbox/setupStart"
+    ) {
+        let output = dispatch_windows_sandbox(&connection_id, &request, &method)?;
+        emit_notifications(&app, &output.notifications)?;
+        return Ok(output);
+    }
     if method.starts_with("command/exec") {
         return dispatch_command_exec(&app, &state, &connection_id, &request, &method).await;
     }
@@ -2246,15 +2254,14 @@ fn turn_tool_runtime(
     let approval_policy =
         serde_json::from_value::<AskForApproval>(snapshot.approval_policy.clone())
             .unwrap_or_default();
-    // macOS uses the R15 Seatbelt implementation. Windows stays unavailable
-    // until R16 installs its Restricted Token/ACL sandbox and therefore fails closed.
+    // macOS uses R15 Seatbelt and Windows uses the R16 Restricted Token/ACL wrapper.
     let sandbox_policy =
         tietiezhi_agent_sandbox::SandboxPolicy::from_value(snapshot.sandbox.clone())
             .map_err(|error| ModelError::Consumer(error.to_string()))?;
     let sandbox_availability = match snapshot.sandbox.get("type").and_then(Value::as_str) {
         Some("dangerFullAccess") => SandboxAvailability::Unrestricted,
         Some("externalSandbox") => SandboxAvailability::External,
-        _ if cfg!(target_os = "macos") => SandboxAvailability::Restricted,
+        _ if cfg!(any(target_os = "macos", windows)) => SandboxAvailability::Restricted,
         _ => SandboxAvailability::Unavailable,
     };
     if approval_policy.allows(ApprovalCategory::RequestPermissions) {
@@ -2731,6 +2738,83 @@ fn turn_tool_runtime(
     Ok((ToolCallRuntime::new(router), specs))
 }
 
+fn dispatch_windows_sandbox(
+    connection_id: &str,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("{method} 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    match method {
+        "windowsSandbox/readiness" => dispatch_success(
+            request,
+            json!({
+                "status":if cfg!(windows) { "ready" } else { "notConfigured" }
+            }),
+        ),
+        "windowsSandbox/setupStart" => {
+            let mode = request
+                .pointer("/params/mode")
+                .and_then(Value::as_str)
+                .unwrap_or("unelevated");
+            let success = cfg!(windows);
+            let cwd = request
+                .pointer("/params/cwd")
+                .and_then(Value::as_str)
+                .map(std::path::PathBuf::from)
+                .unwrap_or(std::env::current_dir().map_err(|error| error.to_string())?);
+            let audit = tietiezhi_agent_sandbox::audit_windows_world_writable(
+                &cwd,
+                &std::env::vars().collect(),
+            );
+            let mut notifications = Vec::new();
+            if !audit.paths.is_empty() || audit.failed_scan {
+                let sample_paths = audit
+                    .paths
+                    .iter()
+                    .take(20)
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                notifications.push(RoutedNotification {
+                    recipients: vec![connection_id.into()],
+                    method: "windows/worldWritableWarning".into(),
+                    params: json!({
+                        "samplePaths":sample_paths,
+                        "extraCount":audit.paths.len().saturating_sub(20),
+                        "failedScan":audit.failed_scan
+                    }),
+                });
+            }
+            notifications.push(RoutedNotification {
+                recipients: vec![connection_id.into()],
+                method: "windowsSandbox/setupCompleted".into(),
+                params: json!({
+                    "mode":mode,
+                    "success":success,
+                    "error":(!success).then_some(
+                        "Windows sandbox setup is only available on Windows"
+                    )
+                }),
+            });
+            for notification in &notifications {
+                serde_json::from_value::<ServerNotification>(notification.wire_message())
+                    .map_err(|error| format!("Windows sandbox setup notification 无效：{error}"))?;
+            }
+            let mut output = dispatch_success(request, json!({"started":true}))?;
+            output.notifications = notifications;
+            Ok(output)
+        }
+        _ => Ok(dispatch_error(request, -32601, "method not found")),
+    }
+}
+
 fn permission_profile_to_v2(mut permissions: Value) -> Value {
     if let Some(object) = permissions.as_object_mut() {
         if let Some(file_system) = object.remove("file_system") {
@@ -3183,10 +3267,11 @@ fn fail_turn(
 #[cfg(test)]
 mod tests {
     use super::{
-        assistant_response_text, compaction_response_request, empty_rate_limits, format_micro,
-        gateway_rate_limits, local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured,
-        normalized_plan_type, permission_profile_list, permission_profile_to_tool,
-        permission_profile_to_v2, response_request, ResponseEvent, ResponseProjection,
+        assistant_response_text, compaction_response_request, dispatch_windows_sandbox,
+        empty_rate_limits, format_micro, gateway_rate_limits, local_tool_timeline_item,
+        merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, permission_profile_list,
+        permission_profile_to_tool, permission_profile_to_v2, response_request, ResponseEvent,
+        ResponseProjection,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
     use serde_json::json;
@@ -3499,5 +3584,44 @@ mod tests {
         assert!(wire.get("fileSystem").is_some());
         assert!(wire.get("file_system").is_none());
         assert_eq!(permission_profile_to_tool(wire), tool);
+    }
+
+    #[test]
+    fn windows_sandbox_lifecycle_matches_v2() {
+        let readiness = dispatch_windows_sandbox(
+            "connection",
+            &json!({
+                "id":1,
+                "method":"windowsSandbox/readiness",
+                "params":{}
+            }),
+            "windowsSandbox/readiness",
+        )
+        .unwrap();
+        assert_eq!(
+            readiness.response["result"]["status"],
+            if cfg!(windows) {
+                "ready"
+            } else {
+                "notConfigured"
+            }
+        );
+        let setup = dispatch_windows_sandbox(
+            "connection",
+            &json!({
+                "id":2,
+                "method":"windowsSandbox/setupStart",
+                "params":{"mode":"unelevated","cwd":null}
+            }),
+            "windowsSandbox/setupStart",
+        )
+        .unwrap();
+        assert_eq!(setup.response["result"]["started"], true);
+        let completed = setup
+            .notifications
+            .iter()
+            .find(|notification| notification.method == "windowsSandbox/setupCompleted")
+            .unwrap();
+        assert_eq!(completed.recipients, ["connection"]);
     }
 }

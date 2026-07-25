@@ -8,6 +8,10 @@ publish = false
 [lib]
 doctest = false
 
+[[bin]]
+name = "tietiezhi-agent-exec-sandbox-runner"
+path = "src/bin/windows_sandbox_runner.rs"
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
@@ -20,6 +24,7 @@ tietiezhi-agent-sandbox = { path = "../agent-sandbox" }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+pretty_assertions = "1"
 tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]

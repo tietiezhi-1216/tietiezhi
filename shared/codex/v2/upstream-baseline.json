@@ -538,15 +538,17 @@
       },
       {
         "method": "windowsSandbox/readiness",
-        "status": "pending",
+        "status": "implemented",
         "target": "R16",
-        "note": ""
+        "note": "源码构建 self-reentry；真实 Windows runner 执行沙箱、ConPTY 和桌面构建。",
+        "evidence": "crates/agent-sandbox Windows Restricted Token/ACL/Job/wrapper；crates/agent-exec/tests/windows_sandbox.rs；desktop commands/codex.rs；docs/CODEX-SANDBOX-WINDOWS.md；Windows CI"
       },
       {
         "method": "windowsSandbox/setupStart",
-        "status": "pending",
+        "status": "implemented",
         "target": "R16",
-        "note": ""
+        "note": "源码构建 self-reentry；真实 Windows runner 执行沙箱、ConPTY 和桌面构建。",
+        "evidence": "crates/agent-sandbox Windows Restricted Token/ACL/Job/wrapper；crates/agent-exec/tests/windows_sandbox.rs；desktop commands/codex.rs；docs/CODEX-SANDBOX-WINDOWS.md；Windows CI"
       }
     ],
     "clientNotifications": [
@@ -1030,15 +1032,17 @@
       },
       {
         "method": "windows/worldWritableWarning",
-        "status": "pending",
+        "status": "implemented",
         "target": "R16",
-        "note": ""
+        "note": "源码构建 self-reentry；真实 Windows runner 执行沙箱、ConPTY 和桌面构建。",
+        "evidence": "crates/agent-sandbox Windows Restricted Token/ACL/Job/wrapper；crates/agent-exec/tests/windows_sandbox.rs；desktop commands/codex.rs；docs/CODEX-SANDBOX-WINDOWS.md；Windows CI"
       },
       {
         "method": "windowsSandbox/setupCompleted",
-        "status": "pending",
+        "status": "implemented",
         "target": "R16",
-        "note": ""
+        "note": "源码构建 self-reentry；真实 Windows runner 执行沙箱、ConPTY 和桌面构建。",
+        "evidence": "crates/agent-sandbox Windows Restricted Token/ACL/Job/wrapper；crates/agent-exec/tests/windows_sandbox.rs；desktop commands/codex.rs；docs/CODEX-SANDBOX-WINDOWS.md；Windows CI"
       }
     ]
   },
@@ -1192,9 +1196,9 @@
     {
       "id": "R16",
       "name": "Windows 沙箱",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Windows ACL 准备失败时 fail-closed；每次发布由 Windows runner 重跑真实逃逸测试。",
+      "evidence": "crates/agent-sandbox Windows Restricted Token/ACL/Job/wrapper；crates/agent-exec/tests/windows_sandbox.rs；desktop commands/codex.rs；docs/CODEX-SANDBOX-WINDOWS.md；Windows CI"
     },
     {
       "id": "R17",

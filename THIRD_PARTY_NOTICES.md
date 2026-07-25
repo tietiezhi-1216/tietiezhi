@@ -178,3 +178,18 @@ R15 的 macOS Seatbelt 策略生成、命令封装和逃逸测试参考或移植
 - `codex-rs/core/src/tools/runtimes/apply_patch.rs`
 
 本地实现复用同一 `SandboxPolicy` 约束 Pipe、PTY 和 Patch 路径；路径检查额外解析最深已存在父目录，避免新文件通过 symlink 父目录逃逸。
+
+R16 的 Windows Restricted Token、ACL、世界可写审计、用户目录隐藏、Job Object 和自重入 wrapper 行为参考以下 Apache-2.0 上游源码重新实现，没有链接、调用或打包上游二进制：
+
+- `codex-rs/windows-sandbox-rs/src/acl.rs`
+- `codex-rs/windows-sandbox-rs/src/audit.rs`
+- `codex-rs/windows-sandbox-rs/src/cap.rs`
+- `codex-rs/windows-sandbox-rs/src/hide_users.rs`
+- `codex-rs/windows-sandbox-rs/src/path_normalization.rs`
+- `codex-rs/windows-sandbox-rs/src/process.rs`
+- `codex-rs/windows-sandbox-rs/src/token.rs`
+- `codex-rs/windows-sandbox-rs/src/wrapper.rs`
+- `codex-rs/windows-sandbox-rs/src/bin/command_runner/win.rs`
+- `codex-rs/core/src/tools/handlers/unified_exec/mod.rs`
+
+本地实现用当前桌面可执行文件或测试 runner 进行源码级 self-reentry，并增加策略审计缓存、capability SID、Pipe/ConPTY 集成测试和固定 App Server V2 setup/readiness 通知。
