@@ -8,6 +8,7 @@ on:
     branches: [main]
     paths:
       - 'desktop/**'
+      - 'crates/agent-protocol/**'
       - 'shared/codex/**'
       - 'docs/CODEX-*.md'
       - 'THIRD_PARTY_NOTICES.md'
@@ -16,6 +17,7 @@ on:
     branches: [main]
     paths:
       - 'desktop/**'
+      - 'crates/agent-protocol/**'
       - 'shared/codex/**'
       - 'docs/CODEX-*.md'
       - 'THIRD_PARTY_NOTICES.md'
@@ -61,7 +63,9 @@ jobs:
 
       - uses: swatinem/rust-cache@v2
         with:
-          workspaces: desktop/src-tauri
+          workspaces: |
+            desktop/src-tauri
+            crates/agent-protocol
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -71,6 +75,15 @@ jobs:
 
       - name: Check Codex parity ledger
         run: pnpm check:codex-parity
+
+      - name: Check Codex protocol snapshots
+        run: pnpm check:codex-schema
+
+      - name: Typecheck Codex protocol
+        run: pnpm test:codex-protocol-ts
+
+      - name: Codex protocol Rust tests
+        run: cargo test --manifest-path ../crates/agent-protocol/Cargo.toml
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml

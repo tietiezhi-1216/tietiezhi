@@ -1,0 +1,13 @@
+{
+  "id": "approval-1",
+  "method": "item/commandExecution/requestApproval",
+  "params": {
+    "threadId": "thread-1",
+    "turnId": "turn-1",
+    "itemId": "item-1",
+    "startedAtMs": 1784970000000,
+    "reason": "Command requires approval",
+    "command": "cargo test",
+    "cwd": "/workspace"
+  }
+}

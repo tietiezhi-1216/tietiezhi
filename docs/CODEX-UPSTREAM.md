@@ -69,6 +69,6 @@
 
 ## 当前差异
 
-R1 已收紧旧运行时：Bash 和 Fetch 在没有 OS 沙箱时必须审批，临时授权按完整命令、路径、网络来源或完整工具参数隔离，拒绝与取消采用 Codex 决策语义，并移除了固定重复调用硬终止。
+R2 已引入固定上游生成的 273 个 JSON Schema、617 个 TypeScript 类型和 `crates/agent-protocol` Rust 编译期类型生成。四类协议表面与 machine ledger 的 89/1/10/70 个方法逐项校验，跨语言 fixture 和 Rust 反向 Schema 生成已纳入 CI。
 
-这仍是新运行时落地前的止血层，不代表 Codex Approval、Sandbox 或 App Server V2 方法已经实现。R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能把 ledger 方法状态改为 `implemented`。
+当前只完成协议边界，不代表任何 V2 方法已经具备运行时行为。R3 开始接入 Thread、Turn、Item 事件模型，R14-R18 仍需分别完成审批状态机、macOS/Windows 沙箱、网络策略和 ExecPolicy；现有功能只有在目标协议、状态恢复、测试和 UI 行为全部符合后，才能把 ledger 方法状态改为 `implemented`。

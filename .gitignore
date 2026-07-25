@@ -10,6 +10,7 @@ pnpm-debug.log*
 # ---- Tauri / Rust ----
 desktop/src-tauri/target/
 desktop/src-tauri/gen/schemas/
+crates/*/target/
 
 # ---- Editors ----
 .idea/

@@ -1094,9 +1094,9 @@
     {
       "id": "R2",
       "name": "协议层",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "本阶段只实现协议类型与生成门禁，170 个方法的运行时行为仍由 R3-R39 逐项实现",
+      "evidence": "crates/agent-protocol；shared/codex/v2/schema；shared/codex/v2/typescript；desktop/scripts/check-codex-schema.mjs；Rust 双向 fixture 与反向 Schema 测试；pnpm test:codex-protocol-ts"
     },
     {
       "id": "R3",

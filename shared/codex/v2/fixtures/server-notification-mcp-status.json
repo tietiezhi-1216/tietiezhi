@@ -1,0 +1,10 @@
+{
+  "method": "mcpServer/startupStatus/updated",
+  "params": {
+    "threadId": "thread-1",
+    "name": "expired-oauth",
+    "status": "failed",
+    "error": "OAuth credentials expired",
+    "failureReason": "reauthenticationRequired"
+  }
+}
