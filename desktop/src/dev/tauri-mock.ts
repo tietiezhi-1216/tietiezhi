@@ -1399,6 +1399,30 @@ export function installTauriMock(): void {
       if (request.method.startsWith("thread/realtime/")) {
         return { response: { id: request.id, result: {} }, notifications: [] };
       }
+      if (request.method === "feedback/upload") {
+        return {
+          response: {
+            id: request.id,
+            result: { threadId: request.params?.threadId ?? `mock-feedback-${Date.now()}` },
+          },
+          notifications: [],
+        };
+      }
+      if (request.method === "hooks/list") {
+        return {
+          response: { id: request.id, result: { data: [] } },
+          notifications: [],
+        };
+      }
+      if (request.method === "modelProvider/capabilities/read") {
+        return {
+          response: {
+            id: request.id,
+            result: { namespaceTools: true, imageGeneration: true, webSearch: true },
+          },
+          notifications: [],
+        };
+      }
       const app = {
         id: "tietiezhi.devices",
         name: "Tietiezhi Device Fabric",
@@ -1481,6 +1505,51 @@ export function installTauriMock(): void {
       };
     },
     codex_v2_server_response: () => true,
+    codex_doctor_report: () => ({
+      schemaVersion: 1,
+      generatedAtMs: Date.now(),
+      overallStatus: "ok",
+      serviceVersion: "mock",
+      checks: [
+        {
+          id: "runtime.root",
+          category: "runtime",
+          status: "ok",
+          summary: "Agent Runtime 数据目录可读写。",
+          details: ["/mock/agent-runtime"],
+          issues: [],
+          remediation: null,
+          durationMs: 1,
+        },
+        {
+          id: "sandbox.readiness",
+          category: "sandbox",
+          status: "ok",
+          summary: "沙箱运行时已准备完成。",
+          details: [],
+          issues: [],
+          remediation: null,
+          durationMs: 0,
+        },
+      ],
+    }),
+    codex_runtime_metrics: () => ({
+      counters: {
+        "app_server.request.completed": 42,
+        "app_server.request.failed": 1,
+        "feedback.queued": 0,
+      },
+      histograms: {
+        "app_server.request.duration_ms": {
+          count: 43,
+          sum: 920,
+          min: 1,
+          max: 127,
+        },
+      },
+    }),
+    codex_export_telemetry: () => false,
+    codex_request_attestation: () => "mock-attestation",
     codex_remote_grant_thread: (a) => {
       const clientId = String(a.clientId);
       const threadId = String(a.threadId);

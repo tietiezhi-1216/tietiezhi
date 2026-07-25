@@ -16,6 +16,7 @@ import {
   Server,
   ShieldCheck,
   Sparkles,
+  Stethoscope,
   Sun,
   Tags,
   WalletCards,
@@ -34,6 +35,7 @@ import { DictationModelSection } from "@/features/settings/dictation-card";
 import { ArchivedTasksSection } from "@/features/settings/archived-tasks-section";
 import { DictationHotkeySection } from "@/features/settings/dictation-hotkey";
 import { DictationPromptSection } from "@/features/settings/dictation-prompt";
+import { RuntimeDiagnosticsSection } from "@/features/settings/runtime-diagnostics-section";
 import { McpSection } from "@/features/settings/mcp-section";
 import { QuotaCenter } from "@/features/settings/quota-center";
 import { PermissionSection } from "@/features/settings/permission-section";
@@ -94,6 +96,7 @@ const GROUPS: CategoryGroup[] = [
     items: [
       { key: "archives", label: "已归档任务", icon: Archive },
       { key: "appearance", label: "外观", icon: Palette },
+      { key: "diagnostics", label: "运行诊断", icon: Stethoscope },
       { key: "update", label: "软件更新", icon: RefreshCw },
       { key: "about", label: "关于", icon: Info },
     ],
@@ -168,6 +171,7 @@ export function SettingsDialog() {
               {category === "dictationPrompt" && <DictationPromptSection />}
               {category === "archives" && <ArchivedTasksSection />}
               {category === "appearance" && <AppearanceSection />}
+              {category === "diagnostics" && <RuntimeDiagnosticsSection />}
               {category === "update" && <UpdateCard />}
               {category === "about" && <AboutSection />}
             </div>

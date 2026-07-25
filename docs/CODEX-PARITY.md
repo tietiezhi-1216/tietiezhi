@@ -29,10 +29,10 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 14 |
+| 待实现 | 9 |
 | 实现中 | 0 |
-| 已实现 | 147 |
-| 服务映射 | 9 |
+| 已实现 | 151 |
+| 服务映射 | 10 |
 
 ## 阶段进度
 
@@ -74,7 +74,7 @@
 | R33 | Apps 与连接器 | 已完成 | crates/agent-apps/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-apps-panel.tsx; docs/CODEX-APPS.md | 插件 App 工具只有在其 MCP/宿主运行时存在时才可调用；目录不会把 synthetic 或隐藏工具误报为 callable。 |
 | R34 | Automations | 已完成 | desktop/src-tauri/src/automation/runtime.rs; desktop/src-tauri/src/automation/store.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/automations/automation-list.tsx; docs/CODEX-AUTOMATIONS.md | 无人值守运行固定 approvalPolicy=never；交互审批节点禁止发布，必须审批的副作用会失败。指定项目必须是 Git 工作树，每个 Run 使用独立 Worktree。 |
 | R35 | 远程与实时 | 已完成 | crates/agent-remote; crates/agent-realtime; desktop Device Fabric remote bridge; App Server remote/realtime dispatch; Remote & Realtime UI; docs/CODEX-REMOTE-REALTIME.md | Remote transport uses Tietiezhi Device Fabric because the upstream OpenAI remote service is proprietary; protocol lifecycle, authorization, routing and notifications remain source-compatible. Realtime availability depends on the selected provider exposing the pinned WebSocket/WebRTC endpoints. |
-| R36 | 运维能力 | 待开始 |  |  |
+| R36 | 运维能力 | 已完成 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md | OpenAI proprietary Sentry, Statsig and attestation issuers are service-mapped rather than copied; telemetry and feedback networking remain opt-in through explicit Tietiezhi endpoints. |
 | R37 | 稳定性工程 | 待开始 |  |  |
 | R38 | 迁移切换 | 待开始 |  |  |
 | R39 | 正式发布 | 待开始 |  |  |
@@ -109,7 +109,7 @@
 | `externalAgentConfig/detect` | 待实现 | R38 |  |
 | `externalAgentConfig/import` | 待实现 | R38 |  |
 | `externalAgentConfig/import/readHistories` | 待实现 | R38 |  |
-| `feedback/upload` | 待实现 | R36 |  |
+| `feedback/upload` | 服务映射 | R36 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md |
 | `fs/copy` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `fs/createDirectory` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `fs/getMetadata` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
@@ -120,7 +120,7 @@
 | `fs/watch` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `fs/writeFile` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
 | `fuzzyFileSearch` | 已实现 | R31 | desktop/src-tauri/src/commands/codex_fs.rs；desktop/src/stores/codex-timeline.ts；desktop/src/features/chat/codex-timeline.tsx；desktop/scripts/check-codex-timeline.mjs；docs/CODEX-DESKTOP-TIMELINE.md；Rust FS 测试；pnpm test:codex-timeline-ui/typecheck/build |
-| `hooks/list` | 待实现 | R36 |  |
+| `hooks/list` | 已实现 | R36 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md |
 | `initialize` | 待实现 | R2 |  |
 | `marketplace/add` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
 | `marketplace/remove` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
@@ -130,7 +130,7 @@
 | `mcpServer/tool/call` | 已实现 | R19 | crates/agent-mcp rich call results and tool filters; desktop V2 dispatch; agent-core mcpToolCall restart/fork test |
 | `mcpServerStatus/list` | 已实现 | R19 | crates/agent-mcp inventory/auth status; desktop stable cursor/detail projection and V2 response validation |
 | `model/list` | 已实现 | R7 | crates/agent-model Responses HTTP/SSE、固定与在线模型目录测试；crates/agent-core canonical Item、Steer 顺序、Token Usage 恢复和 V2 通知测试；docs/CODEX-MODEL.md；docs/CODEX-GATEWAY.md |
-| `modelProvider/capabilities/read` | 待实现 | R36 |  |
+| `modelProvider/capabilities/read` | 已实现 | R36 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md |
 | `permissionProfile/list` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
 | `plugin/install` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
 | `plugin/installed` | 已实现 | R24 | Source-native App Server V2 plugin runtime with atomic package lifecycle and activation. |
@@ -185,7 +185,7 @@
 | --- | --- | --- | --- |
 | `account/chatgptAuthTokens/refresh` | 已实现 | R8 | crates/agent-account AccountServerRequestBroker 的 Request ID 关联、V2 响应校验、超时取消与重复响应测试；desktop codex-v2-server-request IPC |
 | `applyPatchApproval` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
-| `attestation/generate` | 待实现 | R36 |  |
+| `attestation/generate` | 已实现 | R36 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md |
 | `execCommandApproval` | 已实现 | R14 | crates/agent-approval 策略、精确会话缓存和持久 Amendment；agent-tools request_permissions；desktop V2 路由与 CodexApprovalPrompt；docs/CODEX-APPROVAL.md |
 | `item/commandExecution/requestApproval` | 已实现 | R13 | agent-approval command broker；V2 schema tests |
 | `item/fileChange/requestApproval` | 已实现 | R12 | crates/agent-approval ServerRequestBroker V2 Schema 与四决策测试；desktop/src-tauri/src/commands/codex.rs |
@@ -236,7 +236,7 @@
 | `process/exited` | 已实现 | R13 | desktop thread shell executor；V2 notification validation |
 | `process/outputDelta` | 已实现 | R13 | desktop thread shell executor；V2 notification validation |
 | `remoteControl/status/changed` | 已实现 | R35 | crates/agent-realtime/src/lib.rs; crates/agent-remote/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/remote-realtime-panel.tsx |
-| `serverRequest/resolved` | 待实现 | R36 |  |
+| `serverRequest/resolved` | 已实现 | R36 | crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md |
 | `skills/changed` | 已实现 | R22 | crates/agent-skills 发现/元数据/启停/失效/延迟正文测试；desktop V2 类型与 skill 工具接线；docs/CODEX-SKILLS.md |
 | `thread/archived` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/closed` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 use chrono::Local;
@@ -59,16 +59,21 @@ use tietiezhi_agent_network::{
     NetworkApprovalDecision, NetworkDomainPermission, NetworkExecutionRequest, NetworkMode,
     NetworkPolicy, NetworkPolicyAmendment,
 };
+use tietiezhi_agent_observability::{
+    DoctorInput, DoctorReport, FeedbackUpload, MetricsSnapshot, Observability, ObservabilityConfig,
+    RoutedServerRequest as OperationsServerRequest, StructuredEvent,
+};
 use tietiezhi_agent_plugins::{PluginActivation, PluginMcpSource, PluginPaths, PluginRuntime};
 use tietiezhi_agent_protocol::{
     AppsInstalledResponse, AppsListResponse, AppsReadResponse, ClientRequest, JSONRPCRequest,
     JSONRPCResponse, ListMcpServerStatusResponse, MarketplaceAddResponse,
     MarketplaceRemoveResponse, MarketplaceUpgradeResponse, McpResourceReadResponse,
     McpServerOauthLoginResponse, McpServerToolCallResponse, ModelListResponse,
-    PermissionProfileListResponse, PluginInstallResponse, PluginInstalledResponse,
-    PluginListResponse, PluginReadResponse, PluginShareCheckoutResponse, PluginShareDeleteResponse,
-    PluginShareListResponse, PluginShareSaveResponse, PluginShareUpdateTargetsResponse,
-    PluginSkillReadResponse, PluginUninstallResponse, ServerNotification,
+    ModelProviderCapabilitiesReadResponse, PermissionProfileListResponse, PluginInstallResponse,
+    PluginInstalledResponse, PluginListResponse, PluginReadResponse, PluginShareCheckoutResponse,
+    PluginShareDeleteResponse, PluginShareListResponse, PluginShareSaveResponse,
+    PluginShareUpdateTargetsResponse, PluginSkillReadResponse, PluginUninstallResponse,
+    ServerNotification,
 };
 use tietiezhi_agent_realtime::{
     AudioChunk as RealtimeAudioChunk, NotificationSink, RealtimeProvider,
@@ -192,6 +197,49 @@ pub(crate) fn thread_manager(app: &AppHandle, state: &AppState) -> Result<Thread
     .map_err(|error| format!("初始化 Codex Runtime 失败：{error:?}"))?;
     *slot = Some(manager.clone());
     Ok(manager)
+}
+
+fn observability_runtime(app: &AppHandle, state: &AppState) -> Result<Observability, String> {
+    let mut slot = state
+        .codex_observability
+        .lock()
+        .map_err(|_| "Codex 运维状态锁已损坏".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Ok(runtime.clone());
+    }
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let runtime = Observability::open(ObservabilityConfig::local(
+        app_data.join("agent-runtime").join("operations"),
+        env!("CARGO_PKG_VERSION"),
+    ))
+    .map_err(|error| format!("初始化 Codex 运维能力失败：{error}"))?;
+    *slot = Some(runtime.clone());
+    Ok(runtime)
+}
+
+fn doctor_input(app: &AppHandle) -> Result<DoctorInput, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let settings = super::settings::read_settings(app)?;
+    let provider_endpoint = settings
+        .providers
+        .iter()
+        .find(|provider| provider.id == settings.chat_provider_id)
+        .map(|provider| provider.base_url.clone());
+    Ok(DoctorInput {
+        runtime_root: app_data.join("agent-runtime"),
+        tasks_root: app_data.join("tasks"),
+        state_db: app_data.join("agent-runtime").join("state.sqlite3"),
+        provider_endpoint,
+        sandbox_readiness: Some(json!({
+            "readiness":tietiezhi_agent_sandbox::windows_sandbox_readiness()
+        })),
+    })
 }
 
 fn memory_runtime(app: &AppHandle, state: &AppState) -> Result<MemoryRuntime, String> {
@@ -1299,6 +1347,41 @@ pub(crate) async fn dispatch_remote_transport_request(
 
 fn emit_notifications(app: &AppHandle, notifications: &[RoutedNotification]) -> Result<(), String> {
     for notification in notifications {
+        if !notification.method.contains("/delta") {
+            let state = app.state::<AppState>();
+            if let Ok(runtime) = observability_runtime(app, &state) {
+                let thread_id = notification.params.get("threadId").and_then(Value::as_str);
+                let turn_id = notification.params.get("turnId").and_then(Value::as_str);
+                let mut event = StructuredEvent::new("info", "app_server", &notification.method)
+                    .with_thread(thread_id, turn_id)
+                    .with_field("recipients", notification.recipients.len() as u64);
+                if notification.method == "model/rerouted" {
+                    event = event
+                        .with_field(
+                            "fromModel",
+                            notification
+                                .params
+                                .get("fromModel")
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                        )
+                        .with_field(
+                            "toModel",
+                            notification
+                                .params
+                                .get("toModel")
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                        );
+                    let _ = runtime.counter("model.rerouted", 1);
+                } else if notification.method == "model/safetyBuffering/updated" {
+                    let _ = runtime.counter("model.safety_buffering", 1);
+                } else if notification.method == "error" {
+                    let _ = runtime.counter("runtime.errors", 1);
+                }
+                let _ = runtime.record(event);
+            }
+        }
         forward_remote_payload(
             app,
             &notification.recipients,
@@ -1314,7 +1397,17 @@ fn emit_notifications(app: &AppHandle, notifications: &[RoutedNotification]) -> 
     Ok(())
 }
 
-fn emit_server_request(app: &AppHandle, request: &AccountServerRequest) -> Result<(), String> {
+fn emit_server_request(
+    app: &AppHandle,
+    request: &AccountServerRequest,
+    thread_id: Option<&str>,
+) -> Result<(), String> {
+    register_server_request(
+        app,
+        &request.id,
+        thread_id.or_else(|| request.params.get("threadId").and_then(Value::as_str)),
+        &request.recipients,
+    )?;
     forward_remote_payload(
         app,
         &request.recipients,
@@ -1332,6 +1425,12 @@ fn emit_approval_server_request(
     app: &AppHandle,
     request: &ApprovalServerRequest,
 ) -> Result<(), String> {
+    register_server_request(
+        app,
+        &request.id,
+        request.params.get("threadId").and_then(Value::as_str),
+        &request.recipients,
+    )?;
     forward_remote_payload(
         app,
         &request.recipients,
@@ -1343,6 +1442,41 @@ fn emit_approval_server_request(
     );
     app.emit(CODEX_SERVER_REQUEST_EVENT, request)
         .map_err(|error| format!("发送 Codex 审批请求失败：{error}"))
+}
+
+fn emit_operations_server_request(
+    app: &AppHandle,
+    request: &OperationsServerRequest,
+    thread_id: &str,
+) -> Result<(), String> {
+    register_server_request(app, &request.id, Some(thread_id), &request.recipients)?;
+    forward_remote_payload(
+        app,
+        &request.recipients,
+        json!({
+            "type":"codex.remote.serverRequest",
+            "version":1,
+            "request":request.wire_message()
+        }),
+    );
+    app.emit(CODEX_SERVER_REQUEST_EVENT, request)
+        .map_err(|error| format!("发送 Codex Attestation 请求失败：{error}"))
+}
+
+fn register_server_request(
+    app: &AppHandle,
+    request_id: &Value,
+    thread_id: Option<&str>,
+    recipients: &[String],
+) -> Result<(), String> {
+    let Some(thread_id) = thread_id.filter(|thread_id| !thread_id.trim().is_empty()) else {
+        return Ok(());
+    };
+    app.state::<AppState>()
+        .codex_attestation
+        .tracker()
+        .register(request_id, thread_id, recipients.to_vec())
+        .map_err(|error| format!("登记 Codex Server Request 失败：{error}"))
 }
 
 fn forward_remote_payload(app: &AppHandle, recipients: &[String], payload: Value) {
@@ -1357,9 +1491,32 @@ fn forward_remote_payload(app: &AppHandle, recipients: &[String], payload: Value
 
 #[tauri::command]
 pub fn codex_v2_server_response(
+    app: AppHandle,
     state: State<'_, AppState>,
     response: Value,
 ) -> Result<bool, String> {
+    if let Some(resolved) = state
+        .codex_attestation
+        .tracker()
+        .resolve(&response)
+        .map_err(|error| format!("Codex Server Request 状态错误：{error}"))?
+    {
+        emit_notifications(
+            &app,
+            &[RoutedNotification {
+                recipients: resolved.recipients,
+                method: resolved.method,
+                params: resolved.params,
+            }],
+        )?;
+    }
+    if state
+        .codex_attestation
+        .resolve(&response)
+        .map_err(|error| format!("Codex Attestation 状态错误：{error}"))?
+    {
+        return Ok(true);
+    }
     if state
         .codex_account_requests
         .resolve(&response)
@@ -1377,6 +1534,7 @@ pub fn codex_v2_server_response(
 }
 
 fn cancel_thread(state: &AppState, thread_id: &str, expected_turn_id: Option<&str>) {
+    let _ = state.codex_attestation.tracker().cancel_thread(thread_id);
     if let Ok(cancels) = state.codex_cancels.lock() {
         if let Some((turn_id, cancel)) = cancels.get(thread_id) {
             if expected_turn_id.is_none_or(|expected| expected == turn_id) {
@@ -1788,7 +1946,58 @@ pub async fn codex_v2_request(
     connection_id: String,
     request: Value,
 ) -> Result<DispatchOutput, String> {
-    codex_v2_request_inner(&app, &state, connection_id, request).await
+    let started = Instant::now();
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    let thread_id = request
+        .pointer("/params/threadId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let turn_id = request
+        .pointer("/params/turnId")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let runtime = observability_runtime(&app, &state).ok();
+    if let Some(runtime) = runtime.as_ref() {
+        let _ = runtime.record(
+            StructuredEvent::new("info", "app_server", "request.started")
+                .with_thread(thread_id.as_deref(), turn_id.as_deref())
+                .with_field("method", method.clone())
+                .with_field("connectionId", connection_id.clone()),
+        );
+    }
+    let result = codex_v2_request_inner(&app, &state, connection_id, request).await;
+    if let Some(runtime) = runtime {
+        let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        let failed = result
+            .as_ref()
+            .map(|output| output.response.get("error").is_some())
+            .unwrap_or(true);
+        let _ = runtime.histogram("app_server.request.duration_ms", elapsed_ms);
+        let _ = runtime.counter(
+            if failed {
+                "app_server.request.failed"
+            } else {
+                "app_server.request.completed"
+            },
+            1,
+        );
+        let _ = runtime.record(
+            StructuredEvent::new(
+                if failed { "error" } else { "info" },
+                "app_server",
+                "request.completed",
+            )
+            .with_thread(thread_id.as_deref(), turn_id.as_deref())
+            .with_field("method", method)
+            .with_field("durationMs", elapsed_ms)
+            .with_field("failed", failed),
+        );
+    }
+    result
 }
 
 pub(crate) async fn codex_v2_request_inner(
@@ -1820,6 +2029,12 @@ pub(crate) async fn codex_v2_request_inner(
         let output = dispatch_realtime_request(app, state, &manager, &request, &method).await?;
         emit_notifications(app, &output.notifications)?;
         return Ok(output);
+    }
+    if matches!(
+        method.as_str(),
+        "feedback/upload" | "hooks/list" | "modelProvider/capabilities/read"
+    ) {
+        return dispatch_operations_request(app, state, &request, &method).await;
     }
     if method == "memory/reset" {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
@@ -2151,6 +2366,206 @@ fn permission_profile_list(request: &Value) -> Result<DispatchOutput, String> {
     });
     debug_assert!(serde_json::from_value::<PermissionProfileListResponse>(result.clone()).is_ok());
     dispatch_success(request, result)
+}
+
+async fn dispatch_operations_request(
+    app: &AppHandle,
+    state: &AppState,
+    request: &Value,
+    method: &str,
+) -> Result<DispatchOutput, String> {
+    if let Err(error) = serde_json::from_value::<JSONRPCRequest>(request.clone())
+        .and_then(|_| serde_json::from_value::<ClientRequest>(request.clone()))
+    {
+        return Ok(dispatch_error(
+            request,
+            -32602,
+            format!("{method} 参数不符合 App Server V2：{error}"),
+        ));
+    }
+    let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+    let result = match method {
+        "hooks/list" => {
+            let mut cwds = params
+                .get("cwds")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(std::path::PathBuf::from)
+                .collect::<Vec<_>>();
+            if cwds.is_empty() {
+                cwds.push(runtime_defaults(app)?.cwd);
+            }
+            let result = serde_json::to_value(hooks_runtime(app, state)?.list(&cwds))
+                .map_err(|error| format!("序列化 Hooks 目录失败：{error}"))?;
+            serde_json::from_value::<tietiezhi_agent_protocol::HooksListResponse>(result.clone())
+                .map_err(|error| format!("hooks/list 返回值不符合 App Server V2：{error}"))?;
+            result
+        }
+        "modelProvider/capabilities/read" => {
+            let settings = super::settings::read_settings(app)?;
+            let provider = settings
+                .providers
+                .iter()
+                .find(|provider| provider.id == settings.chat_provider_id);
+            let selected_model = provider.and_then(|provider| {
+                provider
+                    .models
+                    .iter()
+                    .find(|model| model.id == settings.chat_model)
+            });
+            let responses = provider.is_some_and(|provider| {
+                provider.wire_api != super::settings::WireApi::ChatCompletions
+            });
+            let result = json!({
+                "namespaceTools":responses,
+                "imageGeneration":responses && provider.is_some_and(|provider| provider.built_in || provider.kind.eq_ignore_ascii_case("openai")),
+                "webSearch":responses && (
+                    provider.is_some_and(|provider| provider.built_in)
+                    || selected_model.is_some_and(|model| model.capabilities.contains(&super::models::ModelCapability::WebSearch))
+                )
+            });
+            serde_json::from_value::<ModelProviderCapabilitiesReadResponse>(result.clone())
+                .map_err(|error| {
+                    format!("modelProvider/capabilities/read 返回值不符合 App Server V2：{error}")
+                })?;
+            result
+        }
+        "feedback/upload" => {
+            let classification = params
+                .get("classification")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let extra_log_files = params
+                .get("extraLogFiles")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(std::path::PathBuf::from)
+                .collect();
+            let tags = params
+                .get("tags")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|value| (key.clone(), value.to_owned()))
+                })
+                .collect();
+            let runtime = observability_runtime(app, state)?;
+            let doctor = runtime.doctor(doctor_input(app)?);
+            let receipt = match runtime
+                .upload_feedback(
+                    FeedbackUpload {
+                        classification,
+                        reason: params
+                            .get("reason")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        thread_id: params
+                            .get("threadId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        include_logs: params
+                            .get("includeLogs")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                        extra_log_files,
+                        tags,
+                    },
+                    doctor,
+                )
+                .await
+            {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    return Ok(dispatch_error(
+                        request,
+                        -32603,
+                        format!("提交反馈失败：{error}"),
+                    ));
+                }
+            };
+            let result = json!({"threadId":receipt.thread_id});
+            serde_json::from_value::<tietiezhi_agent_protocol::FeedbackUploadResponse>(
+                result.clone(),
+            )
+            .map_err(|error| format!("feedback/upload 返回值不符合 App Server V2：{error}"))?;
+            result
+        }
+        _ => return Ok(dispatch_error(request, -32601, "method not found")),
+    };
+    dispatch_success(request, result)
+}
+
+#[tauri::command]
+pub fn codex_doctor_report(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DoctorReport, String> {
+    let runtime = observability_runtime(&app, &state)?;
+    Ok(runtime.doctor(doctor_input(&app)?))
+}
+
+#[tauri::command]
+pub fn codex_runtime_metrics(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<MetricsSnapshot, String> {
+    observability_runtime(&app, &state)?
+        .snapshot_metrics()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn codex_export_telemetry(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    observability_runtime(&app, &state)?
+        .export_otlp()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Requests an opaque client attestation for a Thread. The Responses
+/// WebSocket transport can use this token as `x-oai-attestation` when the
+/// initialized client opts into reverse attestation requests.
+#[tauri::command]
+pub async fn codex_request_attestation(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<String, String> {
+    let recipients = thread_manager(&app, &state)?
+        .thread_recipients(&thread_id)
+        .map_err(|error| format!("读取 Thread 订阅者失败：{error:?}"))?;
+    if recipients.is_empty() {
+        return Err("当前 Thread 没有可处理 Attestation 的客户端".into());
+    }
+    let pending = state
+        .codex_attestation
+        .begin(recipients, &thread_id)
+        .map_err(|error| format!("创建 Attestation 请求失败：{error}"))?;
+    let request_id = pending.request.id.clone();
+    if let Err(error) = emit_operations_server_request(&app, &pending.request, &thread_id) {
+        let _ = state.codex_attestation.cancel(&request_id);
+        return Err(error);
+    }
+    match tokio::time::timeout(Duration::from_secs(60), pending.receiver).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => {
+            let _ = state.codex_attestation.cancel(&request_id);
+            Err("Attestation 客户端已断开".into())
+        }
+        Err(_) => {
+            let _ = state.codex_attestation.cancel(&request_id);
+            Err("Attestation 请求超时".into())
+        }
+    }
 }
 
 fn online_model_list(app: &AppHandle, request: &Value) -> Result<Option<DispatchOutput>, String> {
@@ -4456,7 +4871,9 @@ async fn run_compaction_snapshot(
             && !auth_refresh_attempted
             && !model_output_seen
         {
-            if let Some(tokens) = refresh_external_auth(&app, &provider_id).await? {
+            if let Some(tokens) =
+                refresh_external_auth(&app, &provider_id, &snapshot.thread_id).await?
+            {
                 auth_refresh_attempted = true;
                 bearer_token = Some(tokens.access_token);
                 client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
@@ -4998,7 +5415,7 @@ async fn run_turn_executor(
             && !auth_refresh_attempted
             && !projection.model_output_seen()
         {
-            if let Some(tokens) = refresh_external_auth(&app, &provider_id).await? {
+            if let Some(tokens) = refresh_external_auth(&app, &provider_id, &thread_id).await? {
                 auth_refresh_attempted = true;
                 bearer_token = Some(tokens.access_token);
                 client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
@@ -5675,6 +6092,7 @@ fn responses_client(
 async fn refresh_external_auth(
     app: &AppHandle,
     provider_id: &str,
+    thread_id: &str,
 ) -> Result<Option<ExternalAuthTokens>, ModelError> {
     let state = app.state::<AppState>();
     let current = state
@@ -5694,7 +6112,7 @@ async fn refresh_external_auth(
         .codex_account_requests
         .begin_auth_refresh(recipients, Some(current.account_id))
         .map_err(|error| ModelError::Consumer(error.message))?;
-    emit_server_request(app, &pending.request).map_err(ModelError::Consumer)?;
+    emit_server_request(app, &pending.request, Some(thread_id)).map_err(ModelError::Consumer)?;
     let request_id = pending.request.id.clone();
     let result = match tokio::time::timeout(Duration::from_secs(60), pending.receiver).await {
         Ok(Ok(result)) => result.map_err(|error| ModelError::InvalidRequest {
@@ -5705,6 +6123,7 @@ async fn refresh_external_auth(
         }
         Err(_) => {
             let _ = state.codex_account_requests.cancel(&request_id);
+            let _ = state.codex_attestation.tracker().cancel(&request_id);
             return Err(ModelError::InvalidRequest {
                 message: "等待外部账号刷新超时".into(),
             });

@@ -1515,6 +1515,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5906,6 +5916,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tietiezhi-agent-observability"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "regex-lite",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tietiezhi-agent-protocol",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "tietiezhi-agent-patch"
 version = "0.1.0"
 dependencies = [
@@ -6095,6 +6121,7 @@ dependencies = [
  "tietiezhi-agent-memory",
  "tietiezhi-agent-model",
  "tietiezhi-agent-network",
+ "tietiezhi-agent-observability",
  "tietiezhi-agent-patch",
  "tietiezhi-agent-plugins",
  "tietiezhi-agent-protocol",

@@ -153,6 +153,28 @@ impl McpHost for DesktopMcpHost {
                     meta: None,
                 };
             };
+            let state = app.state::<AppState>();
+            if state
+                .codex_attestation
+                .tracker()
+                .register(
+                    &pending.request.id,
+                    pending
+                        .request
+                        .params
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    pending.request.recipients.clone(),
+                )
+                .is_err()
+            {
+                return McpElicitationResponse {
+                    action: "decline".into(),
+                    content: None,
+                    meta: None,
+                };
+            }
             if serde_json::from_value::<ServerRequest>(pending.request.wire_message()).is_err()
                 || app
                     .emit(CODEX_SERVER_REQUEST_EVENT, &pending.request)

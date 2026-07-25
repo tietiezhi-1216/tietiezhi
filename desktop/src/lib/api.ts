@@ -73,6 +73,64 @@ export async function codexExperimentalRequest<T>(
   return output.response.result as T;
 }
 
+export type CodexDoctorStatus = "ok" | "warning" | "fail";
+
+export interface CodexDoctorIssue {
+  severity: CodexDoctorStatus;
+  cause: string;
+  measured: string | null;
+  expected: string | null;
+  remedy: string | null;
+  fields: string[];
+}
+
+export interface CodexDoctorCheck {
+  id: string;
+  category: string;
+  status: CodexDoctorStatus;
+  summary: string;
+  details: string[];
+  issues: CodexDoctorIssue[];
+  remediation: string | null;
+  durationMs: number;
+}
+
+export interface CodexDoctorReport {
+  schemaVersion: number;
+  generatedAtMs: number;
+  overallStatus: CodexDoctorStatus;
+  serviceVersion: string;
+  checks: CodexDoctorCheck[];
+}
+
+export interface CodexHistogramSnapshot {
+  count: number;
+  sum: number;
+  min: number;
+  max: number;
+}
+
+export interface CodexMetricsSnapshot {
+  counters: Record<string, number>;
+  histograms: Record<string, CodexHistogramSnapshot>;
+}
+
+export function codexDoctorReport(): Promise<CodexDoctorReport> {
+  return invoke<CodexDoctorReport>("codex_doctor_report");
+}
+
+export function codexRuntimeMetrics(): Promise<CodexMetricsSnapshot> {
+  return invoke<CodexMetricsSnapshot>("codex_runtime_metrics");
+}
+
+export function codexExportTelemetry(): Promise<boolean> {
+  return invoke<boolean>("codex_export_telemetry");
+}
+
+export function codexRequestAttestation(threadId: string): Promise<string> {
+  return invoke<string>("codex_request_attestation", { threadId });
+}
+
 export type RemoteControlConnectionStatus =
   | "disabled"
   | "connecting"

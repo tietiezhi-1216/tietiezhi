@@ -90,6 +90,8 @@ R6 已实现 `turn/start`、`turn/steer`、`turn/interrupt`、三类 Turn 通知
 
 R7 已增加 `crates/agent-model`，实现 `/v1/responses` 请求、HTTP/SSE、错误分类、请求与流重试、reasoning/agent message 增量、Thread Token Usage 累积、模型重路由/校验/safety buffering，以及固定模型目录和分页。Tauri Turn 执行器支持取消、`end_turn: false` 继续采样和 Steer 延迟入历史，详细行为见 `docs/CODEX-MODEL.md`。
 
+R36 已增加 `crates/agent-observability`，实现脱敏结构化日志、进程内指标、OTLP/HTTP JSON、Doctor、原子 Feedback Outbox/上传、Attestation Broker 和 `serverRequest/resolved`；`hooks/list` 复用真实 Hook trust projection，桌面设置提供运行诊断入口。服务端上传映射到 Tietiezhi 自有端点，详细边界见 `docs/CODEX-OPERATIONS.md`。
+
 R8 已增加 `crates/agent-account`，把 App Server V2 的账号登录、取消、退出、读取、额度、用量、工作区消息、重置额度、加额通知和外部令牌刷新映射到 Gateway、Keyring 与客户端反向请求。官方 Provider 固定使用 Responses，自定义 Provider 显式选择或用安全空 POST 探测；Gateway `/v1/models` 元数据投影为 V2 在线目录。详细边界见 `docs/CODEX-GATEWAY.md`。
 
 R9 已增加 `crates/agent-context`，实现 canonical 历史重建、真实服务端 Token Usage 与本地未采样 Item 估算、模型上下文窗口、90% 自动压缩、手动压缩、20,000 Token 最近用户消息保留、压缩窗口链和 RFC 7386 World State 增量。压缩作为正式 `contextCompaction` Item 运行并写入 `compacted` rollout；固定 V2 中已废弃的 `thread/compacted` 不再发送。详细行为见 `docs/CODEX-CONTEXT.md`。

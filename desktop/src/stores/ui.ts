@@ -16,6 +16,7 @@ export type SettingsCategory =
   | "dictationPrompt"
   | "archives"
   | "appearance"
+  | "diagnostics"
   | "update"
   | "about";
 

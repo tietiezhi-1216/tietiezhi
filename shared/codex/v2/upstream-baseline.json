@@ -175,9 +175,9 @@
       },
       {
         "method": "feedback/upload",
-        "status": "pending",
+        "status": "service_mapped",
         "target": "R36",
-        "note": ""
+        "note": "crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md"
       },
       {
         "method": "fs/copy",
@@ -241,9 +241,9 @@
       },
       {
         "method": "hooks/list",
-        "status": "pending",
+        "status": "implemented",
         "target": "R36",
-        "note": ""
+        "note": "crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md"
       },
       {
         "method": "initialize",
@@ -304,9 +304,9 @@
       },
       {
         "method": "modelProvider/capabilities/read",
-        "status": "pending",
+        "status": "implemented",
         "target": "R36",
-        "note": ""
+        "note": "crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md"
       },
       {
         "method": "permissionProfile/list",
@@ -592,9 +592,9 @@
       },
       {
         "method": "attestation/generate",
-        "status": "pending",
+        "status": "implemented",
         "target": "R36",
-        "note": ""
+        "note": "crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md"
       },
       {
         "method": "execCommandApproval",
@@ -874,9 +874,9 @@
       },
       {
         "method": "serverRequest/resolved",
-        "status": "pending",
+        "status": "implemented",
         "target": "R36",
-        "note": ""
+        "note": "crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md"
       },
       {
         "method": "skills/changed",
@@ -1358,9 +1358,9 @@
     {
       "id": "R36",
       "name": "运维能力",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "OpenAI proprietary Sentry, Statsig and attestation issuers are service-mapped rather than copied; telemetry and feedback networking remain opt-in through explicit Tietiezhi endpoints.",
+      "evidence": "crates/agent-observability redacted logs, OTLP, metrics, Doctor, Feedback Outbox, Attestation and server-request tracker; crates/agent-hooks hooks/list trust projection; desktop App Server operations handlers and Settings diagnostics UI; docs/CODEX-OPERATIONS.md"
     },
     {
       "id": "R37",

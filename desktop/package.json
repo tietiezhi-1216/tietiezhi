@@ -25,6 +25,7 @@
     "test:codex-apps-ui": "node scripts/check-codex-apps-ui.mjs",
     "test:codex-automations-ui": "node scripts/check-codex-automations-ui.mjs",
     "test:codex-remote-realtime-ui": "node scripts/check-remote-realtime-ui.mjs",
+    "test:codex-runtime-diagnostics-ui": "node scripts/check-runtime-diagnostics-ui.mjs",
     "test:codex-protocol-ts": "tsc -p ../shared/codex/v2/tsconfig.json",
     "typecheck": "tsc --noEmit",
     "version:timestamp": "node scripts/set-release-version.mjs",

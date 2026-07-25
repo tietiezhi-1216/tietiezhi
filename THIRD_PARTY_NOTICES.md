@@ -427,3 +427,18 @@ R35 的 Remote Control 与 Realtime 协议、请求处理、事件映射和传�
 - `codex-rs/core/src/realtime_conversation.rs`
 
 本地实现在 `crates/agent-remote` 与 `crates/agent-realtime`。OpenAI 专有远程控制服务未被复制；服务传输映射到 Tietiezhi 自有 Device Fabric，同时保留 App Server 生命周期与强类型通知。不调用、链接或分发上游 Codex 二进制。
+
+R36 的结构化日志、指标、Doctor、Feedback、Attestation 和 reverse-request 终态行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/otel`
+- `codex-rs/feedback`
+- `codex-rs/cli/src/doctor.rs`
+- `codex-rs/app-server/src/request_processors/feedback_processor.rs`
+- `codex-rs/app-server/src/request_processors/feedback_doctor_report.rs`
+- `codex-rs/app-server/src/request_processors/catalog_processor.rs`
+- `codex-rs/app-server/src/request_processors/config_processor.rs`
+- `codex-rs/app-server/src/outgoing_message.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/hook.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/plugin.rs`
+
+本地实现位于 `crates/agent-observability`、`crates/agent-hooks` 和桌面 App Server 宿主。OpenAI 专有 Sentry、Statsig 和 Attestation 服务未被复制；上传与 OTLP 映射到 Tietiezhi 可配置端点。不调用、链接或分发上游 Codex 二进制。

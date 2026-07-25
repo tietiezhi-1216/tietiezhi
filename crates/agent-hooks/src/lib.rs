@@ -198,6 +198,58 @@ pub struct HookPaths {
     pub trust_state: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksListResponse {
+    pub data: Vec<HooksListEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HooksListEntry {
+    pub cwd: PathBuf,
+    pub hooks: Vec<HookMetadata>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<HookErrorInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookErrorInfo {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HookTrustStatus {
+    Managed,
+    Untrusted,
+    Trusted,
+    Modified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookMetadata {
+    pub key: String,
+    pub event_name: HookEventName,
+    pub handler_type: HookHandlerType,
+    pub matcher: Option<String>,
+    pub command: Option<String>,
+    pub timeout_sec: u64,
+    pub status_message: Option<String>,
+    pub additional_context_limit: Option<usize>,
+    pub source_path: PathBuf,
+    pub source: HookSource,
+    pub plugin_id: Option<String>,
+    pub display_order: i64,
+    pub enabled: bool,
+    pub is_managed: bool,
+    pub current_hash: String,
+    pub trust_status: HookTrustStatus,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HooksFile {
@@ -353,6 +405,125 @@ impl HookEngine {
         }
     }
 
+    /// Resolves the effective Hook catalog for each working directory using
+    /// the same source precedence and trust state as execution.
+    pub fn list(&self, cwds: &[PathBuf]) -> HooksListResponse {
+        let cwds = if cwds.is_empty() {
+            vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
+        } else {
+            cwds.to_vec()
+        };
+        let mut data = Vec::with_capacity(cwds.len());
+        for cwd in cwds {
+            let absolute_cwd = absolute_path(&cwd);
+            match self.discover(&absolute_cwd) {
+                Ok(sources) => data.push(HooksListEntry {
+                    cwd: absolute_cwd,
+                    hooks: self.source_metadata(sources),
+                    warnings: Vec::new(),
+                    errors: Vec::new(),
+                }),
+                Err(message) => data.push(HooksListEntry {
+                    cwd: absolute_cwd.clone(),
+                    hooks: Vec::new(),
+                    warnings: Vec::new(),
+                    errors: vec![HookErrorInfo {
+                        path: absolute_cwd,
+                        message,
+                    }],
+                }),
+            }
+        }
+        HooksListResponse { data }
+    }
+
+    fn source_metadata(&self, sources: Vec<ConfigSource>) -> Vec<HookMetadata> {
+        let state = self.load_trust_state();
+        let mut metadata = Vec::new();
+        let mut display_order = 0_i64;
+        for source in sources {
+            let current_hash = config_hash(&source.path).unwrap_or_default();
+            let is_managed = managed_source(source.source);
+            let trust_status = if is_managed {
+                HookTrustStatus::Managed
+            } else if source.trusted {
+                HookTrustStatus::Trusted
+            } else {
+                HookTrustStatus::Untrusted
+            };
+            for event_name in ALL_HOOK_EVENTS {
+                for (group_index, group) in source.file.hooks.groups(event_name).iter().enumerate()
+                {
+                    for (handler_index, handler) in group.hooks.iter().enumerate() {
+                        let key = format!(
+                            "{}:{}:{group_index}:{handler_index}",
+                            source.path.display(),
+                            event_name.config_name()
+                        );
+                        let (
+                            handler_type,
+                            command,
+                            timeout_sec,
+                            status_message,
+                            additional_context_limit,
+                        ) = match handler {
+                            HookHandlerConfig::Command {
+                                command,
+                                timeout_seconds,
+                                status_message,
+                                additional_context_limit,
+                                ..
+                            } => (
+                                HookHandlerType::Command,
+                                Some(command.clone()),
+                                timeout_seconds
+                                    .unwrap_or(DEFAULT_TIMEOUT_SECONDS)
+                                    .min(MAX_TIMEOUT_SECONDS),
+                                status_message.clone(),
+                                *additional_context_limit,
+                            ),
+                            HookHandlerConfig::Prompt {} => (
+                                HookHandlerType::Prompt,
+                                None,
+                                DEFAULT_TIMEOUT_SECONDS,
+                                None,
+                                None,
+                            ),
+                            HookHandlerConfig::Agent {} => (
+                                HookHandlerType::Agent,
+                                None,
+                                DEFAULT_TIMEOUT_SECONDS,
+                                None,
+                                None,
+                            ),
+                        };
+                        let enabled = source.trusted && !state.disabled_handlers.contains(&key);
+                        metadata.push(HookMetadata {
+                            key,
+                            event_name,
+                            handler_type,
+                            matcher: group.matcher.clone(),
+                            command,
+                            timeout_sec,
+                            status_message,
+                            additional_context_limit,
+                            source_path: absolute_path(&source.path),
+                            source: source.source,
+                            plugin_id: None,
+                            display_order,
+                            enabled,
+                            is_managed,
+                            current_hash: current_hash.clone(),
+                            trust_status,
+                        });
+                        display_order += 1;
+                    }
+                }
+            }
+        }
+        metadata
+    }
+
     pub fn trust_project_config(&self, path: &Path) -> Result<String, String> {
         let hash = config_hash(path)?;
         let mut state = self.load_trust_state();
@@ -449,6 +620,44 @@ impl HookEngine {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
+}
+
+const ALL_HOOK_EVENTS: [HookEventName; 11] = [
+    HookEventName::PreToolUse,
+    HookEventName::PermissionRequest,
+    HookEventName::PostToolUse,
+    HookEventName::PreCompact,
+    HookEventName::PostCompact,
+    HookEventName::SessionStart,
+    HookEventName::SessionEnd,
+    HookEventName::UserPromptSubmit,
+    HookEventName::SubagentStart,
+    HookEventName::SubagentStop,
+    HookEventName::Stop,
+];
+
+fn managed_source(source: HookSource) -> bool {
+    matches!(
+        source,
+        HookSource::System
+            | HookSource::Mdm
+            | HookSource::CloudRequirements
+            | HookSource::CloudManagedConfig
+            | HookSource::LegacyManagedConfigFile
+            | HookSource::LegacyManagedConfigMdm
+    )
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(path)
+        }
+    })
 }
 
 fn push_source(
@@ -1065,5 +1274,41 @@ mod tests {
             .dispatch(request(root.path(), HookEventName::SessionStart))
             .await;
         assert_eq!(after.runs.len(), 1);
+    }
+
+    #[test]
+    fn hooks_list_preserves_untrusted_entries_and_v2_shape() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join(".git")).unwrap();
+        fs::create_dir(root.path().join(".codex")).unwrap();
+        let path = root.path().join(".codex/hooks.json");
+        fs::write(
+            &path,
+            br#"{"hooks":{"PreToolUse":[{"matcher":"exec_command","hooks":[{"type":"command","command":"printf ok","timeout":12,"statusMessage":"checking"}]}]}}"#,
+        )
+        .unwrap();
+        let runtime = HookEngine::new(HookPaths {
+            system: None,
+            user: None,
+            trust_state: root.path().join("state.json"),
+        });
+        let before = runtime.list(&[root.path().into()]);
+        assert_eq!(before.data.len(), 1);
+        assert_eq!(before.data[0].hooks.len(), 1);
+        assert_eq!(
+            before.data[0].hooks[0].trust_status,
+            HookTrustStatus::Untrusted
+        );
+        assert!(!before.data[0].hooks[0].enabled);
+        runtime.trust_project_config(&path).unwrap();
+        let after = runtime.list(&[root.path().into()]);
+        assert_eq!(
+            after.data[0].hooks[0].trust_status,
+            HookTrustStatus::Trusted
+        );
+        assert!(after.data[0].hooks[0].enabled);
+        let wire = serde_json::to_value(after).unwrap();
+        assert_eq!(wire["data"][0]["hooks"][0]["eventName"], "preToolUse");
+        assert_eq!(wire["data"][0]["hooks"][0]["timeoutSec"], 12);
     }
 }

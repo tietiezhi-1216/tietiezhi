@@ -69,6 +69,9 @@ pub struct AppState {
     pub(crate) codex_execpolicy: tietiezhi_agent_execpolicy::ExecPolicyRuntime,
     /// Shared, execution-attributed HTTP/SOCKS network sandbox proxy.
     pub(crate) codex_network: tietiezhi_agent_network::NetworkRuntime,
+    /// Redacted logs, runtime metrics, Doctor, feedback, and reverse-request lifecycle.
+    pub(crate) codex_observability: Mutex<Option<tietiezhi_agent_observability::Observability>>,
+    pub(crate) codex_attestation: tietiezhi_agent_observability::AttestationBroker,
     /// Turn-scoped denial history for Codex Guardian auto-review.
     pub(crate) codex_guardian: Mutex<tietiezhi_agent_review::GuardianCircuitBreaker>,
     /// Source-native Chronicle, citation and memory pipeline state.
@@ -139,6 +142,8 @@ pub fn run() {
             terminal_sessions: Mutex::new(HashMap::new()),
             codex_execpolicy: tietiezhi_agent_execpolicy::ExecPolicyRuntime::default(),
             codex_network: tietiezhi_agent_network::NetworkRuntime::default(),
+            codex_observability: Mutex::new(None),
+            codex_attestation: tietiezhi_agent_observability::AttestationBroker::default(),
             codex_guardian: Mutex::new(tietiezhi_agent_review::GuardianCircuitBreaker::default()),
             codex_memory: Mutex::new(None),
             codex_remote: Mutex::new(None),
@@ -204,6 +209,10 @@ pub fn run() {
             commands::codex::codex_remote_grant_thread,
             commands::codex::codex_remote_revoke_thread,
             commands::codex::codex_remote_thread_grants,
+            commands::codex::codex_doctor_report,
+            commands::codex::codex_runtime_metrics,
+            commands::codex::codex_export_telemetry,
+            commands::codex::codex_request_attestation,
             commands::tietiezhi::get_tietiezhi_config,
             commands::tietiezhi::save_tietiezhi_config,
             commands::tietiezhi::list_tietiezhi_files,
