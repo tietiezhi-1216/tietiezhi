@@ -49,7 +49,7 @@
 | R8 | Gateway 对齐 | 已完成 | crates/agent-account 账号与反向请求测试；crates/agent-model Responses 探测与在线目录测试；desktop Gateway/Provider/额度适配；Gateway be473f1 路由与 Discovery 测试；docs/CODEX-GATEWAY.md | Gateway 不提供 Token 日聚合、Workspace Message、reset-credit 和加额邮件时使用协议显式的空能力、noCredit 或 Invalid Request；上下文压缩与工具执行分别进入 R9-R13。 |
 | R9 | 上下文系统 | 已完成 | crates/agent-context 历史/窗口/压缩/World State 测试；crates/agent-state canonical compacted/world_state 与 abort 恢复；crates/agent-core 手动/自动压缩和重启/Fork 测试；desktop commands/codex.rs 私有摘要请求与 Token Usage 接线；docs/CODEX-CONTEXT.md | R20 仍需注入 AGENTS、项目环境、Skills 和 Plugins 等具体 World State 内容；R21 接入分层配置与上游默认关闭的高级 TokenBudget 开关。 |
 | R10 | 工具内核 | 已完成 | crates/agent-tools Registry、Router、Lifecycle、模型结果、Dynamic Tool V2 和 RwLock 并发/取消测试；docs/CODEX-TOOLS.md | R11-R13 仍需注册基础工具、Apply Patch 与 Unified Exec；R14-R18 在同一内核接入审批、沙箱、网络与 ExecPolicy。 |
-| R11 | 基础工具 | 待开始 |  |  |
+| R11 | 基础工具 | 已完成 | crates/agent-tools 基础工具与 BM25 Tool Search；desktop Responses 工具闭环、steer 活动信号和模型能力门控；crates/agent-core 强类型 Sleep/ImageView/WebSearch Item；docs/CODEX-BUILTIN-TOOLS.md | R12/R13 仍需实现有文件或进程副作用的 Patch 与 Unified Exec；R14-R18 负责审批、沙箱、网络与 ExecPolicy，R19/R25 负责 MCP、Plan 和用户输入工具。 |
 | R12 | Patch 与 Diff | 待开始 |  |  |
 | R13 | Unified Exec | 待开始 |  |  |
 | R14 | 审批策略 | 待开始 |  |  |

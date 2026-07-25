@@ -88,3 +88,18 @@ R10 的工具注册、路由、生命周期、模型结果和并行调度行为�
 - `codex-rs/core/src/tools/orchestrator.rs`
 - `codex-rs/app-server/src/dynamic_tools.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+
+R11 的基础工具、Tool Search、模型能力门控和强类型 Item 行为参考以下上游源码并在本仓库重新实现，没有链接或调用上游 crate：
+
+- `codex-rs/core/src/tools/handlers/current_time.rs`
+- `codex-rs/core/src/tools/handlers/sleep.rs`
+- `codex-rs/core/src/tools/handlers/get_context_remaining.rs`
+- `codex-rs/core/src/tools/handlers/get_context_remaining_spec.rs`
+- `codex-rs/core/src/tools/handlers/view_image.rs`
+- `codex-rs/core/src/tools/handlers/view_image_spec.rs`
+- `codex-rs/core/src/tools/handlers/tool_search.rs`
+- `codex-rs/core/src/tools/handlers/tool_search_spec.rs`
+- `codex-rs/core/src/tools/spec_plan.rs`
+- `codex-rs/core/src/web_search.rs`
+- `codex-rs/protocol/src/items.rs`
+- `codex-rs/ext/items/src/lib.rs`

@@ -1002,6 +1002,19 @@ pub fn bundled_models(include_hidden: bool) -> Vec<Value> {
     models
 }
 
+pub fn supports_original_image_detail(model: &str) -> bool {
+    matches!(
+        model.to_ascii_lowercase().as_str(),
+        "gpt-5.6-sol"
+            | "gpt-5.6-terra"
+            | "gpt-5.6-luna"
+            | "gpt-5.5"
+            | "gpt-5.4"
+            | "gpt-5.4-mini"
+            | "codex-auto-review"
+    )
+}
+
 pub fn list_models(
     cursor: Option<&str>,
     limit: Option<u32>,
@@ -1431,6 +1444,9 @@ mod tests {
         assert_eq!(hidden["data"][0]["id"], "gpt-5.4");
         assert_eq!(hidden["nextCursor"], Value::Null);
         assert!(list_models(Some("bad"), None, false).is_err());
+        assert!(supports_original_image_detail("gpt-5.6-sol"));
+        assert!(!supports_original_image_detail("gpt-5.2"));
+        assert!(!supports_original_image_detail("relay-model"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -13,10 +14,15 @@ use tietiezhi_agent_core::{
     ThreadManager, TurnExecutionSnapshot,
 };
 use tietiezhi_agent_model::{
-    list_online_models, ModelError, OnlineModel, Reasoning, ResponseEvent, ResponsesApiRequest,
-    ResponsesClient, TextControls, TextFormat, TextFormatType,
+    list_online_models, supports_original_image_detail, ModelError, OnlineModel, Reasoning,
+    ResponseEvent, ResponsesApiRequest, ResponsesClient, TextControls, TextFormat, TextFormatType,
 };
 use tietiezhi_agent_protocol::{ClientRequest, JSONRPCRequest, JSONRPCResponse, ModelListResponse};
+use tietiezhi_agent_tools::builtins::{
+    context_remaining_handler, current_time_handler, sleep_handler, view_image_handler,
+    web_search_handler,
+};
+use tietiezhi_agent_tools::{ToolCall, ToolCallRuntime, ToolPayload, ToolRegistry, ToolRouter};
 use tokio_util::sync::CancellationToken;
 
 use crate::AppState;
@@ -150,6 +156,33 @@ fn cancel_thread(state: &AppState, thread_id: &str, expected_turn_id: Option<&st
     }
 }
 
+fn signal_turn_input_activity(state: &AppState, thread_id: &str, turn_id: &str) {
+    if let Ok(mut activity) = state.codex_input_activity.lock() {
+        let Some((active_turn_id, token)) = activity.get_mut(thread_id) else {
+            return;
+        };
+        if active_turn_id != turn_id {
+            return;
+        }
+        token.cancel();
+        *token = CancellationToken::new();
+    }
+}
+
+fn turn_input_activity_token(app: &AppHandle, thread_id: &str, turn_id: &str) -> CancellationToken {
+    app.state::<AppState>()
+        .codex_input_activity
+        .lock()
+        .ok()
+        .and_then(|activity| {
+            activity
+                .get(thread_id)
+                .filter(|(active_turn_id, _)| active_turn_id == turn_id)
+                .map(|(_, token)| token.clone())
+        })
+        .unwrap_or_default()
+}
+
 /// Dispatch one App Server V2 request without embedding an upstream binary.
 ///
 /// The request itself remains synchronous so JSON-RPC acceptance and lifecycle
@@ -196,6 +229,13 @@ pub async fn codex_v2_request(
 
     let manager = thread_manager(&app, &state)?;
     let output = manager.dispatch(&connection_id, request);
+    if method == "turn/steer" && output.response.get("error").is_none() {
+        if let (Some(thread_id), Some(turn_id)) =
+            (thread_id.as_deref(), requested_turn_id.as_deref())
+        {
+            signal_turn_input_activity(&state, thread_id, turn_id);
+        }
+    }
     let should_cancel = output.response.get("error").is_none()
         && matches!(
             method.as_str(),
@@ -1066,6 +1106,14 @@ fn launch_turn_executor(
             stale.cancel();
         }
     }
+    if let Ok(mut activity) = state.codex_input_activity.lock() {
+        if let Some((_, stale)) = activity.insert(
+            thread_id.clone(),
+            (turn_id.clone(), CancellationToken::new()),
+        ) {
+            stale.cancel();
+        }
+    }
     let app = app.clone();
     let http = state.http.clone();
     tauri::async_runtime::spawn(async move {
@@ -1090,6 +1138,14 @@ fn launch_turn_executor(
                 .is_some_and(|(active_turn_id, _)| active_turn_id == &turn_id)
             {
                 cancels.remove(&thread_id);
+            }
+        };
+        if let Ok(mut activity) = state.codex_input_activity.lock() {
+            if activity
+                .get(&thread_id)
+                .is_some_and(|(active_turn_id, _)| active_turn_id == &turn_id)
+            {
+                activity.remove(&thread_id);
             }
         };
     });
@@ -1130,6 +1186,8 @@ async fn run_turn_executor(
     let mut can_drain_steered = false;
     let mut output_schema = None;
     let mut auth_refresh_attempted = false;
+    let (tool_runtime, base_tool_specs) = turn_tool_runtime(&app, &manager, &initial)?;
+    let mut loaded_tool_specs = Vec::new();
 
     loop {
         let drained = manager
@@ -1165,7 +1223,11 @@ async fn run_turn_executor(
         {
             output_schema = Some(schema);
         }
-        let request = response_request(&snapshot, output_schema.clone());
+        let request = response_request(
+            &snapshot,
+            output_schema.clone(),
+            merge_tool_specs(&base_tool_specs, &loaded_tool_specs),
+        );
         let stream = client.stream(&request, |event| {
             let notifications = projection.apply(&manager, &thread_id, &turn_id, event)?;
             emit_notifications(&app, &notifications).map_err(ModelError::Consumer)
@@ -1188,6 +1250,69 @@ async fn run_turn_executor(
         result?;
         if cancel.is_cancelled() {
             return Ok(());
+        }
+        let tool_calls = projection.take_tool_calls();
+        if !tool_calls.is_empty() {
+            let input_activity = turn_input_activity_token(&app, &thread_id, &turn_id);
+            if manager
+                .has_pending_turn_input(&thread_id, &turn_id)
+                .map_err(core_model_error)?
+            {
+                input_activity.cancel();
+            }
+            let calls = tool_calls
+                .into_iter()
+                .map(|call| {
+                    let timeline_item = local_tool_timeline_item(&snapshot, &call);
+                    (call, timeline_item)
+                })
+                .collect::<Vec<_>>();
+            for (_, item) in &calls {
+                let Some(item) = item else {
+                    continue;
+                };
+                let notifications = manager
+                    .local_tool_item_started(&thread_id, &turn_id, item.clone())
+                    .map_err(core_model_error)?;
+                emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+            }
+            let executions = calls.into_iter().map(|(call, timeline_item)| {
+                let runtime = tool_runtime.clone();
+                let thread_id = thread_id.clone();
+                let turn_id = turn_id.clone();
+                let cancel = cancel.clone();
+                let input_activity = input_activity.clone();
+                async move {
+                    let output = runtime
+                        .handle_model_call_with_activity(
+                            thread_id,
+                            turn_id,
+                            call.clone(),
+                            cancel,
+                            input_activity,
+                        )
+                        .await;
+                    (call, timeline_item, output)
+                }
+            });
+            for (call, timeline_item, output) in futures_util::future::join_all(executions).await {
+                if let Some(item) = timeline_item {
+                    let notifications = manager
+                        .local_tool_item_completed(&thread_id, &turn_id, item)
+                        .map_err(core_model_error)?;
+                    emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+                }
+                if matches!(call.payload, ToolPayload::ToolSearch { .. }) {
+                    if let Some(tools) = output.get("tools").and_then(Value::as_array) {
+                        loaded_tool_specs.extend(tools.iter().cloned());
+                    }
+                }
+                let notifications = manager
+                    .model_item_completed(&thread_id, &turn_id, output)
+                    .map_err(core_model_error)?;
+                emit_notifications(&app, &notifications).map_err(ModelError::Consumer)?;
+            }
+            continue;
         }
         if projection.take_needs_follow_up() {
             continue;
@@ -1334,8 +1459,10 @@ async fn ensure_responses_capability(
 fn response_request(
     snapshot: &TurnExecutionSnapshot,
     output_schema: Option<Value>,
+    tools: Vec<Value>,
 ) -> ResponsesApiRequest {
     let mut request = ResponsesApiRequest::text(snapshot.model.clone(), snapshot.history.clone());
+    request.tools = (!tools.is_empty()).then_some(tools);
     request.reasoning = snapshot.reasoning_effort.as_ref().map(|effort| Reasoning {
         effort: Some(effort.clone()),
         summary: snapshot
@@ -1358,6 +1485,102 @@ fn response_request(
         }),
     });
     request
+}
+
+fn turn_tool_runtime(
+    app: &AppHandle,
+    manager: &ThreadManager,
+    snapshot: &TurnExecutionSnapshot,
+) -> Result<(ToolCallRuntime, Vec<Value>), ModelError> {
+    let context_manager = manager.clone();
+    let mut handlers = vec![
+        current_time_handler(),
+        sleep_handler(),
+        context_remaining_handler(Arc::new(move |thread_id, turn_id| {
+            context_manager
+                .context_tokens_remaining(thread_id, turn_id)
+                .ok()
+                .flatten()
+        })),
+        web_search_handler(),
+    ];
+    let settings = super::settings::read_settings(app).map_err(ModelError::Consumer)?;
+    let supports_images = settings
+        .providers
+        .iter()
+        .find(|provider| provider.id == snapshot.model_provider)
+        .and_then(|provider| {
+            provider
+                .models
+                .iter()
+                .find(|model| model.id == snapshot.model)
+        })
+        .is_some_and(|model| {
+            model
+                .input_modalities
+                .contains(&super::models::ModelModality::Image)
+        });
+    if supports_images {
+        handlers.push(view_image_handler(
+            snapshot.cwd.clone(),
+            supports_original_image_detail(&snapshot.model),
+        ));
+    }
+    let registry = ToolRegistry::new(handlers, Vec::new())
+        .map_err(|error| ModelError::Consumer(format!("初始化 Codex 基础工具失败：{error}")))?;
+    let router = Arc::new(ToolRouter::new(registry));
+    let specs = router.model_visible_wire_specs();
+    Ok((ToolCallRuntime::new(router), specs))
+}
+
+fn merge_tool_specs(base: &[Value], loaded: &[Value]) -> Vec<Value> {
+    let mut result = Vec::with_capacity(base.len() + loaded.len());
+    let mut seen = std::collections::HashSet::new();
+    for spec in base.iter().chain(loaded) {
+        let key = serde_json::to_string(spec).unwrap_or_else(|_| spec.to_string());
+        if seen.insert(key) {
+            result.push(spec.clone());
+        }
+    }
+    result
+}
+
+fn local_tool_timeline_item(snapshot: &TurnExecutionSnapshot, call: &ToolCall) -> Option<Value> {
+    let ToolPayload::Function { arguments } = &call.payload else {
+        return None;
+    };
+    let arguments: Value = serde_json::from_str(arguments).ok()?;
+    match (
+        call.tool_name.namespace.as_deref(),
+        call.tool_name.name.as_str(),
+    ) {
+        (Some("clock"), "sleep") => {
+            let duration_ms = arguments.get("duration_ms")?.as_u64()?;
+            (duration_ms > 0 && duration_ms <= 12 * 60 * 60 * 1000).then(|| {
+                json!({
+                    "type":"sleep",
+                    "id":call.call_id,
+                    "durationMs":duration_ms
+                })
+            })
+        }
+        (None, "view_image") => {
+            let path = std::path::PathBuf::from(arguments.get("path")?.as_str()?);
+            let path = if path.is_absolute() {
+                path
+            } else {
+                snapshot.cwd.join(path)
+            };
+            path.is_file().then(|| {
+                json!({
+                    "type":"imageView",
+                    "id":call.call_id,
+                    "path":path.to_string_lossy()
+                })
+            })
+        }
+        _ => None,
+    }
 }
 
 fn compaction_response_request(
@@ -1413,6 +1636,7 @@ struct ResponseProjection {
     verification_emitted: bool,
     needs_follow_up: bool,
     model_output_seen: bool,
+    tool_calls: Vec<ToolCall>,
 }
 
 impl ResponseProjection {
@@ -1427,6 +1651,7 @@ impl ResponseProjection {
             verification_emitted: false,
             needs_follow_up: false,
             model_output_seen: false,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -1452,8 +1677,7 @@ impl ResponseProjection {
                     .map_err(core_model_error)
             }
             ResponseEvent::OutputItemDone(item) => {
-                self.model_output_seen = true;
-                self.track_item(&item);
+                self.track_completed_item(&item)?;
                 manager
                     .model_item_completed(thread_id, turn_id, item)
                     .map_err(core_model_error)
@@ -1574,6 +1798,17 @@ impl ResponseProjection {
         }
     }
 
+    fn track_completed_item(&mut self, item: &Value) -> Result<(), ModelError> {
+        self.model_output_seen = true;
+        self.track_item(item);
+        if let Some(call) = ToolRouter::build_tool_call(item)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?
+        {
+            self.tool_calls.push(call);
+        }
+        Ok(())
+    }
+
     fn reasoning_item(&self) -> Result<&str, ModelError> {
         self.current_reasoning_item.as_deref().ok_or_else(|| {
             ModelError::Consumer("reasoning delta arrived before reasoning item".into())
@@ -1582,6 +1817,10 @@ impl ResponseProjection {
 
     fn take_needs_follow_up(&mut self) -> bool {
         std::mem::take(&mut self.needs_follow_up)
+    }
+
+    fn take_tool_calls(&mut self) -> Vec<ToolCall> {
+        std::mem::take(&mut self.tool_calls)
     }
 
     fn model_output_seen(&self) -> bool {
@@ -1616,12 +1855,13 @@ fn fail_turn(
 mod tests {
     use super::{
         assistant_response_text, compaction_response_request, empty_rate_limits, format_micro,
-        gateway_rate_limits, nonempty_or_unconfigured, normalized_plan_type, ResponseProjection,
+        gateway_rate_limits, local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured,
+        normalized_plan_type, response_request, ResponseProjection,
     };
     use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
     use serde_json::json;
     use tietiezhi_agent_context::SUMMARIZATION_PROMPT;
-    use tietiezhi_agent_core::CompactionExecutionSnapshot;
+    use tietiezhi_agent_core::{CompactionExecutionSnapshot, TurnExecutionSnapshot};
 
     #[test]
     fn empty_runtime_selection_is_explicitly_unconfigured() {
@@ -1640,6 +1880,64 @@ mod tests {
         projection.needs_follow_up = true;
         assert!(projection.take_needs_follow_up());
         assert!(!projection.take_needs_follow_up());
+        projection
+            .track_completed_item(&json!({
+                "type":"function_call",
+                "id":"fc_1",
+                "name":"sleep",
+                "namespace":"clock",
+                "arguments":"{\"duration_ms\":1}",
+                "call_id":"call_1"
+            }))
+            .unwrap();
+        let calls = projection.take_tool_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_name.namespace.as_deref(), Some("clock"));
+        assert_eq!(calls[0].tool_name.name, "sleep");
+    }
+
+    #[test]
+    fn responses_request_includes_deduplicated_tool_specs() {
+        let snapshot = TurnExecutionSnapshot {
+            thread_id: "018f16f7-58ca-7f59-bb7f-6626b6630f6a".into(),
+            turn_id: "018f16f7-58ca-7f59-bb7f-6626b6630f6b".into(),
+            cwd: std::path::PathBuf::from("/tmp/project"),
+            model: "gpt-5.6-sol".into(),
+            model_provider: "gateway".into(),
+            reasoning_effort: Some("high".into()),
+            reasoning_summary: None,
+            service_tier: Some("priority".into()),
+            history: vec![json!({"type":"message","role":"user","content":[]})],
+            model_context_window: Some(272_000),
+            active_context_tokens: 100,
+            auto_compact_token_limit: None,
+        };
+        let base = vec![
+            json!({"type":"function","name":"view_image"}),
+            json!({"type":"web_search"}),
+        ];
+        let loaded = vec![
+            json!({"type":"function","name":"view_image"}),
+            json!({"type":"function","name":"deferred"}),
+        ];
+        let tools = merge_tool_specs(&base, &loaded);
+        let request = response_request(&snapshot, None, tools.clone());
+        assert_eq!(tools.len(), 3);
+        assert_eq!(request.tools, Some(tools));
+        assert!(request.parallel_tool_calls);
+        let sleep = local_tool_timeline_item(
+            &snapshot,
+            &tietiezhi_agent_tools::ToolCall {
+                tool_name: tietiezhi_agent_tools::ToolName::namespaced("clock", "sleep"),
+                call_id: "call_sleep".into(),
+                payload: tietiezhi_agent_tools::ToolPayload::Function {
+                    arguments: "{\"duration_ms\":25}".into(),
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(sleep["type"], "sleep");
+        assert_eq!(sleep["durationMs"], 25);
     }
 
     #[test]

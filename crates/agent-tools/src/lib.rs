@@ -3,7 +3,7 @@
 //! This crate is a source-level adaptation of OpenAI Codex `rust-v0.145.0`.
 //! It does not invoke or embed the upstream executable.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
+
+pub mod builtins;
 
 pub type ToolFuture<'a> = Pin<Box<dyn Future<Output = Result<ToolOutput, ToolError>> + Send + 'a>>;
 pub type LifecycleFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
@@ -62,6 +64,56 @@ pub struct ToolSpec {
     pub name: ToolName,
     pub description: String,
     pub input_schema: Value,
+    pub output_schema: Option<Value>,
+    pub namespace_description: Option<String>,
+    pub strict: bool,
+    pub defer_loading: Option<bool>,
+    pub wire_override: Option<Value>,
+}
+
+impl ToolSpec {
+    pub fn function(name: ToolName, description: impl Into<String>, input_schema: Value) -> Self {
+        Self {
+            name,
+            description: description.into(),
+            input_schema,
+            output_schema: None,
+            namespace_description: None,
+            strict: false,
+            defer_loading: None,
+            wire_override: None,
+        }
+    }
+
+    pub fn hosted(name: ToolName, wire: Value) -> Self {
+        Self {
+            name,
+            description: String::new(),
+            input_schema: Value::Null,
+            output_schema: None,
+            namespace_description: None,
+            strict: false,
+            defer_loading: None,
+            wire_override: Some(wire),
+        }
+    }
+
+    fn function_wire(&self) -> Value {
+        let mut wire = json!({
+            "type": "function",
+            "name": self.name.name,
+            "description": self.description,
+            "parameters": self.input_schema,
+            "strict": self.strict
+        });
+        if let Some(defer_loading) = self.defer_loading {
+            wire["defer_loading"] = json!(defer_loading);
+        }
+        if let Some(output_schema) = &self.output_schema {
+            wire["output_schema"] = output_schema.clone();
+        }
+        wire
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +136,7 @@ pub struct ToolInvocation {
     pub turn_id: String,
     pub call: ToolCall,
     pub cancellation: CancellationToken,
+    pub input_activity: CancellationToken,
 }
 
 pub fn dynamic_tool_server_request(
@@ -291,6 +344,21 @@ impl ToolRegistry {
         specs.sort_by_key(|spec| spec.name.display_name());
         specs
     }
+
+    pub fn model_visible_wire_specs(&self) -> Vec<Value> {
+        wire_specs(self.model_visible_specs())
+    }
+
+    pub fn deferred_specs(&self) -> Vec<ToolSpec> {
+        let mut specs = self
+            .tools
+            .values()
+            .filter(|handler| handler.exposure() == ToolExposure::Deferred)
+            .map(|handler| handler.spec())
+            .collect::<Vec<_>>();
+        specs.sort_by_key(|spec| spec.name.display_name());
+        specs
+    }
 }
 
 #[derive(Clone)]
@@ -305,6 +373,10 @@ impl ToolRouter {
 
     pub fn model_visible_specs(&self) -> Vec<ToolSpec> {
         self.registry.model_visible_specs()
+    }
+
+    pub fn model_visible_wire_specs(&self) -> Vec<Value> {
+        self.registry.model_visible_wire_specs()
     }
 
     pub fn tool_supports_parallel(&self, call: &ToolCall) -> bool {
@@ -411,6 +483,24 @@ impl ToolCallRuntime {
         call: ToolCall,
         cancellation: CancellationToken,
     ) -> Result<ToolOutput, ToolError> {
+        self.handle_with_activity(
+            thread_id,
+            turn_id,
+            call,
+            cancellation,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    pub async fn handle_with_activity(
+        &self,
+        thread_id: impl Into<String>,
+        turn_id: impl Into<String>,
+        call: ToolCall,
+        cancellation: CancellationToken,
+        input_activity: CancellationToken,
+    ) -> Result<ToolOutput, ToolError> {
         let started = Instant::now();
         let supports_parallel = self.router.tool_supports_parallel(&call);
         let handler = self
@@ -426,6 +516,7 @@ impl ToolCallRuntime {
             turn_id: turn_id.clone(),
             call: call.clone(),
             cancellation: cancellation.clone(),
+            input_activity,
         };
         let router = Arc::clone(&self.router);
         let admission = Arc::clone(&self.admission);
@@ -465,8 +556,32 @@ impl ToolCallRuntime {
         call: ToolCall,
         cancellation: CancellationToken,
     ) -> Value {
+        self.handle_model_call_with_activity(
+            thread_id,
+            turn_id,
+            call,
+            cancellation,
+            CancellationToken::new(),
+        )
+        .await
+    }
+
+    pub async fn handle_model_call_with_activity(
+        &self,
+        thread_id: impl Into<String>,
+        turn_id: impl Into<String>,
+        call: ToolCall,
+        cancellation: CancellationToken,
+        input_activity: CancellationToken,
+    ) -> Value {
         match self
-            .handle(thread_id, turn_id, call.clone(), cancellation)
+            .handle_with_activity(
+                thread_id,
+                turn_id,
+                call.clone(),
+                cancellation,
+                input_activity,
+            )
             .await
         {
             Ok(output) => output.to_response_item(&call),
@@ -512,6 +627,37 @@ fn model_output(content: &Value) -> Value {
     }
 }
 
+pub fn wire_specs(specs: impl IntoIterator<Item = ToolSpec>) -> Vec<Value> {
+    let mut plain = Vec::new();
+    let mut namespaces: BTreeMap<String, (String, Vec<Value>)> = BTreeMap::new();
+    for spec in specs {
+        if let Some(wire) = spec.wire_override.clone() {
+            plain.push(wire);
+        } else if let Some(namespace) = &spec.name.namespace {
+            let description = spec
+                .namespace_description
+                .clone()
+                .unwrap_or_else(|| format!("Tools in the {namespace} namespace."));
+            namespaces
+                .entry(namespace.clone())
+                .or_insert_with(|| (description, Vec::new()))
+                .1
+                .push(spec.function_wire());
+        } else {
+            plain.push(spec.function_wire());
+        }
+    }
+    plain.extend(namespaces.into_iter().map(|(name, (description, tools))| {
+        json!({
+            "type": "namespace",
+            "name": name,
+            "description": description,
+            "tools": tools
+        })
+    }));
+    plain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,11 +681,11 @@ mod tests {
         }
 
         fn spec(&self) -> ToolSpec {
-            ToolSpec {
-                name: self.name.clone(),
-                description: self.name.display_name(),
-                input_schema: json!({"type":"object"}),
-            }
+            ToolSpec::function(
+                self.name.clone(),
+                self.name.display_name(),
+                json!({"type":"object"}),
+            )
         }
 
         fn exposure(&self) -> ToolExposure {
@@ -688,6 +834,7 @@ mod tests {
                 },
             },
             cancellation: CancellationToken::new(),
+            input_activity: CancellationToken::new(),
         };
         let request = dynamic_tool_server_request(json!(7), &invocation).unwrap();
         assert_eq!(request["method"], "item/tool/call");

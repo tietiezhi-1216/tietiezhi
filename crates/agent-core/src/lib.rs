@@ -146,6 +146,7 @@ pub struct TurnInputDrain {
 pub struct TurnExecutionSnapshot {
     pub thread_id: String,
     pub turn_id: String,
+    pub cwd: PathBuf,
     pub model: String,
     pub model_provider: String,
     pub reasoning_effort: Option<String>,
@@ -1657,6 +1658,7 @@ impl ThreadManager {
         Ok(TurnExecutionSnapshot {
             thread_id: thread_id.into(),
             turn_id: turn_id.into(),
+            cwd: loaded.record.cwd,
             model: loaded.record.model,
             model_provider: loaded.record.model_provider,
             reasoning_effort: loaded.record.reasoning_effort,
@@ -1667,6 +1669,32 @@ impl ThreadManager {
             active_context_tokens: loaded.active_context_tokens,
             auto_compact_token_limit: None,
         })
+    }
+
+    pub fn context_tokens_remaining(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> RpcResult<Option<i64>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        Ok(loaded
+            .record
+            .model_context_window
+            .map(|limit| limit.saturating_sub(loaded.active_context_tokens).max(0)))
+    }
+
+    pub fn has_pending_turn_input(&self, thread_id: &str, turn_id: &str) -> RpcResult<bool> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        Ok(loaded
+            .pending_inputs
+            .iter()
+            .any(|input| input.turn_id == turn_id))
     }
 
     pub fn should_auto_compact(&self, thread_id: &str, turn_id: &str) -> RpcResult<bool> {
@@ -1990,6 +2018,121 @@ impl ThreadManager {
         }
         append_model_history(&mut loaded, response_item);
         state.loaded.insert(thread_id.into(), loaded);
+        Ok(notifications)
+    }
+
+    pub fn local_tool_item_started(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        serde_json::from_value::<ThreadItem>(item.clone())
+            .map_err(|error| RpcError::invalid(format!("invalid local tool item: {error}")))?;
+        let item_id = required_item_string(&item, "id", "local tool item")?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        if turn_contains_item(&loaded.turns, turn_id, item_id) {
+            return Ok(Vec::new());
+        }
+        let now = now_ms();
+        upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(item_lifecycle_event(
+                    "item_started",
+                    thread_id,
+                    turn_id,
+                    &item,
+                    "started_at_ms",
+                    now,
+                )?)
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        state.loaded.insert(thread_id.into(), loaded);
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            "item/started",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "item": item,
+                "startedAtMs": now
+            }),
+        )?])
+    }
+
+    pub fn local_tool_item_completed(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        item: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        serde_json::from_value::<ThreadItem>(item.clone())
+            .map_err(|error| RpcError::invalid(format!("invalid local tool item: {error}")))?;
+        let item_id = required_item_string(&item, "id", "local tool item")?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        require_active_turn(&loaded, turn_id)?;
+        let now = now_ms();
+        let started = !turn_contains_item(&loaded.turns, turn_id, item_id);
+        upsert_turn_item(&mut loaded.turns, turn_id, item.clone())?;
+        if let Some(appender) = rollout_appender(&loaded)? {
+            if started {
+                appender
+                    .append_event(item_lifecycle_event(
+                        "item_started",
+                        thread_id,
+                        turn_id,
+                        &item,
+                        "started_at_ms",
+                        now,
+                    )?)
+                    .map_err(state_error)?;
+            }
+            appender
+                .append_event(item_lifecycle_event(
+                    "item_completed",
+                    thread_id,
+                    turn_id,
+                    &item,
+                    "completed_at_ms",
+                    now,
+                )?)
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        state.loaded.insert(thread_id.into(), loaded);
+        let mut notifications = Vec::with_capacity(usize::from(started) + 1);
+        if started {
+            notifications.push(self.checked_notification_for(
+                &state,
+                thread_id,
+                "item/started",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": item,
+                    "startedAtMs": now
+                }),
+            )?);
+        }
+        notifications.push(self.checked_notification_for(
+            &state,
+            thread_id,
+            "item/completed",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "item": item,
+                "completedAtMs": now
+            }),
+        )?);
         Ok(notifications)
     }
 
@@ -3702,6 +3845,24 @@ fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
             "type": "ContextCompaction",
             "id": required_item_string(item, "id", "contextCompaction item")?
         })),
+        Some("sleep") => Ok(json!({
+            "type": "Extension",
+            "kind": "clock.sleep",
+            "id": required_item_string(item, "id", "sleep item")?,
+            "durationMs": item.get("durationMs").cloned().unwrap_or(Value::Null)
+        })),
+        Some("imageView") => Ok(json!({
+            "type": "ImageView",
+            "id": required_item_string(item, "id", "imageView item")?,
+            "path": item.get("path").cloned().unwrap_or(Value::Null)
+        })),
+        Some("webSearch") => Ok(json!({
+            "type": "WebSearch",
+            "id": required_item_string(item, "id", "webSearch item")?,
+            "query": item.get("query").cloned().unwrap_or_else(|| json!("")),
+            "action": web_search_action_to_core(item.get("action")),
+            "results": item.get("results").cloned().unwrap_or(Value::Null)
+        })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported ThreadItem conversion to core: {other}"
         ))),
@@ -3739,6 +3900,25 @@ fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
         Some("ContextCompaction") => Ok(json!({
             "type": "contextCompaction",
             "id": required_item_string(item, "id", "ContextCompaction item")?
+        })),
+        Some("Extension") if item.get("kind").and_then(Value::as_str) == Some("clock.sleep") => {
+            Ok(json!({
+                "type": "sleep",
+                "id": required_item_string(item, "id", "clock.sleep item")?,
+                "durationMs": item.get("durationMs").cloned().unwrap_or(Value::Null)
+            }))
+        }
+        Some("ImageView") => Ok(json!({
+            "type": "imageView",
+            "id": required_item_string(item, "id", "ImageView item")?,
+            "path": item.get("path").cloned().unwrap_or(Value::Null)
+        })),
+        Some("WebSearch") => Ok(json!({
+            "type": "webSearch",
+            "id": required_item_string(item, "id", "WebSearch item")?,
+            "query": item.get("query").cloned().unwrap_or_else(|| json!("")),
+            "action": web_search_action_to_v2(item.get("action")),
+            "results": item.get("results").cloned().unwrap_or(Value::Null)
         })),
         Some(other) => Err(RpcError::internal(format!(
             "unsupported core TurnItem conversion: {other}"
@@ -4267,8 +4447,94 @@ fn response_item_to_v2(item: &Value) -> RpcResult<Option<Value>> {
                 "content": content
             })))
         }
+        Some("web_search_call") => {
+            let action = web_search_action_to_v2(item.get("action"));
+            let query = web_search_action_detail(action.as_ref());
+            Ok(Some(json!({
+                "type": "webSearch",
+                "id": required_item_string(item, "id", "web search response item")?,
+                "query": query,
+                "action": action,
+                "results": item.get("results").cloned().unwrap_or(Value::Null)
+            })))
+        }
         Some(_) => Ok(None),
         None => Err(RpcError::invalid("ResponseItem type is required")),
+    }
+}
+
+fn web_search_action_to_v2(action: Option<&Value>) -> Option<Value> {
+    let action = action?;
+    let action_type = match action.get("type").and_then(Value::as_str) {
+        Some("search") => "search",
+        Some("open_page" | "openPage") => "openPage",
+        Some("find_in_page" | "findInPage") => "findInPage",
+        Some(_) => "other",
+        None => return None,
+    };
+    let mut converted = action.clone();
+    converted["type"] = json!(action_type);
+    Some(converted)
+}
+
+fn web_search_action_to_core(action: Option<&Value>) -> Value {
+    let Some(action) = action else {
+        return Value::Null;
+    };
+    let action_type = match action.get("type").and_then(Value::as_str) {
+        Some("search") => "search",
+        Some("open_page" | "openPage") => "open_page",
+        Some("find_in_page" | "findInPage") => "find_in_page",
+        Some(_) => "other",
+        None => return Value::Null,
+    };
+    let mut converted = action.clone();
+    converted["type"] = json!(action_type);
+    converted
+}
+
+fn web_search_action_detail(action: Option<&Value>) -> String {
+    let Some(action) = action else {
+        return String::new();
+    };
+    match action.get("type").and_then(Value::as_str) {
+        Some("search") => action
+            .get("query")
+            .and_then(Value::as_str)
+            .filter(|query| !query.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                let queries = action
+                    .get("queries")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>();
+                let first = queries.first().copied().unwrap_or_default();
+                if queries.len() > 1 && !first.is_empty() {
+                    format!("{first} ...")
+                } else {
+                    first.into()
+                }
+            }),
+        Some("openPage") => action
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .into(),
+        Some("findInPage") => {
+            match (
+                action.get("pattern").and_then(Value::as_str),
+                action.get("url").and_then(Value::as_str),
+            ) {
+                (Some(pattern), Some(url)) => format!("'{pattern}' in {url}"),
+                (Some(pattern), None) => format!("'{pattern}'"),
+                (None, Some(url)) => url.into(),
+                (None, None) => String::new(),
+            }
+        }
+        _ => String::new(),
     }
 }
 
@@ -5729,6 +5995,54 @@ mod tests {
             .unwrap();
         assert_eq!(completed[0].method, "item/completed");
 
+        let sleep_item = json!({
+            "type":"sleep",
+            "id":"call_sleep",
+            "durationMs":10
+        });
+        assert_eq!(
+            manager
+                .local_tool_item_started(&thread_id, &turn_id, sleep_item.clone())
+                .unwrap()[0]
+                .params["item"]["type"],
+            "sleep"
+        );
+        assert_eq!(
+            manager
+                .local_tool_item_completed(&thread_id, &turn_id, sleep_item)
+                .unwrap()[0]
+                .method,
+            "item/completed"
+        );
+        let web_search = json!({
+            "type":"web_search_call",
+            "id":"web_1",
+            "status":"completed",
+            "action":{
+                "type":"find_in_page",
+                "url":"https://example.test/docs",
+                "pattern":"needle"
+            }
+        });
+        let search_completed = manager
+            .model_item_completed(&thread_id, &turn_id, web_search)
+            .unwrap();
+        assert_eq!(search_completed[0].params["item"]["type"], "webSearch");
+        assert_eq!(
+            search_completed[0].params["item"]["query"],
+            "'needle' in https://example.test/docs"
+        );
+        assert_eq!(
+            search_completed[0].params["item"]["action"]["type"],
+            "findInPage"
+        );
+        assert_eq!(
+            manager
+                .context_tokens_remaining(&thread_id, &turn_id)
+                .unwrap(),
+            None
+        );
+
         assert_eq!(
             manager
                 .model_rerouted_notification(&thread_id, &turn_id, "gpt-test", "gpt-rerouted")
@@ -5801,7 +6115,7 @@ mod tests {
         assert_eq!(items[1]["summary"][0], "summary");
         assert_eq!(items[2]["type"], "agentMessage");
         assert_eq!(items[2]["text"], "answer");
-        assert_eq!(manager.injected_items(&thread_id).unwrap().len(), 3);
+        assert_eq!(manager.injected_items(&thread_id).unwrap().len(), 4);
         let metadata = manager.inner.store.thread(&thread_id).unwrap().unwrap();
         let recovery = manager
             .inner
