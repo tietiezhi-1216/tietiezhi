@@ -337,3 +337,23 @@ R27 的 Review 与 Guardian 生命周期、提示、结构化结果和自动审�
 - `codex-rs/app-server/src/bespoke_event_handling.rs`
 
 固定版本的 Review rubric 和 Guardian policy 以文本资产保存在 `crates/agent-review/assets`；本地实现不调用、链接或分发上游 Codex 二进制。
+
+R28 的 Chronicle 长期记忆、两阶段生成、作业租约、受管文件、引用和读取工具行为参考以下 Apache-2.0 上游源码重新实现：
+
+- `codex-rs/memories/read/src`
+- `codex-rs/memories/write/src`
+- `codex-rs/ext/memories/src`
+- `codex-rs/state/src/runtime/memories.rs`
+- `codex-rs/protocol/src/memory_citation.rs`
+- `codex-rs/core/src/session/session.rs`
+- `codex-rs/app-server/src/request_processors/thread_processor.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
+
+以下固定提示词文件从上述 Apache-2.0 版本逐字保留：
+
+- `crates/agent-memory/assets/read_path.md`
+- `crates/agent-memory/assets/stage_one_system.md`
+- `crates/agent-memory/assets/stage_one_input.md`
+- `crates/agent-memory/assets/consolidation.md`
+
+本地实现位于 `crates/agent-memory`，通过 `agent-core` canonical rollout 和桌面 Responses Provider 执行，不调用、链接或分发上游 Codex 二进制。

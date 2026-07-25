@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use chrono::Local;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -29,8 +30,9 @@ use tietiezhi_agent_config::{
 };
 use tietiezhi_agent_context::compaction_prompt_history;
 use tietiezhi_agent_core::{
-    CompactionExecutionSnapshot, DispatchOutput, RoutedNotification, RuntimeDefaults,
-    SubagentThreadConfig, ThreadManager, TurnExecutionSnapshot,
+    CompactionExecutionSnapshot, DispatchOutput, MemoryRolloutCandidate as CoreMemoryCandidate,
+    RoutedNotification, RuntimeDefaults, SubagentThreadConfig, ThreadManager,
+    TurnExecutionSnapshot,
 };
 use tietiezhi_agent_execpolicy::{
     ApprovalPolicy as ExecApprovalPolicy, EvaluationContext as ExecEvaluationContext,
@@ -39,6 +41,11 @@ use tietiezhi_agent_execpolicy::{
 use tietiezhi_agent_hooks::{
     HookDispatch, HookEngine, HookEventName, HookPaths, HookRequest, HookSource,
     PermissionDecision as HookPermissionDecision,
+};
+use tietiezhi_agent_memory::{
+    build_consolidation_prompt, build_stage_one_input, consolidation_output_schema,
+    stage_one_output_schema, strip_and_parse_memory_citation, MemoriesConfig, MemoryRuntime,
+    RolloutCandidate, SearchMatchMode, ThreadMemoryMode, STAGE_ONE_SYSTEM_PROMPT,
 };
 use tietiezhi_agent_model::{
     list_online_models, supports_original_image_detail, ModelError, OnlineModel, Reasoning,
@@ -75,8 +82,8 @@ use tietiezhi_agent_tools::builtins::{
     FileChangeApprovalRequest, PermissionsApprovalRequest, UserInputRequest,
 };
 use tietiezhi_agent_tools::{
-    ToolCall, ToolCallRuntime, ToolModelCallResult, ToolOutput, ToolPayload, ToolRegistry,
-    ToolRouter,
+    ToolCall, ToolCallRuntime, ToolError, ToolFuture, ToolHandler, ToolInvocation,
+    ToolModelCallResult, ToolName, ToolOutput, ToolPayload, ToolRegistry, ToolRouter, ToolSpec,
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -176,6 +183,443 @@ fn thread_manager(app: &AppHandle, state: &AppState) -> Result<ThreadManager, St
     .map_err(|error| format!("初始化 Codex Runtime 失败：{error:?}"))?;
     *slot = Some(manager.clone());
     Ok(manager)
+}
+
+fn memory_runtime(app: &AppHandle, state: &AppState) -> Result<MemoryRuntime, String> {
+    let mut slot = state
+        .codex_memory
+        .lock()
+        .map_err(|_| "Codex Memory 状态锁已损坏".to_string())?;
+    if let Some(runtime) = slot.as_ref() {
+        return Ok(runtime.clone());
+    }
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("无法定位应用数据目录：{error}"))?;
+    let runtime = MemoryRuntime::open(app_data.join("agent-runtime"))
+        .map_err(|error| format!("初始化 Codex Memory 失败：{error}"))?;
+    let legacy_home = super::tietiezhi::home_dir(app)?;
+    runtime
+        .migrate_legacy_tietiezhi(&legacy_home)
+        .map_err(|error| format!("迁移铁铁汁长期记忆失败：{error}"))?;
+    *slot = Some(runtime.clone());
+    Ok(runtime)
+}
+
+fn memories_config(app: &AppHandle) -> MemoriesConfig {
+    let mut config = MemoriesConfig::default();
+    if let Ok(tietiezhi) = super::tietiezhi::read_config(app) {
+        config.generate_memories = tietiezhi.memory_enabled;
+        config.use_memories = tietiezhi.memory_enabled;
+        config.dedicated_tools = tietiezhi.memory_enabled;
+    }
+    let config_root = app
+        .path()
+        .app_config_dir()
+        .ok()
+        .map(|path| path.join("codex"));
+    if let Some(memory) = config_root
+        .and_then(|config_root| {
+            ConfigRuntime::new(ConfigPaths {
+                user_config: config_root.join("config.toml"),
+                system_config: system_codex_config_path(),
+                requirements: system_codex_requirements_path(),
+            })
+            .dispatch("config/read", &json!({"includeLayers":false}))
+            .ok()
+        })
+        .and_then(|dispatch| dispatch.result.pointer("/config/memories").cloned())
+    {
+        let bool_field = |camel: &str, snake: &str| {
+            memory
+                .get(camel)
+                .or_else(|| memory.get(snake))
+                .and_then(Value::as_bool)
+        };
+        let usize_field = |camel: &str, snake: &str| {
+            memory
+                .get(camel)
+                .or_else(|| memory.get(snake))
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+        };
+        let i64_field = |camel: &str, snake: &str| {
+            memory
+                .get(camel)
+                .or_else(|| memory.get(snake))
+                .and_then(Value::as_i64)
+        };
+        config.disable_on_external_context =
+            bool_field("disableOnExternalContext", "disable_on_external_context")
+                .unwrap_or(config.disable_on_external_context);
+        config.generate_memories =
+            bool_field("generateMemories", "generate_memories").unwrap_or(config.generate_memories);
+        config.use_memories =
+            bool_field("useMemories", "use_memories").unwrap_or(config.use_memories);
+        config.dedicated_tools =
+            bool_field("dedicatedTools", "dedicated_tools").unwrap_or(config.dedicated_tools);
+        config.max_raw_memories_for_consolidation = usize_field(
+            "maxRawMemoriesForConsolidation",
+            "max_raw_memories_for_consolidation",
+        )
+        .unwrap_or(config.max_raw_memories_for_consolidation);
+        config.max_unused_days =
+            i64_field("maxUnusedDays", "max_unused_days").unwrap_or(config.max_unused_days);
+        config.max_rollout_age_days = i64_field("maxRolloutAgeDays", "max_rollout_age_days")
+            .unwrap_or(config.max_rollout_age_days);
+        config.max_rollouts_per_startup =
+            usize_field("maxRolloutsPerStartup", "max_rollouts_per_startup")
+                .unwrap_or(config.max_rollouts_per_startup);
+        config.min_rollout_idle_hours = i64_field("minRolloutIdleHours", "min_rollout_idle_hours")
+            .unwrap_or(config.min_rollout_idle_hours);
+        config.min_rate_limit_remaining_percent = i64_field(
+            "minRateLimitRemainingPercent",
+            "min_rate_limit_remaining_percent",
+        )
+        .unwrap_or(config.min_rate_limit_remaining_percent);
+        config.extract_model = memory
+            .get("extractModel")
+            .or_else(|| memory.get("extract_model"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        config.consolidation_model = memory
+            .get("consolidationModel")
+            .or_else(|| memory.get("consolidation_model"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+    }
+    config.normalize()
+}
+
+fn launch_memory_pipeline(
+    app: &AppHandle,
+    manager: ThreadManager,
+    current_thread_id: String,
+    model: String,
+    model_provider: String,
+) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) =
+            run_memory_pipeline(app, manager, current_thread_id, model, model_provider).await
+        {
+            eprintln!("[codex-memory] {error}");
+        }
+    });
+}
+
+async fn run_memory_pipeline(
+    app: AppHandle,
+    manager: ThreadManager,
+    current_thread_id: String,
+    model: String,
+    model_provider: String,
+) -> Result<(), ModelError> {
+    let config = memories_config(&app);
+    if !config.generate_memories {
+        return Ok(());
+    }
+    let state = app.state::<AppState>();
+    if !memory_rate_limits_allow_startup(
+        &app,
+        &state,
+        &model_provider,
+        config.min_rate_limit_remaining_percent,
+    )
+    .await
+    {
+        return Ok(());
+    }
+    let memory = memory_runtime(&app, &state).map_err(ModelError::Consumer)?;
+    memory
+        .set_thread_mode(&current_thread_id, ThreadMemoryMode::Enabled)
+        .map_err(|error| ModelError::Consumer(error.to_string()))?;
+    let candidates = manager
+        .memory_rollout_candidates(&current_thread_id)
+        .map_err(core_model_error)?
+        .into_iter()
+        .map(core_memory_candidate)
+        .collect::<Vec<_>>();
+    let claims = memory
+        .claim_stage_one(&current_thread_id, &candidates, &config)
+        .map_err(|error| ModelError::Consumer(error.to_string()))?;
+
+    let resolved =
+        super::providers::resolve(&app, &model_provider).map_err(ModelError::Transport)?;
+    let base_url = super::api_url(&resolved.base_url, "")
+        .trim_end_matches('/')
+        .to_owned();
+    let bearer_token = state
+        .codex_external_auth
+        .lock()
+        .map_err(|_| ModelError::Consumer("Codex 外部账号状态锁已损坏".into()))?
+        .get(&resolved.id)
+        .map(|tokens| tokens.access_token.clone())
+        .or(resolved.key);
+    let client = responses_client(&state.http, &resolved.kind, &base_url, bearer_token);
+    ensure_responses_capability(
+        &app,
+        &format!("{}\n{base_url}", resolved.id),
+        resolved.wire_api,
+        &client,
+    )
+    .await?;
+
+    let extraction_model = config
+        .extract_model
+        .clone()
+        .unwrap_or_else(|| model.clone());
+    let mut jobs = FuturesUnordered::new();
+    for claim in claims {
+        let manager = manager.clone();
+        let client = client.clone();
+        let extraction_model = extraction_model.clone();
+        jobs.push(async move {
+            let result = async {
+                let rollout = manager
+                    .memory_rollout_text(&claim.candidate.thread_id, 150_000)
+                    .map_err(core_model_error)?;
+                if rollout.trim().is_empty() {
+                    return Ok::<Option<Value>, ModelError>(None);
+                }
+                let prompt = build_stage_one_input(
+                    &rollout,
+                    &claim.candidate.rollout_path,
+                    &claim.candidate.cwd,
+                );
+                let mut request = ResponsesApiRequest::text(
+                    extraction_model,
+                    vec![json!({
+                        "type":"message",
+                        "role":"user",
+                        "content":[{"type":"input_text","text":prompt}]
+                    })],
+                );
+                request.instructions = STAGE_ONE_SYSTEM_PROMPT.to_owned();
+                request.reasoning = Some(Reasoning {
+                    effort: Some("low".into()),
+                    summary: None,
+                    context: None,
+                });
+                request.prompt_cache_key =
+                    Some(format!("memory-stage1:{}", claim.candidate.thread_id));
+                request.text = Some(TextControls {
+                    verbosity: None,
+                    format: Some(TextFormat {
+                        r#type: TextFormatType::JsonSchema,
+                        strict: true,
+                        schema: stage_one_output_schema(),
+                        name: "memory_stage_one".into(),
+                    }),
+                });
+                collect_structured_memory_response(&client, &request)
+                    .await
+                    .map(Some)
+            }
+            .await;
+            (claim, result)
+        });
+    }
+    while let Some((claim, result)) = jobs.next().await {
+        match result {
+            Ok(Some(output)) => {
+                let raw = output
+                    .get("raw_memory")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let summary = output
+                    .get("rollout_summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let slug = output.get("rollout_slug").and_then(Value::as_str);
+                if let Err(error) = memory.complete_stage_one(&claim, raw, summary, slug) {
+                    let _ = memory.fail_stage_one(&claim, &error.to_string());
+                }
+            }
+            Ok(None) => {
+                let _ = memory.complete_stage_one_without_output(&claim);
+            }
+            Err(error) => {
+                let _ = memory.fail_stage_one(&claim, &error.to_string());
+            }
+        }
+    }
+
+    let Some(phase_two) = memory
+        .claim_phase_two(&current_thread_id, &config)
+        .map_err(|error| ModelError::Consumer(error.to_string()))?
+    else {
+        return Ok(());
+    };
+    if phase_two.inputs.is_empty() {
+        memory
+            .sync_phase_two_inputs(&phase_two, config.max_raw_memories_for_consolidation)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        memory
+            .complete_phase_two(&phase_two)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        return Ok(());
+    }
+    let result = async {
+        let raw_path = memory
+            .sync_phase_two_inputs(&phase_two, config.max_raw_memories_for_consolidation)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        let raw = std::fs::read_to_string(&raw_path).map_err(|error| {
+            ModelError::Consumer(format!("读取 Phase 2 raw memories 失败：{error}"))
+        })?;
+        let current_memory =
+            std::fs::read_to_string(memory.root().join("MEMORY.md")).unwrap_or_default();
+        let current_summary =
+            std::fs::read_to_string(memory.root().join("memory_summary.md")).unwrap_or_default();
+        let instructions = build_consolidation_prompt(
+            memory.root(),
+            &memory.codex_home().join("memories_extensions"),
+        );
+        let prompt = format!(
+            "Consolidate the following canonical memory inputs. Return the complete next contents \
+             of MEMORY.md and memory_summary.md. Preserve source references and make the first line \
+             of memory_summary.md exactly `v1`.\n\nCURRENT MEMORY.md:\n{current_memory}\n\n\
+             CURRENT memory_summary.md:\n{current_summary}\n\nRAW INPUTS:\n{raw}"
+        );
+        let mut request = ResponsesApiRequest::text(
+            config
+                .consolidation_model
+                .clone()
+                .unwrap_or_else(|| model.clone()),
+            vec![json!({
+                "type":"message",
+                "role":"user",
+                "content":[{"type":"input_text","text":prompt}]
+            })],
+        );
+        request.instructions = instructions;
+        request.reasoning = Some(Reasoning {
+            effort: Some("medium".into()),
+            summary: None,
+            context: None,
+        });
+        request.prompt_cache_key = Some("memory-consolidation".into());
+        request.text = Some(TextControls {
+            verbosity: None,
+            format: Some(TextFormat {
+                r#type: TextFormatType::JsonSchema,
+                strict: true,
+                schema: consolidation_output_schema(),
+                name: "memory_consolidation".into(),
+            }),
+        });
+        let output = collect_structured_memory_response(&client, &request).await?;
+        let memory_markdown = output
+            .get("memory_markdown")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ModelError::Consumer("missing memory_markdown".into()))?;
+        let summary_markdown = output
+            .get("memory_summary_markdown")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ModelError::Consumer("missing memory_summary_markdown".into()))?;
+        memory
+            .apply_consolidation(memory_markdown, summary_markdown)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        memory
+            .complete_phase_two(&phase_two)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        Ok::<(), ModelError>(())
+    }
+    .await;
+    if let Err(error) = &result {
+        let _ = memory.fail_phase_two(&phase_two, &error.to_string());
+    }
+    result
+}
+
+async fn memory_rate_limits_allow_startup(
+    app: &AppHandle,
+    state: &AppState,
+    provider_id: &str,
+    minimum_remaining_percent: i64,
+) -> bool {
+    let built_in = super::settings::read_settings(app)
+        .ok()
+        .and_then(|settings| {
+            settings
+                .providers
+                .into_iter()
+                .find(|provider| provider.id == provider_id)
+        })
+        .is_some_and(|provider| provider.built_in);
+    if !built_in {
+        return true;
+    }
+    match super::gateway_auth::load_gateway_quota(&state.http, app, provider_id).await {
+        Ok(quota) => gateway_quota_allows_memory_startup(&quota, minimum_remaining_percent),
+        Err(error) => {
+            eprintln!("[codex-memory] 无法读取限额，按 Codex 容错规则继续：{error}");
+            true
+        }
+    }
+}
+
+fn gateway_quota_allows_memory_startup(
+    quota: &super::gateway_auth::GatewayQuotaView,
+    minimum_remaining_percent: i64,
+) -> bool {
+    let has_credits = quota.wallet.balance_micro > 0
+        || quota
+            .packages
+            .iter()
+            .any(|package| package.window_remaining > 0);
+    if !has_credits {
+        return false;
+    }
+    let threshold = minimum_remaining_percent.clamp(0, 100) as i128;
+    quota
+        .packages
+        .iter()
+        .filter(|package| package.quota_per_window > 0)
+        .all(|package| {
+            let remaining = i128::from(package.window_remaining.max(0));
+            let total = i128::from(package.quota_per_window);
+            remaining.saturating_mul(100) >= total.saturating_mul(threshold)
+        })
+}
+
+fn core_memory_candidate(candidate: CoreMemoryCandidate) -> RolloutCandidate {
+    RolloutCandidate {
+        thread_id: candidate.thread_id,
+        rollout_path: candidate.rollout_path,
+        cwd: candidate.cwd,
+        git_branch: candidate.git_branch,
+        source_updated_at: candidate.source_updated_at,
+    }
+}
+
+async fn collect_structured_memory_response(
+    client: &ResponsesClient,
+    request: &ResponsesApiRequest,
+) -> Result<Value, ModelError> {
+    let mut deltas = String::new();
+    let mut final_text = None;
+    tokio::time::timeout(
+        Duration::from_secs(300),
+        client.stream(request, |event| {
+            match event {
+                ResponseEvent::OutputTextDelta(delta) => deltas.push_str(&delta),
+                ResponseEvent::OutputItemDone(item) => {
+                    if let Some(text) = assistant_response_text(&item) {
+                        final_text = Some(text);
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }),
+    )
+    .await
+    .map_err(|_| ModelError::Transport("memory model request timed out".into()))??;
+    let text = final_text.unwrap_or(deltas);
+    serde_json::from_str(&text)
+        .map_err(|error| ModelError::Consumer(format!("invalid memory model output: {error}")))
 }
 
 fn collaboration_runtime(
@@ -784,6 +1228,30 @@ pub async fn codex_v2_request(
         .codex_account
         .register_connection(&connection_id)
         .map_err(account_rpc_error)?;
+    if method == "memory/reset" {
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let valid_shape = request.get("method").and_then(Value::as_str) == Some("memory/reset")
+            && (id.is_string() || id.is_i64() || id.is_u64())
+            && request.get("params").is_none_or(|params| {
+                params.is_null() || params.as_object().is_some_and(serde_json::Map::is_empty)
+            });
+        if !valid_shape {
+            return Ok(dispatch_error(
+                &request,
+                -32602,
+                "memory/reset 参数不符合 App Server V2",
+            ));
+        }
+        let runtime = memory_runtime(&app, &state)?;
+        return match runtime.reset() {
+            Ok(()) => dispatch_success(&request, json!({})),
+            Err(error) => Ok(dispatch_error(
+                &request,
+                -32603,
+                format!("重置 Codex Memory 失败：{error}"),
+            )),
+        };
+    }
     if ConfigRuntime::handles(&method) {
         let output =
             dispatch_config_request(&app, &state, &connection_id, &request, &method).await?;
@@ -846,6 +1314,27 @@ pub async fn codex_v2_request(
         .pointer("/params/turnId")
         .and_then(Value::as_str)
         .map(str::to_owned);
+    let requested_memory_mode = request
+        .pointer("/params/mode")
+        .and_then(Value::as_str)
+        .and_then(|mode| match mode {
+            "enabled" => Some(ThreadMemoryMode::Enabled),
+            "disabled" => Some(ThreadMemoryMode::Disabled),
+            _ => None,
+        });
+    let thread_start_ephemeral = request
+        .pointer("/params/ephemeral")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let thread_start_is_background = request
+        .pointer("/params/threadSource")
+        .and_then(Value::as_str)
+        .is_some_and(|source| {
+            source == "subagent"
+                || source == "memory_consolidation"
+                || source.starts_with("subagent")
+                || source.starts_with("subAgent")
+        });
 
     let manager = thread_manager(&app, &state)?;
     if matches!(method.as_str(), "thread/archive" | "thread/delete") {
@@ -891,6 +1380,13 @@ pub async fn codex_v2_request(
         }
     }
     let output = manager.dispatch(&connection_id, request);
+    if method == "thread/memoryMode/set" && output.response.get("error").is_none() {
+        if let (Some(thread_id), Some(mode)) = (thread_id.as_deref(), requested_memory_mode) {
+            memory_runtime(&app, &state)?
+                .set_thread_mode(thread_id, mode)
+                .map_err(|error| format!("保存 Thread Memory Mode 失败：{error}"))?;
+        }
+    }
     if method == "turn/steer" && output.response.get("error").is_none() {
         if let (Some(thread_id), Some(turn_id)) =
             (thread_id.as_deref(), requested_turn_id.as_deref())
@@ -921,6 +1417,36 @@ pub async fn codex_v2_request(
         }
     }
     emit_notifications(&app, &output.notifications)?;
+
+    if method == "thread/start"
+        && output.response.get("error").is_none()
+        && !thread_start_ephemeral
+        && !thread_start_is_background
+        && memories_config(&app).generate_memories
+    {
+        if let (Some(thread_id), Some(model), Some(model_provider)) = (
+            output
+                .response
+                .pointer("/result/thread/id")
+                .and_then(Value::as_str),
+            output
+                .response
+                .pointer("/result/model")
+                .and_then(Value::as_str),
+            output
+                .response
+                .pointer("/result/modelProvider")
+                .and_then(Value::as_str),
+        ) {
+            launch_memory_pipeline(
+                &app,
+                manager.clone(),
+                thread_id.to_owned(),
+                model.to_owned(),
+                model_provider.to_owned(),
+            );
+        }
+    }
 
     let starts_new_turn = method == "turn/start"
         && output
@@ -3424,6 +3950,23 @@ async fn run_turn_executor(
     let initial = manager
         .turn_execution_snapshot(&thread_id, &turn_id)
         .map_err(core_model_error)?;
+    let memory_config = memories_config(&app);
+    let memory = memory_runtime(&app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
+    let memory_mode = match initial.memory_mode.as_str() {
+        "disabled" => ThreadMemoryMode::Disabled,
+        "polluted" => ThreadMemoryMode::Polluted,
+        _ => ThreadMemoryMode::Enabled,
+    };
+    memory
+        .set_thread_mode(&thread_id, memory_mode)
+        .map_err(|error| ModelError::Consumer(error.to_string()))?;
+    let memory_instructions = if initial.review.is_none() {
+        memory
+            .developer_instructions(initial.memory_mode == "enabled" && memory_config.use_memories)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?
+    } else {
+        None
+    };
     let collaboration_identity = manager
         .collaboration_identity(&thread_id)
         .map_err(core_model_error)?;
@@ -3491,6 +4034,10 @@ async fn run_turn_executor(
         initial.model_context_window,
         initial.cwd.clone(),
     );
+    if initial.memory_mode == "enabled" && memory_config.use_memories {
+        projection =
+            projection.with_memory(memory.clone(), memory_config.disable_on_external_context);
+    }
     if initial.review.is_some() {
         projection.suppress_agent_messages = true;
     }
@@ -3586,6 +4133,18 @@ async fn run_turn_executor(
             output_schema = Some(schema);
         }
         let mut request = response_request(&snapshot, output_schema.clone(), tool_specs);
+        if !projection.memory_polluted() {
+            if let Some(instructions) = &memory_instructions {
+                request.input.insert(
+                    0,
+                    json!({
+                        "type":"message",
+                        "role":"developer",
+                        "content":[{"type":"input_text","text":instructions}]
+                    }),
+                );
+            }
+        }
         if initial.review.is_some() {
             request.instructions = REVIEW_RUBRIC.to_owned();
         }
@@ -3614,6 +4173,17 @@ async fn run_turn_executor(
         }
         let tool_calls = projection.take_tool_calls();
         if !tool_calls.is_empty() {
+            if memory_config.disable_on_external_context
+                && tool_calls.iter().any(|call| {
+                    call.tool_name
+                        .namespace
+                        .as_deref()
+                        .is_some_and(|namespace| namespace != "memories")
+                })
+            {
+                mark_memory_polluted(&manager, &memory, &thread_id)?;
+                projection.memory_polluted = true;
+            }
             let input_activity = turn_input_activity_token(&app, &thread_id, &turn_id);
             if manager
                 .has_pending_turn_input(&thread_id, &turn_id)
@@ -4465,6 +5035,228 @@ fn record_runtime_world_state(
     Ok(())
 }
 
+#[derive(Clone)]
+struct MemoryToolHandler {
+    runtime: MemoryRuntime,
+    name: &'static str,
+}
+
+impl MemoryToolHandler {
+    fn handler(runtime: MemoryRuntime, name: &'static str) -> Arc<dyn ToolHandler> {
+        Arc::new(Self { runtime, name })
+    }
+
+    fn arguments(invocation: &ToolInvocation) -> Result<Value, ToolError> {
+        let ToolPayload::Function { arguments } = &invocation.call.payload else {
+            return Err(ToolError::InvalidCall(
+                "memory tools require function arguments".into(),
+            ));
+        };
+        if arguments.trim().is_empty() {
+            return Ok(json!({}));
+        }
+        serde_json::from_str(arguments)
+            .map_err(|error| ToolError::InvalidCall(format!("invalid memory arguments: {error}")))
+    }
+}
+
+impl ToolHandler for MemoryToolHandler {
+    fn tool_name(&self) -> ToolName {
+        ToolName::namespaced("memories", self.name)
+    }
+
+    fn spec(&self) -> ToolSpec {
+        let (description, properties, required) = match self.name {
+            "list" => (
+                "List entries in the managed memory folder.",
+                json!({
+                    "path":{"type":["string","null"]},
+                    "cursor":{"type":["string","null"]},
+                    "max_results":{"type":["integer","null"],"minimum":1,"maximum":2000}
+                }),
+                json!([]),
+            ),
+            "read" => (
+                "Read a bounded line range from one managed memory file.",
+                json!({
+                    "path":{"type":"string"},
+                    "line_offset":{"type":["integer","null"],"minimum":1},
+                    "max_lines":{"type":["integer","null"],"minimum":1},
+                    "max_tokens":{"type":["integer","null"],"minimum":1}
+                }),
+                json!(["path"]),
+            ),
+            "search" => (
+                "Search managed memory files and return line-numbered evidence.",
+                json!({
+                    "queries":{"type":"array","minItems":1,"items":{"type":"string"}},
+                    "path":{"type":["string","null"]},
+                    "cursor":{"type":["string","null"]},
+                    "match_mode":{"oneOf":[
+                        {"type":"object","additionalProperties":false,"properties":{"type":{"const":"any"}},"required":["type"]},
+                        {"type":"object","additionalProperties":false,"properties":{"type":{"const":"all_on_same_line"}},"required":["type"]},
+                        {"type":"object","additionalProperties":false,"properties":{"type":{"const":"all_within_lines"},"line_count":{"type":"integer","minimum":1}},"required":["type","line_count"]}
+                    ]},
+                    "context_lines":{"type":["integer","null"],"minimum":0},
+                    "case_sensitive":{"type":["boolean","null"]},
+                    "normalized":{"type":["boolean","null"]},
+                    "max_results":{"type":["integer","null"],"minimum":1,"maximum":200}
+                }),
+                json!(["queries"]),
+            ),
+            "add_ad_hoc_note" => (
+                "Add one immutable memory update note only after an explicit user request.",
+                json!({"filename":{"type":"string"},"note":{"type":"string"}}),
+                json!(["filename", "note"]),
+            ),
+            _ => ("Unknown memory tool.", json!({}), json!([])),
+        };
+        let mut spec = ToolSpec::function(
+            self.tool_name(),
+            description,
+            json!({
+                "type":"object",
+                "additionalProperties":false,
+                "properties":properties,
+                "required":required
+            }),
+        );
+        spec.namespace_description =
+            Some("Read and update the source-native Codex memory workspace.".into());
+        spec
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        self.name != "add_ad_hoc_note"
+    }
+
+    fn handle(&self, invocation: ToolInvocation) -> ToolFuture<'_> {
+        Box::pin(async move {
+            let arguments = Self::arguments(&invocation)?;
+            let output = match self.name {
+                "list" => {
+                    let page = self
+                        .runtime
+                        .list(
+                            arguments.get("path").and_then(Value::as_str),
+                            arguments.get("cursor").and_then(Value::as_str),
+                            arguments
+                                .get("max_results")
+                                .and_then(Value::as_u64)
+                                .and_then(|value| usize::try_from(value).ok())
+                                .unwrap_or(tietiezhi_agent_memory::DEFAULT_LIST_MAX_RESULTS),
+                        )
+                        .map_err(|error| ToolError::Handler(error.to_string()))?;
+                    json!({
+                        "path":arguments.get("path").cloned().unwrap_or(Value::Null),
+                        "entries":page.data,
+                        "next_cursor":page.next_cursor,
+                        "truncated":page.truncated
+                    })
+                }
+                "read" => self
+                    .runtime
+                    .read(
+                        arguments
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| ToolError::InvalidCall("path is required".into()))?,
+                        arguments
+                            .get("line_offset")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| usize::try_from(value).ok())
+                            .unwrap_or(1),
+                        arguments
+                            .get("max_lines")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| usize::try_from(value).ok()),
+                        arguments
+                            .get("max_tokens")
+                            .and_then(Value::as_u64)
+                            .and_then(|value| usize::try_from(value).ok())
+                            .unwrap_or(tietiezhi_agent_memory::DEFAULT_READ_MAX_TOKENS),
+                    )
+                    .map_err(|error| ToolError::Handler(error.to_string()))?,
+                "search" => {
+                    let queries = arguments
+                        .get("queries")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| ToolError::InvalidCall("queries are required".into()))?
+                        .iter()
+                        .map(|query| {
+                            query.as_str().map(str::to_owned).ok_or_else(|| {
+                                ToolError::InvalidCall("queries must contain strings".into())
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let mode = match arguments
+                        .pointer("/match_mode/type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("any")
+                    {
+                        "any" => SearchMatchMode::Any,
+                        "all_on_same_line" => SearchMatchMode::AllOnSameLine,
+                        "all_within_lines" => SearchMatchMode::AllWithinLines {
+                            line_count: arguments
+                                .pointer("/match_mode/line_count")
+                                .and_then(Value::as_u64)
+                                .and_then(|value| usize::try_from(value).ok())
+                                .unwrap_or(1),
+                        },
+                        other => {
+                            return Err(ToolError::InvalidCall(format!(
+                                "unknown match_mode `{other}`"
+                            )))
+                        }
+                    };
+                    self.runtime
+                        .search(
+                            queries,
+                            mode,
+                            arguments.get("path").and_then(Value::as_str),
+                            arguments.get("cursor").and_then(Value::as_str),
+                            arguments
+                                .get("context_lines")
+                                .and_then(Value::as_u64)
+                                .and_then(|value| usize::try_from(value).ok())
+                                .unwrap_or(2),
+                            arguments
+                                .get("case_sensitive")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            arguments
+                                .get("normalized")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(true),
+                            arguments
+                                .get("max_results")
+                                .and_then(Value::as_u64)
+                                .and_then(|value| usize::try_from(value).ok())
+                                .unwrap_or(tietiezhi_agent_memory::DEFAULT_SEARCH_MAX_RESULTS),
+                        )
+                        .map_err(|error| ToolError::Handler(error.to_string()))?
+                }
+                "add_ad_hoc_note" => {
+                    let filename = arguments
+                        .get("filename")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| ToolError::InvalidCall("filename is required".into()))?;
+                    let note = arguments
+                        .get("note")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| ToolError::InvalidCall("note is required".into()))?;
+                    self.runtime
+                        .add_ad_hoc_note(filename, note)
+                        .map_err(|error| ToolError::Handler(error.to_string()))?;
+                    json!({})
+                }
+                other => return Err(ToolError::Unknown(format!("memories.{other}"))),
+            };
+            Ok(ToolOutput::success(output))
+        })
+    }
+}
+
 async fn turn_tool_runtime(
     app: &AppHandle,
     manager: &ThreadManager,
@@ -4483,6 +5275,19 @@ async fn turn_tool_runtime(
         web_search_handler(),
         update_plan_handler(),
     ];
+    let memory_config = memories_config(app);
+    if snapshot.memory_mode == "enabled"
+        && memory_config.use_memories
+        && memory_config.dedicated_tools
+    {
+        let runtime =
+            memory_runtime(app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
+        handlers.extend(
+            ["add_ad_hoc_note", "list", "read", "search"]
+                .into_iter()
+                .map(|name| MemoryToolHandler::handler(runtime.clone(), name)),
+        );
+    }
     if snapshot.review.is_none() {
         let collaboration =
             collaboration_runtime(app, &app.state::<AppState>()).map_err(ModelError::Consumer)?;
@@ -6063,6 +6868,9 @@ struct ResponseProjection {
     cwd: std::path::PathBuf,
     patch_inputs: HashMap<String, String>,
     patch_items_started: HashSet<String>,
+    memory: Option<MemoryRuntime>,
+    pollute_on_external_context: bool,
+    memory_polluted: bool,
 }
 
 impl ResponseProjection {
@@ -6087,7 +6895,16 @@ impl ResponseProjection {
             cwd,
             patch_inputs: HashMap::new(),
             patch_items_started: HashSet::new(),
+            memory: None,
+            pollute_on_external_context: false,
+            memory_polluted: false,
         }
+    }
+
+    fn with_memory(mut self, memory: MemoryRuntime, pollute_on_external_context: bool) -> Self {
+        self.memory = Some(memory);
+        self.pollute_on_external_context = pollute_on_external_context;
+        self
     }
 
     fn apply(
@@ -6114,7 +6931,16 @@ impl ResponseProjection {
                     .model_item_started(thread_id, turn_id, item)
                     .map_err(core_model_error)
             }
-            ResponseEvent::OutputItemDone(item) => {
+            ResponseEvent::OutputItemDone(mut item) => {
+                if self.pollute_on_external_context
+                    && item.get("type").and_then(Value::as_str) == Some("web_search_call")
+                {
+                    if let Some(memory) = &self.memory {
+                        mark_memory_polluted(manager, memory, thread_id)?;
+                    }
+                    self.memory_polluted = true;
+                }
+                self.project_memory_citation(&mut item)?;
                 self.track_completed_item(&item)?;
                 if self.suppress_agent_messages && is_assistant_message(&item) {
                     self.captured_agent_text = assistant_response_text(&item);
@@ -6265,6 +7091,41 @@ impl ResponseProjection {
         Ok(())
     }
 
+    fn project_memory_citation(&self, item: &mut Value) -> Result<(), ModelError> {
+        let Some(memory) = &self.memory else {
+            return Ok(());
+        };
+        let Some(text) = assistant_response_text(item) else {
+            return Ok(());
+        };
+        let (visible, citation) = strip_and_parse_memory_citation(&text);
+        let Some(citation) = citation else {
+            return Ok(());
+        };
+        let mut replaced = false;
+        if let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) {
+            for part in content {
+                if matches!(
+                    part.get("type").and_then(Value::as_str),
+                    Some("output_text" | "text")
+                ) {
+                    part["text"] = if replaced {
+                        json!("")
+                    } else {
+                        replaced = true;
+                        json!(visible)
+                    };
+                }
+            }
+        }
+        item["memory_citation"] = serde_json::to_value(&citation)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        memory
+            .record_citation_usage(&citation)
+            .map_err(|error| ModelError::Consumer(error.to_string()))?;
+        Ok(())
+    }
+
     fn apply_patch_delta(
         &mut self,
         manager: &ThreadManager,
@@ -6333,6 +7194,10 @@ impl ResponseProjection {
         self.model_output_seen
     }
 
+    fn memory_polluted(&self) -> bool {
+        self.memory_polluted
+    }
+
     fn take_captured_agent_text(&mut self) -> Option<String> {
         self.captured_agent_text.take()
     }
@@ -6369,6 +7234,20 @@ fn core_model_error(error: tietiezhi_agent_core::RpcError) -> ModelError {
     ModelError::Consumer(format!("Codex Runtime 状态错误：{error:?}"))
 }
 
+fn mark_memory_polluted(
+    manager: &ThreadManager,
+    memory: &MemoryRuntime,
+    thread_id: &str,
+) -> Result<(), ModelError> {
+    manager
+        .mark_thread_memory_polluted(thread_id)
+        .map_err(core_model_error)?;
+    memory
+        .mark_thread_polluted(thread_id)
+        .map_err(|error| ModelError::Consumer(error.to_string()))?;
+    Ok(())
+}
+
 fn fail_turn(
     app: &AppHandle,
     manager: &ThreadManager,
@@ -6392,14 +7271,17 @@ fn fail_turn(
 mod tests {
     use super::{
         assistant_response_text, collaboration_timeline_item, compaction_response_request,
-        dispatch_windows_sandbox, empty_rate_limits, format_micro, gateway_rate_limits,
-        local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type,
-        parse_plugin_mcp_source, permission_profile_list, permission_profile_to_tool,
-        permission_profile_to_v2, plugin_enablement_edits, response_request, review_tool_allowed,
+        dispatch_windows_sandbox, empty_rate_limits, format_micro,
+        gateway_quota_allows_memory_startup, gateway_rate_limits, local_tool_timeline_item,
+        merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, parse_plugin_mcp_source,
+        permission_profile_list, permission_profile_to_tool, permission_profile_to_v2,
+        plugin_enablement_edits, response_request, review_tool_allowed,
         sanitize_collaboration_fork_history, ConfigPaths, ConfigRuntime, PluginMcpSource,
         ResponseEvent, ResponseProjection, SkillsPaths, SkillsRuntime,
     };
-    use crate::commands::gateway_auth::{GatewayPaymentChannels, GatewayQuotaView, GatewayWallet};
+    use crate::commands::gateway_auth::{
+        GatewayOwnedPackage, GatewayPaymentChannels, GatewayQuotaView, GatewayWallet,
+    };
     use serde_json::json;
     use tempfile::TempDir;
     use tietiezhi_agent_context::SUMMARIZATION_PROMPT;
@@ -6753,6 +7635,7 @@ mod tests {
             active_context_tokens: 100,
             auto_compact_token_limit: None,
             review: None,
+            memory_mode: "enabled".into(),
         };
         let base = vec![
             json!({"type":"function","name":"view_image"}),
@@ -6873,6 +7756,56 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn memory_startup_honors_the_codex_remaining_rate_limit_threshold() {
+        let package = GatewayOwnedPackage {
+            id: 1,
+            name: "primary".into(),
+            status: "active".into(),
+            meter_by: "tokens".into(),
+            quota_per_window: 10_000,
+            total_quota_cap: 10_000,
+            total_used: 7_600,
+            window_remaining: 2_400,
+            valid_until: None,
+        };
+        let quota = GatewayQuotaView {
+            wallet: GatewayWallet {
+                balance_micro: 1,
+                frozen_micro: 0,
+                total_topup_micro: 1,
+                total_spend_micro: 0,
+            },
+            packages: vec![package.clone()],
+            recent_consumption: Vec::new(),
+            payment_channels: GatewayPaymentChannels {
+                alipay: false,
+                wechat: false,
+            },
+        };
+        assert!(!gateway_quota_allows_memory_startup(&quota, 25));
+        assert!(gateway_quota_allows_memory_startup(&quota, 24));
+
+        let exhausted = GatewayQuotaView {
+            wallet: GatewayWallet {
+                balance_micro: 0,
+                frozen_micro: 0,
+                total_topup_micro: 0,
+                total_spend_micro: 0,
+            },
+            packages: vec![GatewayOwnedPackage {
+                window_remaining: 0,
+                ..package
+            }],
+            recent_consumption: Vec::new(),
+            payment_channels: GatewayPaymentChannels {
+                alipay: false,
+                wechat: false,
+            },
+        };
+        assert!(!gateway_quota_allows_memory_startup(&exhausted, 0));
     }
 
     #[test]

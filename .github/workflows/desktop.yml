@@ -67,6 +67,7 @@ jobs:
             crates/agent-core
             crates/agent-collab
             crates/agent-review
+            crates/agent-memory
             crates/agent-config
             crates/agent-skills
             crates/agent-hooks
@@ -129,6 +130,9 @@ jobs:
 
       - name: Codex Guardian and Review tests
         run: cargo test --manifest-path ../crates/agent-review/Cargo.toml
+
+      - name: Codex Chronicle memory tests
+        run: cargo test --manifest-path ../crates/agent-memory/Cargo.toml
 
       - name: Codex context and compaction tests
         run: cargo test --manifest-path ../crates/agent-context/Cargo.toml

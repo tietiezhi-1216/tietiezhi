@@ -69,6 +69,8 @@ pub struct AppState {
     pub(crate) codex_network: tietiezhi_agent_network::NetworkRuntime,
     /// Turn-scoped denial history for Codex Guardian auto-review.
     pub(crate) codex_guardian: Mutex<tietiezhi_agent_review::GuardianCircuitBreaker>,
+    /// Source-native Chronicle, citation and memory pipeline state.
+    pub(crate) codex_memory: Mutex<Option<tietiezhi_agent_memory::MemoryRuntime>>,
     /// Unstable externally supplied ChatGPT tokens are intentionally memory-only.
     pub(crate) codex_external_auth: Mutex<HashMap<String, commands::codex::ExternalAuthTokens>>,
 }
@@ -126,6 +128,7 @@ pub fn run() {
             codex_execpolicy: tietiezhi_agent_execpolicy::ExecPolicyRuntime::default(),
             codex_network: tietiezhi_agent_network::NetworkRuntime::default(),
             codex_guardian: Mutex::new(tietiezhi_agent_review::GuardianCircuitBreaker::default()),
+            codex_memory: Mutex::new(None),
             codex_external_auth: Mutex::new(HashMap::new()),
         })
         .manage(commands::hotkey::HotkeyState::default())

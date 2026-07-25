@@ -129,6 +129,8 @@ struct ThreadRecord {
     service_tier: Option<String>,
     #[serde(default)]
     goal: Option<Value>,
+    #[serde(default = "default_memory_mode")]
+    memory_mode: String,
     created_at_ms: u64,
     updated_at_ms: u64,
     recency_at_ms: Option<u64>,
@@ -168,6 +170,16 @@ pub struct CollaborationIdentity {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct MemoryRolloutCandidate {
+    pub thread_id: String,
+    pub rollout_path: PathBuf,
+    pub cwd: PathBuf,
+    pub git_branch: Option<String>,
+    pub source_updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct SubagentThreadConfig {
     pub parent_thread_id: String,
     pub agent_path: String,
@@ -198,6 +210,7 @@ pub struct TurnExecutionSnapshot {
     pub active_context_tokens: i64,
     pub auto_compact_token_limit: Option<i64>,
     pub review: Option<ResolvedReview>,
+    pub memory_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -419,16 +432,25 @@ impl ThreadManager {
         connection_id: &str,
         request: &Value,
     ) -> RpcResult<(Value, Vec<RoutedNotification>)> {
-        serde_json::from_value::<JSONRPCRequest>(request.clone())
-            .map_err(|error| RpcError::invalid(format!("invalid JSON-RPC request: {error}")))?;
-        serde_json::from_value::<ClientRequest>(request.clone())
-            .map_err(|error| RpcError::invalid(format!("invalid App Server request: {error}")))?;
-        self.state()?.connections.insert(connection_id.into());
-
         let method = request
             .get("method")
             .and_then(Value::as_str)
             .ok_or_else(|| RpcError::invalid("request method must be a string"))?;
+        let experimental_memory_method = matches!(method, "thread/memoryMode/set" | "memory/reset");
+        if !experimental_memory_method {
+            serde_json::from_value::<JSONRPCRequest>(request.clone())
+                .map_err(|error| RpcError::invalid(format!("invalid JSON-RPC request: {error}")))?;
+            serde_json::from_value::<ClientRequest>(request.clone()).map_err(|error| {
+                RpcError::invalid(format!("invalid App Server request: {error}"))
+            })?;
+        } else if !request
+            .get("id")
+            .is_some_and(|id| id.is_string() || id.is_i64() || id.is_u64())
+        {
+            return Err(RpcError::invalid("JSON-RPC request id is required"));
+        }
+        self.state()?.connections.insert(connection_id.into());
+
         let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
 
         let (result, notifications) = match method {
@@ -447,6 +469,7 @@ impl ThreadManager {
             "thread/goal/get" => (self.thread_goal_get(&params)?, Vec::new()),
             "thread/goal/clear" => self.thread_goal_clear(&params)?,
             "thread/metadata/update" => (self.thread_metadata_update(&params)?, Vec::new()),
+            "thread/memoryMode/set" => (self.thread_memory_mode_set(&params)?, Vec::new()),
             "thread/inject_items" => (self.thread_inject_items(&params)?, Vec::new()),
             "thread/rollback" => (self.thread_rollback(&params)?, Vec::new()),
             "thread/compact/start" => self.thread_compact_start(&params)?,
@@ -501,6 +524,7 @@ impl ThreadManager {
             "thread/goal/get" => validate!(ThreadGoalGetResponse),
             "thread/goal/clear" => validate!(ThreadGoalClearResponse),
             "thread/metadata/update" => validate!(ThreadMetadataUpdateResponse),
+            "thread/memoryMode/set" => Ok(()),
             "thread/inject_items" => validate!(ThreadInjectItemsResponse),
             "thread/rollback" => validate!(ThreadRollbackResponse),
             "thread/compact/start" => validate!(ThreadCompactStartResponse),
@@ -620,6 +644,16 @@ impl ThreadManager {
             personality: None,
             service_tier,
             goal: None,
+            memory_mode: if params
+                .pointer("/config/memories/generate_memories")
+                .and_then(Value::as_bool)
+                .is_some_and(|enabled| !enabled)
+            {
+                "disabled"
+            } else {
+                "enabled"
+            }
+            .into(),
             created_at_ms: now,
             updated_at_ms: now,
             recency_at_ms: Some(now),
@@ -1360,6 +1394,43 @@ impl ThreadManager {
             state.loaded.insert(id, loaded);
         }
         Ok(json!({"thread": thread}))
+    }
+
+    fn thread_memory_mode_set(&self, params: &Value) -> RpcResult<Value> {
+        let id = required_string(params, "threadId")?;
+        validate_thread_id(&id)?;
+        let mode = required_string(params, "mode")?;
+        if !matches!(mode.as_str(), "enabled" | "disabled") {
+            return Err(RpcError::invalid(
+                "memoryMode must be `enabled` or `disabled`",
+            ));
+        }
+        self.set_thread_memory_mode(&id, &mode)?;
+        Ok(json!({}))
+    }
+
+    pub fn mark_thread_memory_polluted(&self, thread_id: &str) -> RpcResult<bool> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let (loaded, _) = self.thread_for_update_locked(thread_id, &state)?;
+        if loaded.record.memory_mode != "enabled" {
+            return Ok(false);
+        }
+        drop(state);
+        self.set_thread_memory_mode(thread_id, "polluted")?;
+        Ok(true)
+    }
+
+    fn set_thread_memory_mode(&self, thread_id: &str, mode: &str) -> RpcResult<()> {
+        let mut state = self.state()?;
+        let (mut loaded, was_loaded) = self.thread_for_update_locked(thread_id, &state)?;
+        loaded.record.memory_mode = mode.to_owned();
+        loaded.record.updated_at_ms = now_ms();
+        self.persist_loaded(&mut loaded)?;
+        if was_loaded {
+            state.loaded.insert(thread_id.to_owned(), loaded);
+        }
+        Ok(())
     }
 
     fn thread_inject_items(&self, params: &Value) -> RpcResult<Value> {
@@ -2176,6 +2247,7 @@ impl ThreadManager {
             active_context_tokens: loaded.active_context_tokens,
             auto_compact_token_limit: None,
             review: loaded.active_review,
+            memory_mode: loaded.record.memory_mode,
         })
     }
 
@@ -2839,6 +2911,74 @@ impl ThreadManager {
             agent_nickname: loaded.record.agent_nickname.clone(),
             agent_role: loaded.record.agent_role.clone(),
         })
+    }
+
+    pub fn memory_rollout_candidates(
+        &self,
+        current_thread_id: &str,
+    ) -> RpcResult<Vec<MemoryRolloutCandidate>> {
+        validate_thread_id(current_thread_id)?;
+        let metadata = self.inner.store.list_threads(false).map_err(state_error)?;
+        let mut candidates = Vec::new();
+        for metadata in metadata {
+            if metadata.id == current_thread_id {
+                continue;
+            }
+            let record = self.record_from_metadata(&metadata)?;
+            if record.ephemeral
+                || record.parent_thread_id.is_some()
+                || record.memory_mode != "enabled"
+            {
+                continue;
+            }
+            candidates.push(MemoryRolloutCandidate {
+                thread_id: record.id,
+                rollout_path: metadata.rollout_path,
+                cwd: record.cwd,
+                git_branch: record.git_info.and_then(|git| git.branch),
+                source_updated_at: i64::try_from(metadata.updated_at_ms / 1_000)
+                    .unwrap_or(i64::MAX),
+            });
+        }
+        candidates.sort_by(|left, right| {
+            right
+                .source_updated_at
+                .cmp(&left.source_updated_at)
+                .then(right.thread_id.cmp(&left.thread_id))
+        });
+        Ok(candidates)
+    }
+
+    pub fn memory_rollout_text(&self, thread_id: &str, token_limit: usize) -> RpcResult<String> {
+        validate_thread_id(thread_id)?;
+        let metadata = self.metadata(thread_id)?;
+        let recovery = self
+            .inner
+            .store
+            .recover_rollout(&metadata.rollout_path)
+            .map_err(state_error)?;
+        let mut lines = recovery
+            .response_items
+            .into_iter()
+            .filter(memory_relevant_response_item)
+            .map(|item| serde_json::to_string(&item).map_err(json_error))
+            .collect::<RpcResult<Vec<_>>>()?;
+        let max_chars = token_limit.max(1).saturating_mul(4);
+        while lines.iter().map(String::len).sum::<usize>() > max_chars && lines.len() > 1 {
+            lines.remove(0);
+        }
+        let mut output = lines.join("\n");
+        if output.chars().count() > max_chars {
+            output = output
+                .chars()
+                .rev()
+                .take(max_chars)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+        }
+        Ok(output)
     }
 
     pub fn configure_subagent_thread(
@@ -4489,6 +4629,11 @@ impl ThreadManager {
             personality: None,
             service_tier: self.inner.defaults.service_tier.clone(),
             goal: None,
+            memory_mode: meta
+                .get("memory_mode")
+                .and_then(Value::as_str)
+                .unwrap_or("enabled")
+                .to_owned(),
             created_at_ms,
             updated_at_ms: created_at_ms,
             recency_at_ms: Some(created_at_ms),
@@ -4551,6 +4696,7 @@ impl ThreadManager {
             personality: None,
             service_tier: self.inner.defaults.service_tier.clone(),
             goal: None,
+            memory_mode: default_memory_mode(),
             created_at_ms: metadata.created_at_ms,
             updated_at_ms: metadata.updated_at_ms,
             recency_at_ms: Some(metadata.updated_at_ms),
@@ -4863,6 +5009,24 @@ fn append_model_history(loaded: &mut LoadedThread, item: Value) {
         loaded.active_context_tokens = loaded.active_context_tokens.saturating_add(added_tokens);
     } else {
         loaded.active_context_tokens = estimate_history_tokens(&loaded.injected_items);
+    }
+}
+
+fn memory_relevant_response_item(item: &Value) -> bool {
+    match item.get("type").and_then(Value::as_str) {
+        Some("message") => matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("user" | "assistant")
+        ),
+        Some(
+            "function_call"
+            | "function_call_output"
+            | "custom_tool_call"
+            | "custom_tool_call_output"
+            | "tool_search_call"
+            | "tool_search_output",
+        ) => true,
+        _ => false,
     }
 }
 
@@ -5874,7 +6038,10 @@ fn response_item_to_v2(item: &Value) -> RpcResult<Option<Value>> {
                 "id": required_item_string(item, "id", "assistant response item")?,
                 "text": text,
                 "phase": item.get("phase").cloned().unwrap_or(Value::Null),
-                "memoryCitation": Value::Null
+                "memoryCitation": item
+                    .get("memory_citation")
+                    .cloned()
+                    .unwrap_or(Value::Null)
             })))
         }
         Some("reasoning") => {
@@ -6239,6 +6406,7 @@ fn canonical_session_meta(record: &ThreadRecord, compact_window: &CompactWindow)
         ("source".into(), record.source.clone()),
         ("model_provider".into(), json!(record.model_provider)),
         ("history_mode".into(), json!(record.history_mode)),
+        ("memory_mode".into(), json!(record.memory_mode)),
         (
             "context_window".into(),
             json!({"window_id": compact_window.window_id.to_string()}),
@@ -6305,6 +6473,10 @@ fn required_string(params: &Value, key: &str) -> RpcResult<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| RpcError::invalid(format!("{key} must be a non-empty string")))
+}
+
+fn default_memory_mode() -> String {
+    "enabled".into()
 }
 
 fn optional_string(params: &Value, key: &str) -> Option<String> {
@@ -6475,6 +6647,90 @@ mod tests {
 
     fn start(manager: &ThreadManager, connection: &str) -> DispatchOutput {
         manager.dispatch(connection, request(1, "thread/start", json!({})))
+    }
+
+    #[test]
+    fn memory_mode_switch_pollution_and_restart_use_canonical_session_state() {
+        let (temp, manager) = manager();
+        let started = manager.dispatch(
+            "desktop",
+            request(
+                1,
+                "thread/start",
+                json!({"config":{"memories":{"generate_memories":false}}}),
+            ),
+        );
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let enabled = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "thread/memoryMode/set",
+                json!({"threadId":thread_id,"mode":"enabled"}),
+            ),
+        );
+        assert_eq!(result(&enabled), &json!({}));
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                3,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"remember this","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            manager
+                .turn_execution_snapshot(&thread_id, &turn_id)
+                .unwrap()
+                .memory_mode,
+            "enabled"
+        );
+        manager.complete_turn(&thread_id, &turn_id, None).unwrap();
+        assert!(manager.mark_thread_memory_polluted(&thread_id).unwrap());
+        assert!(!manager.mark_thread_memory_polluted(&thread_id).unwrap());
+        drop(manager);
+
+        let reopened = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "gpt-test".into(),
+                model_provider: "test-provider".into(),
+                cwd: temp.path().join("workspace"),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        reopened.dispatch(
+            "desktop",
+            request(4, "thread/resume", json!({"threadId":thread_id})),
+        );
+        let turn = reopened.dispatch(
+            "desktop",
+            request(
+                5,
+                "turn/start",
+                json!({
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"continue","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap();
+        assert_eq!(
+            reopened
+                .turn_execution_snapshot(&thread_id, turn_id)
+                .unwrap()
+                .memory_mode,
+            "polluted"
+        );
     }
 
     #[test]
@@ -7821,12 +8077,25 @@ mod tests {
             "type":"message",
             "id":"message_1",
             "role":"assistant",
-            "content":[{"type":"output_text","text":"answer"}]
+            "content":[{"type":"output_text","text":"answer"}],
+            "memory_citation":{
+                "entries":[{
+                    "path":"MEMORY.md",
+                    "lineStart":2,
+                    "lineEnd":4,
+                    "note":"used fact"
+                }],
+                "threadIds":[thread_id]
+            }
         });
         let completed = manager
             .model_item_completed(&thread_id, &turn_id, completed_message)
             .unwrap();
         assert_eq!(completed[0].method, "item/completed");
+        assert_eq!(
+            completed[0].params["item"]["memoryCitation"]["entries"][0]["path"],
+            "MEMORY.md"
+        );
 
         let sleep_item = json!({
             "type":"sleep",

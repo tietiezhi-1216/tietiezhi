@@ -1298,9 +1298,9 @@
     {
       "id": "R28",
       "name": "Memory",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "Chronicle 仅使用当前 Responses Provider；实验 Memory 方法未写入固定 stable Schema，R38 前继续保留协议兼容测试。",
+      "evidence": "crates/agent-memory Chronicle 作业/文件/引用/工具/迁移测试；crates/agent-core Thread memory mode、污染恢复与 memoryCitation；desktop Responses、额度阈值和实验请求接线；docs/CODEX-MEMORY.md"
     },
     {
       "id": "R29",

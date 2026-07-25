@@ -66,7 +66,7 @@
 | R25 | Plan 与用户输入 | 已完成 | crates/agent-core/src/lib.rs; crates/agent-tools/src/builtins.rs; crates/agent-approval/src/lib.rs; desktop/src-tauri/src/commands/codex.rs; desktop/src/features/chat/codex-approval-prompt.tsx; docs/CODEX-PLAN-GOALS.md | The unified Item timeline consumes these notifications in R31; the current reverse-request component is SSR-verified. |
 | R26 | Collaboration | 已完成 | crates/agent-collab; crates/agent-core/src/lib.rs CollaborationIdentity and response_history_tail; desktop/src-tauri/src/commands/codex.rs DesktopCollaborationHost and protocol-exact Item projection; docs/CODEX-COLLABORATION.md | Subagents inherit the selected execution environment; Git Worktree isolation is applied by R29 rather than duplicating directories in the collaboration control plane. |
 | R27 | Guardian 与 Review | 已完成 | crates/agent-review; crates/agent-core review lifecycle and guardian audit rollout; desktop Responses executor and approval integration; docs/CODEX-REVIEW-GUARDIAN.md | Guardian is an untrusted model reviewer and never expands Sandbox or durable approval scope; failures and timeouts fail closed. Review shares the selected environment but disables Web, image, Goal/Plan and collaboration tools. |
-| R28 | Memory | 待开始 |  |  |
+| R28 | Memory | 已完成 | crates/agent-memory Chronicle 作业/文件/引用/工具/迁移测试；crates/agent-core Thread memory mode、污染恢复与 memoryCitation；desktop Responses、额度阈值和实验请求接线；docs/CODEX-MEMORY.md | Chronicle 仅使用当前 Responses Provider；实验 Memory 方法未写入固定 stable Schema，R38 前继续保留协议兼容测试。 |
 | R29 | Git 与 Worktree | 待开始 |  |  |
 | R30 | 集成终端 | 待开始 |  |  |
 | R31 | Desktop 时间线 | 待开始 |  |  |
