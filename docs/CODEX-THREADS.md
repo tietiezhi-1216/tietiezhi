@@ -57,7 +57,7 @@ R5 已实现并通过固定协议类型校验：
 
 SQLite v3 的 `canonical_json` 是查询缓存。状态库损坏、丢失或重建后，`ThreadManager` 扫描受管 rollout 的 canonical `session_meta` 恢复 Thread 索引；R4 的旧 `threadId` 元数据仍由会话迁移层处理，不会被误判为新 Runtime Thread。
 
-`response_item` 与 `event_msg` 是追加式历史。临时 Thread 只存在于内存，不写 SQLite 或 rollout。R6 会把 Turn 开始、Item、完成和中断也改为 canonical rollout 投影，并移除当前 Turn 快照缓存。
+`response_item`、`turn_context` 与 `event_msg` 是追加式历史。临时 Thread 只存在于内存，不写 SQLite 或 rollout。R6 已把 Turn 开始、Item、完成和中断改为 canonical rollout 投影，并移除 SQLite `canonical_json` 内的 Turn 快照缓存。具体格式和恢复语义见 `docs/CODEX-TURNS.md`。
 
 ## 迁移兼容
 
@@ -81,4 +81,4 @@ pnpm typecheck
 pnpm build
 ```
 
-`agent-core` 测试覆盖协议响应、UUIDv7、重启恢复、SQLite 损坏重建、临时 Thread、分叉、归档、删除、订阅、分页、元数据、注入 Item、回滚、Guardian 路由和全部 R5 通知发布器。
+`agent-core` 测试覆盖协议响应、UUIDv7、重启恢复、SQLite 损坏重建、临时 Thread、分叉、归档、删除、订阅、分页、元数据、注入 Item、回滚、Guardian 路由以及 Thread、Turn 和 Item 通知发布器。

@@ -16,17 +16,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tietiezhi_agent_protocol::{
     ClientRequest, JSONRPCRequest, JSONRPCResponse, ServerNotification,
     ThreadApproveGuardianDeniedActionResponse, ThreadArchiveResponse, ThreadDeleteResponse,
-    ThreadForkResponse, ThreadInjectItemsResponse, ThreadListResponse, ThreadLoadedListResponse,
-    ThreadMetadataUpdateResponse, ThreadReadResponse, ThreadResumeResponse, ThreadRollbackResponse,
-    ThreadSetNameResponse, ThreadStartResponse, ThreadUnarchiveResponse, ThreadUnsubscribeResponse,
+    ThreadForkResponse, ThreadInjectItemsResponse, ThreadItem, ThreadListResponse,
+    ThreadLoadedListResponse, ThreadMetadataUpdateResponse, ThreadReadResponse,
+    ThreadResumeResponse, ThreadRollbackResponse, ThreadSetNameResponse, ThreadStartResponse,
+    ThreadUnarchiveResponse, ThreadUnsubscribeResponse, TurnInterruptResponse, TurnStartResponse,
+    TurnSteerResponse,
 };
-use tietiezhi_agent_state::{RolloutAppender, StateError, StateStore, ThreadMetadata};
+use tietiezhi_agent_state::{
+    RecoveredRolloutItem, RecoveredRolloutItemKind, RolloutAppender, StateError, StateStore,
+    ThreadMetadata,
+};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
 const THREAD_LIST_MAX_LIMIT: usize = 100;
+const MAX_USER_INPUT_TEXT_CHARS: usize = 1 << 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -94,12 +100,42 @@ struct ThreadRecord {
     approvals_reviewer: String,
     sandbox: Value,
     reasoning_effort: Option<String>,
+    #[serde(default)]
+    reasoning_summary: Option<Value>,
+    #[serde(default)]
+    personality: Option<Value>,
     service_tier: Option<String>,
     created_at_ms: u64,
     updated_at_ms: u64,
     recency_at_ms: Option<u64>,
-    #[serde(default)]
+    /// R5 compatibility input only. R6 no longer writes Turn snapshots into
+    /// SQLite canonical metadata; rollout events are authoritative.
+    #[serde(default, skip_serializing)]
     turns: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnInputBatch {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub client_user_message_id: Option<String>,
+    pub item_id: Option<String>,
+    pub input: Vec<Value>,
+    pub output_schema: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct AcceptedClientMessage {
+    turn_id: String,
+    input: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TurnProjection {
+    turns: Vec<Value>,
+    active_turn_id: Option<String>,
+    accepted_client_messages: HashMap<String, AcceptedClientMessage>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +143,11 @@ struct LoadedThread {
     record: ThreadRecord,
     metadata: Option<ThreadMetadata>,
     status: Value,
+    turns: Vec<Value>,
+    active_turn_id: Option<String>,
+    pending_inputs: Vec<TurnInputBatch>,
+    accepted_client_messages: HashMap<String, AcceptedClientMessage>,
+    unload_when_idle: bool,
     guardian_approvals: Vec<Value>,
     injected_items: Vec<Value>,
 }
@@ -156,6 +197,8 @@ pub struct DispatchOutput {
 pub struct RpcError {
     pub code: i64,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 impl RpcError {
@@ -163,6 +206,23 @@ impl RpcError {
         Self {
             code: -32602,
             message: message.into(),
+            data: None,
+        }
+    }
+
+    fn invalid_request(message: impl Into<String>) -> Self {
+        Self {
+            code: -32600,
+            message: message.into(),
+            data: None,
+        }
+    }
+
+    fn invalid_with_data(message: impl Into<String>, data: Value) -> Self {
+        Self {
+            code: -32602,
+            message: message.into(),
+            data: Some(data),
         }
     }
 
@@ -170,6 +230,7 @@ impl RpcError {
         Self {
             code: -32601,
             message: format!("method not found: {method}"),
+            data: None,
         }
     }
 
@@ -177,6 +238,7 @@ impl RpcError {
         Self {
             code: -32603,
             message: message.into(),
+            data: None,
         }
     }
 }
@@ -227,16 +289,19 @@ impl ThreadManager {
                     notifications,
                 }
             }
-            Err(error) => DispatchOutput {
-                response: json!({
-                    "id": id,
-                    "error": {
-                        "code": error.code,
-                        "message": error.message
-                    }
-                }),
-                notifications: Vec::new(),
-            },
+            Err(error) => {
+                let mut response_error = json!({
+                    "code": error.code,
+                    "message": error.message
+                });
+                if let Some(data) = error.data {
+                    response_error["data"] = data;
+                }
+                DispatchOutput {
+                    response: json!({"id": id, "error": response_error}),
+                    notifications: Vec::new(),
+                }
+            }
         }
     }
 
@@ -276,6 +341,9 @@ impl ThreadManager {
                 self.thread_approve_guardian_denied_action(&params)?,
                 Vec::new(),
             ),
+            "turn/start" => self.turn_start(&params)?,
+            "turn/steer" => self.turn_steer(&params)?,
+            "turn/interrupt" => self.turn_interrupt(&params)?,
             _ => return Err(RpcError::method_not_found(method)),
         };
         self.validate_result(method, &result)?;
@@ -320,6 +388,9 @@ impl ThreadManager {
             "thread/approveGuardianDeniedAction" => {
                 validate!(ThreadApproveGuardianDeniedActionResponse)
             }
+            "turn/start" => validate!(TurnStartResponse),
+            "turn/steer" => validate!(TurnSteerResponse),
+            "turn/interrupt" => validate!(TurnInterruptResponse),
             _ => Err(RpcError::method_not_found(method)),
         }
     }
@@ -372,6 +443,8 @@ impl ThreadManager {
             approvals_reviewer,
             sandbox,
             reasoning_effort: self.inner.defaults.reasoning_effort.clone(),
+            reasoning_summary: None,
+            personality: None,
             service_tier,
             created_at_ms: now,
             updated_at_ms: now,
@@ -415,7 +488,7 @@ impl ThreadManager {
             .or_default()
             .insert(connection_id.into());
         let response =
-            self.thread_open_response(&loaded.record, &loaded.status, loaded.record.turns.clone());
+            self.thread_open_response(&loaded.record, &loaded.status, loaded.turns.clone());
         let notification = self.notification_global(
             &state,
             "thread/started",
@@ -433,20 +506,44 @@ impl ThreadManager {
         validate_thread_id(&source_id)?;
         let mut state = self.state()?;
         let source = self.load_thread_locked(&source_id, &mut state)?;
-        let mut turns = source.record.turns.clone();
-        if let Some(last_turn_id) = optional_string(params, "lastTurnId") {
+        let mut turns = source.turns.clone();
+        let last_turn_id = optional_string(params, "lastTurnId");
+        if let Some(last_turn_id) = last_turn_id.as_deref() {
             let index = turns
                 .iter()
-                .position(|turn| turn.get("id").and_then(Value::as_str) == Some(&last_turn_id))
+                .position(|turn| turn.get("id").and_then(Value::as_str) == Some(last_turn_id))
                 .ok_or_else(|| RpcError::invalid(format!("turn not found: {last_turn_id}")))?;
             if turns[index].get("status").and_then(Value::as_str) == Some("inProgress") {
                 return Err(RpcError::invalid("cannot fork through an in-progress turn"));
             }
             turns.truncate(index + 1);
+        } else if turns
+            .iter()
+            .any(|turn| turn.get("status").and_then(Value::as_str) == Some("inProgress"))
+        {
+            return Err(RpcError::invalid("cannot fork an in-progress turn"));
         }
         let now = now_ms();
         let id = Uuid::now_v7().to_string();
-        let inherited_items = source.injected_items;
+        let source_rollout_items = source
+            .metadata
+            .as_ref()
+            .map(|metadata| {
+                self.inner
+                    .store
+                    .recover_rollout(&metadata.rollout_path)
+                    .map(|recovery| recovery.rollout_items)
+                    .map_err(state_error)
+            })
+            .transpose()?;
+        let copied_rollout_items = source_rollout_items
+            .as_deref()
+            .map(|items| rollout_items_through_turn(items, last_turn_id.as_deref()))
+            .transpose()?;
+        let inherited_items = copied_rollout_items
+            .as_deref()
+            .map(response_items_from_rollout)
+            .unwrap_or_else(|| source.injected_items.clone());
         let mut record = source.record;
         record.id = id.clone();
         record.forked_from_id = Some(source_id);
@@ -459,19 +556,42 @@ impl ThreadManager {
             .get("ephemeral")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        record.turns = turns;
+        record.turns.clear();
         self.apply_open_overrides(&mut record, params)?;
         if let Some(source) = params.get("threadSource").filter(|value| !value.is_null()) {
             record.thread_source = Some(source.clone());
         }
-        let loaded = self.create_loaded_thread(record, inherited_items, &mut state)?;
+        let mut loaded = self.create_loaded_thread(record, Vec::new(), &mut state)?;
+        if let Some(items) = copied_rollout_items.as_deref() {
+            self.append_recovered_rollout_items(&loaded, items)?;
+            if !turns.is_empty()
+                && !items.iter().any(|item| {
+                    matches!(
+                        &item.item,
+                        RecoveredRolloutItemKind::EventMsg(event)
+                            if matches!(
+                                event.get("type").and_then(Value::as_str),
+                                Some("task_started" | "turn_started")
+                            )
+                    )
+                })
+            {
+                self.append_turn_snapshots(&loaded, &turns)?;
+            }
+        } else {
+            self.append_turn_snapshots(&loaded, &turns)?;
+        }
+        loaded.injected_items = inherited_items;
+        loaded.turns = turns;
+        self.persist_loaded(&mut loaded)?;
+        state.loaded.insert(id.clone(), loaded.clone());
         state
             .subscribers
             .entry(id.clone())
             .or_default()
             .insert(connection_id.into());
         let response =
-            self.thread_open_response(&loaded.record, &loaded.status, loaded.record.turns.clone());
+            self.thread_open_response(&loaded.record, &loaded.status, loaded.turns.clone());
         let notification = self.notification_global(
             &state,
             "thread/started",
@@ -485,13 +605,14 @@ impl ThreadManager {
         validate_thread_id(&id)?;
         let state = self.state()?;
         let loaded = state.loaded.get(&id).cloned();
-        let (record, status) = if let Some(loaded) = loaded {
-            (loaded.record, loaded.status)
+        let (record, status, recovered_turns) = if let Some(loaded) = loaded {
+            (loaded.record, loaded.status, loaded.turns)
         } else {
             let metadata = self.metadata(&id)?;
             (
                 self.record_from_metadata(&metadata)?,
                 json!({"type": "notLoaded"}),
+                self.turn_projection_for_metadata(&metadata)?.turns,
             )
         };
         let turns = if params
@@ -499,7 +620,7 @@ impl ThreadManager {
             .and_then(Value::as_bool)
             .unwrap_or(false)
         {
-            record.turns.clone()
+            recovered_turns
         } else {
             Vec::new()
         };
@@ -667,7 +788,19 @@ impl ThreadManager {
         let id = required_string(params, "threadId")?;
         validate_thread_id(&id)?;
         let mut state = self.state()?;
-        let loaded_before = state.loaded.remove(&id);
+        let mut loaded_before = state.loaded.remove(&id);
+        let mut notifications = Vec::new();
+        if let Some(loaded) = loaded_before.as_mut()
+            && let Some(turn_id) = loaded.active_turn_id.clone()
+        {
+            if let Err(error) =
+                self.finish_turn_locked(loaded, &turn_id, "interrupted", None, "interrupted")
+            {
+                state.loaded.insert(id.clone(), loaded.clone());
+                return Err(error);
+            }
+            notifications.extend(self.terminal_turn_notifications(&state, &id, loaded, &turn_id)?);
+        }
         let mut metadata = loaded_before
             .as_ref()
             .and_then(|loaded| loaded.metadata.clone())
@@ -682,8 +815,11 @@ impl ThreadManager {
             .store
             .upsert_metadata(&metadata)
             .map_err(state_error)?;
-        let archived = self.notification_global(&state, "thread/archived", json!({"threadId": id}));
-        let mut notifications = vec![archived];
+        notifications.push(self.notification_global(
+            &state,
+            "thread/archived",
+            json!({"threadId": id}),
+        ));
         if loaded_before.is_some() {
             notifications.push(self.notification_global(
                 &state,
@@ -727,7 +863,19 @@ impl ThreadManager {
         let id = required_string(params, "threadId")?;
         validate_thread_id(&id)?;
         let mut state = self.state()?;
-        let loaded_before = state.loaded.remove(&id);
+        let mut loaded_before = state.loaded.remove(&id);
+        let mut notifications = Vec::new();
+        if let Some(loaded) = loaded_before.as_mut()
+            && let Some(turn_id) = loaded.active_turn_id.clone()
+        {
+            if let Err(error) =
+                self.finish_turn_locked(loaded, &turn_id, "interrupted", None, "interrupted")
+            {
+                state.loaded.insert(id.clone(), loaded.clone());
+                return Err(error);
+            }
+            notifications.extend(self.terminal_turn_notifications(&state, &id, loaded, &turn_id)?);
+        }
         let metadata = loaded_before
             .as_ref()
             .and_then(|loaded| loaded.metadata.clone())
@@ -747,8 +895,11 @@ impl ThreadManager {
                 }
             }
         }
-        let deleted = self.notification_global(&state, "thread/deleted", json!({"threadId": id}));
-        let mut notifications = vec![deleted];
+        notifications.push(self.notification_global(
+            &state,
+            "thread/deleted",
+            json!({"threadId": id}),
+        ));
         if loaded_before.is_some() {
             notifications.push(self.notification_global(
                 &state,
@@ -865,16 +1016,13 @@ impl ThreadManager {
         if loaded.status.get("type").and_then(Value::as_str) == Some("active") {
             return Err(RpcError::invalid("cannot rollback an active thread"));
         }
-        if num_turns > loaded.record.turns.len() {
+        if num_turns > loaded.turns.len() {
             return Err(RpcError::invalid(format!(
                 "cannot rollback {num_turns} turns from a thread with {} turns",
-                loaded.record.turns.len()
+                loaded.turns.len()
             )));
         }
-        loaded
-            .record
-            .turns
-            .truncate(loaded.record.turns.len() - num_turns);
+        loaded.turns.truncate(loaded.turns.len() - num_turns);
         let metadata = loaded
             .metadata
             .as_ref()
@@ -889,7 +1037,7 @@ impl ThreadManager {
         appender.sync_data().map_err(state_error)?;
         loaded.record.updated_at_ms = now_ms();
         self.persist_loaded(&mut loaded)?;
-        let thread = self.thread_value(&loaded.record, &loaded.status, loaded.record.turns.clone());
+        let thread = self.thread_value(&loaded.record, &loaded.status, loaded.turns.clone());
         state.loaded.insert(id, loaded);
         Ok(json!({"thread": thread}))
     }
@@ -914,6 +1062,16 @@ impl ThreadManager {
         let should_unload = subscribers.is_empty();
         if should_unload {
             state.subscribers.remove(&id);
+            if state
+                .loaded
+                .get(&id)
+                .is_some_and(|loaded| loaded.active_turn_id.is_some())
+            {
+                if let Some(loaded) = state.loaded.get_mut(&id) {
+                    loaded.unload_when_idle = true;
+                }
+                return Ok((json!({"status": "unsubscribed"}), Vec::new()));
+            }
             state.loaded.remove(&id);
             let notification =
                 self.notification_global(&state, "thread/closed", json!({"threadId": id}));
@@ -940,6 +1098,362 @@ impl ThreadManager {
                 .expect("event presence checked above"),
         );
         Ok(json!({}))
+    }
+
+    fn turn_start(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
+        let thread_id = required_string(params, "threadId")?;
+        validate_thread_id(&thread_id)?;
+        let input = user_input(params)?;
+        validate_user_input(&input)?;
+
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(&thread_id, &state)?;
+        let client_id = optional_string(params, "clientUserMessageId");
+        if let Some(response) =
+            duplicate_turn_start_response(&loaded, client_id.as_deref(), &input)?
+        {
+            return Ok((response, Vec::new()));
+        }
+        if let Some(active_turn_id) = &loaded.active_turn_id {
+            return Err(RpcError::invalid_request(format!(
+                "thread already has an active turn: {active_turn_id}"
+            )));
+        }
+
+        self.apply_turn_overrides(&mut loaded.record, params)?;
+        let turn_id = Uuid::now_v7().to_string();
+        let now = now_ms();
+        let started_at = milliseconds_to_seconds(now);
+        let item = (!input.is_empty()).then(|| {
+            json!({
+                "type": "userMessage",
+                "id": Uuid::now_v7().to_string(),
+                "clientId": client_id,
+                "content": input
+            })
+        });
+        let turn = turn_value(
+            &turn_id,
+            item.iter().cloned().collect(),
+            "inProgress",
+            None,
+            Some(started_at),
+            None,
+            None,
+            "full",
+        );
+        self.append_turn_start_records(&loaded, &turn_id, item.as_ref(), &input, now)?;
+
+        loaded.turns.push(turn.clone());
+        loaded.active_turn_id = Some(turn_id.clone());
+        loaded.status = active_thread_status();
+        loaded.pending_inputs.push(TurnInputBatch {
+            thread_id: thread_id.clone(),
+            turn_id: turn_id.clone(),
+            client_user_message_id: client_id.clone(),
+            item_id: item
+                .as_ref()
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            input: input.clone(),
+            output_schema: params
+                .get("outputSchema")
+                .filter(|value| !value.is_null())
+                .cloned(),
+        });
+        if let Some(client_id) = client_id {
+            loaded.accepted_client_messages.insert(
+                client_id,
+                AcceptedClientMessage {
+                    turn_id: turn_id.clone(),
+                    input: input.clone(),
+                },
+            );
+        }
+        loaded.record.updated_at_ms = now;
+        loaded.record.recency_at_ms = Some(now);
+        update_preview(&mut loaded.record, &input);
+        self.persist_loaded(&mut loaded)?;
+        state.loaded.insert(thread_id.clone(), loaded);
+
+        let response_turn = turn_value(
+            &turn_id,
+            Vec::new(),
+            "inProgress",
+            None,
+            None,
+            None,
+            None,
+            "notLoaded",
+        );
+        let notification_turn = turn_value(
+            &turn_id,
+            Vec::new(),
+            "inProgress",
+            None,
+            Some(started_at),
+            None,
+            None,
+            "notLoaded",
+        );
+        let mut notifications = vec![self.checked_notification_for(
+            &state,
+            &thread_id,
+            "turn/started",
+            json!({"threadId": thread_id, "turn": notification_turn}),
+        )?];
+        if let Some(item) = item {
+            notifications.push(self.checked_notification_for(
+                &state,
+                &thread_id,
+                "item/started",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": item,
+                    "startedAtMs": now
+                }),
+            )?);
+            notifications.push(self.checked_notification_for(
+                &state,
+                &thread_id,
+                "item/completed",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "item": item,
+                    "completedAtMs": now
+                }),
+            )?);
+        }
+        notifications.push(self.checked_global_notification(
+            &state,
+            "thread/status/changed",
+            json!({"threadId": thread_id, "status": active_thread_status()}),
+        )?);
+        Ok((json!({"turn": response_turn}), notifications))
+    }
+
+    fn turn_steer(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
+        let thread_id = required_string(params, "threadId")?;
+        validate_thread_id(&thread_id)?;
+        let expected_turn_id = required_string(params, "expectedTurnId")?;
+        let input = user_input(params)?;
+        validate_user_input(&input)?;
+        if input.is_empty() {
+            return Err(RpcError::invalid_request("input must not be empty"));
+        }
+
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(&thread_id, &state)?;
+        let client_id = optional_string(params, "clientUserMessageId");
+        if let Some(client_id) = client_id.as_deref()
+            && let Some(accepted) = loaded.accepted_client_messages.get(client_id)
+        {
+            if accepted.input != input {
+                return Err(RpcError::invalid_request(
+                    "clientUserMessageId was already used with different input",
+                ));
+            }
+            return Ok((json!({"turnId": accepted.turn_id}), Vec::new()));
+        }
+        let Some(active_turn_id) = loaded.active_turn_id.clone() else {
+            return Err(RpcError::invalid_request("no active turn to steer"));
+        };
+        if active_turn_id != expected_turn_id {
+            return Err(RpcError::invalid_request(format!(
+                "expected active turn id `{expected_turn_id}` but found `{active_turn_id}`"
+            )));
+        }
+
+        let now = now_ms();
+        let item = json!({
+            "type": "userMessage",
+            "id": Uuid::now_v7().to_string(),
+            "clientId": client_id,
+            "content": input
+        });
+        self.append_user_input_records(&loaded, &active_turn_id, &item, &input, now)?;
+        upsert_turn_item(&mut loaded.turns, &active_turn_id, item.clone())?;
+        loaded.pending_inputs.push(TurnInputBatch {
+            thread_id: thread_id.clone(),
+            turn_id: active_turn_id.clone(),
+            client_user_message_id: client_id.clone(),
+            item_id: item.get("id").and_then(Value::as_str).map(str::to_owned),
+            input: input.clone(),
+            output_schema: None,
+        });
+        if let Some(client_id) = client_id {
+            loaded.accepted_client_messages.insert(
+                client_id,
+                AcceptedClientMessage {
+                    turn_id: active_turn_id.clone(),
+                    input,
+                },
+            );
+        }
+        loaded.record.updated_at_ms = now;
+        loaded.record.recency_at_ms = Some(now);
+        self.persist_loaded(&mut loaded)?;
+        state.loaded.insert(thread_id.clone(), loaded);
+
+        let notifications = vec![
+            self.checked_notification_for(
+                &state,
+                &thread_id,
+                "item/started",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": active_turn_id,
+                    "item": item,
+                    "startedAtMs": now
+                }),
+            )?,
+            self.checked_notification_for(
+                &state,
+                &thread_id,
+                "item/completed",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": active_turn_id,
+                    "item": item,
+                    "completedAtMs": now
+                }),
+            )?,
+        ];
+        Ok((json!({"turnId": active_turn_id}), notifications))
+    }
+
+    fn turn_interrupt(&self, params: &Value) -> RpcResult<(Value, Vec<RoutedNotification>)> {
+        let thread_id = required_string(params, "threadId")?;
+        validate_thread_id(&thread_id)?;
+        let requested_turn_id = params
+            .get("turnId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| RpcError::invalid("turnId must be a string"))?;
+
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(&thread_id, &state)?;
+        let active_turn_id = loaded.active_turn_id.clone();
+        let Some(active_turn_id) = active_turn_id else {
+            if requested_turn_id.is_empty() {
+                return Ok((json!({}), Vec::new()));
+            }
+            return Err(RpcError::invalid_request("no active turn to interrupt"));
+        };
+        if !requested_turn_id.is_empty() && requested_turn_id != active_turn_id {
+            return Err(RpcError::invalid_request(format!(
+                "expected active turn id {requested_turn_id} but found {active_turn_id}"
+            )));
+        }
+
+        self.finish_turn_locked(
+            &mut loaded,
+            &active_turn_id,
+            "interrupted",
+            None,
+            "interrupted",
+        )?;
+        let notifications =
+            self.terminal_turn_notifications(&state, &thread_id, &loaded, &active_turn_id)?;
+        self.store_or_unload_completed(&mut state, &thread_id, loaded);
+        Ok((json!({}), notifications))
+    }
+
+    /// Drain input accepted for an active Turn exactly once.
+    ///
+    /// R7's Responses executor consumes this queue. It is intentionally not
+    /// reconstructed after a crash: persisted in-progress Turns are marked
+    /// interrupted on resume rather than replaying external side effects.
+    pub fn take_turn_inputs(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> RpcResult<Vec<TurnInputBatch>> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let loaded = state
+            .loaded
+            .get_mut(thread_id)
+            .ok_or_else(|| RpcError::invalid(format!("thread not loaded: {thread_id}")))?;
+        if loaded.active_turn_id.as_deref() != Some(turn_id) {
+            return Err(RpcError::invalid_request(format!(
+                "turn is not active: {turn_id}"
+            )));
+        }
+        let (matching, retained): (Vec<_>, Vec<_>) = loaded
+            .pending_inputs
+            .drain(..)
+            .partition(|input| input.turn_id == turn_id);
+        loaded.pending_inputs = retained;
+        Ok(matching)
+    }
+
+    /// Complete or fail the active Turn through the same terminal state path
+    /// used by interrupts and crash recovery.
+    pub fn complete_turn(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        error: Option<Value>,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let mut state = self.state()?;
+        let mut loaded = self.loaded_thread_locked(thread_id, &state)?;
+        if loaded.active_turn_id.as_deref() != Some(turn_id) {
+            return Err(RpcError::invalid_request(format!(
+                "turn is not active: {turn_id}"
+            )));
+        }
+        let status = if error.is_some() {
+            "failed"
+        } else {
+            "completed"
+        };
+        self.finish_turn_locked(&mut loaded, turn_id, status, error, "completed")?;
+        let notifications =
+            self.terminal_turn_notifications(&state, thread_id, &loaded, turn_id)?;
+        self.store_or_unload_completed(&mut state, thread_id, loaded);
+        Ok(notifications)
+    }
+
+    pub fn turn_moderation_metadata_notification(
+        &self,
+        thread_id: &str,
+        turn_id: &str,
+        metadata: Value,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        validate_thread_id(thread_id)?;
+        let state = self.state()?;
+        let loaded = self.loaded_thread_locked(thread_id, &state)?;
+        if !loaded
+            .turns
+            .iter()
+            .any(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+        {
+            return Err(RpcError::invalid(format!("turn not found: {turn_id}")));
+        }
+        if let Some(appender) = rollout_appender(&loaded)? {
+            appender
+                .append_event(json!({
+                    "type": "turn_moderation_metadata",
+                    "turn_id": turn_id,
+                    "metadata": metadata
+                }))
+                .map_err(state_error)?;
+            appender.sync_data().map_err(state_error)?;
+        }
+        Ok(vec![self.checked_notification_for(
+            &state,
+            thread_id,
+            "turn/moderationMetadata",
+            json!({
+                "threadId": thread_id,
+                "turnId": turn_id,
+                "metadata": metadata
+            }),
+        )?])
     }
 
     pub fn set_thread_status(
@@ -1029,7 +1543,8 @@ impl ThreadManager {
         validate_thread_id(thread_id)?;
         let mut state = self.state()?;
         let mut loaded = self.load_thread_locked(thread_id, &mut state)?;
-        loaded.record.turns = turns;
+        self.append_turn_snapshots(&loaded, &turns)?;
+        loaded.turns = turns;
         loaded.record.updated_at_ms = now_ms();
         self.persist_loaded(&mut loaded)?;
         state.loaded.insert(thread_id.into(), loaded);
@@ -1053,12 +1568,344 @@ impl ThreadManager {
         Ok(self.loaded_thread_locked(thread_id, &state)?.injected_items)
     }
 
+    fn apply_turn_overrides(&self, record: &mut ThreadRecord, params: &Value) -> RpcResult<()> {
+        if let Some(cwd) = params.get("cwd").filter(|value| !value.is_null()) {
+            record.cwd = self.resolve_cwd(Some(cwd))?;
+        }
+        if let Some(policy) = params
+            .get("approvalPolicy")
+            .filter(|value| !value.is_null())
+        {
+            record.approval_policy = policy.clone();
+        }
+        if let Some(reviewer) = optional_string(params, "approvalsReviewer") {
+            record.approvals_reviewer = reviewer;
+        }
+        if let Some(sandbox) = params.get("sandboxPolicy").filter(|value| !value.is_null()) {
+            record.sandbox = sandbox.clone();
+        }
+        if let Some(model) = optional_string(params, "model") {
+            record.model = model;
+        }
+        if params.get("serviceTier").is_some() {
+            record.service_tier = optional_nullable_string(params, "serviceTier").unwrap_or(None);
+        }
+        if let Some(effort) = optional_string(params, "effort") {
+            record.reasoning_effort = Some(effort);
+        }
+        if let Some(summary) = params.get("summary").filter(|value| !value.is_null()) {
+            record.reasoning_summary = Some(summary.clone());
+        }
+        if let Some(personality) = params.get("personality").filter(|value| !value.is_null()) {
+            record.personality = Some(personality.clone());
+        }
+        Ok(())
+    }
+
+    fn append_turn_start_records(
+        &self,
+        loaded: &LoadedThread,
+        turn_id: &str,
+        item: Option<&Value>,
+        input: &[Value],
+        now: u64,
+    ) -> RpcResult<()> {
+        let Some(appender) = rollout_appender(loaded)? else {
+            return Ok(());
+        };
+        let started_at = milliseconds_to_seconds(now);
+        appender
+            .append_event(json!({
+                "type": "task_started",
+                "turn_id": turn_id,
+                "started_at": started_at,
+                "model_context_window": Value::Null,
+                "collaboration_mode_kind": "default"
+            }))
+            .map_err(state_error)?;
+        appender
+            .append_turn_context(turn_context_value(&loaded.record, turn_id))
+            .map_err(state_error)?;
+        if let Some(item) = item {
+            append_user_input_to_rollout(&appender, &loaded.record.id, turn_id, item, input, now)?;
+        }
+        appender.sync_data().map_err(state_error)
+    }
+
+    fn append_user_input_records(
+        &self,
+        loaded: &LoadedThread,
+        turn_id: &str,
+        item: &Value,
+        input: &[Value],
+        now: u64,
+    ) -> RpcResult<()> {
+        let Some(appender) = rollout_appender(loaded)? else {
+            return Ok(());
+        };
+        append_user_input_to_rollout(&appender, &loaded.record.id, turn_id, item, input, now)?;
+        appender.sync_data().map_err(state_error)
+    }
+
+    fn finish_turn_locked(
+        &self,
+        loaded: &mut LoadedThread,
+        turn_id: &str,
+        status: &str,
+        error: Option<Value>,
+        terminal_kind: &str,
+    ) -> RpcResult<()> {
+        let index = loaded
+            .turns
+            .iter()
+            .position(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+            .ok_or_else(|| RpcError::invalid(format!("turn not found: {turn_id}")))?;
+        let normalized_error = if status == "failed" {
+            Some(normalize_turn_error(error)?)
+        } else {
+            None
+        };
+        let now = now_ms();
+        let completed_at = milliseconds_to_seconds(now);
+        let started_at = loaded.turns[index].get("startedAt").and_then(Value::as_i64);
+        let duration_ms = started_at.map(|started_at| {
+            let started_at_ms = started_at.saturating_mul(1_000);
+            i64::try_from(now)
+                .unwrap_or(i64::MAX)
+                .saturating_sub(started_at_ms)
+                .max(0)
+        });
+
+        loaded.turns[index]["status"] = json!(status);
+        loaded.turns[index]["error"] = normalized_error.clone().unwrap_or(Value::Null);
+        loaded.turns[index]["completedAt"] = json!(completed_at);
+        loaded.turns[index]["durationMs"] = json!(duration_ms);
+        loaded.active_turn_id = None;
+        loaded
+            .pending_inputs
+            .retain(|input| input.turn_id != turn_id);
+        loaded.status = json!({"type": "idle"});
+        loaded.record.updated_at_ms = now;
+        loaded.record.recency_at_ms = Some(now);
+
+        if let Some(appender) = rollout_appender(loaded)? {
+            if terminal_kind == "interrupted" {
+                appender
+                    .append_event(json!({
+                        "type": "turn_aborted",
+                        "turn_id": turn_id,
+                        "reason": "interrupted",
+                        "started_at": started_at,
+                        "completed_at": completed_at,
+                        "duration_ms": duration_ms
+                    }))
+                    .map_err(state_error)?;
+            } else {
+                if let Some(error) = &normalized_error {
+                    appender
+                        .append_event(json!({
+                            "type": "error",
+                            "message": error["message"],
+                            "codex_error_info": error["codexErrorInfo"]
+                        }))
+                        .map_err(state_error)?;
+                }
+                appender
+                    .append_event(json!({
+                        "type": "turn_complete",
+                        "turn_id": turn_id,
+                        "last_agent_message": Value::Null,
+                        "error": normalized_error.as_ref().map(turn_error_to_core),
+                        "started_at": started_at,
+                        "completed_at": completed_at,
+                        "duration_ms": duration_ms,
+                        "time_to_first_token_ms": Value::Null
+                    }))
+                    .map_err(state_error)?;
+            }
+            appender.sync_data().map_err(state_error)?;
+        }
+        self.persist_loaded(loaded)
+    }
+
+    fn terminal_turn_notifications(
+        &self,
+        state: &ManagerState,
+        thread_id: &str,
+        loaded: &LoadedThread,
+        turn_id: &str,
+    ) -> RpcResult<Vec<RoutedNotification>> {
+        let turn = loaded
+            .turns
+            .iter()
+            .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
+            .cloned()
+            .ok_or_else(|| RpcError::invalid(format!("turn not found: {turn_id}")))?;
+        let mut notification_turn = turn;
+        notification_turn["items"] = json!([]);
+        notification_turn["itemsView"] = json!("notLoaded");
+        let mut notifications = vec![
+            self.checked_notification_for(
+                state,
+                thread_id,
+                "turn/completed",
+                json!({"threadId": thread_id, "turn": notification_turn}),
+            )?,
+            self.checked_global_notification(
+                state,
+                "thread/status/changed",
+                json!({"threadId": thread_id, "status": {"type": "idle"}}),
+            )?,
+        ];
+        if loaded.unload_when_idle {
+            notifications.push(self.checked_global_notification(
+                state,
+                "thread/closed",
+                json!({"threadId": thread_id}),
+            )?);
+        }
+        Ok(notifications)
+    }
+
+    fn store_or_unload_completed(
+        &self,
+        state: &mut ManagerState,
+        thread_id: &str,
+        loaded: LoadedThread,
+    ) {
+        if loaded.unload_when_idle {
+            state.loaded.remove(thread_id);
+        } else {
+            state.loaded.insert(thread_id.into(), loaded);
+        }
+    }
+
+    fn turn_projection_for_metadata(&self, metadata: &ThreadMetadata) -> RpcResult<TurnProjection> {
+        let recovery = self
+            .inner
+            .store
+            .recover_rollout(&metadata.rollout_path)
+            .map_err(state_error)?;
+        project_turns(&recovery.rollout_items)
+    }
+
+    fn append_turn_snapshots(&self, loaded: &LoadedThread, turns: &[Value]) -> RpcResult<()> {
+        let Some(appender) = rollout_appender(loaded)? else {
+            return Ok(());
+        };
+        for turn in turns {
+            let turn_id = turn
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| RpcError::invalid("turn id is required"))?;
+            appender
+                .append_event(json!({
+                    "type": "task_started",
+                    "turn_id": turn_id,
+                    "started_at": turn.get("startedAt").cloned().unwrap_or(Value::Null),
+                    "model_context_window": Value::Null,
+                    "collaboration_mode_kind": "default"
+                }))
+                .map_err(state_error)?;
+            for item in turn
+                .get("items")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let timestamp = loaded.record.created_at_ms;
+                appender
+                    .append_event(item_lifecycle_event(
+                        "item_started",
+                        &loaded.record.id,
+                        turn_id,
+                        item,
+                        "started_at_ms",
+                        timestamp,
+                    )?)
+                    .map_err(state_error)?;
+                appender
+                    .append_event(item_lifecycle_event(
+                        "item_completed",
+                        &loaded.record.id,
+                        turn_id,
+                        item,
+                        "completed_at_ms",
+                        timestamp,
+                    )?)
+                    .map_err(state_error)?;
+            }
+            match turn.get("status").and_then(Value::as_str) {
+                Some("interrupted") => {
+                    appender
+                        .append_event(json!({
+                            "type": "turn_aborted",
+                            "turn_id": turn_id,
+                            "reason": "interrupted",
+                            "started_at": turn["startedAt"],
+                            "completed_at": turn["completedAt"],
+                            "duration_ms": turn["durationMs"]
+                        }))
+                        .map_err(state_error)?;
+                }
+                Some("inProgress") => {
+                    return Err(RpcError::invalid("cannot copy an in-progress turn"));
+                }
+                _ => {
+                    appender
+                        .append_event(json!({
+                            "type": "turn_complete",
+                            "turn_id": turn_id,
+                            "last_agent_message": Value::Null,
+                            "error": turn.get("error").filter(|value| !value.is_null()).map(turn_error_to_core),
+                            "started_at": turn["startedAt"],
+                            "completed_at": turn["completedAt"],
+                            "duration_ms": turn["durationMs"],
+                            "time_to_first_token_ms": Value::Null
+                        }))
+                        .map_err(state_error)?;
+                }
+            }
+        }
+        appender.sync_data().map_err(state_error)
+    }
+
+    fn append_recovered_rollout_items(
+        &self,
+        loaded: &LoadedThread,
+        items: &[RecoveredRolloutItem],
+    ) -> RpcResult<()> {
+        let Some(appender) = rollout_appender(loaded)? else {
+            return Ok(());
+        };
+        for recovered in items {
+            match &recovered.item {
+                RecoveredRolloutItemKind::SessionMeta(_) => {}
+                RecoveredRolloutItemKind::TurnContext(context) => {
+                    appender
+                        .append_turn_context(context.clone())
+                        .map_err(state_error)?;
+                }
+                RecoveredRolloutItemKind::ResponseItem(item) => {
+                    appender
+                        .append_response_item(item.clone())
+                        .map_err(state_error)?;
+                }
+                RecoveredRolloutItemKind::EventMsg(event) => {
+                    appender.append_event(event.clone()).map_err(state_error)?;
+                }
+            }
+        }
+        appender.sync_data().map_err(state_error)
+    }
+
     fn create_loaded_thread(
         &self,
-        record: ThreadRecord,
+        mut record: ThreadRecord,
         injected_items: Vec<Value>,
         state: &mut ManagerState,
     ) -> RpcResult<LoadedThread> {
+        let legacy_turns = std::mem::take(&mut record.turns);
         let metadata = if record.ephemeral {
             None
         } else {
@@ -1092,6 +1939,11 @@ impl ThreadManager {
             record: record.clone(),
             metadata,
             status: json!({"type": "idle"}),
+            turns: legacy_turns,
+            active_turn_id: None,
+            pending_inputs: Vec::new(),
+            accepted_client_messages: HashMap::new(),
+            unload_when_idle: false,
             guardian_approvals: Vec::new(),
             injected_items,
         };
@@ -1107,20 +1959,35 @@ impl ThreadManager {
         if metadata.archived_at_ms != 0 {
             return Err(RpcError::invalid(format!("thread is archived: {id}")));
         }
-        let record = self.record_from_metadata(&metadata)?;
-        let injected_items = self
+        let mut record = self.record_from_metadata(&metadata)?;
+        let recovery = self
             .inner
             .store
             .recover_rollout(&metadata.rollout_path)
-            .map_err(state_error)?
-            .response_items;
-        let loaded = LoadedThread {
+            .map_err(state_error)?;
+        let mut projection = project_turns(&recovery.rollout_items)?;
+        if projection.turns.is_empty() && !record.turns.is_empty() {
+            projection.turns = std::mem::take(&mut record.turns);
+        }
+        let injected_items = recovery.response_items;
+        let mut loaded = LoadedThread {
             record,
             metadata: Some(metadata),
             status: json!({"type": "idle"}),
+            turns: projection.turns,
+            active_turn_id: projection.active_turn_id,
+            pending_inputs: Vec::new(),
+            accepted_client_messages: projection.accepted_client_messages,
+            unload_when_idle: false,
             guardian_approvals: Vec::new(),
             injected_items,
         };
+        // A process restart cannot safely resume an in-flight model/tool
+        // operation. Codex exposes such persisted turns as interrupted instead
+        // of replaying them and risking duplicate side effects.
+        if let Some(turn_id) = loaded.active_turn_id.clone() {
+            self.finish_turn_locked(&mut loaded, &turn_id, "interrupted", None, "interrupted")?;
+        }
         state.loaded.insert(id.into(), loaded.clone());
         Ok(loaded)
     }
@@ -1148,6 +2015,11 @@ impl ThreadManager {
                 record,
                 metadata: Some(metadata),
                 status: json!({"type": "notLoaded"}),
+                turns: Vec::new(),
+                active_turn_id: None,
+                pending_inputs: Vec::new(),
+                accepted_client_messages: HashMap::new(),
+                unload_when_idle: false,
                 guardian_approvals: Vec::new(),
                 injected_items: Vec::new(),
             },
@@ -1281,6 +2153,8 @@ impl ThreadManager {
             approvals_reviewer: self.inner.defaults.approvals_reviewer.clone(),
             sandbox: self.inner.defaults.sandbox.clone(),
             reasoning_effort: self.inner.defaults.reasoning_effort.clone(),
+            reasoning_summary: None,
+            personality: None,
             service_tier: self.inner.defaults.service_tier.clone(),
             created_at_ms,
             updated_at_ms: created_at_ms,
@@ -1331,6 +2205,8 @@ impl ThreadManager {
             approvals_reviewer: self.inner.defaults.approvals_reviewer.clone(),
             sandbox: self.inner.defaults.sandbox.clone(),
             reasoning_effort: self.inner.defaults.reasoning_effort.clone(),
+            reasoning_summary: None,
+            personality: None,
             service_tier: self.inner.defaults.service_tier.clone(),
             created_at_ms: metadata.created_at_ms,
             updated_at_ms: metadata.updated_at_ms,
@@ -1541,6 +2417,721 @@ impl ThreadManager {
             .lock()
             .map_err(|_| RpcError::internal("thread manager lock is poisoned"))
     }
+}
+
+fn user_input(params: &Value) -> RpcResult<Vec<Value>> {
+    params
+        .get("input")
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| RpcError::invalid("input must be an array"))
+}
+
+fn validate_user_input(input: &[Value]) -> RpcResult<()> {
+    let actual_chars = input
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .map(str::chars)
+        .map(Iterator::count)
+        .sum::<usize>();
+    if actual_chars > MAX_USER_INPUT_TEXT_CHARS {
+        return Err(RpcError::invalid_with_data(
+            format!("Input exceeds the maximum length of {MAX_USER_INPUT_TEXT_CHARS} characters."),
+            json!({
+                "input_error_code": "input_too_large",
+                "max_chars": MAX_USER_INPUT_TEXT_CHARS,
+                "actual_chars": actual_chars
+            }),
+        ));
+    }
+    if input.iter().any(|item| {
+        item.get("type").and_then(Value::as_str) == Some("image")
+            && item
+                .get("url")
+                .and_then(Value::as_str)
+                .is_some_and(is_remote_url)
+    }) {
+        return Err(RpcError::invalid_request(
+            "remote image URLs are not supported; use an inline data URL instead",
+        ));
+    }
+    Ok(())
+}
+
+fn is_remote_url(value: &str) -> bool {
+    value.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+    })
+}
+
+fn duplicate_turn_start_response(
+    loaded: &LoadedThread,
+    client_id: Option<&str>,
+    input: &[Value],
+) -> RpcResult<Option<Value>> {
+    let Some(client_id) = client_id else {
+        return Ok(None);
+    };
+    let Some(accepted) = loaded.accepted_client_messages.get(client_id) else {
+        return Ok(None);
+    };
+    if accepted.input != input {
+        return Err(RpcError::invalid_request(
+            "clientUserMessageId was already used with different input",
+        ));
+    }
+    let mut turn = loaded
+        .turns
+        .iter()
+        .find(|turn| turn.get("id").and_then(Value::as_str) == Some(&accepted.turn_id))
+        .cloned()
+        .ok_or_else(|| RpcError::internal("accepted message references a missing turn"))?;
+    turn["items"] = json!([]);
+    turn["itemsView"] = json!("notLoaded");
+    Ok(Some(json!({"turn": turn})))
+}
+
+fn active_thread_status() -> Value {
+    json!({"type": "active", "activeFlags": []})
+}
+
+#[allow(clippy::too_many_arguments)]
+fn turn_value(
+    id: &str,
+    items: Vec<Value>,
+    status: &str,
+    error: Option<Value>,
+    started_at: Option<i64>,
+    completed_at: Option<i64>,
+    duration_ms: Option<i64>,
+    items_view: &str,
+) -> Value {
+    json!({
+        "id": id,
+        "items": items,
+        "itemsView": items_view,
+        "status": status,
+        "error": error,
+        "startedAt": started_at,
+        "completedAt": completed_at,
+        "durationMs": duration_ms
+    })
+}
+
+fn update_preview(record: &mut ThreadRecord, input: &[Value]) {
+    if !record.preview.is_empty() {
+        return;
+    }
+    let preview = input
+        .iter()
+        .find_map(|item| match item.get("type").and_then(Value::as_str) {
+            Some("text") => item
+                .get("text")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned),
+            Some("image" | "localImage") => Some("[Image]".into()),
+            Some("audio" | "localAudio") => Some("[Audio]".into()),
+            Some("skill") => Some("[Skill]".into()),
+            Some("mention") => Some("[Mention]".into()),
+            _ => None,
+        });
+    if let Some(preview) = preview {
+        record.preview = preview;
+    }
+}
+
+fn rollout_appender(loaded: &LoadedThread) -> RpcResult<Option<RolloutAppender>> {
+    loaded
+        .metadata
+        .as_ref()
+        .map(|metadata| RolloutAppender::open(&metadata.rollout_path).map_err(state_error))
+        .transpose()
+}
+
+fn turn_context_value(record: &ThreadRecord, turn_id: &str) -> Value {
+    json!({
+        "turn_id": turn_id,
+        "cwd": record.cwd,
+        "approval_policy": record.approval_policy,
+        "approvals_reviewer": record.approvals_reviewer,
+        "sandbox_policy": record.sandbox,
+        "model": record.model,
+        "personality": record.personality,
+        "effort": record.reasoning_effort,
+        "summary": "auto"
+    })
+}
+
+fn append_user_input_to_rollout(
+    appender: &RolloutAppender,
+    thread_id: &str,
+    turn_id: &str,
+    item: &Value,
+    input: &[Value],
+    now: u64,
+) -> RpcResult<()> {
+    appender
+        .append_response_item(response_item_from_user_input(input))
+        .map_err(state_error)?;
+    appender
+        .append_event(item_lifecycle_event(
+            "item_started",
+            thread_id,
+            turn_id,
+            item,
+            "started_at_ms",
+            now,
+        )?)
+        .map_err(state_error)?;
+    appender
+        .append_event(item_lifecycle_event(
+            "item_completed",
+            thread_id,
+            turn_id,
+            item,
+            "completed_at_ms",
+            now,
+        )?)
+        .map_err(state_error)?;
+    Ok(())
+}
+
+fn item_lifecycle_event(
+    event_type: &str,
+    thread_id: &str,
+    turn_id: &str,
+    item: &Value,
+    timestamp_key: &str,
+    timestamp: u64,
+) -> RpcResult<Value> {
+    let mut event = Map::from_iter([
+        ("type".into(), json!(event_type)),
+        ("thread_id".into(), json!(thread_id)),
+        ("turn_id".into(), json!(turn_id)),
+        ("item".into(), v2_item_to_core(item)?),
+    ]);
+    event.insert(timestamp_key.into(), json!(timestamp));
+    Ok(Value::Object(event))
+}
+
+fn v2_item_to_core(item: &Value) -> RpcResult<Value> {
+    match item.get("type").and_then(Value::as_str) {
+        Some("userMessage") => Ok(json!({
+            "type": "UserMessage",
+            "id": required_item_string(item, "id", "userMessage item")?,
+            "client_id": item.get("clientId").cloned().unwrap_or(Value::Null),
+            "content": item
+                .get("content")
+                .and_then(Value::as_array)
+                .ok_or_else(|| RpcError::invalid("userMessage content is required"))?
+                .iter()
+                .map(v2_input_to_core)
+                .collect::<RpcResult<Vec<_>>>()?
+        })),
+        Some(other) => Err(RpcError::internal(format!(
+            "unsupported ThreadItem conversion to core: {other}"
+        ))),
+        None => Err(RpcError::invalid("ThreadItem type is required")),
+    }
+}
+
+fn core_item_to_v2(item: &Value) -> RpcResult<Value> {
+    match item.get("type").and_then(Value::as_str) {
+        Some("UserMessage") => Ok(json!({
+            "type": "userMessage",
+            "id": required_item_string(item, "id", "UserMessage item")?,
+            "clientId": item.get("client_id").cloned().unwrap_or(Value::Null),
+            "content": item
+                .get("content")
+                .and_then(Value::as_array)
+                .ok_or_else(|| RpcError::internal("persisted UserMessage content is missing"))?
+                .iter()
+                .map(core_input_to_v2)
+                .collect::<RpcResult<Vec<_>>>()?
+        })),
+        Some(other) => Err(RpcError::internal(format!(
+            "unsupported core TurnItem conversion: {other}"
+        ))),
+        None => Err(RpcError::internal("persisted TurnItem type is missing")),
+    }
+}
+
+fn required_item_string<'a>(value: &'a Value, key: &str, kind: &str) -> RpcResult<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| RpcError::invalid(format!("{kind} {key} is required")))
+}
+
+fn v2_input_to_core(input: &Value) -> RpcResult<Value> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| RpcError::invalid("user input must be an object"))?;
+    match object.get("type").and_then(Value::as_str) {
+        Some("text") => Ok(json!({
+            "type": "text",
+            "text": object.get("text").cloned().unwrap_or(Value::Null),
+            "text_elements": object.get("textElements").cloned().unwrap_or_else(|| json!([]))
+        })),
+        Some("image") => Ok(json!({
+            "type": "image",
+            "image_url": object.get("url").cloned().unwrap_or(Value::Null),
+            "detail": object.get("detail").cloned().unwrap_or(Value::Null)
+        })),
+        Some("localImage") => Ok(json!({
+            "type": "local_image",
+            "path": object.get("path").cloned().unwrap_or(Value::Null),
+            "detail": object.get("detail").cloned().unwrap_or(Value::Null)
+        })),
+        Some("audio") => Ok(json!({
+            "type": "audio",
+            "audio_url": object.get("url").cloned().unwrap_or(Value::Null)
+        })),
+        Some("localAudio") => Ok(json!({
+            "type": "local_audio",
+            "path": object.get("path").cloned().unwrap_or(Value::Null)
+        })),
+        Some("skill") => Ok(json!({
+            "type": "skill",
+            "name": object.get("name").cloned().unwrap_or(Value::Null),
+            "path": object.get("path").cloned().unwrap_or(Value::Null)
+        })),
+        Some("mention") => Ok(json!({
+            "type": "mention",
+            "name": object.get("name").cloned().unwrap_or(Value::Null),
+            "path": object.get("path").cloned().unwrap_or(Value::Null)
+        })),
+        Some(other) => Err(RpcError::invalid(format!(
+            "unsupported user input type: {other}"
+        ))),
+        None => Err(RpcError::invalid("user input type is required")),
+    }
+}
+
+fn core_input_to_v2(input: &Value) -> RpcResult<Value> {
+    let object = input
+        .as_object()
+        .ok_or_else(|| RpcError::internal("persisted user input must be an object"))?;
+    match object.get("type").and_then(Value::as_str) {
+        Some("text") => Ok(json!({
+            "type": "text",
+            "text": object.get("text").cloned().unwrap_or(Value::Null),
+            "textElements": object.get("text_elements").cloned().unwrap_or_else(|| json!([]))
+        })),
+        Some("image") => Ok(json!({
+            "type": "image",
+            "url": object.get("image_url").cloned().unwrap_or(Value::Null),
+            "detail": object.get("detail").cloned().unwrap_or(Value::Null)
+        })),
+        Some("local_image") => Ok(json!({
+            "type": "localImage",
+            "path": object.get("path").cloned().unwrap_or(Value::Null),
+            "detail": object.get("detail").cloned().unwrap_or(Value::Null)
+        })),
+        Some("audio") => Ok(json!({
+            "type": "audio",
+            "url": object.get("audio_url").cloned().unwrap_or(Value::Null)
+        })),
+        Some("local_audio") => Ok(json!({
+            "type": "localAudio",
+            "path": object.get("path").cloned().unwrap_or(Value::Null)
+        })),
+        Some("skill") => Ok(json!({
+            "type": "skill",
+            "name": object.get("name").cloned().unwrap_or(Value::Null),
+            "path": object.get("path").cloned().unwrap_or(Value::Null)
+        })),
+        Some("mention") => Ok(json!({
+            "type": "mention",
+            "name": object.get("name").cloned().unwrap_or(Value::Null),
+            "path": object.get("path").cloned().unwrap_or(Value::Null)
+        })),
+        Some(other) => Err(RpcError::internal(format!(
+            "unsupported persisted user input type: {other}"
+        ))),
+        None => Err(RpcError::internal("persisted user input type is missing")),
+    }
+}
+
+fn response_item_from_user_input(input: &[Value]) -> Value {
+    let mut content = Vec::new();
+    let mut image_index = 0_usize;
+    let mut audio_index = 0_usize;
+    for item in input {
+        match item.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = item.get("text").and_then(Value::as_str) {
+                    content.push(json!({"type": "input_text", "text": text}));
+                }
+            }
+            Some("image") => {
+                image_index = image_index.saturating_add(1);
+                if let Some(url) = item.get("url").and_then(Value::as_str) {
+                    content.push(json!({
+                        "type": "input_image",
+                        "image_url": url,
+                        "detail": input_image_detail(item)
+                    }));
+                }
+            }
+            Some("localImage") => {
+                image_index = image_index.saturating_add(1);
+                if let Some(path) = item.get("path").and_then(Value::as_str) {
+                    let path = Path::new(path);
+                    match fs::read(path) {
+                        Ok(bytes) => {
+                            content.push(json!({
+                                "type": "input_text",
+                                "text": format!(
+                                    "<image name=[Image #{}] path=\"{}\">",
+                                    image_index,
+                                    path.display()
+                                )
+                            }));
+                            content.push(json!({
+                                "type": "input_image",
+                                "image_url": format!(
+                                    "data:application/octet-stream;base64,{}",
+                                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                                ),
+                                "detail": input_image_detail(item)
+                            }));
+                            content.push(json!({"type": "input_text", "text": "</image>"}));
+                        }
+                        Err(error) => content.push(json!({
+                            "type": "input_text",
+                            "text": format!(
+                                "Codex could not read the local image at `{}`: {error}",
+                                path.display()
+                            )
+                        })),
+                    }
+                }
+            }
+            Some("audio") => {
+                audio_index = audio_index.saturating_add(1);
+                if let Some(url) = item.get("url").and_then(Value::as_str) {
+                    content.push(json!({"type": "input_audio", "audio_url": url}));
+                }
+            }
+            Some("localAudio") => {
+                audio_index = audio_index.saturating_add(1);
+                if let Some(path) = item.get("path").and_then(Value::as_str) {
+                    append_local_audio_content(&mut content, Path::new(path), audio_index);
+                }
+            }
+            Some("skill" | "mention") | None | Some(_) => {}
+        }
+    }
+    json!({"type": "message", "role": "user", "content": content})
+}
+
+fn input_image_detail(item: &Value) -> &str {
+    item.get("detail").and_then(Value::as_str).unwrap_or("high")
+}
+
+fn append_local_audio_content(content: &mut Vec<Value>, path: &Path, label: usize) {
+    let Some(mime) = audio_mime(path) else {
+        content.push(json!({
+            "type": "input_text",
+            "text": format!(
+                "Codex cannot attach audio at `{}`: unsupported audio format; use wav, mp3, m4a, webm, or ogg.",
+                path.display()
+            )
+        }));
+        return;
+    };
+    match fs::read(path) {
+        Ok(bytes) => {
+            content.push(json!({
+                "type": "input_text",
+                "text": format!(
+                    "<audio name=[Audio #{}] path=\"{}\">",
+                    label,
+                    path.display()
+                )
+            }));
+            content.push(json!({
+                "type": "input_audio",
+                "audio_url": format!(
+                    "data:{mime};base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                )
+            }));
+            content.push(json!({"type": "input_text", "text": "</audio>"}));
+        }
+        Err(error) => content.push(json!({
+            "type": "input_text",
+            "text": format!(
+                "Codex could not read the local audio at `{}`: {error}",
+                path.display()
+            )
+        })),
+    }
+}
+
+fn audio_mime(path: &Path) -> Option<&'static str> {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "wav" => Some("audio/wav"),
+        "mp3" => Some("audio/mpeg"),
+        "m4a" => Some("audio/mp4"),
+        "webm" => Some("audio/webm"),
+        "ogg" => Some("audio/ogg"),
+        _ => None,
+    }
+}
+
+fn normalize_turn_error(error: Option<Value>) -> RpcResult<Value> {
+    let mut error = error.unwrap_or_else(|| {
+        json!({
+            "message": "turn failed",
+            "codexErrorInfo": "other"
+        })
+    });
+    let object = error
+        .as_object_mut()
+        .ok_or_else(|| RpcError::invalid("turn error must be an object"))?;
+    if object
+        .get("message")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
+        return Err(RpcError::invalid("turn error message is required"));
+    }
+    object.entry("codexErrorInfo").or_insert(Value::Null);
+    Ok(error)
+}
+
+fn turn_error_to_core(error: &Value) -> Value {
+    json!({
+        "message": error.get("message").cloned().unwrap_or(Value::Null),
+        "codex_error_info": error
+            .get("codexErrorInfo")
+            .cloned()
+            .unwrap_or(Value::Null)
+    })
+}
+
+fn project_turns(items: &[RecoveredRolloutItem]) -> RpcResult<TurnProjection> {
+    let mut projection = TurnProjection::default();
+    for recovered in items {
+        let RecoveredRolloutItemKind::EventMsg(event) = &recovered.item else {
+            continue;
+        };
+        match event.get("type").and_then(Value::as_str) {
+            Some("task_started" | "turn_started") => {
+                let Some(turn_id) = event.get("turn_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                if let Some(active_turn_id) = projection.active_turn_id.take()
+                    && let Some(previous) = find_turn_mut(&mut projection.turns, &active_turn_id)
+                {
+                    previous["status"] = json!("interrupted");
+                }
+                let turn = turn_value(
+                    turn_id,
+                    Vec::new(),
+                    "inProgress",
+                    None,
+                    event.get("started_at").and_then(Value::as_i64),
+                    None,
+                    None,
+                    "full",
+                );
+                projection
+                    .turns
+                    .retain(|turn| turn.get("id").and_then(Value::as_str) != Some(turn_id));
+                projection.turns.push(turn);
+                projection.active_turn_id = Some(turn_id.into());
+            }
+            Some("item_started" | "item_completed") => {
+                let Some(turn_id) = event.get("turn_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(core_item) = event.get("item") else {
+                    continue;
+                };
+                let item = core_item_to_v2(core_item)?;
+                serde_json::from_value::<ThreadItem>(item.clone()).map_err(|error| {
+                    RpcError::internal(format!("invalid persisted ThreadItem: {error}"))
+                })?;
+                upsert_turn_item(&mut projection.turns, turn_id, item.clone())?;
+                if item.get("type").and_then(Value::as_str) == Some("userMessage")
+                    && let Some(client_id) = item.get("clientId").and_then(Value::as_str)
+                {
+                    projection.accepted_client_messages.insert(
+                        client_id.into(),
+                        AcceptedClientMessage {
+                            turn_id: turn_id.into(),
+                            input: item
+                                .get("content")
+                                .and_then(Value::as_array)
+                                .cloned()
+                                .unwrap_or_default(),
+                        },
+                    );
+                }
+            }
+            Some("error") => {
+                if let Some(turn_id) = projection.active_turn_id.clone()
+                    && let Some(turn) = find_turn_mut(&mut projection.turns, &turn_id)
+                {
+                    turn["status"] = json!("failed");
+                    turn["error"] = json!({
+                        "message": event
+                            .get("message")
+                            .cloned()
+                            .unwrap_or_else(|| json!("turn failed")),
+                        "codexErrorInfo": event
+                            .get("codex_error_info")
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    });
+                }
+            }
+            Some("turn_complete") => {
+                let Some(turn_id) = event.get("turn_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                if let Some(turn) = find_turn_mut(&mut projection.turns, turn_id) {
+                    let core_error = event.get("error").filter(|value| !value.is_null());
+                    if let Some(error) = core_error {
+                        turn["status"] = json!("failed");
+                        turn["error"] = json!({
+                            "message": error
+                                .get("message")
+                                .cloned()
+                                .unwrap_or_else(|| json!("turn failed")),
+                            "codexErrorInfo": error
+                                .get("codex_error_info")
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                        });
+                    } else if turn.get("status").and_then(Value::as_str) != Some("failed") {
+                        turn["status"] = json!("completed");
+                    }
+                    turn["completedAt"] = event.get("completed_at").cloned().unwrap_or(Value::Null);
+                    turn["durationMs"] = event.get("duration_ms").cloned().unwrap_or(Value::Null);
+                }
+                if projection.active_turn_id.as_deref() == Some(turn_id) {
+                    projection.active_turn_id = None;
+                }
+            }
+            Some("turn_aborted") => {
+                let turn_id = event
+                    .get("turn_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| projection.active_turn_id.clone());
+                if let Some(turn_id) = turn_id {
+                    if let Some(turn) = find_turn_mut(&mut projection.turns, &turn_id) {
+                        turn["status"] = json!("interrupted");
+                        turn["error"] = Value::Null;
+                        turn["completedAt"] =
+                            event.get("completed_at").cloned().unwrap_or(Value::Null);
+                        turn["durationMs"] =
+                            event.get("duration_ms").cloned().unwrap_or(Value::Null);
+                    }
+                    if projection.active_turn_id.as_deref() == Some(&turn_id) {
+                        projection.active_turn_id = None;
+                    }
+                }
+            }
+            Some("thread_rolled_back") => {
+                let count = event.get("num_turns").and_then(Value::as_u64).unwrap_or(0) as usize;
+                projection
+                    .turns
+                    .truncate(projection.turns.len().saturating_sub(count));
+                projection.active_turn_id = projection
+                    .turns
+                    .last()
+                    .filter(|turn| turn.get("status").and_then(Value::as_str) == Some("inProgress"))
+                    .and_then(|turn| turn.get("id").and_then(Value::as_str))
+                    .map(str::to_owned);
+            }
+            _ => {}
+        }
+    }
+    Ok(projection)
+}
+
+fn rollout_items_through_turn(
+    items: &[RecoveredRolloutItem],
+    last_turn_id: Option<&str>,
+) -> RpcResult<Vec<RecoveredRolloutItem>> {
+    let cutoff = last_turn_id
+        .map(|last_turn_id| {
+            items
+                .iter()
+                .find(|recovered| {
+                    matches!(
+                        &recovered.item,
+                        RecoveredRolloutItemKind::EventMsg(event)
+                            if matches!(
+                                event.get("type").and_then(Value::as_str),
+                                Some("turn_complete" | "turn_aborted")
+                            )
+                            && event.get("turn_id").and_then(Value::as_str) == Some(last_turn_id)
+                    )
+                })
+                .map(|recovered| recovered.ordinal)
+                .ok_or_else(|| {
+                    RpcError::internal(format!(
+                        "completed turn is missing its terminal rollout event: {last_turn_id}"
+                    ))
+                })
+        })
+        .transpose()?;
+    Ok(items
+        .iter()
+        .filter(|recovered| {
+            !matches!(recovered.item, RecoveredRolloutItemKind::SessionMeta(_))
+                && cutoff.is_none_or(|cutoff| recovered.ordinal <= cutoff)
+        })
+        .cloned()
+        .collect())
+}
+
+fn response_items_from_rollout(items: &[RecoveredRolloutItem]) -> Vec<Value> {
+    items
+        .iter()
+        .filter_map(|recovered| match &recovered.item {
+            RecoveredRolloutItemKind::ResponseItem(item) => Some(item.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn upsert_turn_item(turns: &mut [Value], turn_id: &str, item: Value) -> RpcResult<()> {
+    let turn = find_turn_mut(turns, turn_id)
+        .ok_or_else(|| RpcError::internal(format!("item references unknown turn: {turn_id}")))?;
+    let item_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::internal("ThreadItem id is required"))?;
+    let items = turn
+        .get_mut("items")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| RpcError::internal("Turn items must be an array"))?;
+    if let Some(existing) = items
+        .iter_mut()
+        .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(item_id))
+    {
+        *existing = item;
+    } else {
+        items.push(item);
+    }
+    Ok(())
+}
+
+fn find_turn_mut<'a>(turns: &'a mut [Value], turn_id: &str) -> Option<&'a mut Value> {
+    turns
+        .iter_mut()
+        .find(|turn| turn.get("id").and_then(Value::as_str) == Some(turn_id))
 }
 
 fn sorted_connections(connections: &HashSet<String>) -> Vec<String> {
@@ -1916,6 +3507,69 @@ mod tests {
     }
 
     #[test]
+    fn fork_preserves_canonical_rollout_item_order() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let source_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId": source_id,
+                    "input": [{"type": "text", "text": "fork history", "textElements": []}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_string();
+        manager.complete_turn(&source_id, &turn_id, None).unwrap();
+        let forked = manager.dispatch(
+            "desktop",
+            request(3, "thread/fork", json!({"threadId": source_id})),
+        );
+        let fork_id = result(&forked)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let metadata = manager.inner.store.thread(&fork_id).unwrap().unwrap();
+        let recovery = manager
+            .inner
+            .store
+            .recover_rollout(metadata.rollout_path)
+            .unwrap();
+        assert_eq!(
+            recovery
+                .rollout_items
+                .iter()
+                .map(|item| match &item.item {
+                    RecoveredRolloutItemKind::SessionMeta(_) => "session_meta",
+                    RecoveredRolloutItemKind::TurnContext(_) => "turn_context",
+                    RecoveredRolloutItemKind::ResponseItem(_) => "response_item",
+                    RecoveredRolloutItemKind::EventMsg(event) => event["type"].as_str().unwrap(),
+                })
+                .collect::<Vec<_>>(),
+            [
+                "session_meta",
+                "task_started",
+                "turn_context",
+                "response_item",
+                "item_started",
+                "item_completed",
+                "turn_complete"
+            ]
+        );
+        assert_eq!(
+            recovery.session_meta.unwrap()["id"],
+            fork_id,
+            "source session_meta must never be copied"
+        );
+    }
+
+    #[test]
     fn archive_unarchive_delete_emit_lifecycle_notifications() {
         let (_temp, manager) = manager();
         let started = start(&manager, "desktop");
@@ -2265,6 +3919,435 @@ mod tests {
                 .settings_notification(&id, json!({"model": "missing required fields"}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn turn_start_persists_canonical_items_and_is_idempotent() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let params = json!({
+            "threadId": thread_id,
+            "clientUserMessageId": "client-message-1",
+            "input": [{
+                "type": "text",
+                "text": "implement the turn",
+                "textElements": []
+            }],
+            "outputSchema": {"type": "object"}
+        });
+        let output = manager.dispatch("desktop", request(2, "turn/start", params.clone()));
+        let turn_id = result(&output)["turn"]["id"].as_str().unwrap().to_string();
+        assert_eq!(Uuid::parse_str(&turn_id).unwrap().get_version_num(), 7);
+        assert_eq!(result(&output)["turn"]["status"], "inProgress");
+        assert_eq!(result(&output)["turn"]["items"], json!([]));
+        assert_eq!(result(&output)["turn"]["itemsView"], "notLoaded");
+        assert_eq!(
+            output
+                .notifications
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "turn/started",
+                "item/started",
+                "item/completed",
+                "thread/status/changed"
+            ]
+        );
+        assert!(output.notifications.iter().all(|notification| {
+            serde_json::from_value::<ServerNotification>(notification.wire_message()).is_ok()
+        }));
+        assert!(serde_json::from_value::<TurnStartResponse>(result(&output).clone()).is_ok());
+
+        let pending = manager.take_turn_inputs(&thread_id, &turn_id).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            pending[0].client_user_message_id.as_deref(),
+            Some("client-message-1")
+        );
+        assert_eq!(pending[0].output_schema, Some(json!({"type": "object"})));
+        assert!(
+            manager
+                .take_turn_inputs(&thread_id, &turn_id)
+                .unwrap()
+                .is_empty()
+        );
+
+        let metadata = manager.inner.store.thread(&thread_id).unwrap().unwrap();
+        let recovery = manager
+            .inner
+            .store
+            .recover_rollout(metadata.rollout_path)
+            .unwrap();
+        assert!(recovery.rollout_items.iter().any(|item| matches!(
+            &item.item,
+            RecoveredRolloutItemKind::TurnContext(context)
+                if context["turn_id"] == turn_id
+        )));
+        let persisted_item = recovery
+            .trailing_events
+            .iter()
+            .find(|event| event["type"] == "item_started")
+            .unwrap();
+        assert_eq!(persisted_item["item"]["type"], "UserMessage");
+        assert_eq!(persisted_item["item"]["client_id"], "client-message-1");
+        assert_eq!(
+            persisted_item["item"]["content"][0]["text_elements"],
+            json!([])
+        );
+
+        let duplicate = manager.dispatch("desktop", request(3, "turn/start", params.clone()));
+        assert_eq!(result(&duplicate)["turn"]["id"], turn_id);
+        assert!(duplicate.notifications.is_empty());
+        let conflict = manager.dispatch(
+            "desktop",
+            request(
+                4,
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "clientUserMessageId": "client-message-1",
+                    "input": [{"type": "text", "text": "different", "textElements": []}]
+                }),
+            ),
+        );
+        assert_eq!(conflict.response["error"]["code"], -32600);
+    }
+
+    #[test]
+    fn turn_steer_requires_active_match_and_deduplicates_input() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": "first", "textElements": []}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_string();
+        let steer_params = json!({
+            "threadId": thread_id,
+            "expectedTurnId": turn_id,
+            "clientUserMessageId": "steer-1",
+            "input": [{"type": "text", "text": "change direction", "textElements": []}]
+        });
+        let steered = manager.dispatch("desktop", request(3, "turn/steer", steer_params.clone()));
+        assert_eq!(result(&steered)["turnId"], turn_id);
+        assert_eq!(steered.notifications.len(), 2);
+        assert!(serde_json::from_value::<TurnSteerResponse>(result(&steered).clone()).is_ok());
+        let pending = manager.take_turn_inputs(&thread_id, &turn_id).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(
+            pending[1].client_user_message_id.as_deref(),
+            Some("steer-1")
+        );
+
+        let duplicate = manager.dispatch("desktop", request(4, "turn/steer", steer_params.clone()));
+        assert_eq!(result(&duplicate)["turnId"], turn_id);
+        assert!(duplicate.notifications.is_empty());
+        let mismatch = manager.dispatch(
+            "desktop",
+            request(
+                5,
+                "turn/steer",
+                json!({
+                    "threadId": thread_id,
+                    "expectedTurnId": Uuid::now_v7().to_string(),
+                    "input": [{"type": "text", "text": "wrong turn", "textElements": []}]
+                }),
+            ),
+        );
+        assert_eq!(mismatch.response["error"]["code"], -32600);
+        let wrong_interrupt = manager.dispatch(
+            "desktop",
+            request(
+                6,
+                "turn/interrupt",
+                json!({"threadId": thread_id, "turnId": Uuid::now_v7().to_string()}),
+            ),
+        );
+        assert_eq!(wrong_interrupt.response["error"]["code"], -32600);
+
+        let interrupted = manager.dispatch(
+            "desktop",
+            request(
+                7,
+                "turn/interrupt",
+                json!({"threadId": thread_id, "turnId": turn_id}),
+            ),
+        );
+        assert!(
+            serde_json::from_value::<TurnInterruptResponse>(result(&interrupted).clone()).is_ok()
+        );
+        assert_eq!(
+            interrupted.notifications[0].params["turn"]["status"],
+            "interrupted"
+        );
+        let after = manager.dispatch(
+            "desktop",
+            request(
+                8,
+                "thread/read",
+                json!({"threadId": thread_id, "includeTurns": true}),
+            ),
+        );
+        assert_eq!(
+            result(&after)["thread"]["turns"][0]["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn turn_completion_failure_and_moderation_share_terminal_path() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let turn = manager.dispatch(
+            "desktop",
+            request(2, "turn/start", json!({"threadId": thread_id, "input": []})),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_string();
+        let moderation = manager
+            .turn_moderation_metadata_notification(&thread_id, &turn_id, json!({"blocked": false}))
+            .unwrap();
+        assert_eq!(moderation[0].method, "turn/moderationMetadata");
+        assert!(serde_json::from_value::<ServerNotification>(moderation[0].wire_message()).is_ok());
+        let completed = manager
+            .complete_turn(
+                &thread_id,
+                &turn_id,
+                Some(json!({"message": "model failed", "codexErrorInfo": null})),
+            )
+            .unwrap();
+        assert_eq!(completed[0].method, "turn/completed");
+        assert_eq!(completed[0].params["turn"]["status"], "failed");
+        assert_eq!(
+            completed[0].params["turn"]["error"]["message"],
+            "model failed"
+        );
+        assert_eq!(completed[0].params["turn"]["itemsView"], "notLoaded");
+        assert_eq!(completed[1].method, "thread/status/changed");
+
+        let metadata = manager.inner.store.thread(&thread_id).unwrap().unwrap();
+        let recovery = manager
+            .inner
+            .store
+            .recover_rollout(metadata.rollout_path)
+            .unwrap();
+        assert!(
+            recovery
+                .trailing_events
+                .iter()
+                .any(|event| event["type"] == "turn_moderation_metadata")
+        );
+        assert!(
+            recovery
+                .trailing_events
+                .iter()
+                .any(|event| event["type"] == "turn_complete"
+                    && event["error"]["message"] == "model failed")
+        );
+    }
+
+    #[test]
+    fn active_turn_is_interrupted_once_after_restart_and_never_replayed() {
+        let (temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": "crash me", "textElements": []}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_string();
+        drop(manager);
+
+        let reopen = || {
+            ThreadManager::open(
+                temp.path().join("state"),
+                temp.path().join("threads"),
+                RuntimeDefaults {
+                    model: "gpt-test".into(),
+                    model_provider: "test-provider".into(),
+                    cwd: temp.path().join("workspace"),
+                    ..RuntimeDefaults::default()
+                },
+            )
+            .unwrap()
+        };
+        let recovered = reopen();
+        let resumed = recovered.dispatch(
+            "desktop",
+            request(3, "thread/resume", json!({"threadId": thread_id})),
+        );
+        assert_eq!(
+            result(&resumed)["thread"]["turns"][0]["status"],
+            "interrupted"
+        );
+        assert!(recovered.take_turn_inputs(&thread_id, &turn_id).is_err());
+        drop(recovered);
+
+        let recovered_again = reopen();
+        recovered_again.dispatch(
+            "desktop",
+            request(4, "thread/resume", json!({"threadId": thread_id})),
+        );
+        let metadata = recovered_again
+            .inner
+            .store
+            .thread(&thread_id)
+            .unwrap()
+            .unwrap();
+        let recovery = recovered_again
+            .inner
+            .store
+            .recover_rollout(metadata.rollout_path)
+            .unwrap();
+        assert_eq!(
+            recovery
+                .trailing_events
+                .iter()
+                .filter(|event| event["type"] == "turn_aborted")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn archiving_active_thread_interrupts_turn_before_closing_it() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{"type": "text", "text": "running", "textElements": []}]
+                }),
+            ),
+        );
+        let archived = manager.dispatch(
+            "desktop",
+            request(3, "thread/archive", json!({"threadId": thread_id})),
+        );
+        assert_eq!(
+            archived
+                .notifications
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "turn/completed",
+                "thread/status/changed",
+                "thread/archived",
+                "thread/closed"
+            ]
+        );
+        assert_eq!(
+            archived.notifications[0].params["turn"]["status"],
+            "interrupted"
+        );
+    }
+
+    #[test]
+    fn turn_input_limits_and_remote_images_match_codex_errors() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let oversized = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{
+                        "type": "text",
+                        "text": "x".repeat(MAX_USER_INPUT_TEXT_CHARS + 1),
+                        "textElements": []
+                    }]
+                }),
+            ),
+        );
+        assert_eq!(oversized.response["error"]["code"], -32602);
+        assert_eq!(
+            oversized.response["error"]["data"]["input_error_code"],
+            "input_too_large"
+        );
+        assert_eq!(
+            oversized.response["error"]["data"]["max_chars"],
+            MAX_USER_INPUT_TEXT_CHARS
+        );
+        let remote = manager.dispatch(
+            "desktop",
+            request(
+                3,
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{"type": "image", "url": "https://example.invalid/a.png"}]
+                }),
+            ),
+        );
+        assert_eq!(remote.response["error"]["code"], -32600);
+        assert!(
+            remote.response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("remote image URLs are not supported")
+        );
+
+        let empty = manager.dispatch(
+            "desktop",
+            request(4, "turn/start", json!({"threadId": thread_id, "input": []})),
+        );
+        let turn_id = result(&empty)["turn"]["id"].as_str().unwrap().to_string();
+        let empty_steer = manager.dispatch(
+            "desktop",
+            request(
+                5,
+                "turn/steer",
+                json!({"threadId": thread_id, "expectedTurnId": turn_id, "input": []}),
+            ),
+        );
+        assert_eq!(empty_steer.response["error"]["code"], -32600);
     }
 
     #[test]

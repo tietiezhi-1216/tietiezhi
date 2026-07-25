@@ -520,21 +520,21 @@
       },
       {
         "method": "turn/interrupt",
-        "status": "pending",
+        "status": "implemented",
         "target": "R6",
-        "note": ""
+        "note": "crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md"
       },
       {
         "method": "turn/start",
-        "status": "pending",
+        "status": "implemented",
         "target": "R6",
-        "note": ""
+        "note": "crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md"
       },
       {
         "method": "turn/steer",
-        "status": "pending",
+        "status": "implemented",
         "target": "R6",
-        "note": ""
+        "note": "crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md"
       },
       {
         "method": "windowsSandbox/readiness",
@@ -748,9 +748,9 @@
       },
       {
         "method": "item/completed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md"
       },
       {
         "method": "item/fileChange/outputDelta",
@@ -796,9 +796,9 @@
       },
       {
         "method": "item/started",
-        "status": "pending",
+        "status": "implemented",
         "target": "R3",
-        "note": ""
+        "note": "crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md"
       },
       {
         "method": "mcpServer/oauthLogin/completed",
@@ -994,9 +994,9 @@
       },
       {
         "method": "turn/completed",
-        "status": "pending",
+        "status": "implemented",
         "target": "R6",
-        "note": ""
+        "note": "crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md"
       },
       {
         "method": "turn/diff/updated",
@@ -1006,9 +1006,9 @@
       },
       {
         "method": "turn/moderationMetadata",
-        "status": "pending",
+        "status": "implemented",
         "target": "R6",
-        "note": ""
+        "note": "crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md"
       },
       {
         "method": "turn/plan/updated",
@@ -1018,9 +1018,9 @@
       },
       {
         "method": "turn/started",
-        "status": "pending",
+        "status": "implemented",
         "target": "R6",
-        "note": ""
+        "note": "crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md"
       },
       {
         "method": "warning",
@@ -1122,9 +1122,9 @@
     {
       "id": "R6",
       "name": "Turn 生命周期",
-      "status": "pending",
-      "risk": "",
-      "evidence": ""
+      "status": "completed",
+      "risk": "R7 尚未接入 Responses API、模型增量 Item、usage、reasoning summary 和重试；当前 exactly-once 输入队列只提供执行器边界",
+      "evidence": "crates/agent-core；crates/agent-state canonical rollout ordinal 投影；docs/CODEX-TURNS.md；19 项 TurnManager 测试；崩溃中断、分叉顺序与 R5 rollout 迁移测试；cargo clippy -D warnings；pnpm 协议/迁移/typecheck/build 门禁"
     },
     {
       "id": "R7",

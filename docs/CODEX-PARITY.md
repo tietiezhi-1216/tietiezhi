@@ -29,9 +29,9 @@
 
 | 方法状态 | 数量 |
 | --- | ---: |
-| 待实现 | 144 |
+| 待实现 | 136 |
 | 实现中 | 0 |
-| 已实现 | 26 |
+| 已实现 | 34 |
 | 服务映射 | 0 |
 
 ## 阶段进度
@@ -44,7 +44,7 @@
 | R3 | 事件模型 | 已完成 | crates/agent-events；desktop/src-tauri/src/agent/events.rs；desktop/src/lib/chat-events.ts；desktop/scripts/check-chat-event-migration.mjs；docs/CODEX-EVENTS.md；cargo test；pnpm test:chat-event-migration；pnpm typecheck；pnpm build | Thread 生命周期通知已由 R5 接入正式 App Server 路由；Turn/Item 通知由 R6 接管，LegacyChatEvent 在 R38 删除 |
 | R4 | 持久化 | 已完成 | crates/agent-state；commands/conversations.rs；agent/events.rs；docs/CODEX-STATE.md；SQLite v1→v2 迁移测试；数据库损坏备份测试；真实子进程 abort 恢复测试；pnpm test:conversation-migration；cargo test；pnpm typecheck；pnpm build | 新 Runtime 已由 R5 写入 canonical session_meta/response_item；旧会话仍写 legacy_checkpoint，R6 接管 Turn/Item，task.json 镜像在 R38 删除 |
 | R5 | Thread 生命周期 | 已完成 | crates/agent-core；commands/codex.rs；docs/CODEX-THREADS.md；SQLite v2→v3 迁移与 canonical session_meta 索引重建测试；12 项 ThreadManager 测试；137 项桌面 Rust 测试；pnpm typecheck；pnpm build | Turn 列表暂存于 canonical_json 查询缓存；R6 将以 rollout 的 Turn/Item 事件重建并接入真实执行状态机，旧会话适配层在 R38 删除 |
-| R6 | Turn 生命周期 | 待开始 |  |  |
+| R6 | Turn 生命周期 | 已完成 | crates/agent-core；crates/agent-state canonical rollout ordinal 投影；docs/CODEX-TURNS.md；19 项 TurnManager 测试；崩溃中断、分叉顺序与 R5 rollout 迁移测试；cargo clippy -D warnings；pnpm 协议/迁移/typecheck/build 门禁 | R7 尚未接入 Responses API、模型增量 Item、usage、reasoning summary 和重试；当前 exactly-once 输入队列只提供执行器边界 |
 | R7 | Responses 模型层 | 待开始 |  |  |
 | R8 | Gateway 对齐 | 待开始 |  |  |
 | R9 | 上下文系统 | 待开始 |  |  |
@@ -167,9 +167,9 @@
 | `thread/start` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/unarchive` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
 | `thread/unsubscribe` | 已实现 | R5 | crates/agent-core ThreadManager 的固定 V2 分派、持久化与协议级生命周期测试；desktop commands/codex.rs 提供 Tauri 请求入口 |
-| `turn/interrupt` | 待实现 | R6 |  |
-| `turn/start` | 待实现 | R6 |  |
-| `turn/steer` | 待实现 | R6 |  |
+| `turn/interrupt` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
+| `turn/start` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
+| `turn/steer` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `windowsSandbox/readiness` | 待实现 | R16 |  |
 | `windowsSandbox/setupStart` | 待实现 | R16 |  |
 
@@ -219,7 +219,7 @@
 | `item/autoApprovalReview/started` | 待实现 | R27 |  |
 | `item/commandExecution/outputDelta` | 待实现 | R13 |  |
 | `item/commandExecution/terminalInteraction` | 待实现 | R13 |  |
-| `item/completed` | 待实现 | R3 |  |
+| `item/completed` | 已实现 | R3 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `item/fileChange/outputDelta` | 待实现 | R12 |  |
 | `item/fileChange/patchUpdated` | 待实现 | R12 |  |
 | `item/mcpToolCall/progress` | 待实现 | R19 |  |
@@ -227,7 +227,7 @@
 | `item/reasoning/summaryPartAdded` | 待实现 | R3 |  |
 | `item/reasoning/summaryTextDelta` | 待实现 | R3 |  |
 | `item/reasoning/textDelta` | 待实现 | R3 |  |
-| `item/started` | 待实现 | R3 |  |
+| `item/started` | 已实现 | R3 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `mcpServer/oauthLogin/completed` | 待实现 | R19 |  |
 | `mcpServer/startupStatus/updated` | 待实现 | R19 |  |
 | `model/rerouted` | 待实现 | R7 |  |
@@ -260,11 +260,11 @@
 | `thread/status/changed` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/tokenUsage/updated` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
 | `thread/unarchived` | 已实现 | R5 | crates/agent-core 订阅路由与 ServerNotification 类型校验；Thread 生命周期及通知发布器测试 |
-| `turn/completed` | 待实现 | R6 |  |
+| `turn/completed` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `turn/diff/updated` | 待实现 | R12 |  |
-| `turn/moderationMetadata` | 待实现 | R6 |  |
+| `turn/moderationMetadata` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `turn/plan/updated` | 待实现 | R25 |  |
-| `turn/started` | 待实现 | R6 |  |
+| `turn/started` | 已实现 | R6 | crates/agent-core TurnManager 的固定 V2 分派、UUIDv7、canonical rollout、幂等与崩溃恢复测试；docs/CODEX-TURNS.md |
 | `warning` | 待实现 | R3 |  |
 | `windows/worldWritableWarning` | 待实现 | R16 |  |
 | `windowsSandbox/setupCompleted` | 待实现 | R16 |  |

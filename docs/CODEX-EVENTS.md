@@ -39,7 +39,7 @@ R3 将桌面 Agent 的所有流式事件纳入统一的 Thread、Turn、Item 身
 - `LegacyChatEvent` 仅作为迁移期 IPC 输入，统一由 `createChatEventNormalizer` 补齐身份和顺序。
 - 已带合法身份的事件保持原对象和原顺序，不重复包装。
 - 旧 mock、旧应用进程或滚动升级期间的旧事件仍可被当前前端读取。
-- R4 已将这些身份写入 rollout 与任务项，SQLite 保存可重建的 Thread 索引；R5 的正式 `ThreadManager` 已分配 UUIDv7 Thread ID 并发送 App Server 通知，R6 将接管 Turn 与 Item ID；R31 将桌面时间线切到强类型 Thread Item。
+- R4 已将这些身份写入 rollout 与任务项，SQLite 保存可重建的 Thread 索引；R5 的正式 `ThreadManager` 已分配 UUIDv7 Thread ID；R6 已接管 UUIDv7 Turn/User Message Item、`item/started`、`item/completed` 和 Turn 生命周期通知；R7 将接入模型增量 Item，R31 将桌面时间线切到强类型 Thread Item。
 - R38 删除旧 Agent 循环后，同时删除 `LegacyChatEvent` 兼容输入。
 
 ## 验证

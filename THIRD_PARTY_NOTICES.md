@@ -26,3 +26,16 @@ R5 的 Thread 生命周期行为参考以下上游源码并在本仓库重新实
 - `codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs`
 - `codex-rs/core/src/thread_manager.rs`
 - `codex-rs/core/src/thread_rollout_truncation.rs`
+
+R6 的 Turn 生命周期、输入转换和 rollout 投影行为参考以下上游源码并在本仓库重新实现，没有链接或调用上游 crate：
+
+- `codex-rs/app-server/src/request_processors/turn_processor.rs`
+- `codex-rs/app-server/src/bespoke_event_handling.rs`
+- `codex-rs/app-server/src/thread_state.rs`
+- `codex-rs/app-server-protocol/src/protocol/v2/turn.rs`
+- `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
+- `codex-rs/core/src/session/handlers.rs`
+- `codex-rs/core/src/session/turn_context.rs`
+- `codex-rs/protocol/src/items.rs`
+- `codex-rs/protocol/src/protocol.rs`
+- `codex-rs/protocol/src/user_input.rs`

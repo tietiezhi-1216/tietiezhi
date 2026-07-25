@@ -158,8 +158,29 @@ pub struct RolloutRecovery {
     pub checkpoint: Option<RecoveredCheckpoint>,
     pub trailing_events: Vec<Value>,
     pub response_items: Vec<Value>,
+    /// Canonical rollout items in append order.
+    ///
+    /// Unlike the compatibility projections above, this preserves the
+    /// `turn_context` / `response_item` / `event_msg` ordering required to
+    /// rebuild Codex Turn and Item state without consulting SQLite.
+    pub rollout_items: Vec<RecoveredRolloutItem>,
     pub last_ordinal: u64,
     pub truncated_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecoveredRolloutItem {
+    pub timestamp_ms: u64,
+    pub ordinal: u64,
+    pub item: RecoveredRolloutItemKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecoveredRolloutItemKind {
+    SessionMeta(Value),
+    TurnContext(Value),
+    ResponseItem(Value),
+    EventMsg(Value),
 }
 
 #[derive(Debug, Clone)]
@@ -488,16 +509,17 @@ fn sqlite_paths(database_path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 enum RolloutItem {
     SessionMeta(Value),
+    TurnContext(Value),
     ResponseItem(Value),
     LegacyCheckpoint(LegacyCheckpoint),
     EventMsg(Value),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionMeta {
     thread_id: String,
@@ -506,7 +528,7 @@ struct SessionMeta {
     originator: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LegacyCheckpoint {
     thread_id: String,
@@ -653,6 +675,10 @@ impl RolloutAppender {
         self.writer()?.append(RolloutItem::EventMsg(event))
     }
 
+    pub fn append_turn_context(&self, context: Value) -> StateResult<u64> {
+        self.writer()?.append(RolloutItem::TurnContext(context))
+    }
+
     pub fn append_response_item(&self, item: Value) -> StateResult<u64> {
         self.writer()?.append(RolloutItem::ResponseItem(item))
     }
@@ -723,6 +749,26 @@ fn recover_rollout(path: &Path) -> StateResult<RolloutRecovery> {
         }
         valid_offset = valid_offset.saturating_add(read as u64);
         recovery.last_ordinal = line.ordinal;
+        let recovered_item = match &line.item {
+            RolloutItem::SessionMeta(meta) => {
+                Some(RecoveredRolloutItemKind::SessionMeta(meta.clone()))
+            }
+            RolloutItem::TurnContext(context) => {
+                Some(RecoveredRolloutItemKind::TurnContext(context.clone()))
+            }
+            RolloutItem::ResponseItem(item) => {
+                Some(RecoveredRolloutItemKind::ResponseItem(item.clone()))
+            }
+            RolloutItem::EventMsg(event) => Some(RecoveredRolloutItemKind::EventMsg(event.clone())),
+            RolloutItem::LegacyCheckpoint(_) => None,
+        };
+        if let Some(item) = recovered_item {
+            recovery.rollout_items.push(RecoveredRolloutItem {
+                timestamp_ms: line.timestamp_ms,
+                ordinal: line.ordinal,
+                item,
+            });
+        }
         match line.item {
             RolloutItem::LegacyCheckpoint(checkpoint) => {
                 recovery.checkpoint = Some(RecoveredCheckpoint {
@@ -735,6 +781,7 @@ fn recover_rollout(path: &Path) -> StateResult<RolloutRecovery> {
             }
             RolloutItem::EventMsg(event) => events_since_checkpoint.push(event),
             RolloutItem::ResponseItem(item) => recovery.response_items.push(item),
+            RolloutItem::TurnContext(_) => {}
             RolloutItem::SessionMeta(meta) => {
                 if recovery.session_thread_id.is_none() {
                     recovery.session_thread_id = session_meta_thread_id(&meta).map(str::to_owned);
@@ -946,6 +993,56 @@ mod tests {
         let second = store.upsert_checkpoint(thread, &json!({"id": id})).unwrap();
         assert_eq!(second.revision, 2);
         assert!(second.ordinal > persisted.ordinal);
+    }
+
+    #[test]
+    fn canonical_rollout_items_preserve_turn_order_and_r5_streams_remain_readable() {
+        let temp = TempDir::new().unwrap();
+        let store = StateStore::open(temp.path().join("runtime")).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let path = temp.path().join("threads").join(&id).join("rollout.jsonl");
+        let appender = store.rollout_appender(&path).unwrap();
+        appender
+            .ensure_canonical_session_meta(
+                &id,
+                json!({
+                    "id": id,
+                    "session_id": id,
+                    "cli_version": "test"
+                }),
+            )
+            .unwrap();
+        appender
+            .append_turn_context(json!({"turn_id": "turn-1", "model": "gpt-test"}))
+            .unwrap();
+        appender
+            .append_response_item(json!({"type": "message", "role": "user", "content": []}))
+            .unwrap();
+        appender
+            .append_event(json!({"type": "task_started", "turn_id": "turn-1"}))
+            .unwrap();
+        appender.sync_data().unwrap();
+
+        let recovered = store.recover_rollout(path).unwrap();
+        assert_eq!(recovered.response_items.len(), 1);
+        assert_eq!(recovered.trailing_events.len(), 1);
+        assert_eq!(recovered.rollout_items.len(), 4);
+        assert!(matches!(
+            recovered.rollout_items[0].item,
+            RecoveredRolloutItemKind::SessionMeta(_)
+        ));
+        assert!(matches!(
+            recovered.rollout_items[1].item,
+            RecoveredRolloutItemKind::TurnContext(_)
+        ));
+        assert!(matches!(
+            recovered.rollout_items[2].item,
+            RecoveredRolloutItemKind::ResponseItem(_)
+        ));
+        assert!(matches!(
+            recovered.rollout_items[3].item,
+            RecoveredRolloutItemKind::EventMsg(_)
+        ));
     }
 
     #[test]
