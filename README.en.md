@@ -49,7 +49,7 @@ Every desktop app, mobile device, server process, or lightweight node should be 
 | Local agents | Streaming conversations, multi-step tool use, custom system prompts, and reusable agent profiles |
 | Tools and permissions | File, editing, search, shell, and fetch tools with Ask, Auto, and Full Access permission modes |
 | Skills and MCP | Import Markdown-based Skills and connect stdio or Streamable HTTP MCP servers |
-| Tietiezhi control center | Manage identity instructions, readable Markdown memory, Skill/MCP assignments, Home files, and dedicated tool permissions in one panel |
+| Tietiezhi control center | Manage identity instructions, readable Markdown memory, Skill/MCP assignments, a file-oriented secret vault, Home files, and dedicated tool permissions in one panel |
 | Projects and workspaces | One task shares context across Work for research/deliverables and Code for terminal/test workflows; isolated spaces support explicit file handoff |
 | Context management | Uses a 256K window and persists an anchored summary at about 80%; `/compact` compacts early and `/context` shows estimated usage |
 | Device interconnection | Manage local and remote Cores in Tietiezhi, discover online devices, and invoke approved capabilities through `device_call` |

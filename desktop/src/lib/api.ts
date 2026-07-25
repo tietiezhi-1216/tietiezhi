@@ -462,6 +462,15 @@ export interface TietiezhiHomeOverview {
   timelineCount: number;
 }
 
+export interface TietiezhiSecret {
+  name: string;
+  label: string;
+  description: string;
+  updatedAt: number;
+  hasValue: boolean;
+  reference: string;
+}
+
 export type ChatContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } };
@@ -910,6 +919,32 @@ export function saveTietiezhiConfig(
 
 export function listTietiezhiFiles(): Promise<TietiezhiFileEntry[]> {
   return invoke<TietiezhiFileEntry[]>("list_tietiezhi_files");
+}
+
+export function listTietiezhiSecrets(): Promise<TietiezhiSecret[]> {
+  return invoke<TietiezhiSecret[]>("list_tietiezhi_secrets");
+}
+
+export function upsertTietiezhiSecret(
+  name: string,
+  label: string,
+  description: string,
+  value?: string,
+): Promise<TietiezhiSecret> {
+  return invoke<TietiezhiSecret>("upsert_tietiezhi_secret", {
+    name,
+    label,
+    description,
+    value: value ?? null,
+  });
+}
+
+export function revealTietiezhiSecret(name: string): Promise<string> {
+  return invoke<string>("reveal_tietiezhi_secret", { name });
+}
+
+export function deleteTietiezhiSecret(name: string): Promise<void> {
+  return invoke("delete_tietiezhi_secret", { name });
 }
 
 export function readTietiezhiFile(path: string): Promise<string> {

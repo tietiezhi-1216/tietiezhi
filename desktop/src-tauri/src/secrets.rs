@@ -1,4 +1,4 @@
-//! Secret storage for provider API keys.
+//! Secret storage for provider credentials and user-managed secret values.
 //!
 //! Release builds keep keys in the OS credential store (macOS Keychain /
 //! Windows Credential Manager). Debug builds (`tauri dev`) use a plaintext file
@@ -32,6 +32,10 @@ fn gateway_api_key_account(provider_id: &str) -> String {
 
 fn gateway_issuer_account(provider_id: &str) -> String {
     format!("gateway-issuer-{provider_id}")
+}
+
+fn tietiezhi_secret_account(name: &str) -> String {
+    format!("tietiezhi-secret-{name}")
 }
 
 // MARK: - Public API (backend-agnostic)
@@ -96,6 +100,18 @@ pub fn delete_device_core_token(core_id: &str) -> Result<(), String> {
     backend::delete(&device_core_account(core_id))
 }
 
+pub fn set_tietiezhi_secret(name: &str, value: &str) -> Result<(), String> {
+    backend::set(&tietiezhi_secret_account(name), value)
+}
+
+pub fn get_tietiezhi_secret(name: &str) -> Result<Option<String>, String> {
+    backend::get(&tietiezhi_secret_account(name))
+}
+
+pub fn delete_tietiezhi_secret(name: &str) -> Result<(), String> {
+    backend::delete(&tietiezhi_secret_account(name))
+}
+
 /// Legacy single-relay key (read-only, migration only).
 pub fn get_api_key() -> Result<Option<String>, String> {
     backend::get(API_KEY_USER)
@@ -115,21 +131,21 @@ mod backend {
     pub fn set(account: &str, value: &str) -> Result<(), String> {
         entry(account)?
             .set_password(value)
-            .map_err(|e| format!("保存 API Key 失败：{e}"))
+            .map_err(|e| format!("保存密钥失败：{e}"))
     }
 
     pub fn get(account: &str) -> Result<Option<String>, String> {
         match entry(account)?.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(format!("读取 API Key 失败：{e}")),
+            Err(e) => Err(format!("读取密钥失败：{e}")),
         }
     }
 
     pub fn delete(account: &str) -> Result<(), String> {
         match entry(account)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(format!("删除 API Key 失败：{e}")),
+            Err(e) => Err(format!("删除密钥失败：{e}")),
         }
     }
 }

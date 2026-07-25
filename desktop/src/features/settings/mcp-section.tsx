@@ -195,7 +195,7 @@ export function McpSection() {
                   value={draft.envText}
                   onChange={(e) => setDraft({ ...draft, envText: e.target.value })}
                   spellCheck={false}
-                  placeholder="API_KEY=sk-xxx"
+                  placeholder={"API_KEY=${secret:service_api_key}"}
                   className="min-h-16 font-mono text-xs"
                 />
               </div>
@@ -218,7 +218,7 @@ export function McpSection() {
                   value={draft.headersText}
                   onChange={(e) => setDraft({ ...draft, headersText: e.target.value })}
                   spellCheck={false}
-                  placeholder="Authorization: Bearer xxx"
+                  placeholder={"Authorization: Bearer ${secret:service_api_key}"}
                   className="min-h-16 font-mono text-xs"
                 />
               </div>

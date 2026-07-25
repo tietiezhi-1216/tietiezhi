@@ -27,7 +27,8 @@ pub async fn mcp_restart_server(
         .iter()
         .find(|c| c.id == id && c.enabled)
     {
-        state.mcp.ensure_started(cfg).await?;
+        let resolved = super::tietiezhi::resolve_mcp_config_secrets(&app, cfg)?;
+        state.mcp.ensure_started(&resolved).await?;
     }
     Ok(())
 }

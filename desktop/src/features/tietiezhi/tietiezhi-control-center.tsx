@@ -7,15 +7,21 @@ import {
   Check,
   ChevronRight,
   CircleGauge,
+  Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
   File,
   FilePlus2,
   Files,
   Folder,
   FolderOpen,
+  KeyRound,
   Loader2,
   LockKeyhole,
   Plug,
+  Plus,
+  Pencil,
   Save,
   ScrollText,
   ShieldCheck,
@@ -33,6 +39,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { message } from "@/components/app-message";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -55,22 +62,27 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import {
   deleteTietiezhiFile,
+  deleteTietiezhiSecret,
   errorMessage,
   getTietiezhiConfig,
   getTietiezhiHomeOverview,
   listSkills,
   listTietiezhiFiles,
+  listTietiezhiSecrets,
   loadSettings,
   mcpServerStatus,
   readTietiezhiFile,
+  revealTietiezhiSecret,
   revealTietiezhiHome,
   saveTietiezhiConfig,
+  upsertTietiezhiSecret,
   writeTietiezhiFile,
 } from "@/lib/api";
 import type {
   McpServer,
   TietiezhiConfig,
   TietiezhiFileEntry,
+  TietiezhiSecret,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/ui";
@@ -81,6 +93,7 @@ type Section =
   | "memory"
   | "skills"
   | "mcp"
+  | "secrets"
   | "files"
   | "security";
 
@@ -96,6 +109,7 @@ const SECTIONS: SectionDefinition[] = [
   { key: "memory", label: "记忆", icon: BrainCircuit },
   { key: "skills", label: "Skills", icon: Sparkles },
   { key: "mcp", label: "MCP", icon: Plug },
+  { key: "secrets", label: "密钥库", icon: KeyRound },
   { key: "files", label: "文件", icon: Files },
   { key: "security", label: "权限与工具", icon: ShieldCheck },
 ];
@@ -160,6 +174,11 @@ export function TietiezhiControlCenter() {
     queryFn: mcpServerStatus,
     enabled: open,
     refetchInterval: open ? 5_000 : false,
+  });
+  const secretsQuery = useQuery({
+    queryKey: ["tietiezhi", "secrets"],
+    queryFn: listTietiezhiSecrets,
+    enabled: open,
   });
 
   useEffect(() => {
@@ -287,6 +306,7 @@ export function TietiezhiControlCenter() {
                   mcpCount={settingsQuery.data?.mcpServers.filter(
                     (server) => server.enabled && draft.mcpServers.includes(server.id),
                   ).length}
+                  secretCount={secretsQuery.data?.filter((secret) => secret.hasValue).length}
                   onNavigate={setSection}
                 />
               )}
@@ -313,6 +333,7 @@ export function TietiezhiControlCenter() {
                   onManage={() => openGlobalSettings("mcp")}
                 />
               )}
+              {draft && section === "secrets" && <SecretsVault />}
               {draft && section === "files" && <FileWorkbench />}
               {draft && section === "security" && (
                 <SecuritySection draft={draft} onPatch={patchDraft} />
@@ -330,6 +351,7 @@ function OverviewSection({
   overview,
   skillCount = 0,
   mcpCount = 0,
+  secretCount = 0,
   onNavigate,
 }: {
   draft: TietiezhiConfig;
@@ -342,6 +364,7 @@ function OverviewSection({
   };
   skillCount?: number;
   mcpCount?: number;
+  secretCount?: number;
   onNavigate: (section: Section) => void;
 }) {
   const cards = [
@@ -366,6 +389,13 @@ function OverviewSection({
       icon: Plug,
       section: "mcp" as const,
     },
+    {
+      label: "密钥库",
+      value: `${secretCount} 个可用`,
+      detail: "Markdown 引用 + 系统安全存储",
+      icon: KeyRound,
+      section: "secrets" as const,
+    },
   ];
 
   return (
@@ -385,7 +415,7 @@ function OverviewSection({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         {cards.map((card) => (
           <button
             type="button"
@@ -807,6 +837,364 @@ function SecuritySection({
   );
 }
 
+interface SecretDraft {
+  originalName?: string;
+  name: string;
+  label: string;
+  description: string;
+  value: string;
+}
+
+function SecretsVault() {
+  const queryClient = useQueryClient();
+  const secretsQuery = useQuery({
+    queryKey: ["tietiezhi", "secrets"],
+    queryFn: listTietiezhiSecrets,
+  });
+  const secrets = secretsQuery.data ?? [];
+  const [draft, setDraft] = useState<SecretDraft | null>(null);
+  const [showDraftValue, setShowDraftValue] = useState(false);
+  const [revealed, setRevealed] = useState<{ name: string; value: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<TietiezhiSecret | null>(null);
+  const [error, setError] = useState("");
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["tietiezhi", "secrets"] });
+    void queryClient.invalidateQueries({ queryKey: ["tietiezhi", "files"] });
+    void queryClient.invalidateQueries({ queryKey: ["tietiezhi", "overview"] });
+    void queryClient.invalidateQueries({ queryKey: ["mcpStatus"] });
+  };
+
+  const save = useMutation({
+    mutationFn: (value: SecretDraft) =>
+      upsertTietiezhiSecret(
+        value.name.trim(),
+        value.label.trim(),
+        value.description.trim(),
+        value.value.length > 0 ? value.value : undefined,
+      ),
+    onSuccess: () => {
+      refresh();
+      setDraft(null);
+      setShowDraftValue(false);
+      setError("");
+      message.success("密钥已保存", "相关 MCP 会在下次调用时使用新值。");
+    },
+    onError: (cause: unknown) => setError(errorMessage(cause)),
+  });
+  const remove = useMutation({
+    mutationFn: deleteTietiezhiSecret,
+    onSuccess: () => {
+      refresh();
+      setPendingDelete(null);
+      setRevealed(null);
+      setError("");
+      message.success("密钥已删除");
+    },
+    onError: (cause: unknown) => setError(errorMessage(cause)),
+  });
+
+  const copyText = async (text: string, success: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success(success);
+    } catch (cause) {
+      message.error("复制失败", errorMessage(cause));
+    }
+  };
+
+  const toggleReveal = async (secret: TietiezhiSecret) => {
+    if (revealed?.name === secret.name) {
+      setRevealed(null);
+      return;
+    }
+    setError("");
+    try {
+      const value = await revealTietiezhiSecret(secret.name);
+      setRevealed({ name: secret.name, value });
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  };
+
+  const copyValue = async (secret: TietiezhiSecret) => {
+    setError("");
+    try {
+      const value =
+        revealed?.name === secret.name
+          ? revealed.value
+          : await revealTietiezhiSecret(secret.name);
+      await copyText(value, "密钥值已复制");
+    } catch (cause) {
+      setError(errorMessage(cause));
+    }
+  };
+
+  if (draft) {
+    const existing = draft.originalName != null;
+    return (
+      <div className="flex flex-col gap-5">
+        <div>
+          <h3 className="text-sm font-medium">{existing ? "编辑密钥" : "新增密钥"}</h3>
+          <p className="text-muted-foreground mt-1 text-xs">
+            Markdown 只记录引用和用途，真实值会写入系统安全存储。
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="secret-name">引用名称</Label>
+            <Input
+              id="secret-name"
+              value={draft.name}
+              disabled={existing}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  name: event.target.value.toLowerCase().replace(/\s+/g, "_"),
+                })
+              }
+              autoComplete="off"
+              placeholder="github_token"
+              className="font-mono"
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="secret-label">显示名称</Label>
+            <Input
+              id="secret-label"
+              value={draft.label}
+              onChange={(event) => setDraft({ ...draft, label: event.target.value })}
+              placeholder="GitHub Token"
+            />
+          </div>
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="secret-description">用途</Label>
+          <Textarea
+            id="secret-description"
+            value={draft.description}
+            onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+            placeholder="用于发布代码和读取私有仓库"
+            className="min-h-20"
+          />
+        </div>
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="secret-value">密钥值</Label>
+          <div className="relative">
+            <Input
+              id="secret-value"
+              type={showDraftValue ? "text" : "password"}
+              value={draft.value}
+              onChange={(event) => setDraft({ ...draft, value: event.target.value })}
+              placeholder={existing ? "已保存，留空保持不变" : "粘贴密钥值"}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              className="pr-9 font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => setShowDraftValue((current) => !current)}
+              aria-label={showDraftValue ? "隐藏密钥值" : "显示密钥值"}
+              className="text-muted-foreground hover:text-foreground absolute inset-y-0 right-0 grid w-9 place-items-center"
+            >
+              {showDraftValue ? (
+                <EyeOff className="size-4" />
+              ) : (
+                <Eye className="size-4" />
+              )}
+            </button>
+          </div>
+        </div>
+        <div className="bg-muted/35 rounded-lg border px-3 py-2.5">
+          <p className="text-muted-foreground text-xs">保存后引用</p>
+          <code className="mt-1 block text-sm">{`\${secret:${draft.name || "name"}}`}</code>
+        </div>
+        {error && <p className="text-destructive text-xs">{error}</p>}
+        <div className="flex items-center gap-2">
+          <Button
+            disabled={
+              !draft.name.trim() ||
+              !draft.label.trim() ||
+              (!existing && draft.value.length === 0) ||
+              save.isPending
+            }
+            onClick={() => save.mutate(draft)}
+          >
+            {save.isPending ? <Loader2 className="animate-spin" /> : <Save />}
+            保存密钥
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setDraft(null);
+              setShowDraftValue(false);
+              setError("");
+            }}
+          >
+            取消
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-medium">文件式密钥库</h3>
+          <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+            `secrets/` 保存可读的 Markdown 索引，真实值保存在系统安全存储。MCP
+            环境变量和 HTTP 请求头、设备调用参数支持引用。
+          </p>
+        </div>
+        <Button
+          size="sm"
+          onClick={() =>
+            setDraft({ name: "", label: "", description: "", value: "" })
+          }
+        >
+          <Plus />
+          新增密钥
+        </Button>
+      </div>
+
+      <div className="rounded-xl border">
+        <div className="bg-muted/25 border-b px-4 py-3">
+          <p className="text-xs font-medium">引用示例</p>
+          <code className="text-muted-foreground mt-1 block text-xs">
+            Authorization: Bearer {"${secret:github_token}"}
+          </code>
+        </div>
+        {secretsQuery.isLoading ? (
+          <div className="text-muted-foreground flex items-center justify-center gap-2 py-12 text-sm">
+            <Loader2 className="size-4 animate-spin" />
+            正在读取密钥库
+          </div>
+        ) : secrets.length === 0 ? (
+          <div className="px-4 py-12 text-center">
+            <KeyRound className="text-muted-foreground mx-auto size-6" />
+            <p className="mt-3 text-sm font-medium">还没有密钥</p>
+            <p className="text-muted-foreground mt-1 text-xs">
+              新增后会自动生成 `secrets/SECRETS.md` 索引。
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y">
+            {secrets.map((secret) => {
+              const visible = revealed?.name === secret.name;
+              return (
+                <div key={secret.name} className="flex items-center gap-3 px-4 py-3">
+                  <div className="bg-muted grid size-9 shrink-0 place-items-center rounded-lg">
+                    <KeyRound className="size-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium">{secret.label}</span>
+                      <Badge variant={secret.hasValue ? "outline" : "destructive"}>
+                        {secret.hasValue ? "已安全保存" : "缺少值"}
+                      </Badge>
+                    </div>
+                    <code className="text-muted-foreground mt-0.5 block truncate text-xs">
+                      {visible ? revealed.value : secret.reference}
+                    </code>
+                    {secret.description && (
+                      <p className="text-muted-foreground mt-0.5 truncate text-xs">
+                        {secret.description}
+                      </p>
+                    )}
+                  </div>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    disabled={!secret.hasValue}
+                    onClick={() => void toggleReveal(secret)}
+                    aria-label={visible ? "隐藏密钥值" : "显示密钥值"}
+                    title={visible ? "隐藏密钥值" : "显示密钥值"}
+                  >
+                    {visible ? <EyeOff /> : <Eye />}
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={() => void copyText(secret.reference, "密钥引用已复制")}
+                    aria-label="复制密钥引用"
+                    title="复制密钥引用"
+                  >
+                    <Copy />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    disabled={!secret.hasValue}
+                    onClick={() => void copyValue(secret)}
+                    aria-label="复制密钥值"
+                    title="复制密钥值"
+                  >
+                    <KeyRound />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    onClick={() =>
+                      setDraft({
+                        originalName: secret.name,
+                        name: secret.name,
+                        label: secret.label,
+                        description: secret.description,
+                        value: "",
+                      })
+                    }
+                    aria-label="编辑密钥"
+                    title="编辑密钥"
+                  >
+                    <Pencil />
+                  </Button>
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => setPendingDelete(secret)}
+                    aria-label="删除密钥"
+                    title="删除密钥"
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {error && <p className="text-destructive text-xs">{error}</p>}
+
+      <AlertDialog
+        open={pendingDelete != null}
+        onOpenChange={(nextOpen) => !nextOpen && setPendingDelete(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除「{pendingDelete?.label}」？</AlertDialogTitle>
+            <AlertDialogDescription>
+              Markdown 说明和系统安全存储中的真实值都会被删除，现有引用将失效。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => pendingDelete && remove.mutate(pendingDelete.name)}
+            >
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
 function FileWorkbench() {
   const queryClient = useQueryClient();
   const filesQuery = useQuery({
@@ -960,6 +1348,7 @@ function FileEditor({
   const [content, setContent] = useState("");
   const [changed, setChanged] = useState(false);
   const [error, setError] = useState("");
+  const managedSecret = entry.path.startsWith("secrets/");
 
   useEffect(() => {
     if (fileQuery.data != null && !changed) setContent(fileQuery.data);
@@ -997,7 +1386,7 @@ function FileEditor({
         )}
         <Button
           size="sm"
-          disabled={!changed || save.isPending}
+          disabled={managedSecret || !changed || save.isPending}
           onClick={() => save.mutate()}
         >
           {save.isPending ? <Loader2 className="animate-spin" /> : <Save />}
@@ -1007,7 +1396,9 @@ function FileEditor({
       <Textarea
         value={content}
         disabled={fileQuery.isLoading}
+        readOnly={managedSecret}
         onChange={(event) => {
+          if (managedSecret) return;
           setContent(event.target.value);
           setChanged(true);
           setError("");
@@ -1015,6 +1406,11 @@ function FileEditor({
         spellCheck={false}
         className="min-h-0 flex-1 resize-none font-mono text-xs leading-relaxed"
       />
+      {managedSecret && (
+        <p className="text-muted-foreground text-xs">
+          这是密钥库生成的只读说明文件，请在“密钥库”面板中修改。
+        </p>
+      )}
       {error && <p className="text-destructive text-xs">{error}</p>}
     </div>
   );

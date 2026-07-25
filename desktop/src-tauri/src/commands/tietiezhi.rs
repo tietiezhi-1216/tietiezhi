@@ -3,12 +3,13 @@ use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::agent::loop_::AgentEnv;
+use crate::mcp::{McpServerConfig, McpTransport};
 use crate::permission::PermissionMode;
-use crate::skills;
+use crate::{secrets, skills, AppState};
 
 const CONFIG_VERSION: u32 = 1;
 const MAX_CONFIG_PROMPT_BYTES: usize = 64 * 1024;
@@ -70,6 +71,15 @@ const MEMORY_TEMPLATE: &str = r#"# 长期记忆
 
 ## 待持续关注
 "#;
+
+const SECRETS_INDEX_TEMPLATE: &str = r#"# 密钥库
+
+这里保存密钥的用途和引用，不保存真实密钥值。
+
+在 MCP 环境变量或 HTTP 请求头中使用 `${secret:name}`。Tietiezhi 只会在 Rust 执行层解析引用，真实值保存在操作系统安全存储中，不会进入提示词或会话记录。
+"#;
+const SECRET_METADATA_START: &str = "<!-- tietiezhi-secret-metadata\n";
+const SECRET_METADATA_END: &str = "\n-->";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -151,6 +161,26 @@ pub struct TietiezhiHomeOverview {
     pub timeline_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TietiezhiSecretMeta {
+    pub name: String,
+    pub label: String,
+    pub description: String,
+    pub updated_at: u64,
+    pub has_value: bool,
+    pub reference: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SecretFileMetadata {
+    name: String,
+    label: String,
+    description: String,
+    updated_at: u64,
+}
+
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -171,9 +201,14 @@ pub(crate) fn home_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn ensure_home(home: &Path) -> Result<(), String> {
     std::fs::create_dir_all(home).map_err(|error| format!("创建铁铁汁 Home 失败：{error}"))?;
-    for directory in ["memory", "notes", "uploads", "sessions"] {
+    for directory in ["memory", "notes", "uploads", "secrets", "sessions"] {
         std::fs::create_dir_all(home.join(directory))
             .map_err(|error| format!("创建铁铁汁目录失败：{error}"))?;
+    }
+    let marker = home.join(".tietiezhi-home");
+    if !marker.exists() {
+        std::fs::write(&marker, "managed by Tietiezhi\n")
+            .map_err(|error| format!("初始化铁铁汁 Home 标记失败：{error}"))?;
     }
     for (name, content) in [
         ("SOUL.md", SOUL_TEMPLATE),
@@ -185,6 +220,11 @@ fn ensure_home(home: &Path) -> Result<(), String> {
             std::fs::write(&path, content)
                 .map_err(|error| format!("初始化 {name} 失败：{error}"))?;
         }
+    }
+    let secrets_index = home.join("secrets").join("SECRETS.md");
+    if !secrets_index.exists() {
+        std::fs::write(&secrets_index, SECRETS_INDEX_TEMPLATE)
+            .map_err(|error| format!("初始化密钥索引失败：{error}"))?;
     }
     Ok(())
 }
@@ -243,7 +283,8 @@ fn write_config(app: &AppHandle, config: &TietiezhiConfig) -> Result<(), String>
 }
 
 fn is_visible_entry(entry: &DirEntry) -> bool {
-    entry.depth() == 0 || entry.file_name() != "sessions"
+    entry.depth() == 0
+        || (entry.file_name() != "sessions" && entry.file_name() != ".tietiezhi-home")
 }
 
 fn relative_path(home: &Path, path: &Path) -> String {
@@ -264,6 +305,8 @@ fn modified_at(metadata: &std::fs::Metadata) -> u64 {
 
 fn is_protected(relative: &str) -> bool {
     PROTECTED_FILES.contains(&relative)
+        || relative == ".tietiezhi-home"
+        || relative.starts_with("secrets/")
 }
 
 fn list_files_in(home: &Path) -> Result<Vec<TietiezhiFileEntry>, String> {
@@ -304,7 +347,7 @@ fn list_files_in(home: &Path) -> Result<Vec<TietiezhiFileEntry>, String> {
 
 fn resolve_home_path(home: &Path, relative: &str) -> Result<PathBuf, String> {
     let raw = relative.trim();
-    if Path::new(raw).is_absolute() {
+    if Path::new(raw).has_root() {
         return Err("只能使用铁铁汁 Home 内的相对路径".into());
     }
     let trimmed = raw.trim_matches('/');
@@ -361,6 +404,194 @@ fn prompt_document(home: &Path, name: &str) -> String {
         .unwrap_or_default()
 }
 
+fn validate_secret_name(name: &str) -> Result<(), String> {
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err("密钥名称只能包含小写字母、数字、- 和 _，且不能超过 64 个字符".into())
+    }
+}
+
+fn secret_file_path(home: &Path, name: &str) -> Result<PathBuf, String> {
+    validate_secret_name(name)?;
+    Ok(home.join("secrets").join(format!("{name}.md")))
+}
+
+fn parse_secret_metadata(content: &str) -> Option<SecretFileMetadata> {
+    let raw = content
+        .strip_prefix(SECRET_METADATA_START)?
+        .split_once(SECRET_METADATA_END)?
+        .0;
+    serde_json::from_str(raw).ok()
+}
+
+fn list_secret_metadata(home: &Path) -> Result<Vec<SecretFileMetadata>, String> {
+    let directory = home.join("secrets");
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(directory)
+        .map_err(|error| format!("读取密钥目录失败：{error}"))?
+        .flatten()
+    {
+        if !entry.path().is_file() || entry.file_name() == "SECRETS.md" {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Some(metadata) = parse_secret_metadata(&content) else {
+            continue;
+        };
+        let file_matches = entry
+            .path()
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem == metadata.name);
+        if file_matches && validate_secret_name(&metadata.name).is_ok() {
+            entries.push(metadata);
+        }
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(entries)
+}
+
+fn secret_document(metadata: &SecretFileMetadata) -> Result<String, String> {
+    let metadata_json = serde_json::to_string(metadata).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "{SECRET_METADATA_START}{metadata_json}{SECRET_METADATA_END}\n\n\
+         # {}\n\n\
+         - 引用：`${{secret:{}}}`\n\
+         - 存储：操作系统安全存储\n\
+         - 最后更新：{}\n\n\
+         {}\n",
+        metadata.label, metadata.name, metadata.updated_at, metadata.description
+    ))
+}
+
+fn markdown_cell(value: &str) -> String {
+    value.replace(['\r', '\n'], " ").replace('|', "\\|")
+}
+
+fn write_secret_index(home: &Path, metadata: &[SecretFileMetadata]) -> Result<(), String> {
+    let mut content = format!("{SECRETS_INDEX_TEMPLATE}\n\n");
+    if metadata.is_empty() {
+        content.push_str("当前没有已登记的密钥。\n");
+    } else {
+        content.push_str("| 名称 | 引用 | 用途 |\n| --- | --- | --- |\n");
+        for item in metadata {
+            content.push_str(&format!(
+                "| {} | `${{secret:{}}}` | {} |\n",
+                markdown_cell(&item.label),
+                item.name,
+                markdown_cell(&item.description)
+            ));
+        }
+    }
+    std::fs::write(home.join("secrets").join("SECRETS.md"), content)
+        .map_err(|error| format!("更新密钥索引失败：{error}"))
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn substitute_secret_references(
+    input: &str,
+    mut lookup: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Result<String, String> {
+    const PREFIX: &str = "${secret:";
+    let mut remaining = input;
+    let mut output = String::with_capacity(input.len());
+    while let Some(start) = remaining.find(PREFIX) {
+        output.push_str(&remaining[..start]);
+        let reference = &remaining[start + PREFIX.len()..];
+        let Some(end) = reference.find('}') else {
+            output.push_str(&remaining[start..]);
+            return Ok(output);
+        };
+        let name = &reference[..end];
+        validate_secret_name(name)?;
+        let value = lookup(name)?.ok_or_else(|| format!("密钥引用未配置：${{secret:{name}}}"))?;
+        output.push_str(&value);
+        remaining = &reference[end + 1..];
+    }
+    output.push_str(remaining);
+    Ok(output)
+}
+
+pub(crate) fn resolve_secret_references(_app: &AppHandle, input: &str) -> Result<String, String> {
+    substitute_secret_references(input, secrets::get_tietiezhi_secret)
+}
+
+pub(crate) fn resolve_json_secret_references(
+    app: &AppHandle,
+    value: &mut serde_json::Value,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = resolve_secret_references(app, text)?;
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                resolve_json_secret_references(app, item)?;
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for value in fields.values_mut() {
+                resolve_json_secret_references(app, value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn redact_tietiezhi_secret_values(app: &AppHandle, input: &str) -> String {
+    let Ok(home) = home_dir(app) else {
+        return input.to_string();
+    };
+    let Ok(metadata) = list_secret_metadata(&home) else {
+        return input.to_string();
+    };
+    let mut redacted = input.to_string();
+    for item in metadata {
+        let Ok(Some(value)) = secrets::get_tietiezhi_secret(&item.name) else {
+            continue;
+        };
+        if !value.is_empty() {
+            redacted = redacted.replace(&value, &format!("${{secret:{}}}", item.name));
+        }
+    }
+    redacted
+}
+
+pub(crate) fn resolve_mcp_config_secrets(
+    app: &AppHandle,
+    config: &McpServerConfig,
+) -> Result<McpServerConfig, String> {
+    let mut resolved = config.clone();
+    match &mut resolved.transport {
+        McpTransport::Stdio { env, .. } => {
+            for value in env.values_mut() {
+                *value = resolve_secret_references(app, value)?;
+            }
+        }
+        McpTransport::Http { headers, .. } => {
+            for value in headers.values_mut() {
+                *value = resolve_secret_references(app, value)?;
+            }
+        }
+    }
+    Ok(resolved)
+}
+
 pub(crate) fn resolve_env(
     app: &AppHandle,
     device_id: &str,
@@ -384,9 +615,10 @@ pub(crate) fn resolve_env(
         .join("\n");
     let mcp_configs = settings
         .mcp_servers
-        .into_iter()
+        .iter()
         .filter(|server| server.enabled && config.mcp_servers.contains(&server.id))
-        .collect::<Vec<_>>();
+        .map(|server| resolve_mcp_config_secrets(app, server))
+        .collect::<Result<Vec<_>, _>>()?;
 
     let identity = if config.system_prompt.is_empty() {
         BUILTIN_PROMPT
@@ -416,6 +648,7 @@ pub(crate) fn resolve_env(
          铁铁汁 Home 是当前唯一工作目录。SOUL.md、USER.md、MEMORY.md 和 memory/ 用于用户可控的长期资料；notes/ 保存普通笔记，uploads/ 保存导入文件。所有工具路径都使用相对 Home 的路径。只有值得跨会话保留且用户允许的信息才写入 MEMORY.md，不要把每轮对话都当作记忆。\n\n\
          {memory_context}\n\n\
          {skills_context}\n\n\
+         secrets/ 只包含密钥名称、用途和 ${{secret:name}} 引用，不包含真实值。不要要求读取或输出真实密钥；执行层会在获准的 MCP 或设备调用中解析引用。\n\n\
          当前用户选择的目标设备是“{device_name}”，设备 ID 必须原样使用：{device_id}。用户明确要求查看或操作设备时调用 device_call；不要编造设备状态或声称未执行的操作已经完成。普通交流无需调用设备工具。"
     );
 
@@ -452,6 +685,108 @@ pub fn list_tietiezhi_files(app: AppHandle) -> Result<Vec<TietiezhiFileEntry>, S
 }
 
 #[tauri::command]
+pub fn list_tietiezhi_secrets(app: AppHandle) -> Result<Vec<TietiezhiSecretMeta>, String> {
+    let home = home_dir(&app)?;
+    list_secret_metadata(&home)?
+        .into_iter()
+        .map(|metadata| {
+            let has_value = secrets::get_tietiezhi_secret(&metadata.name)?.is_some();
+            Ok(TietiezhiSecretMeta {
+                reference: format!("${{secret:{}}}", metadata.name),
+                name: metadata.name,
+                label: metadata.label,
+                description: metadata.description,
+                updated_at: metadata.updated_at,
+                has_value,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn upsert_tietiezhi_secret(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    label: String,
+    description: String,
+    value: Option<String>,
+) -> Result<TietiezhiSecretMeta, String> {
+    let name = name.trim().to_string();
+    validate_secret_name(&name)?;
+    let label = label.trim().replace(['\r', '\n'], " ");
+    if label.is_empty() || label.chars().count() > 80 {
+        return Err("密钥显示名称不能为空且不能超过 80 个字符".into());
+    }
+    let description = description.trim().to_string();
+    if description.chars().count() > 500 {
+        return Err("密钥用途不能超过 500 个字符".into());
+    }
+    if value.as_deref().is_some_and(str::is_empty) {
+        return Err("密钥值不能为空".into());
+    }
+
+    let home = home_dir(&app)?;
+    let had_value = secrets::get_tietiezhi_secret(&name)?.is_some();
+    if !had_value && value.is_none() {
+        return Err("新密钥需要填写密钥值".into());
+    }
+    let metadata = SecretFileMetadata {
+        name: name.clone(),
+        label: label.clone(),
+        description: description.clone(),
+        updated_at: now_millis(),
+    };
+    std::fs::write(secret_file_path(&home, &name)?, secret_document(&metadata)?)
+        .map_err(|error| format!("保存密钥说明失败：{error}"))?;
+    if let Some(value) = value {
+        secrets::set_tietiezhi_secret(&name, &value)?;
+    }
+    let all_metadata = list_secret_metadata(&home)?;
+    write_secret_index(&home, &all_metadata)?;
+    let settings = super::settings::read_settings(&app)?;
+    for server in &settings.mcp_servers {
+        state.mcp.stop(&server.id).await;
+    }
+    Ok(TietiezhiSecretMeta {
+        name: name.clone(),
+        label,
+        description,
+        updated_at: metadata.updated_at,
+        has_value: true,
+        reference: format!("${{secret:{name}}}"),
+    })
+}
+
+#[tauri::command]
+pub fn reveal_tietiezhi_secret(name: String) -> Result<String, String> {
+    validate_secret_name(&name)?;
+    secrets::get_tietiezhi_secret(&name)?.ok_or_else(|| "密钥值不存在，请重新保存".into())
+}
+
+#[tauri::command]
+pub async fn delete_tietiezhi_secret(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<(), String> {
+    validate_secret_name(&name)?;
+    let home = home_dir(&app)?;
+    secrets::delete_tietiezhi_secret(&name)?;
+    let path = secret_file_path(&home, &name)?;
+    if path.exists() {
+        std::fs::remove_file(path).map_err(|error| format!("删除密钥说明失败：{error}"))?;
+    }
+    let metadata = list_secret_metadata(&home)?;
+    write_secret_index(&home, &metadata)?;
+    let settings = super::settings::read_settings(&app)?;
+    for server in &settings.mcp_servers {
+        state.mcp.stop(&server.id).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn read_tietiezhi_file(app: AppHandle, path: String) -> Result<String, String> {
     let home = home_dir(&app)?;
     read_bounded(&resolve_home_path(&home, &path)?)
@@ -464,6 +799,13 @@ pub fn write_tietiezhi_file(app: AppHandle, path: String, content: String) -> Re
     }
     let home = home_dir(&app)?;
     let resolved = resolve_home_path(&home, &path)?;
+    let relative = relative_path(&home, &resolved);
+    if relative == ".tietiezhi-home" {
+        return Err("铁铁汁 Home 标记由系统管理".into());
+    }
+    if relative.starts_with("secrets/") {
+        return Err("密钥说明由密钥库管理，请在“密钥库”面板中修改".into());
+    }
     if resolved == home {
         return Err("请输入文件名".into());
     }
@@ -629,5 +971,40 @@ mod tests {
             resolve_home_path(home, "notes/today.md").unwrap(),
             home.join("notes/today.md")
         );
+    }
+
+    #[test]
+    fn secret_references_keep_a_stable_explicit_shape() {
+        assert!(validate_secret_name("github_token").is_ok());
+        assert!(validate_secret_name("GitHub Token").is_err());
+        assert!(validate_secret_name("../token").is_err());
+        let metadata = SecretFileMetadata {
+            name: "github_token".into(),
+            label: "GitHub Token".into(),
+            description: "发布代码".into(),
+            updated_at: 42,
+        };
+        let document = secret_document(&metadata).unwrap();
+        assert!(document.contains("${secret:github_token}"));
+        assert_eq!(
+            parse_secret_metadata(&document).unwrap().name,
+            "github_token"
+        );
+        let resolved = substitute_secret_references(
+            "Bearer ${secret:github_token}; ${secret:region}",
+            |name| {
+                Ok(Some(
+                    match name {
+                        "github_token" => "secret-value",
+                        "region" => "cn",
+                        _ => return Ok(None),
+                    }
+                    .into(),
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(resolved, "Bearer secret-value; cn");
+        assert!(substitute_secret_references("${secret:missing}", |_| Ok(None)).is_err());
     }
 }

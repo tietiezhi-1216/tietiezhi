@@ -5,6 +5,17 @@ use super::{resolve_in_workspace, str_arg, ToolCtx};
 const MAX_READ_LINES: usize = 2000;
 const MAX_READ_BYTES: usize = 50 * 1024;
 
+fn ensure_not_managed_secret(
+    workspace: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<(), String> {
+    if workspace.join(".tietiezhi-home").is_file() && path.starts_with(workspace.join("secrets")) {
+        Err("密钥说明由铁铁汁控制中心管理，不能通过文件工具修改".into())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn read_file(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
     let path = resolve_in_workspace(&ctx.workspace, str_arg(args, "path")?)?;
     let raw = std::fs::read(&path).map_err(|e| format!("读取文件失败：{e}"))?;
@@ -43,6 +54,7 @@ pub fn read_file(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
 
 pub fn write_file(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
     let path = resolve_in_workspace(&ctx.workspace, str_arg(args, "path")?)?;
+    ensure_not_managed_secret(&ctx.workspace, &path)?;
     let content = str_arg(args, "content")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败：{e}"))?;
@@ -57,6 +69,7 @@ pub fn write_file(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
 
 pub fn edit_file(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
     let path = resolve_in_workspace(&ctx.workspace, str_arg(args, "path")?)?;
+    ensure_not_managed_secret(&ctx.workspace, &path)?;
     let old = str_arg(args, "old_string")?;
     let new = str_arg(args, "new_string")?;
     if old.is_empty() {
@@ -84,6 +97,9 @@ pub fn list_dir(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
     let mut names: Vec<String> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
+        if name == ".tietiezhi-home" {
+            continue;
+        }
         if entry.path().is_dir() {
             names.push(format!("{name}/"));
         } else {
@@ -95,4 +111,19 @@ pub fn list_dir(ctx: &ToolCtx, args: &Value) -> Result<String, String> {
         return Ok("[空目录]".into());
     }
     Ok(names.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_not_managed_secret;
+
+    #[test]
+    fn managed_secret_documents_are_not_writable_by_file_tools() {
+        let root = std::env::temp_dir().join(format!("tietiezhi-fs-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("secrets")).unwrap();
+        std::fs::write(root.join(".tietiezhi-home"), "managed").unwrap();
+        assert!(ensure_not_managed_secret(&root, &root.join("secrets/token.md")).is_err());
+        assert!(ensure_not_managed_secret(&root, &root.join("notes/today.md")).is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

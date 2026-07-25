@@ -143,7 +143,7 @@ pub(crate) fn resolve_env(
         .collect();
 
     // MCP servers: enabled ones, optionally narrowed by the agent.
-    let mcp_configs: Vec<_> = settings
+    let mcp_configs = settings
         .mcp_servers
         .iter()
         .filter(|c| c.enabled)
@@ -153,8 +153,8 @@ pub(crate) fn resolve_env(
                 .map(|a| a.mcp_servers.is_empty() || a.mcp_servers.contains(&c.id))
                 .unwrap_or(true)
         })
-        .cloned()
-        .collect();
+        .map(|config| super::tietiezhi::resolve_mcp_config_secrets(app, config))
+        .collect::<Result<Vec<_>, _>>()?;
 
     let system_prompt = prompt::compose(
         &settings.system_prompt,

@@ -38,7 +38,7 @@ Tietiezhi 的核心是 **设备 × 模型互联**。长期目标是把 macOS、W
 - [x] 本地任务持久化、置顶、归档和恢复
 - [x] 共享任务上下文、差异化工具与结果面板的 Work / Code 模式，以及隔离空间间的显式成果交接
 - [x] Tietiezhi 设备中心、远程 Core 管理、桌面节点注册、设备发现与基础能力调用
-- [x] Tietiezhi 控制中心、独立 Home、可编辑 Markdown 长期记忆，以及专属 Skills / MCP / 工具分配
+- [x] Tietiezhi 控制中心、独立 Home、可编辑 Markdown 长期记忆、文件式安全密钥引用，以及专属 Skills / MCP / 工具分配
 - [x] 全局语音听写、语音识别、模型润色与文本插入
 - [x] Create 图片 / 视频生成、参考图输入、任务进度与本地作品管理
 - [x] 深浅色主题、Windows / macOS CI、版本发布与应用内更新

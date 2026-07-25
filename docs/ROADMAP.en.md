@@ -38,7 +38,7 @@ Three principles guide that direction:
 - [x] Local task persistence, pinning, archiving, and restoring
 - [x] Work and Code modes with shared context, distinct tool/result surfaces, isolated spaces, and explicit artifact handoff
 - [x] Tietiezhi device center, remote Core management, desktop node registration, discovery, and baseline capability calls
-- [x] Tietiezhi control center, dedicated Home, editable Markdown memory, and dedicated Skill/MCP/tool assignment
+- [x] Tietiezhi control center, dedicated Home, editable Markdown memory, file-oriented secure secret references, and dedicated Skill/MCP/tool assignment
 - [x] Global voice dictation, speech recognition, model polishing, and text insertion
 - [x] Create image/video generation, reference-image input, task progress, and local asset management
 - [x] Light/dark themes, Windows/macOS CI, releases, and in-app updates

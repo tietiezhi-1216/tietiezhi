@@ -912,9 +912,29 @@ pub async fn run_agent_loop(
                         };
                         match call_result {
                             Some(Ok((out, err))) => {
-                                (tools::truncate_output(&out), err, None, false, false, false)
+                                let output =
+                                    crate::commands::tietiezhi::redact_tietiezhi_secret_values(
+                                        app, &out,
+                                    );
+                                (
+                                    tools::truncate_output(&output),
+                                    err,
+                                    None,
+                                    false,
+                                    false,
+                                    false,
+                                )
                             }
-                            Some(Err(e)) => (e, true, None, false, false, false),
+                            Some(Err(error)) => (
+                                crate::commands::tietiezhi::redact_tietiezhi_secret_values(
+                                    app, &error,
+                                ),
+                                true,
+                                None,
+                                false,
+                                false,
+                                false,
+                            ),
                             None => ("MCP 工具调用已取消".into(), true, None, false, true, false),
                         }
                     }

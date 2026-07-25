@@ -17,6 +17,7 @@ import type {
   Provider,
   TietiezhiConfig,
   TietiezhiDevice,
+  TietiezhiSecret,
   TietiezhiTimelineMessage,
 } from "@/lib/api";
 
@@ -399,6 +400,33 @@ export function installTauriMock(): void {
         "# 长期记忆\n\n## 重要事实\n\n- Tietiezhi 是当前主要项目。\n",
       ],
       ["notes/产品想法.md", "# 产品想法\n\n把个人 Agent 的入口做得更明确。\n"],
+      [
+        "secrets/SECRETS.md",
+        "# 密钥库\n\n这里保存密钥的用途和引用，不保存真实密钥值。\n",
+      ],
+      [
+        "secrets/github_token.md",
+        "# GitHub Token\n\n- 引用：`${secret:github_token}`\n\n用于发布代码和访问私有仓库\n",
+      ],
+    ]),
+    tietiezhiSecrets: new Map<
+      string,
+      { meta: TietiezhiSecret; value: string }
+    >([
+      [
+        "github_token",
+        {
+          meta: {
+            name: "github_token",
+            label: "GitHub Token",
+            description: "用于发布代码和访问私有仓库",
+            updatedAt: Date.now() - 86_400_000,
+            hasValue: true,
+            reference: "${secret:github_token}",
+          },
+          value: "github_pat_mock_value",
+        },
+      ],
     ]),
     tietiezhiTimeline: [] as TietiezhiTimelineMessage[],
     keys: {} as Record<string, string>,
@@ -486,6 +514,19 @@ export function installTauriMock(): void {
     automationArchivedAt: new Map<string, number>(),
     suggestionDecks: new Map<string, Record<string, unknown>>(),
     cancelled: new Set<number>(),
+  };
+
+  const updateMockSecretIndex = () => {
+    const rows = [...state.tietiezhiSecrets.values()]
+      .map(
+        ({ meta }) =>
+          `| ${meta.label} | \`${meta.reference}\` | ${meta.description} |`,
+      )
+      .join("\n");
+    state.tietiezhiFiles.set(
+      "secrets/SECRETS.md",
+      `# 密钥库\n\n这里保存密钥的用途和引用，不保存真实密钥值。\n\n| 名称 | 引用 | 用途 |\n| --- | --- | --- |\n${rows}\n`,
+    );
   };
 
   const push = (channel: MockChannel, index: number, payload: Record<string, unknown>) =>
@@ -840,6 +881,45 @@ export function installTauriMock(): void {
       return [...directoryEntries, ...fileEntries].sort((left, right) =>
         left.path.localeCompare(right.path),
       );
+    },
+    list_tietiezhi_secrets: () =>
+      [...state.tietiezhiSecrets.values()].map(({ meta }) =>
+        structuredClone(meta),
+      ),
+    upsert_tietiezhi_secret: (a) => {
+      const name = String(a.name);
+      const current = state.tietiezhiSecrets.get(name);
+      const value =
+        typeof a.value === "string" && a.value.length > 0
+          ? a.value
+          : current?.value;
+      if (!value) throw "新密钥需要填写密钥值";
+      const meta: TietiezhiSecret = {
+        name,
+        label: String(a.label),
+        description: String(a.description),
+        updatedAt: Date.now(),
+        hasValue: true,
+        reference: `\${secret:${name}}`,
+      };
+      state.tietiezhiSecrets.set(name, { meta, value });
+      state.tietiezhiFiles.set(
+        `secrets/${name}.md`,
+        `# ${meta.label}\n\n- 引用：\`${meta.reference}\`\n\n${meta.description}\n`,
+      );
+      updateMockSecretIndex();
+      return structuredClone(meta);
+    },
+    reveal_tietiezhi_secret: (a) => {
+      const item = state.tietiezhiSecrets.get(String(a.name));
+      if (!item) throw "密钥值不存在，请重新保存";
+      return item.value;
+    },
+    delete_tietiezhi_secret: (a) => {
+      const name = String(a.name);
+      state.tietiezhiSecrets.delete(name);
+      state.tietiezhiFiles.delete(`secrets/${name}.md`);
+      updateMockSecretIndex();
     },
     read_tietiezhi_file: (a) => {
       const content = state.tietiezhiFiles.get(String(a.path));
