@@ -250,7 +250,7 @@ async fn disconnected_responses_stream_retries_and_completes_once() {
             let mut request = vec![0; 8192];
             let _ = socket.read(&mut request).await.unwrap();
             let body = if attempt == 0 {
-                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-disconnected\"}}\n\n"
             } else {
                 "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-recovered\",\"end_turn\":true}}\n\n"
             };
