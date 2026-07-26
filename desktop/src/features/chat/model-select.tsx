@@ -184,6 +184,7 @@ const EFFORT_LABELS: Record<ReasoningEffort, string> = {
   high: "high",
   xhigh: "xhigh",
   max: "max",
+  ultra: "ultra",
 };
 
 /** Efforts a model lets the user pick, "auto" first; empty when not selectable. */
@@ -230,7 +231,17 @@ export function ModelSelect({
   const save = useMutation({
     mutationFn: async ({ providerId, model }: { providerId: string; model: string }) => {
       if (!settings) return;
-      await saveSettings({ ...settings, chatProviderId: providerId, chatModel: model });
+      const selected = settings.providers
+        .find((provider) => provider.id === providerId)
+        ?.models.find((candidate) => candidate.id === model);
+      const supported = selected ? selectableEfforts(selected) : ["auto"];
+      const configured = settings.chatReasoningEffort ?? "auto";
+      await saveSettings({
+        ...settings,
+        chatProviderId: providerId,
+        chatModel: model,
+        chatReasoningEffort: supported.includes(configured) ? configured : "auto",
+      });
     },
     onSuccess: () => {
       setOpen(false);

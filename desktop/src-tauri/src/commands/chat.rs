@@ -1,4 +1,3 @@
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
@@ -6,8 +5,8 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 use tokio_util::sync::CancellationToken;
 
-use super::models::{classify, ModelInfo, ModelKind, ReasoningEffort};
-use super::{api_url, providers};
+use super::models::{classify, ModelInfo, ModelKind, ModelWireApi, ReasoningEffort};
+use super::providers;
 use crate::agent::context::ContextAction;
 use crate::agent::failure::ChatFailure;
 use crate::AppState;
@@ -36,11 +35,13 @@ pub struct ChatMessage {
 /// Incremental SSE line splitter: feed raw bytes, get complete lines back.
 /// Lines are only emitted once their trailing `\n` arrived, so multi-byte
 /// UTF-8 sequences split across network chunks are never broken.
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct SseLineBuffer {
     buf: Vec<u8>,
 }
 
+#[cfg(test)]
 impl SseLineBuffer {
     pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<String> {
         self.buf.extend_from_slice(chunk);
@@ -58,22 +59,26 @@ impl SseLineBuffer {
 }
 
 /// Extract the payload of an SSE `data:` line; other fields are ignored.
+#[cfg(test)]
 pub(crate) fn sse_data(line: &str) -> Option<&str> {
     line.strip_prefix("data:").map(str::trim_start)
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct StreamChunk {
     #[serde(default)]
     choices: Vec<StreamChoice>,
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct StreamChoice {
     #[serde(default)]
     delta: StreamDelta,
 }
 
+#[cfg(test)]
 #[derive(Deserialize, Default)]
 struct StreamDelta {
     #[serde(default)]
@@ -114,6 +119,7 @@ pub async fn tietiezhi_stream(
             .iter()
             .find(|candidate| candidate.id == model);
         ensure_chat_model(&model, model_info).map_err(ChatFailure::message)?;
+        let wire_api = resolved.wire_api_for_model(&model);
 
         let env = super::tietiezhi::resolve_env(&app, &device_id, &device_name)
             .map_err(ChatFailure::message)?;
@@ -130,6 +136,7 @@ pub async fn tietiezhi_stream(
             &resolved.base_url,
             resolved.key.as_deref(),
             &model,
+            wire_api,
             model_info,
             reasoning_effort,
             messages,
@@ -196,6 +203,7 @@ pub(crate) async fn stream_to_channel(
                         &state.http,
                         &resolved.base_url,
                         &model,
+                        resolved.wire_api_for_model(&model),
                         &messages,
                         resolved.key.as_deref(),
                         &cancel,
@@ -250,6 +258,7 @@ async fn run_stream(
     http: &reqwest::Client,
     base_url: &str,
     model: &str,
+    wire_api: ModelWireApi,
     messages: &[ChatMessage],
     api_key: Option<&str>,
     cancel: &CancellationToken,
@@ -263,62 +272,58 @@ async fn run_stream(
         return Err("尚未选择模型，请先在顶部选择模型".into());
     }
 
-    let body = json!({
-        "model": model,
-        "messages": messages,
-        "stream": true,
-    });
-
-    let mut req = http.post(api_url(base, "chat/completions")).json(&body);
-    if let Some(key) = api_key {
-        req = req.bearer_auth(key);
-    }
-
-    let resp = tokio::select! {
-        _ = cancel.cancelled() => return Ok(true),
-        r = req.send() => r.map_err(|e| format!("无法连接中转站：{e}"))?,
-    };
-
-    let status = resp.status();
-    if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(super::provider_http_error("模型服务", status, &body));
-    }
-
-    let mut stream = resp.bytes_stream();
-    let mut lines = SseLineBuffer::default();
-
-    loop {
-        let chunk = tokio::select! {
-            _ = cancel.cancelled() => return Ok(true),
-            c = stream.next() => c,
-        };
-        let Some(chunk) = chunk else { break };
-        let chunk = chunk.map_err(|e| format!("流式读取中断：{e}"))?;
-
-        for line in lines.push(&chunk) {
-            let Some(data) = sse_data(&line) else {
-                continue;
-            };
-            if data == "[DONE]" {
-                return Ok(false);
+    let mut instructions = Vec::new();
+    let input = messages
+        .iter()
+        .filter_map(|message| {
+            if message.role == "system" {
+                if let Some(text) = message.content.as_str() {
+                    instructions.push(text.to_owned());
+                }
+                return None;
             }
-            // Tolerate unknown event shapes (keep-alives, usage frames, …).
-            let Ok(parsed) = serde_json::from_str::<StreamChunk>(data) else {
-                continue;
+            let kind = if message.role == "assistant" {
+                "output_text"
+            } else {
+                "input_text"
             };
-            let content = parsed
-                .choices
-                .into_iter()
-                .next()
-                .and_then(|c| c.delta.content)
-                .unwrap_or_default();
-            if !content.is_empty() {
-                on_delta(content)?;
-            }
+            Some(json!({
+                "type":"message",
+                "role":message.role,
+                "content":[{"type":kind,"text":message.content.as_str().unwrap_or_default()}]
+            }))
+        })
+        .collect();
+    let mut request = tietiezhi_agent_model::ResponsesApiRequest::text(model, input);
+    request.instructions = instructions.join("\n\n");
+    let canonical_base_url = super::api_url(base, "");
+    let provider = tietiezhi_agent_model::Provider::openai_compatible(
+        "chat",
+        canonical_base_url,
+        api_key.map(str::to_owned),
+    )
+    .with_wire_api(match wire_api {
+        ModelWireApi::Auto | ModelWireApi::Responses => tietiezhi_agent_model::WireApi::Responses,
+        ModelWireApi::ChatCompletions => tietiezhi_agent_model::WireApi::ChatCompletions,
+        ModelWireApi::AnthropicMessages => tietiezhi_agent_model::WireApi::AnthropicMessages,
+        ModelWireApi::GeminiGenerateContent => {
+            tietiezhi_agent_model::WireApi::GeminiGenerateContent
         }
+    });
+    let client = tietiezhi_agent_model::ResponsesClient::new(http.clone(), provider);
+    let stream = client.stream(&request, |event| {
+        if let tietiezhi_agent_model::ResponseEvent::OutputTextDelta(content) = event {
+            on_delta(content).map_err(tietiezhi_agent_model::ModelError::Consumer)?;
+        }
+        Ok(())
+    });
+    tokio::pin!(stream);
+    tokio::select! {
+        _ = cancel.cancelled() => Ok(true),
+        result = &mut stream => result
+            .map(|_| false)
+            .map_err(|error| error.to_string()),
     }
-    Ok(false)
 }
 
 #[cfg(test)]
@@ -414,6 +419,7 @@ mod tests {
             &http,
             &format!("http://{addr}"),
             "mock-model",
+            ModelWireApi::ChatCompletions,
             &[ChatMessage {
                 role: "user".into(),
                 content: "hi".into(),

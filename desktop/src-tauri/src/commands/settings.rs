@@ -2,11 +2,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use super::models::{
-    deserialize_models, known_kind_override, ModelInfo, ModelKind, DEFAULT_CONTEXT_WINDOW_TOKENS,
+    deserialize_models, known_kind_override, ModelInfo, ModelKind, ModelWireApi,
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
 };
 use crate::secrets;
 
-const CURRENT_SETTINGS_VERSION: u32 = 9;
+const CURRENT_SETTINGS_VERSION: u32 = 11;
 pub(crate) const BUILTIN_PROVIDER_ID: &str = "builtin-official";
 pub(crate) const BUILTIN_PROVIDER_NAME: &str = "Tietiezhi Gateway";
 pub(crate) const BUILTIN_PROVIDER_URL: &str = "https://tietiezhi.vip/v1";
@@ -14,14 +15,7 @@ const LEGACY_BUILTIN_PROVIDER_URL: &str = "https://api.terln.com/v1";
 
 /// A model provider (relay / vendor). API keys never live here — they go to the
 /// OS credential store, keyed by the provider id.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum WireApi {
-    #[default]
-    Auto,
-    Responses,
-    ChatCompletions,
-}
+pub type WireApi = ModelWireApi;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,9 +26,7 @@ pub struct Provider {
     #[serde(rename = "type")]
     pub kind: String,
     pub base_url: String,
-    /// Agent wire protocol. Ordinary chat continues to use Chat Completions;
-    /// this field only controls whether the source-native Agent may use
-    /// `/v1/responses`.
+    /// Provider-level wire protocol. Auto uses model metadata and model overrides.
     #[serde(default)]
     pub wire_api: WireApi,
     /// Built-in entries provide a ready-to-configure starting point. They can
@@ -167,12 +159,19 @@ pub(crate) fn read_settings(app: &AppHandle) -> Result<AppSettings, String> {
     }
     if settings.settings_version < 7 {
         for provider in &mut settings.providers {
-            provider.wire_api = if provider.built_in {
-                WireApi::Responses
-            } else {
-                WireApi::Auto
-            };
+            provider.wire_api = WireApi::Auto;
         }
+        changed = true;
+    }
+    if settings.settings_version < 10 {
+        for provider in &mut settings.providers {
+            if provider.built_in {
+                provider.wire_api = WireApi::Auto;
+            }
+        }
+        changed = true;
+    }
+    if settings.settings_version < 11 && refresh_registry_capability_profiles(&mut settings) {
         changed = true;
     }
     if normalize_known_model_capabilities(&mut settings) {
@@ -233,6 +232,8 @@ fn refresh_registry_capability_profiles(settings: &mut AppSettings) -> bool {
                 refreshed.capabilities = model.capabilities.clone();
                 refreshed.context_window = model.context_window;
                 refreshed.max_output_tokens = model.max_output_tokens;
+                refreshed.supported_wire_apis = model.supported_wire_apis.clone();
+                refreshed.default_wire_api = model.default_wire_api;
                 if refreshed.reasoning.is_none() {
                     refreshed.reasoning = model.reasoning.clone();
                 }
@@ -266,7 +267,7 @@ fn builtin_provider() -> Provider {
         name: BUILTIN_PROVIDER_NAME.into(),
         kind: "openai".into(),
         base_url: BUILTIN_PROVIDER_URL.into(),
-        wire_api: WireApi::Responses,
+        wire_api: WireApi::Auto,
         built_in: true,
         models: Vec::new(),
     }
@@ -294,10 +295,10 @@ fn ensure_builtin_provider(settings: &mut AppSettings) -> bool {
         let changed = index != 0
             || !provider.built_in
             || provider.name != BUILTIN_PROVIDER_NAME
-            || provider.wire_api != WireApi::Responses;
+            || provider.wire_api != WireApi::Auto;
         provider.built_in = true;
         provider.name = BUILTIN_PROVIDER_NAME.into();
-        provider.wire_api = WireApi::Responses;
+        provider.wire_api = WireApi::Auto;
         settings.providers.insert(0, provider);
         return changed;
     }
@@ -470,7 +471,7 @@ mod tests {
         assert_eq!(settings.providers.len(), 1);
         assert!(settings.providers[0].built_in);
         assert_eq!(settings.providers[0].id, BUILTIN_PROVIDER_ID);
-        assert_eq!(settings.providers[0].wire_api, WireApi::Responses);
+        assert_eq!(settings.providers[0].wire_api, WireApi::Auto);
         assert!(settings.chat_provider_id.is_empty());
         assert!(settings.smart_suggestions_enabled);
         assert!(!settings.smart_suggestions_allow_paid_models);
@@ -505,6 +506,7 @@ mod tests {
             supported_efforts: vec![ReasoningEffort::Low, ReasoningEffort::Max],
             default_effort: Some(ReasoningEffort::Max),
             transport: ReasoningTransport::OpenaiReasoningEffort,
+            protocol_transports: Default::default(),
         });
         stale.capability_source = "provider".into();
         stale
@@ -556,7 +558,7 @@ mod tests {
         assert_eq!(settings.providers[0].id, "existing");
         assert_eq!(settings.providers[0].name, BUILTIN_PROVIDER_NAME);
         assert_eq!(settings.providers[0].base_url, "https://api.terln.com/v1/");
-        assert_eq!(settings.providers[0].wire_api, WireApi::Responses);
+        assert_eq!(settings.providers[0].wire_api, WireApi::Auto);
     }
 
     #[test]

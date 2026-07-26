@@ -75,7 +75,9 @@ import type {
   ModelCapability,
   ModelModality,
   ReasoningEffort,
+  ReasoningProtocol,
   ReasoningProfile,
+  ReasoningTransport,
 } from "@/lib/api";
 import {
   effectiveModelKind,
@@ -84,6 +86,7 @@ import {
   modelInputModalities,
   modelOutputModalities,
   modelReasoning,
+  modelWireApi,
 } from "@/lib/model-capabilities";
 import { SettingsSection } from "@/features/settings/settings-section";
 import { notifyGatewayError } from "@/lib/gateway-feedback";
@@ -94,9 +97,11 @@ const TYPE_LABELS: Record<ProviderType, string> = {
 };
 
 const WIRE_API_LABELS: Record<WireApi, string> = {
-  auto: "自动探测",
+  auto: "按模型 / 自动探测",
   responses: "Responses API",
-  chatCompletions: "仅普通聊天",
+  chatCompletions: "OpenAI Chat Completions",
+  anthropicMessages: "Anthropic Messages",
+  geminiGenerateContent: "Gemini GenerateContent",
 };
 
 const KIND_LABELS: Record<ModelKind, string> = {
@@ -137,6 +142,55 @@ const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; label: string }[] = [
   { value: "high", label: "High" },
   { value: "xhigh", label: "XHigh" },
   { value: "max", label: "Max" },
+  { value: "ultra", label: "Ultra" },
+];
+
+const REASONING_PROTOCOLS: Array<{
+  value: ReasoningProtocol;
+  label: string;
+  options: Array<{ value: ReasoningTransport; label: string }>;
+}> = [
+  {
+    value: "responses",
+    label: "Responses",
+    options: [
+      {
+        value: "responses-reasoning",
+        label: "reasoning.effort + summary",
+      },
+    ],
+  },
+  {
+    value: "chat_completions",
+    label: "Chat Completions",
+    options: [
+      { value: "openai-reasoning-effort", label: "reasoning_effort" },
+      { value: "openrouter-reasoning", label: "reasoning.effort" },
+      { value: "enable-thinking", label: "enable_thinking" },
+    ],
+  },
+  {
+    value: "anthropic_messages",
+    label: "Anthropic Messages",
+    options: [
+      {
+        value: "anthropic-adaptive",
+        label: "output_config.effort + adaptive",
+      },
+      {
+        value: "anthropic-thinking-budget",
+        label: "thinking.budget_tokens",
+      },
+    ],
+  },
+  {
+    value: "gemini_generate_content",
+    label: "Gemini GenerateContent",
+    options: [
+      { value: "gemini-thinking-level", label: "thinkingLevel" },
+      { value: "gemini-thinking-budget", label: "thinkingBudget" },
+    ],
+  },
 ];
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -200,6 +254,12 @@ function defaultReasoningProfile(model: ModelInfo): ReasoningProfile {
       supportedEfforts: ["low", "medium", "high"],
       defaultEffort: "auto",
       transport: "openai-reasoning-effort",
+      protocolTransports: {
+        responses: "responses-reasoning",
+        chat_completions: "openai-reasoning-effort",
+        anthropic_messages: "anthropic-adaptive",
+        gemini_generate_content: "gemini-thinking-level",
+      },
     }
   );
 }
@@ -265,6 +325,44 @@ function ModelCapabilityEditor({
       </div>
 
       <div className="flex flex-col gap-1.5">
+        <span className="text-xs font-medium">模型协议</span>
+        <Select
+          value={model.overrides?.wireApi ?? "auto"}
+          onValueChange={(wireApi) => {
+            const overrides = { ...model.overrides };
+            if (wireApi === "auto") delete overrides.wireApi;
+            else overrides.wireApi = wireApi as WireApi;
+            onChange({ ...model, overrides });
+          }}
+        >
+          <SelectTrigger size="sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="auto">
+              自动（当前：{WIRE_API_LABELS[modelWireApi(model)]}）
+            </SelectItem>
+            <SelectItem value="responses">{WIRE_API_LABELS.responses}</SelectItem>
+            <SelectItem value="chatCompletions">
+              {WIRE_API_LABELS.chatCompletions}
+            </SelectItem>
+            <SelectItem value="anthropicMessages">
+              {WIRE_API_LABELS.anthropicMessages}
+            </SelectItem>
+            <SelectItem value="geminiGenerateContent">
+              {WIRE_API_LABELS.geminiGenerateContent}
+            </SelectItem>
+          </SelectContent>
+        </Select>
+        {model.supportedWireApis && model.supportedWireApis.length > 0 && (
+          <span className="text-xs text-muted-foreground">
+            网关声明：
+            {model.supportedWireApis.map((wireApi) => WIRE_API_LABELS[wireApi]).join("、")}
+          </span>
+        )}
+      </div>
+
+      <div className="flex flex-col gap-1.5">
         <span className="text-xs font-medium">输入模态</span>
         <div className="flex flex-wrap gap-1.5">{renderModalities("input")}</div>
       </div>
@@ -305,7 +403,7 @@ function ModelCapabilityEditor({
 
       {reasoning && (
         <div className="flex flex-col gap-2 rounded-md border bg-background/60 p-2.5">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-medium">Reasoning Mode</span>
               <Select
@@ -326,28 +424,40 @@ function ModelCapabilityEditor({
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium">Reasoning Protocol</span>
-              <Select
-                value={reasoning.transport}
-                onValueChange={(transport) =>
-                  onChange(
-                    setReasoningOverride(model, {
-                      ...defaultReasoningProfile(model),
-                      transport: transport as ReasoningProfile["transport"],
-                    }),
-                  )
-                }
-              >
-                <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="openai-reasoning-effort">reasoning_effort</SelectItem>
-                  <SelectItem value="openrouter-reasoning">reasoning.effort</SelectItem>
-                  <SelectItem value="enable-thinking">enable_thinking</SelectItem>
-                  <SelectItem value="none">None</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {REASONING_PROTOCOLS.map((protocol) => {
+              const current = defaultReasoningProfile(model);
+              const selected =
+                current.protocolTransports?.[protocol.value] ??
+                protocol.options[0].value;
+              return (
+                <div key={protocol.value} className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium">{protocol.label} 参数</span>
+                  <Select
+                    value={selected}
+                    onValueChange={(transport) =>
+                      onChange(
+                        setReasoningOverride(model, {
+                          ...current,
+                          protocolTransports: {
+                            ...current.protocolTransports,
+                            [protocol.value]: transport as ReasoningTransport,
+                          },
+                        }),
+                      )
+                    }
+                  >
+                    <SelectTrigger size="sm"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {protocol.options.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              );
+            })}
           </div>
           {reasoning.mode === "effort" && (
             <div className="flex flex-col gap-2">
@@ -905,12 +1015,18 @@ function ProviderFormDialog({
                   <SelectItem value="chatCompletions">
                     {WIRE_API_LABELS.chatCompletions}
                   </SelectItem>
+                  <SelectItem value="anthropicMessages">
+                    {WIRE_API_LABELS.anthropicMessages}
+                  </SelectItem>
+                  <SelectItem value="geminiGenerateContent">
+                    {WIRE_API_LABELS.geminiGenerateContent}
+                  </SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs leading-relaxed text-muted-foreground">
                 {draft.builtIn
-                  ? "官方 Gateway 固定使用 Responses API。"
-                  : "Agent Runtime 只使用 Responses API。选择“仅普通聊天”时，此供应商不会用于工具任务。"}
+                  ? "官方 Gateway 按模型目录自动选择协议，可在每个模型下覆盖。"
+                  : "Agent Runtime 支持 Responses、Chat Completions、Anthropic Messages 与 Gemini GenerateContent。"}
               </p>
             </div>
 

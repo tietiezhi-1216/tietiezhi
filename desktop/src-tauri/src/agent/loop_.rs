@@ -1,9 +1,5 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::Duration;
 
-use futures_util::StreamExt;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
@@ -14,18 +10,14 @@ use super::context::{
     DEFAULT_CONTEXT_WINDOW_TOKENS,
 };
 use super::events::{ChatEvent, ChatEventEmitter};
-use super::failure::{retry_delay_ms, ChatFailure};
-use crate::commands::api_url;
+use super::failure::ChatFailure;
 use crate::commands::models::{
-    ModelCapability, ModelInfo, ReasoningEffort, ReasoningMode, ReasoningProfile,
+    ModelCapability, ModelInfo, ModelWireApi, ReasoningEffort, ReasoningMode, ReasoningProfile,
     ReasoningTransport,
 };
 use crate::mcp::{self, McpManager, McpServerConfig};
 use crate::permission::{needs_approval, Decision, PermissionBroker, PermissionMode};
 use crate::tools::{self, ToolCtx};
-
-const MODEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// The fully-resolved execution environment for one agent chat turn.
 pub struct AgentEnv {
@@ -54,22 +46,14 @@ impl ToolCall {
 
 // ---- SSE chunk shapes ------------------------------------------------------
 
-#[derive(Deserialize)]
-struct StreamChunk {
-    #[serde(default)]
-    choices: Vec<StreamChoice>,
-    #[serde(default)]
-    usage: Option<StreamUsage>,
-}
+#[cfg(test)]
+use serde::Deserialize;
+#[cfg(test)]
+use std::collections::BTreeMap;
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct StreamUsage {
-    #[serde(default)]
-    prompt_tokens: u64,
-    #[serde(default)]
-    completion_tokens: u64,
-    #[serde(default)]
-    total_tokens: u64,
     /// OpenAI-standard cache reporting: `prompt_tokens_details.cached_tokens`.
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
@@ -78,6 +62,7 @@ struct StreamUsage {
     prompt_cache_hit_tokens: Option<u64>,
 }
 
+#[cfg(test)]
 impl StreamUsage {
     /// Prompt tokens billed from cache, normalized across the OpenAI and
     /// DeepSeek shapes (0 when the provider reports neither).
@@ -91,34 +76,14 @@ impl StreamUsage {
     }
 }
 
+#[cfg(test)]
 #[derive(Deserialize)]
 struct PromptTokensDetails {
     #[serde(default)]
     cached_tokens: u64,
 }
 
-#[derive(Deserialize)]
-struct StreamChoice {
-    #[serde(default)]
-    delta: StreamDelta,
-    #[serde(default)]
-    finish_reason: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-struct StreamDelta {
-    #[serde(default)]
-    content: Option<String>,
-    // Reasoning models stream their chain-of-thought here: `reasoning_content`
-    // (DeepSeek and most OpenAI-compatible relays) or `reasoning` (OpenRouter).
-    #[serde(default)]
-    reasoning_content: Option<String>,
-    #[serde(default)]
-    reasoning: Option<String>,
-    #[serde(default)]
-    tool_calls: Option<Vec<ToolCallDelta>>,
-}
-
+#[cfg(test)]
 #[derive(Deserialize)]
 struct ToolCallDelta {
     #[serde(default)]
@@ -129,6 +94,7 @@ struct ToolCallDelta {
     function: Option<FunctionDelta>,
 }
 
+#[cfg(test)]
 #[derive(Deserialize, Default)]
 struct FunctionDelta {
     #[serde(default)]
@@ -139,12 +105,14 @@ struct FunctionDelta {
 
 /// Accumulates streamed tool-call deltas keyed by index. Handles both
 /// fragmented arguments (OpenAI) and whole-call-in-one-delta relays.
+#[cfg(test)]
 #[derive(Default)]
 pub struct ToolCallAccumulator {
     calls: BTreeMap<u32, ToolCall>,
     next_implicit_index: u32,
 }
 
+#[cfg(test)]
 impl ToolCallAccumulator {
     fn push(&mut self, delta: ToolCallDelta) {
         let index = delta.index.unwrap_or_else(|| {
@@ -205,6 +173,7 @@ async fn stream_once(
     base_url: &str,
     api_key: Option<&str>,
     model: &str,
+    wire_api: ModelWireApi,
     transcript: &[Value],
     tools: &[Value],
     reasoning: Option<&ReasoningProfile>,
@@ -213,132 +182,339 @@ async fn stream_once(
     cancel: &CancellationToken,
     on_event: &ChatEventEmitter,
 ) -> Result<StreamOutcome, ChatFailure> {
-    let mut body = json!({
-        "model": model,
-        "messages": transcript,
-        "stream": true,
-        "stream_options": {"include_usage": true},
+    let (instructions, input) = chat_transcript_to_responses(transcript);
+    let mut request = tietiezhi_agent_model::ResponsesApiRequest::text(model, input);
+    request.instructions = instructions;
+    request.tools = (!tools.is_empty()).then(|| chat_tools_to_responses(tools));
+    request.reasoning = effective_reasoning_effort(reasoning, reasoning_effort).map(|effort| {
+        tietiezhi_agent_model::Reasoning {
+            effort: Some(effort),
+            summary: Some("auto".into()),
+            context: None,
+        }
     });
-    if !tools.is_empty() {
-        body["tools"] = Value::Array(tools.to_vec());
-    }
-    apply_reasoning(&mut body, reasoning, reasoning_effort);
-
-    let mut req = http
-        .post(api_url(base_url, "chat/completions"))
-        .timeout(MODEL_REQUEST_TIMEOUT)
-        .json(&body);
-    if let Some(key) = api_key {
-        req = req.bearer_auth(key);
-    }
-
-    let resp = tokio::select! {
-        _ = cancel.cancelled() => return Ok(StreamOutcome { text: String::new(), tool_calls: vec![], cancelled: true }),
-        r = req.send() => r.map_err(ChatFailure::request)?,
-    };
-
-    let status = resp.status();
-    if !status.is_success() {
-        let retry_after_ms = resp
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .map(|seconds| seconds.saturating_mul(1_000));
-        let body = resp.text().await.unwrap_or_default();
-        return Err(ChatFailure::http(status, body, retry_after_ms));
-    }
-
-    let mut stream = resp.bytes_stream();
-    let mut lines = crate::commands::chat::SseLineBuffer::default();
+    let canonical_base_url = crate::commands::api_url(base_url, "");
+    let provider = tietiezhi_agent_model::Provider::openai_compatible(
+        "companion",
+        canonical_base_url,
+        api_key.map(str::to_owned),
+    )
+    .with_wire_api(agent_model_wire_api(wire_api))
+    .with_reasoning_wire_format(agent_model_reasoning_wire_format(
+        reasoning
+            .map(|profile| profile.transport_for_wire_api(wire_api))
+            .unwrap_or(ReasoningTransport::None),
+    ));
+    let client = tietiezhi_agent_model::ResponsesClient::new(http.clone(), provider);
     let mut text = String::new();
-    let mut acc = ToolCallAccumulator::default();
+    let mut tool_calls = Vec::new();
     let mut output_started = false;
-
-    'outer: loop {
-        let chunk = tokio::select! {
-            _ = cancel.cancelled() => return Ok(StreamOutcome { text, tool_calls: vec![], cancelled: true }),
-            result = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => {
-                result.map_err(|_| ChatFailure::response_timeout(output_started))?
-            },
-        };
-        let Some(chunk) = chunk else { break };
-        let chunk = chunk.map_err(|error| ChatFailure::stream(error, output_started))?;
-
-        for line in lines.push(&chunk) {
-            let Some(data) = crate::commands::chat::sse_data(&line) else {
-                continue;
-            };
-            if data == "[DONE]" {
-                break 'outer;
-            }
-            let Ok(parsed) = serde_json::from_str::<StreamChunk>(data) else {
-                continue;
-            };
-            if let Some(usage) = parsed.usage {
-                let total_tokens = if usage.total_tokens == 0 {
-                    usage.prompt_tokens + usage.completion_tokens
-                } else {
-                    usage.total_tokens
-                };
-                if total_tokens > 0 && emit_output_events {
+    let mut retries = 0;
+    let result = {
+        let stream = client.stream(&request, |event| {
+            match event {
+                tietiezhi_agent_model::ResponseEvent::OutputTextDelta(content) => {
+                    output_started = true;
+                    text.push_str(&content);
+                    if emit_output_events {
+                        on_event
+                            .send(ChatEvent::Delta { content })
+                            .map_err(|error| {
+                                tietiezhi_agent_model::ModelError::Consumer(error.to_string())
+                            })?;
+                    }
+                }
+                tietiezhi_agent_model::ResponseEvent::ReasoningContentDelta {
+                    delta: content,
+                    ..
+                }
+                | tietiezhi_agent_model::ResponseEvent::ReasoningSummaryDelta {
+                    delta: content,
+                    ..
+                } => {
+                    output_started = true;
+                    if emit_output_events {
+                        on_event
+                            .send(ChatEvent::Reasoning { content })
+                            .map_err(|error| {
+                                tietiezhi_agent_model::ModelError::Consumer(error.to_string())
+                            })?;
+                    }
+                }
+                tietiezhi_agent_model::ResponseEvent::OutputItemDone(item) => {
+                    if let Some(call) = response_item_tool_call(&item) {
+                        output_started = true;
+                        tool_calls.push(call);
+                    }
+                }
+                tietiezhi_agent_model::ResponseEvent::Completed {
+                    token_usage: Some(usage),
+                    ..
+                } if emit_output_events => {
                     on_event
                         .send(ChatEvent::Usage {
-                            prompt_tokens: usage.prompt_tokens,
-                            completion_tokens: usage.completion_tokens,
-                            total_tokens,
-                            cached_tokens: usage.cached_tokens(),
+                            prompt_tokens: usage.input_tokens.max(0) as u64,
+                            completion_tokens: usage.output_tokens.max(0) as u64,
+                            total_tokens: usage.total_tokens.max(0) as u64,
+                            cached_tokens: usage.cached_input_tokens.max(0) as u64,
                         })
-                        .map_err(|e| ChatFailure::channel(format!("推送消息到界面失败：{e}")))?;
+                        .map_err(|error| {
+                            tietiezhi_agent_model::ModelError::Consumer(error.to_string())
+                        })?;
                 }
-            }
-            for choice in parsed.choices {
-                // Reasoning first (it precedes the answer), forwarded as its own
-                // event so it never mixes into `text`/the transcript replayed to
-                // the model.
-                if let Some(reasoning) = choice.delta.reasoning_content.or(choice.delta.reasoning) {
-                    if !reasoning.is_empty() {
-                        output_started = true;
-                        if emit_output_events {
-                            on_event
-                                .send(ChatEvent::Reasoning { content: reasoning })
-                                .map_err(|e| {
-                                    ChatFailure::channel(format!("推送消息到界面失败：{e}"))
-                                })?;
-                        }
-                    }
-                }
-                if let Some(content) = choice.delta.content {
-                    if !content.is_empty() {
-                        output_started = true;
-                        text.push_str(&content);
-                        if emit_output_events {
-                            on_event.send(ChatEvent::Delta { content }).map_err(|e| {
-                                ChatFailure::channel(format!("推送消息到界面失败：{e}"))
+                tietiezhi_agent_model::ResponseEvent::Retrying { attempt, .. } => {
+                    retries = attempt.min(u64::from(u8::MAX)) as u8;
+                    if emit_output_events {
+                        on_event
+                            .send(ChatEvent::Retrying {
+                                attempt: retries,
+                                max_retries: 1,
+                                delay_ms: 0,
+                                reason: "模型传输暂时不可用".into(),
+                            })
+                            .map_err(|error| {
+                                tietiezhi_agent_model::ModelError::Consumer(error.to_string())
                             })?;
-                        }
                     }
                 }
-                if let Some(deltas) = choice.delta.tool_calls {
-                    if !deltas.is_empty() {
-                        output_started = true;
-                    }
-                    for d in deltas {
-                        acc.push(d);
-                    }
-                }
-                let _ = choice.finish_reason;
+                _ => {}
             }
+            Ok(())
+        });
+        tokio::pin!(stream);
+        tokio::select! {
+            _ = cancel.cancelled() => None,
+            result = &mut stream => Some(result),
         }
-    }
+    };
+    let Some(result) = result else {
+        return Ok(StreamOutcome {
+            text,
+            tool_calls: vec![],
+            cancelled: true,
+        });
+    };
+    result.map_err(|error| {
+        let mut failure = model_error_to_chat_failure(error, output_started);
+        failure.retries = retries;
+        failure
+    })?;
 
     Ok(StreamOutcome {
         text,
-        tool_calls: acc.finish(),
+        tool_calls,
         cancelled: false,
     })
 }
 
+fn agent_model_wire_api(wire_api: ModelWireApi) -> tietiezhi_agent_model::WireApi {
+    match wire_api {
+        ModelWireApi::Auto | ModelWireApi::Responses => tietiezhi_agent_model::WireApi::Responses,
+        ModelWireApi::ChatCompletions => tietiezhi_agent_model::WireApi::ChatCompletions,
+        ModelWireApi::AnthropicMessages => tietiezhi_agent_model::WireApi::AnthropicMessages,
+        ModelWireApi::GeminiGenerateContent => {
+            tietiezhi_agent_model::WireApi::GeminiGenerateContent
+        }
+    }
+}
+
+fn agent_model_reasoning_wire_format(
+    transport: ReasoningTransport,
+) -> tietiezhi_agent_model::ReasoningWireFormat {
+    match transport {
+        ReasoningTransport::None => tietiezhi_agent_model::ReasoningWireFormat::Auto,
+        ReasoningTransport::ResponsesReasoning => {
+            tietiezhi_agent_model::ReasoningWireFormat::ResponsesReasoning
+        }
+        ReasoningTransport::OpenaiReasoningEffort => {
+            tietiezhi_agent_model::ReasoningWireFormat::ChatReasoningEffort
+        }
+        ReasoningTransport::OpenrouterReasoning => {
+            tietiezhi_agent_model::ReasoningWireFormat::OpenRouterReasoning
+        }
+        ReasoningTransport::EnableThinking => {
+            tietiezhi_agent_model::ReasoningWireFormat::EnableThinking
+        }
+        ReasoningTransport::AnthropicAdaptive => {
+            tietiezhi_agent_model::ReasoningWireFormat::AnthropicAdaptive
+        }
+        ReasoningTransport::AnthropicThinkingBudget => {
+            tietiezhi_agent_model::ReasoningWireFormat::AnthropicThinkingBudget
+        }
+        ReasoningTransport::GeminiThinkingLevel => {
+            tietiezhi_agent_model::ReasoningWireFormat::GeminiThinkingLevel
+        }
+        ReasoningTransport::GeminiThinkingBudget => {
+            tietiezhi_agent_model::ReasoningWireFormat::GeminiThinkingBudget
+        }
+    }
+}
+
+fn chat_transcript_to_responses(transcript: &[Value]) -> (String, Vec<Value>) {
+    let mut instructions = Vec::new();
+    let mut input = Vec::new();
+    for message in transcript {
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("user");
+        if role == "system" {
+            if let Some(text) = message.get("content").and_then(Value::as_str) {
+                instructions.push(text.to_owned());
+            }
+            continue;
+        }
+        if role == "tool" {
+            input.push(json!({
+                "type":"function_call_output",
+                "call_id":message.get("tool_call_id").cloned().unwrap_or(Value::Null),
+                "output":message.get("content").cloned().unwrap_or(Value::Null)
+            }));
+            continue;
+        }
+        let content = chat_content_to_responses(role, message.get("content"));
+        if !content.is_empty() {
+            input.push(json!({"type":"message","role":role,"content":content}));
+        }
+        for call in message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            input.push(json!({
+                "type":"function_call",
+                "call_id":call.get("id").cloned().unwrap_or(Value::Null),
+                "name":call.pointer("/function/name").cloned().unwrap_or(Value::Null),
+                "arguments":call.pointer("/function/arguments").cloned().unwrap_or_else(|| json!("{}"))
+            }));
+        }
+    }
+    (instructions.join("\n\n"), input)
+}
+
+fn chat_content_to_responses(role: &str, content: Option<&Value>) -> Vec<Value> {
+    let output_type = if role == "assistant" {
+        "output_text"
+    } else {
+        "input_text"
+    };
+    match content {
+        Some(Value::String(text)) if !text.is_empty() => {
+            vec![json!({"type":output_type,"text":text})]
+        }
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|part| match part.get("type").and_then(Value::as_str) {
+                Some("text" | "input_text" | "output_text") => Some(json!({
+                    "type":output_type,
+                    "text":part.get("text").and_then(Value::as_str).unwrap_or("")
+                })),
+                Some("image_url" | "input_image") => Some(json!({
+                    "type":"input_image",
+                    "image_url":part.pointer("/image_url/url")
+                        .or_else(|| part.get("image_url"))
+                        .cloned()
+                        .unwrap_or(Value::Null)
+                })),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn chat_tools_to_responses(tools: &[Value]) -> Vec<Value> {
+    tools
+        .iter()
+        .filter_map(|tool| {
+            let function = tool.get("function").unwrap_or(tool);
+            let name = function.get("name")?.clone();
+            Some(json!({
+                "type":"function",
+                "name":name,
+                "description":function.get("description").cloned().unwrap_or_else(|| json!("")),
+                "parameters":function.get("parameters").cloned().unwrap_or_else(|| json!({"type":"object"})),
+                "strict":false
+            }))
+        })
+        .collect()
+}
+
+fn effective_reasoning_effort(
+    profile: Option<&ReasoningProfile>,
+    selected: ReasoningEffort,
+) -> Option<String> {
+    let profile = profile?;
+    if profile.mode == ReasoningMode::Fixed {
+        return None;
+    }
+    let effort = if selected == ReasoningEffort::Auto {
+        profile.default_effort?
+    } else {
+        selected
+    };
+    if !profile.supported_efforts.is_empty() && !profile.supported_efforts.contains(&effort) {
+        return profile
+            .default_effort
+            .filter(|default| profile.supported_efforts.contains(default))
+            .and_then(ReasoningEffort::as_wire_value)
+            .map(str::to_owned);
+    }
+    effort.as_wire_value().map(str::to_owned)
+}
+
+fn response_item_tool_call(item: &Value) -> Option<ToolCall> {
+    let kind = item.get("type").and_then(Value::as_str)?;
+    let id = item.get("call_id").and_then(Value::as_str)?.to_owned();
+    let name = item.get("name").and_then(Value::as_str)?.to_owned();
+    match kind {
+        "function_call" => Some(ToolCall {
+            id,
+            name,
+            arguments: item
+                .get("arguments")
+                .and_then(Value::as_str)
+                .unwrap_or("{}")
+                .to_owned(),
+        }),
+        "custom_tool_call" => Some(ToolCall {
+            id,
+            name,
+            arguments: json!({
+                "input":item.get("input").and_then(Value::as_str).unwrap_or("")
+            })
+            .to_string(),
+        }),
+        _ => None,
+    }
+}
+
+fn model_error_to_chat_failure(
+    error: tietiezhi_agent_model::ModelError,
+    output_started: bool,
+) -> ChatFailure {
+    let mut failure = match error {
+        tietiezhi_agent_model::ModelError::Api { status, message } => {
+            let status =
+                reqwest::StatusCode::from_u16(status).unwrap_or(reqwest::StatusCode::BAD_GATEWAY);
+            ChatFailure::http(status, json!({"error":{"message":message}}).to_string())
+        }
+        tietiezhi_agent_model::ModelError::Unauthorized { message } => ChatFailure::http(
+            reqwest::StatusCode::UNAUTHORIZED,
+            json!({"error":{"message":message}}).to_string(),
+        ),
+        tietiezhi_agent_model::ModelError::Transport(message)
+        | tietiezhi_agent_model::ModelError::Stream(message) => {
+            ChatFailure::transport(message, output_started)
+        }
+        other => ChatFailure::message(other.to_string()),
+    };
+    failure.output_started = output_started;
+    failure
+}
+
+#[cfg(test)]
 fn apply_reasoning(
     body: &mut Value,
     profile: Option<&ReasoningProfile>,
@@ -354,6 +530,11 @@ fn apply_reasoning(
 
     match profile.transport {
         ReasoningTransport::None => {}
+        ReasoningTransport::ResponsesReasoning => {
+            if let Some(value) = selected.as_wire_value() {
+                body["reasoning"] = json!({"effort": value});
+            }
+        }
         ReasoningTransport::OpenaiReasoningEffort => {
             if let Some(value) = selected.as_wire_value() {
                 body["reasoning_effort"] = Value::String(value.into());
@@ -367,6 +548,25 @@ fn apply_reasoning(
         ReasoningTransport::EnableThinking => {
             body["enable_thinking"] = Value::Bool(selected != ReasoningEffort::Off);
         }
+        ReasoningTransport::AnthropicAdaptive => {
+            if let Some(value) = selected.as_wire_value() {
+                body["output_config"] = json!({"effort":value});
+                body["thinking"] = json!({"type":"adaptive"});
+            }
+        }
+        ReasoningTransport::AnthropicThinkingBudget => {
+            body["thinking"] = json!({"type":"enabled"});
+        }
+        ReasoningTransport::GeminiThinkingLevel => {
+            if let Some(value) = selected.as_wire_value() {
+                body["generationConfig"] =
+                    json!({"thinkingConfig":{"thinkingLevel":value,"includeThoughts":true}});
+            }
+        }
+        ReasoningTransport::GeminiThinkingBudget => {
+            body["generationConfig"] =
+                json!({"thinkingConfig":{"includeThoughts":selected != ReasoningEffort::Off}});
+        }
     }
 }
 
@@ -376,6 +576,7 @@ async fn stream_with_retries(
     base_url: &str,
     api_key: Option<&str>,
     model: &str,
+    wire_api: ModelWireApi,
     transcript: &[Value],
     tools: &[Value],
     reasoning: Option<&ReasoningProfile>,
@@ -384,54 +585,21 @@ async fn stream_with_retries(
     cancel: &CancellationToken,
     on_event: &ChatEventEmitter,
 ) -> Result<StreamOutcome, ChatFailure> {
-    let mut retries = 0;
-    loop {
-        match stream_once(
-            http,
-            base_url,
-            api_key,
-            model,
-            transcript,
-            tools,
-            reasoning,
-            reasoning_effort,
-            emit_output_events,
-            cancel,
-            on_event,
-        )
-        .await
-        {
-            Ok(outcome) => return Ok(outcome),
-            Err(failure)
-                if failure.retryable
-                    && !failure.output_started
-                    && retries < failure.max_retries() =>
-            {
-                let max_retries = failure.max_retries();
-                retries += 1;
-                let delay_ms = retry_delay_ms(retries, failure.retry_after_ms);
-                on_event
-                    .send(ChatEvent::Retrying {
-                        attempt: retries,
-                        max_retries,
-                        delay_ms,
-                        reason: failure.retry_reason().into(),
-                    })
-                    .map_err(|e| ChatFailure::channel(format!("推送重试状态到界面失败：{e}")))?;
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        return Ok(StreamOutcome {
-                            text: String::new(),
-                            tool_calls: vec![],
-                            cancelled: true,
-                        });
-                    }
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
-                }
-            }
-            Err(failure) => return Err(failure.with_retries(retries)),
-        }
-    }
+    stream_once(
+        http,
+        base_url,
+        api_key,
+        model,
+        wire_api,
+        transcript,
+        tools,
+        reasoning,
+        reasoning_effort,
+        emit_output_events,
+        cancel,
+        on_event,
+    )
+    .await
 }
 
 fn permission_description(name: &str, args: &Value) -> String {
@@ -495,6 +663,7 @@ async fn compact_messages(
     base_url: &str,
     api_key: Option<&str>,
     model: &str,
+    wire_api: ModelWireApi,
     messages: &[crate::commands::chat::ChatMessage],
     automatic: bool,
     estimated_tokens: u64,
@@ -511,6 +680,7 @@ async fn compact_messages(
         base_url,
         api_key,
         model,
+        wire_api,
         &transcript,
         automatic,
         estimated_tokens,
@@ -527,6 +697,7 @@ async fn compact_transcript(
     base_url: &str,
     api_key: Option<&str>,
     model: &str,
+    wire_api: ModelWireApi,
     transcript: &[Value],
     automatic: bool,
     estimated_tokens: u64,
@@ -547,6 +718,7 @@ async fn compact_transcript(
         base_url,
         api_key,
         model,
+        wire_api,
         transcript,
         &[],
         None,
@@ -577,6 +749,7 @@ pub async fn run_companion_loop(
     base_url: &str,
     api_key: Option<&str>,
     model: &str,
+    wire_api: ModelWireApi,
     model_info: Option<&ModelInfo>,
     reasoning_effort: ReasoningEffort,
     messages: Vec<crate::commands::chat::ChatMessage>,
@@ -649,6 +822,7 @@ pub async fn run_companion_loop(
             base_url,
             api_key,
             model,
+            wire_api,
             &active_messages,
             false,
             estimated_tokens,
@@ -693,6 +867,7 @@ pub async fn run_companion_loop(
             base_url,
             api_key,
             model,
+            wire_api,
             history,
             true,
             estimated_tokens,
@@ -734,6 +909,7 @@ pub async fn run_companion_loop(
                     base_url,
                     api_key,
                     model,
+                    wire_api,
                     &compaction_transcript,
                     true,
                     estimated_tokens,
@@ -772,6 +948,7 @@ pub async fn run_companion_loop(
             base_url,
             api_key,
             model,
+            wire_api,
             &transcript,
             &tool_specs,
             model_info.and_then(ModelInfo::effective_reasoning),
@@ -1081,6 +1258,7 @@ mod tests {
             supported_efforts: vec![ReasoningEffort::Low, ReasoningEffort::High],
             default_effort: Some(ReasoningEffort::High),
             transport,
+            protocol_transports: Default::default(),
         }
     }
 

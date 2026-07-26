@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use super::models::{
-    ModelCapability, ModelInfo, ModelModality, ReasoningEffort, ReasoningMode, ReasoningProfile,
-    ReasoningTransport,
+    ModelCapability, ModelInfo, ModelModality, ModelWireApi, ReasoningEffort, ReasoningMode,
+    ReasoningProfile, ReasoningTransport,
 };
 use super::settings::{read_settings, Provider, WireApi};
 use super::{api_url, provider_http_error, snippet};
@@ -32,6 +32,38 @@ pub(crate) struct Resolved {
     pub models: Vec<ModelInfo>,
 }
 
+impl Resolved {
+    pub(crate) fn wire_api_for_model(&self, model_id: &str) -> WireApi {
+        if self.wire_api != WireApi::Auto {
+            return self.wire_api;
+        }
+        self.models
+            .iter()
+            .find(|model| model.id == model_id)
+            .and_then(ModelInfo::effective_wire_api)
+            .unwrap_or(WireApi::Responses)
+    }
+
+    pub(crate) fn reasoning_transport_for_model(
+        &self,
+        model_id: &str,
+        wire_api: WireApi,
+    ) -> ReasoningTransport {
+        let model_wire_api = match wire_api {
+            WireApi::Auto | WireApi::Responses => ModelWireApi::Responses,
+            WireApi::ChatCompletions => ModelWireApi::ChatCompletions,
+            WireApi::AnthropicMessages => ModelWireApi::AnthropicMessages,
+            WireApi::GeminiGenerateContent => ModelWireApi::GeminiGenerateContent,
+        };
+        self.models
+            .iter()
+            .find(|model| model.id == model_id)
+            .and_then(ModelInfo::effective_reasoning)
+            .map(|profile| profile.transport_for_wire_api(model_wire_api))
+            .unwrap_or(ReasoningTransport::None)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ProviderReasoning {
     mode: ReasoningMode,
@@ -40,6 +72,8 @@ struct ProviderReasoning {
     #[serde(default)]
     default_effort: Option<ReasoningEffort>,
     transport: ReasoningTransport,
+    #[serde(default)]
+    protocol_transports: std::collections::BTreeMap<String, ReasoningTransport>,
 }
 
 fn apply_provider_reasoning(model: &mut ModelInfo, reasoning: ProviderReasoning) {
@@ -51,6 +85,7 @@ fn apply_provider_reasoning(model: &mut ModelInfo, reasoning: ProviderReasoning)
         supported_efforts: reasoning.supported_efforts,
         default_effort: reasoning.default_effort,
         transport: reasoning.transport,
+        protocol_transports: reasoning.protocol_transports,
     });
 }
 
@@ -169,7 +204,7 @@ pub fn upsert_provider(
             provider.built_in = existing.built_in;
             if existing.built_in {
                 provider.name = super::settings::BUILTIN_PROVIDER_NAME.into();
-                provider.wire_api = WireApi::Responses;
+                provider.wire_api = WireApi::Auto;
             }
             *existing = provider.clone();
         }
@@ -344,6 +379,10 @@ pub(crate) async fn fetch_models(
         top_provider: Option<TopProvider>,
         #[serde(default)]
         reasoning: Option<ProviderReasoning>,
+        #[serde(default)]
+        wire_apis: Vec<String>,
+        #[serde(default)]
+        default_wire_api: Option<String>,
     }
     #[derive(Deserialize)]
     struct ModelArchitecture {
@@ -385,6 +424,20 @@ pub(crate) async fn fetch_models(
 
             if let Some(reasoning) = entry.reasoning {
                 apply_provider_reasoning(&mut model, reasoning);
+                has_metadata = true;
+            }
+
+            model.supported_wire_apis = entry
+                .wire_apis
+                .iter()
+                .filter_map(|value| parse_wire_api(value))
+                .collect();
+            model.default_wire_api = entry
+                .default_wire_api
+                .as_deref()
+                .and_then(parse_wire_api)
+                .or_else(|| model.supported_wire_apis.first().copied());
+            if !model.supported_wire_apis.is_empty() {
                 has_metadata = true;
             }
 
@@ -434,6 +487,7 @@ pub(crate) async fn fetch_models(
                     ],
                     default_effort: Some(ReasoningEffort::Auto),
                     transport: ReasoningTransport::OpenaiReasoningEffort,
+                    protocol_transports: Default::default(),
                 });
             }
 
@@ -480,6 +534,20 @@ fn parse_capability(value: &str) -> Option<ModelCapability> {
             Some(ModelCapability::StructuredOutput)
         }
         "web-search" | "web_search" | "web_search_options" => Some(ModelCapability::WebSearch),
+        _ => None,
+    }
+}
+
+fn parse_wire_api(value: &str) -> Option<ModelWireApi> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "responses" | "openai_responses" => Some(ModelWireApi::Responses),
+        "chat_completions" | "chatcompletions" | "openai_chat_completions" => {
+            Some(ModelWireApi::ChatCompletions)
+        }
+        "anthropic_messages" | "anthropic" | "messages" => Some(ModelWireApi::AnthropicMessages),
+        "gemini_generate_content" | "gemini" | "generate_content" => {
+            Some(ModelWireApi::GeminiGenerateContent)
+        }
         _ => None,
     }
 }
@@ -537,5 +605,51 @@ mod builtin_tests {
             ]
         );
         assert_eq!(profile.default_effort, Some(ReasoningEffort::High));
+    }
+
+    #[test]
+    fn model_protocol_metadata_and_override_control_auto_selection() {
+        let mut model = ModelInfo::new("model-x");
+        model.supported_wire_apis = vec![
+            ModelWireApi::AnthropicMessages,
+            ModelWireApi::ChatCompletions,
+        ];
+        model.default_wire_api = Some(ModelWireApi::AnthropicMessages);
+        let mut resolved = Resolved {
+            id: "relay".into(),
+            base_url: "https://example.test/v1".into(),
+            key: None,
+            kind: "openai".into(),
+            wire_api: WireApi::Auto,
+            models: vec![model],
+        };
+
+        assert_eq!(
+            resolved.wire_api_for_model("model-x"),
+            ModelWireApi::AnthropicMessages
+        );
+        resolved.models[0].overrides.wire_api = Some(ModelWireApi::ChatCompletions);
+        assert_eq!(
+            resolved.wire_api_for_model("model-x"),
+            ModelWireApi::ChatCompletions
+        );
+        resolved.wire_api = WireApi::Responses;
+        assert_eq!(
+            resolved.wire_api_for_model("model-x"),
+            ModelWireApi::Responses
+        );
+    }
+
+    #[test]
+    fn gateway_wire_api_aliases_are_normalized() {
+        assert_eq!(
+            parse_wire_api("anthropic_messages"),
+            Some(ModelWireApi::AnthropicMessages)
+        );
+        assert_eq!(
+            parse_wire_api("generate_content"),
+            Some(ModelWireApi::GeminiGenerateContent)
+        );
+        assert_eq!(parse_wire_api("unknown"), None);
     }
 }

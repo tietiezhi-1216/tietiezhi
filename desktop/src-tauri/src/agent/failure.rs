@@ -1,8 +1,6 @@
 use reqwest::StatusCode;
 use serde_json::Value;
 
-pub const MAX_RETRIES: u8 = 5;
-
 #[derive(Debug, Clone)]
 pub struct ChatFailure {
     pub summary: String,
@@ -12,8 +10,6 @@ pub struct ChatFailure {
     pub retryable: bool,
     pub retries: u8,
     pub output_started: bool,
-    pub retry_after_ms: Option<u64>,
-    retry_reason: String,
 }
 
 impl ChatFailure {
@@ -27,8 +23,6 @@ impl ChatFailure {
             retryable: false,
             retries: 0,
             output_started: false,
-            retry_after_ms: None,
-            retry_reason: "请求无法继续".into(),
         }
     }
 
@@ -41,83 +35,30 @@ impl ChatFailure {
             retryable: false,
             retries: 0,
             output_started: false,
-            retry_after_ms: None,
-            retry_reason: "界面连接已断开".into(),
         }
     }
 
-    pub fn request(error: reqwest::Error) -> Self {
-        let timeout = error.is_timeout();
-        let retryable = timeout || error.is_connect() || error.is_request() || error.is_body();
-        let summary = if timeout {
-            "连接模型服务超时"
-        } else {
-            "无法连接模型服务"
-        };
-        let retry_reason = if timeout {
-            "连接超时"
-        } else {
-            "连接失败"
-        };
+    pub fn transport(message: impl Into<String>, output_started: bool) -> Self {
         Self {
-            summary: summary.into(),
-            detail: user_facing(error.to_string()),
-            code: Some(if timeout {
-                "request_timeout".into()
+            summary: if output_started {
+                "模型服务连接中断".into()
+            } else {
+                "无法连接模型服务".into()
+            },
+            detail: user_facing(message.into()),
+            code: Some(if output_started {
+                "stream_interrupted".into()
             } else {
                 "connection_failed".into()
-            }),
-            status: None,
-            retryable,
-            retries: 0,
-            output_started: false,
-            retry_after_ms: None,
-            retry_reason: retry_reason.into(),
-        }
-    }
-
-    pub fn stream(error: reqwest::Error, output_started: bool) -> Self {
-        let timeout = error.is_timeout();
-        Self {
-            summary: if timeout {
-                "模型服务响应超时".into()
-            } else {
-                "模型服务连接中断".into()
-            },
-            detail: user_facing(error.to_string()),
-            code: Some(if timeout {
-                "stream_timeout".into()
-            } else {
-                "stream_interrupted".into()
             }),
             status: None,
             retryable: true,
             retries: 0,
             output_started,
-            retry_after_ms: None,
-            retry_reason: if timeout {
-                "响应超时".into()
-            } else {
-                "连接中断".into()
-            },
         }
     }
 
-    pub fn response_timeout(output_started: bool) -> Self {
-        Self {
-            summary: "模型服务响应超时".into(),
-            detail: "模型服务长时间没有返回新数据，请重试或先使用 /compact 压缩上下文".into(),
-            code: Some("stream_idle_timeout".into()),
-            status: None,
-            retryable: !output_started,
-            retries: 0,
-            output_started,
-            retry_after_ms: None,
-            retry_reason: "长时间没有返回新数据".into(),
-        }
-    }
-
-    pub fn http(status: StatusCode, body: String, retry_after_ms: Option<u64>) -> Self {
+    pub fn http(status: StatusCode, body: String) -> Self {
         let status_code = status.as_u16();
         let parsed = serde_json::from_str::<Value>(&body).ok();
         let upstream_code = parsed
@@ -158,22 +99,22 @@ impl ChatFailure {
             format!("模型服务返回 HTTP {status_code}\n\n{formatted_body}")
         };
         let retryable = matches!(status_code, 408 | 425 | 429 | 500 | 502 | 503 | 504);
-        let (summary, reason) = match code.as_deref() {
-            Some("api_key_quota_exceeded") => ("API Key 额度已用尽", "Key 额度已用尽"),
-            Some("insufficient_balance") => ("当前额度不足", "额度不足"),
-            Some("account_disabled") => ("当前账号已停用", "账号已停用"),
+        let summary = match code.as_deref() {
+            Some("api_key_quota_exceeded") => "API Key 额度已用尽",
+            Some("insufficient_balance") => "当前额度不足",
+            Some("account_disabled") => "当前账号已停用",
             _ => match status_code {
-                400 | 422 => ("请求未被模型服务接受", "请求参数有误"),
-                401 => ("模型服务认证失败", "认证失败"),
-                402 => ("当前额度不足", "额度不足"),
-                403 => ("模型服务拒绝访问", "访问被拒绝"),
-                404 => ("模型或接口不存在", "服务不存在"),
-                408 => ("模型服务响应超时", "响应超时"),
-                425 => ("模型服务暂未就绪", "服务尚未就绪"),
-                429 => ("请求过于频繁", "请求过于频繁"),
-                500 => ("模型服务暂时不可用", "服务内部错误"),
-                502..=504 => ("模型服务暂时不可用", "服务暂时不可用"),
-                _ => ("模型服务请求失败", "请求失败"),
+                400 | 422 => "请求未被模型服务接受",
+                401 => "模型服务认证失败",
+                402 => "当前额度不足",
+                403 => "模型服务拒绝访问",
+                404 => "模型或接口不存在",
+                408 => "模型服务响应超时",
+                425 => "模型服务暂未就绪",
+                429 => "请求过于频繁",
+                500 => "模型服务暂时不可用",
+                502..=504 => "模型服务暂时不可用",
+                _ => "模型服务请求失败",
             },
         };
         let detail = match code.as_deref() {
@@ -198,34 +139,8 @@ impl ChatFailure {
             retryable,
             retries: 0,
             output_started: false,
-            retry_after_ms,
-            retry_reason: format!("{reason}（{status_code}）"),
         }
     }
-
-    pub fn retry_reason(&self) -> &str {
-        &self.retry_reason
-    }
-
-    pub fn max_retries(&self) -> u8 {
-        match self.code.as_deref() {
-            Some("request_timeout" | "stream_timeout") => 0,
-            Some("stream_idle_timeout") => 1,
-            _ => MAX_RETRIES,
-        }
-    }
-
-    pub fn with_retries(mut self, retries: u8) -> Self {
-        self.retries = retries;
-        self
-    }
-}
-
-pub fn retry_delay_ms(retry: u8, server_hint_ms: Option<u64>) -> u64 {
-    const BACKOFF: [u64; MAX_RETRIES as usize] = [800, 1_600, 3_200, 5_000, 8_000];
-    server_hint_ms
-        .unwrap_or(BACKOFF[usize::from(retry.saturating_sub(1).min(MAX_RETRIES - 1))])
-        .clamp(250, 30_000)
 }
 
 fn user_facing(message: String) -> String {
@@ -239,13 +154,11 @@ mod tests {
     #[test]
     fn retryable_statuses_are_classified() {
         for status in [408, 425, 429, 500, 502, 503, 504] {
-            let failure =
-                ChatFailure::http(StatusCode::from_u16(status).unwrap(), String::new(), None);
+            let failure = ChatFailure::http(StatusCode::from_u16(status).unwrap(), String::new());
             assert!(failure.retryable, "HTTP {status} should be retryable");
         }
         for status in [400, 401, 402, 403, 404, 422] {
-            let failure =
-                ChatFailure::http(StatusCode::from_u16(status).unwrap(), String::new(), None);
+            let failure = ChatFailure::http(StatusCode::from_u16(status).unwrap(), String::new());
             assert!(!failure.retryable, "HTTP {status} should not be retryable");
         }
     }
@@ -255,11 +168,19 @@ mod tests {
         let failure = ChatFailure::http(
             StatusCode::SERVICE_UNAVAILABLE,
             r#"{"error":{"code":"do_request_failed","message":"all nodes failed"}}"#.into(),
-            None,
         );
         assert_eq!(failure.code.as_deref(), Some("do_request_failed"));
         assert!(failure.detail.contains("all nodes failed"));
-        assert_eq!(failure.retry_reason(), "服务暂时不可用（503）");
+    }
+
+    #[test]
+    fn transport_failure_keeps_manual_retry_available() {
+        let failure = ChatFailure::transport("stream closed", true);
+
+        assert_eq!(failure.summary, "模型服务连接中断");
+        assert_eq!(failure.code.as_deref(), Some("stream_interrupted"));
+        assert!(failure.retryable);
+        assert!(failure.output_started);
     }
 
     #[test]
@@ -267,7 +188,6 @@ mod tests {
         let failure = ChatFailure::http(
             StatusCode::PAYMENT_REQUIRED,
             r#"{"error":{"code":"unauthorized","message":"insufficient balance"}}"#.into(),
-            None,
         );
 
         assert_eq!(failure.summary, "当前额度不足");
@@ -281,7 +201,6 @@ mod tests {
         let failure = ChatFailure::http(
             StatusCode::PAYMENT_REQUIRED,
             r#"{"error":{"code":"unauthorized","message":"api key quota exceeded"}}"#.into(),
-            None,
         );
 
         assert_eq!(failure.summary, "API Key 额度已用尽");
@@ -298,7 +217,6 @@ mod tests {
         let failure = ChatFailure::http(
             StatusCode::FORBIDDEN,
             r#"{"error":{"code":"unauthorized","message":"account disabled"}}"#.into(),
-            None,
         );
 
         assert_eq!(failure.summary, "当前账号已停用");
@@ -310,23 +228,5 @@ mod tests {
     fn internal_term_is_not_exposed() {
         let failure = ChatFailure::message("无法连接中转站");
         assert_eq!(failure.summary, "无法连接模型服务");
-    }
-
-    #[test]
-    fn backoff_has_five_steps_and_honors_hint() {
-        assert_eq!(retry_delay_ms(1, None), 800);
-        assert_eq!(retry_delay_ms(5, None), 8_000);
-        assert_eq!(retry_delay_ms(2, Some(12_000)), 12_000);
-    }
-
-    #[test]
-    fn timeouts_retry_only_once_and_never_repeat_partial_output() {
-        let failure = ChatFailure::response_timeout(false);
-        assert!(failure.retryable);
-        assert_eq!(failure.max_retries(), 1);
-
-        let partial = ChatFailure::response_timeout(true);
-        assert!(!partial.retryable);
-        assert_eq!(partial.max_retries(), 1);
     }
 }

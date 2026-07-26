@@ -12,6 +12,7 @@ pub mod dictation;
 pub mod gateway_auth;
 pub mod hotkey;
 pub mod mcp;
+mod model_text;
 pub mod models;
 pub mod permissions;
 pub mod projects;
@@ -27,11 +28,15 @@ pub mod workspace;
 use reqwest::StatusCode;
 use serde_json::Value;
 
-/// Join a user-supplied base URL with an API path, normalizing the common
-/// "/v1 or not" ambiguity: both `https://x.com` and `https://x.com/v1` work.
+/// Join a user-supplied base URL with an API path, normalizing common API
+/// version suffixes. Gemini transport derives `/v1beta` from this canonical
+/// `/v1` base when needed.
 pub(crate) fn api_url(base_url: &str, path: &str) -> String {
     let base = base_url.trim().trim_end_matches('/');
-    let base = base.strip_suffix("/v1").unwrap_or(base);
+    let base = base
+        .strip_suffix("/v1beta")
+        .or_else(|| base.strip_suffix("/v1"))
+        .unwrap_or(base);
     format!("{base}/v1/{}", path.trim_start_matches('/'))
 }
 
@@ -112,6 +117,14 @@ mod tests {
         assert_eq!(
             api_url("https://relay.example.com/v1/", "/chat/completions"),
             "https://relay.example.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn api_url_normalizes_gemini_v1beta() {
+        assert_eq!(
+            api_url("https://relay.example.com/v1beta", ""),
+            "https://relay.example.com/v1/"
         );
     }
 

@@ -11,7 +11,7 @@ use walkdir::{DirEntry, WalkDir};
 
 use super::models::ModelKind;
 use super::workspace::TaskMode;
-use super::{api_url, provider_http_error, providers, settings, snippet};
+use super::{providers, settings};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -325,47 +325,22 @@ pub async fn refresh_project_recommendations(
         return Ok(prepared.existing);
     };
     let provider = providers::resolve(&app, &provider_id)?;
-    let body = json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": SUGGESTION_SYSTEM_PROMPT},
-            {"role": "user", "content": prepared.prompt}
-        ],
-        "stream": false
-    });
-    let mut request = state
-        .http
-        .post(api_url(&provider.base_url, "chat/completions"))
-        .timeout(std::time::Duration::from_secs(45))
-        .json(&body);
-    if let Some(key) = provider.key.as_deref() {
-        request = request.bearer_auth(key);
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("无法连接建议模型：{error}"))?;
-    let status = response.status();
-    let raw = response
-        .text()
-        .await
-        .map_err(|error| format!("读取任务建议失败：{error}"))?;
-    if !status.is_success() {
-        return Err(provider_http_error("建议模型", status, &raw));
-    }
-    let value: Value =
-        serde_json::from_str(&raw).map_err(|_| format!("建议响应格式异常：{}", snippet(&raw)))?;
-    let content = suggestion_response_content(&value).ok_or("建议响应中没有文本")?;
-    let suggestions = parse_generated_suggestions(&content)?;
+    let generated = super::model_text::generate_text(
+        &state.http,
+        &provider,
+        &model,
+        SUGGESTION_SYSTEM_PROMPT,
+        &prepared.prompt,
+        std::time::Duration::from_secs(45),
+    )
+    .await?;
+    let suggestions = parse_generated_suggestions(&generated.text)?;
     let deck = ProjectRecommendations {
         project_id: prepared.project_id,
         task_mode,
         generated_at: now_ms(),
         model,
-        token_usage: value
-            .pointer("/usage/total_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
+        token_usage: generated.total_tokens,
         technologies: prepared.technologies,
         suggestions,
         source_fingerprint: prepared.source_fingerprint,
@@ -657,20 +632,6 @@ fn select_suggestion_model(app_settings: &settings::AppSettings) -> Option<(Stri
         })
         .or_else(|| chat_models.first())?;
     Some((provider.id.clone(), model.id.clone()))
-}
-
-fn suggestion_response_content(value: &Value) -> Option<String> {
-    let content = value.pointer("/choices/0/message/content")?;
-    if let Some(text) = content.as_str() {
-        return Some(text.into());
-    }
-    let parts = content.as_array()?;
-    let text = parts
-        .iter()
-        .filter_map(|part| part.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("");
-    (!text.is_empty()).then_some(text)
 }
 
 #[derive(Deserialize)]

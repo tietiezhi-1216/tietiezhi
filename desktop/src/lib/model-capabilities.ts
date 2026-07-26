@@ -4,6 +4,7 @@ import type {
   ModelKind,
   ModelModality,
   ReasoningProfile,
+  WireApi,
 } from "@/lib/api";
 
 export function effectiveModelKind(model: ModelInfo): ModelKind {
@@ -32,6 +33,15 @@ export function modelReasoning(model: ModelInfo): ReasoningProfile | undefined {
   return model.overrides?.reasoning ?? model.reasoning;
 }
 
+export function modelWireApi(model: ModelInfo): WireApi {
+  return (
+    model.overrides?.wireApi ??
+    model.defaultWireApi ??
+    model.supportedWireApis?.[0] ??
+    "auto"
+  );
+}
+
 export function hasModelOverrides(model: ModelInfo): boolean {
   const overrides = model.overrides;
   return Boolean(
@@ -39,6 +49,7 @@ export function hasModelOverrides(model: ModelInfo): boolean {
       overrides?.inputModalities ||
       overrides?.outputModalities ||
       overrides?.reasoning ||
+      overrides?.wireApi ||
       Object.keys(overrides?.capabilities ?? {}).length > 0,
   );
 }

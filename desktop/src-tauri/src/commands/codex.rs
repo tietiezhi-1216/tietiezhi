@@ -161,10 +161,20 @@ fn runtime_defaults(app: &AppHandle) -> Result<RuntimeDefaults, String> {
             "excludeSlashTmp": false
         })
     };
-    let reasoning_effort = match settings.chat_reasoning_effort.as_str() {
-        "" | "auto" | "off" => None,
-        effort => Some(effort.to_string()),
-    };
+    let selected_reasoning =
+        super::models::ReasoningEffort::from_setting(&settings.chat_reasoning_effort);
+    let reasoning_effort = settings
+        .providers
+        .iter()
+        .find(|provider| provider.id == settings.chat_provider_id)
+        .and_then(|provider| {
+            provider
+                .models
+                .iter()
+                .find(|model| model.id == settings.chat_model)
+        })
+        .and_then(|model| model.effective_reasoning())
+        .and_then(|profile| resolve_runtime_reasoning_effort(profile, selected_reasoning));
     Ok(RuntimeDefaults {
         model: nonempty_or_unconfigured(settings.chat_model),
         model_provider: nonempty_or_unconfigured(settings.chat_provider_id),
@@ -177,6 +187,28 @@ fn runtime_defaults(app: &AppHandle) -> Result<RuntimeDefaults, String> {
         model_context_windows,
         cli_version: env!("CARGO_PKG_VERSION").into(),
     })
+}
+
+fn resolve_runtime_reasoning_effort(
+    profile: &super::models::ReasoningProfile,
+    selected: super::models::ReasoningEffort,
+) -> Option<String> {
+    if profile.mode == super::models::ReasoningMode::Fixed {
+        return None;
+    }
+    let effort = if selected == super::models::ReasoningEffort::Auto {
+        profile.default_effort?
+    } else if profile.supported_efforts.contains(&selected) {
+        selected
+    } else {
+        profile.default_effort?
+    };
+    profile
+        .supported_efforts
+        .contains(&effort)
+        .then(|| effort.as_wire_value())
+        .flatten()
+        .map(str::to_owned)
 }
 
 fn nonempty_or_unconfigured(value: String) -> String {
@@ -331,9 +363,7 @@ pub fn codex_v2_notify(
                 .providers
                 .iter()
                 .find(|provider| provider.id == settings.chat_provider_id)
-                .is_none_or(|provider| {
-                    provider.wire_api == super::settings::WireApi::ChatCompletions
-                });
+                .is_none();
         if unsupported {
             emit_notifications(
                 &app,
@@ -342,7 +372,7 @@ pub fn codex_v2_notify(
                     method: "warning".into(),
                     params: json!({
                         "threadId":Value::Null,
-                        "message":"当前模型渠道未配置 Responses API，Workspace Agent 无法执行 Turn。"
+                        "message":"当前 Workspace 尚未配置可用的模型渠道。"
                     }),
                 }],
             )?;
@@ -1396,6 +1426,9 @@ async fn run_memory_pipeline(
     let base_url = super::api_url(&resolved.base_url, "")
         .trim_end_matches('/')
         .to_owned();
+    let configured_wire_api = resolved.wire_api;
+    let effective_wire_api = resolved.wire_api_for_model(&model);
+    let reasoning_transport = resolved.reasoning_transport_for_model(&model, effective_wire_api);
     let bearer_token = state
         .codex_external_auth
         .lock()
@@ -1403,11 +1436,18 @@ async fn run_memory_pipeline(
         .get(&resolved.id)
         .map(|tokens| tokens.access_token.clone())
         .or(resolved.key);
-    let client = responses_client(&state.http, &resolved.kind, &base_url, bearer_token);
+    let client = responses_client(
+        &state.http,
+        &resolved.kind,
+        &base_url,
+        bearer_token,
+        effective_wire_api,
+        reasoning_transport,
+    );
     ensure_responses_capability(
         &app,
         &format!("{}\n{base_url}", resolved.id),
-        resolved.wire_api,
+        configured_wire_api,
         &client,
     )
     .await?;
@@ -5793,6 +5833,10 @@ async fn run_compaction_snapshot(
     let base_url = super::api_url(&resolved.base_url, "")
         .trim_end_matches('/')
         .to_owned();
+    let configured_wire_api = resolved.wire_api;
+    let effective_wire_api = resolved.wire_api_for_model(&snapshot.model);
+    let reasoning_transport =
+        resolved.reasoning_transport_for_model(&snapshot.model, effective_wire_api);
     let provider_id = resolved.id;
     let provider_name = resolved.kind;
     let mut bearer_token = app
@@ -5804,9 +5848,15 @@ async fn run_compaction_snapshot(
         .map(|tokens| tokens.access_token.clone())
         .or(resolved.key);
     let capability_key = format!("{provider_id}\n{base_url}");
-    let wire_api = resolved.wire_api;
-    let mut client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
-    ensure_responses_capability(&app, &capability_key, wire_api, &client).await?;
+    let mut client = responses_client(
+        &http,
+        &provider_name,
+        &base_url,
+        bearer_token.clone(),
+        effective_wire_api,
+        reasoning_transport,
+    );
+    ensure_responses_capability(&app, &capability_key, configured_wire_api, &client).await?;
 
     let mut history = compaction_prompt_history(&snapshot.history);
     let mut summary_suffix = String::new();
@@ -5924,7 +5974,14 @@ async fn run_compaction_snapshot(
             {
                 auth_refresh_attempted = true;
                 bearer_token = Some(tokens.access_token);
-                client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
+                client = responses_client(
+                    &http,
+                    &provider_name,
+                    &base_url,
+                    bearer_token.clone(),
+                    effective_wire_api,
+                    reasoning_transport,
+                );
                 continue;
             }
         }
@@ -6318,6 +6375,10 @@ async fn run_turn_executor(
     let base_url = super::api_url(&resolved.base_url, "")
         .trim_end_matches('/')
         .to_owned();
+    let configured_wire_api = resolved.wire_api;
+    let effective_wire_api = resolved.wire_api_for_model(&initial.model);
+    let reasoning_transport =
+        resolved.reasoning_transport_for_model(&initial.model, effective_wire_api);
     let provider_id = resolved.id;
     let provider_name = resolved.kind;
     let mut bearer_token = app
@@ -6329,9 +6390,15 @@ async fn run_turn_executor(
         .map(|tokens| tokens.access_token.clone())
         .or(resolved.key);
     let capability_key = format!("{provider_id}\n{base_url}");
-    let wire_api = resolved.wire_api;
-    let mut client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
-    ensure_responses_capability(&app, &capability_key, wire_api, &client).await?;
+    let mut client = responses_client(
+        &http,
+        &provider_name,
+        &base_url,
+        bearer_token.clone(),
+        effective_wire_api,
+        reasoning_transport,
+    );
+    ensure_responses_capability(&app, &capability_key, configured_wire_api, &client).await?;
     let mut projection = ResponseProjection::new(
         initial.model.clone(),
         initial.model_context_window,
@@ -6466,7 +6533,14 @@ async fn run_turn_executor(
             if let Some(tokens) = refresh_external_auth(&app, &provider_id, &thread_id).await? {
                 auth_refresh_attempted = true;
                 bearer_token = Some(tokens.access_token);
-                client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
+                client = responses_client(
+                    &http,
+                    &provider_name,
+                    &base_url,
+                    bearer_token.clone(),
+                    effective_wire_api,
+                    reasoning_transport,
+                );
                 continue;
             }
         }
@@ -7020,6 +7094,9 @@ async fn run_guardian_model(
     let base_url = super::api_url(&resolved.base_url, "")
         .trim_end_matches('/')
         .to_owned();
+    let effective_wire_api = resolved.wire_api_for_model(&snapshot.model);
+    let reasoning_transport =
+        resolved.reasoning_transport_for_model(&snapshot.model, effective_wire_api);
     let bearer_token = app
         .state::<AppState>()
         .codex_external_auth
@@ -7033,6 +7110,8 @@ async fn run_guardian_model(
         &resolved.kind,
         &base_url,
         bearer_token,
+        effective_wire_api,
+        reasoning_transport,
     );
     let prompt = guardian_prompt(&snapshot.history, action)
         .map_err(|error| GuardianModelFailure::Failed(error.to_string()))?;
@@ -7130,10 +7209,56 @@ fn responses_client(
     provider_name: &str,
     base_url: &str,
     bearer_token: Option<String>,
+    wire_api: super::settings::WireApi,
+    reasoning_transport: super::models::ReasoningTransport,
 ) -> ResponsesClient {
+    let wire_api = match wire_api {
+        super::settings::WireApi::Auto | super::settings::WireApi::Responses => {
+            tietiezhi_agent_model::WireApi::Responses
+        }
+        super::settings::WireApi::ChatCompletions => {
+            tietiezhi_agent_model::WireApi::ChatCompletions
+        }
+        super::settings::WireApi::AnthropicMessages => {
+            tietiezhi_agent_model::WireApi::AnthropicMessages
+        }
+        super::settings::WireApi::GeminiGenerateContent => {
+            tietiezhi_agent_model::WireApi::GeminiGenerateContent
+        }
+    };
     ResponsesClient::new(
         http.clone(),
-        tietiezhi_agent_model::Provider::openai_compatible(provider_name, base_url, bearer_token),
+        tietiezhi_agent_model::Provider::openai_compatible(provider_name, base_url, bearer_token)
+            .with_wire_api(wire_api)
+            .with_reasoning_wire_format(match reasoning_transport {
+                super::models::ReasoningTransport::None => {
+                    tietiezhi_agent_model::ReasoningWireFormat::Auto
+                }
+                super::models::ReasoningTransport::ResponsesReasoning => {
+                    tietiezhi_agent_model::ReasoningWireFormat::ResponsesReasoning
+                }
+                super::models::ReasoningTransport::OpenaiReasoningEffort => {
+                    tietiezhi_agent_model::ReasoningWireFormat::ChatReasoningEffort
+                }
+                super::models::ReasoningTransport::OpenrouterReasoning => {
+                    tietiezhi_agent_model::ReasoningWireFormat::OpenRouterReasoning
+                }
+                super::models::ReasoningTransport::EnableThinking => {
+                    tietiezhi_agent_model::ReasoningWireFormat::EnableThinking
+                }
+                super::models::ReasoningTransport::AnthropicAdaptive => {
+                    tietiezhi_agent_model::ReasoningWireFormat::AnthropicAdaptive
+                }
+                super::models::ReasoningTransport::AnthropicThinkingBudget => {
+                    tietiezhi_agent_model::ReasoningWireFormat::AnthropicThinkingBudget
+                }
+                super::models::ReasoningTransport::GeminiThinkingLevel => {
+                    tietiezhi_agent_model::ReasoningWireFormat::GeminiThinkingLevel
+                }
+                super::models::ReasoningTransport::GeminiThinkingBudget => {
+                    tietiezhi_agent_model::ReasoningWireFormat::GeminiThinkingBudget
+                }
+            }),
     )
 }
 
@@ -7213,14 +7338,14 @@ async fn ensure_responses_capability(
     wire_api: super::settings::WireApi,
     client: &ResponsesClient,
 ) -> Result<(), ModelError> {
+    if client.wire_api() != tietiezhi_agent_model::WireApi::Responses {
+        return Ok(());
+    }
     match wire_api {
-        super::settings::WireApi::Responses => return Ok(()),
-        super::settings::WireApi::ChatCompletions => {
-            return Err(ModelError::InvalidRequest {
-                message: "当前供应商配置为仅普通聊天；Codex Agent Runtime 必须使用 Responses API"
-                    .into(),
-            });
-        }
+        super::settings::WireApi::Responses
+        | super::settings::WireApi::ChatCompletions
+        | super::settings::WireApi::AnthropicMessages
+        | super::settings::WireApi::GeminiGenerateContent => return Ok(()),
         super::settings::WireApi::Auto => {}
     }
     let state = app.state::<AppState>();
@@ -7247,7 +7372,7 @@ async fn ensure_responses_capability(
     } else {
         Err(ModelError::InvalidRequest {
             message:
-                "当前供应商没有可用的 /v1/responses；请升级 Gateway，或改用支持 Responses API 的供应商"
+                "自动探测未找到 /v1/responses；请在供应商或模型设置中明确选择 Chat Completions、Anthropic Messages 或 Gemini GenerateContent"
                     .into(),
         })
     }
@@ -9945,10 +10070,11 @@ mod tests {
         format_micro, gateway_quota_allows_memory_startup, gateway_rate_limits,
         local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type,
         parse_plugin_mcp_source, permission_profile_list, permission_profile_to_tool,
-        permission_profile_to_v2, plugin_enablement_edits, response_request, review_tool_allowed,
-        rewrite_external_terms, sanitize_collaboration_fork_history, write_atomic, ConfigPaths,
-        ConfigRuntime, ExternalMigrationSource, PluginMcpSource, ResponseEvent, ResponseProjection,
-        SkillsPaths, SkillsRuntime,
+        permission_profile_to_v2, plugin_enablement_edits, resolve_runtime_reasoning_effort,
+        response_request, review_tool_allowed, rewrite_external_terms,
+        sanitize_collaboration_fork_history, write_atomic, ConfigPaths, ConfigRuntime,
+        ExternalMigrationSource, PluginMcpSource, ResponseEvent, ResponseProjection, SkillsPaths,
+        SkillsRuntime,
     };
     use crate::commands::gateway_auth::{
         GatewayOwnedPackage, GatewayPaymentChannels, GatewayQuotaView, GatewayWallet,
@@ -9960,6 +10086,35 @@ mod tests {
         CompactionExecutionSnapshot, RuntimeDefaults, ThreadManager, TurnExecutionSnapshot,
     };
     use tietiezhi_agent_tools::{ToolCall, ToolPayload};
+
+    #[test]
+    fn runtime_reasoning_honors_explicit_off_and_rejects_stale_max() {
+        use crate::commands::models::{
+            ReasoningEffort, ReasoningMode, ReasoningProfile, ReasoningTransport,
+        };
+
+        let profile = ReasoningProfile {
+            mode: ReasoningMode::Effort,
+            supported_efforts: vec![
+                ReasoningEffort::Off,
+                ReasoningEffort::Low,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh,
+            ],
+            default_effort: Some(ReasoningEffort::High),
+            transport: ReasoningTransport::OpenaiReasoningEffort,
+            protocol_transports: Default::default(),
+        };
+
+        assert_eq!(
+            resolve_runtime_reasoning_effort(&profile, ReasoningEffort::Off).as_deref(),
+            Some("none")
+        );
+        assert_eq!(
+            resolve_runtime_reasoning_effort(&profile, ReasoningEffort::Max).as_deref(),
+            Some("high")
+        );
+    }
 
     #[test]
     fn device_app_dynamic_input_is_not_advertised_as_strict() {

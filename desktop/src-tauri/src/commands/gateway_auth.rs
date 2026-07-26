@@ -232,6 +232,18 @@ struct Discovery {
     wire_apis: Vec<String>,
     #[serde(default)]
     responses_endpoint: Option<String>,
+    #[serde(default)]
+    chat_completions_api_version: Option<u32>,
+    #[serde(default)]
+    chat_completions_endpoint: Option<String>,
+    #[serde(default)]
+    anthropic_messages_api_version: Option<u32>,
+    #[serde(default)]
+    anthropic_messages_endpoint: Option<String>,
+    #[serde(default)]
+    gemini_generate_content_api_version: Option<u32>,
+    #[serde(default)]
+    gemini_generate_content_endpoint_template: Option<String>,
     authorization_endpoint: String,
     token_endpoint: String,
     session_endpoint: String,
@@ -845,6 +857,9 @@ fn validate_discovery(expected_issuer: &str, discovery: &Discovery) -> Result<()
     }
     for endpoint in [
         discovery.responses_endpoint.as_ref(),
+        discovery.chat_completions_endpoint.as_ref(),
+        discovery.anthropic_messages_endpoint.as_ref(),
+        discovery.gemini_generate_content_endpoint_template.as_ref(),
         discovery.quota_endpoint.as_ref(),
         discovery.catalog_endpoint.as_ref(),
         discovery.order_endpoint.as_ref(),
@@ -877,6 +892,32 @@ fn validate_discovery(expected_issuer: &str, discovery: &Discovery) -> Result<()
         && (discovery.responses_api_version != Some(1) || discovery.responses_endpoint.is_none())
     {
         return Err("中转站 Responses 能力声明不完整".into());
+    }
+    for (wire_api, version, endpoint) in [
+        (
+            "chat_completions",
+            discovery.chat_completions_api_version,
+            discovery.chat_completions_endpoint.as_ref(),
+        ),
+        (
+            "anthropic_messages",
+            discovery.anthropic_messages_api_version,
+            discovery.anthropic_messages_endpoint.as_ref(),
+        ),
+        (
+            "gemini_generate_content",
+            discovery.gemini_generate_content_api_version,
+            discovery.gemini_generate_content_endpoint_template.as_ref(),
+        ),
+    ] {
+        if discovery
+            .wire_apis
+            .iter()
+            .any(|candidate| candidate == wire_api)
+            && (version != Some(1) || endpoint.is_none())
+        {
+            return Err(format!("中转站 {wire_api} 能力声明不完整"));
+        }
     }
     Ok(())
 }
@@ -1093,6 +1134,12 @@ mod tests {
             responses_api_version: Some(1),
             wire_apis: vec!["responses".into()],
             responses_endpoint: Some("https://gateway.example.test/v1/responses".into()),
+            chat_completions_api_version: None,
+            chat_completions_endpoint: None,
+            anthropic_messages_api_version: None,
+            anthropic_messages_endpoint: None,
+            gemini_generate_content_api_version: None,
+            gemini_generate_content_endpoint_template: None,
             authorization_endpoint: "https://gateway.example.test/desktop-authorize".into(),
             token_endpoint: "https://gateway.example.test/app-api/user/auth/native/token".into(),
             session_endpoint: "https://gateway.example.test/app-api/user/auth/native/session"

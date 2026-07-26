@@ -15,6 +15,18 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 pub use crate::agent::context::DEFAULT_CONTEXT_WINDOW_TOKENS;
 
+/// Wire protocol used by the agent runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelWireApi {
+    #[default]
+    Auto,
+    Responses,
+    ChatCompletions,
+    AnthropicMessages,
+    GeminiGenerateContent,
+}
+
 /// What a model can be used for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -68,6 +80,7 @@ pub enum ReasoningEffort {
     High,
     Xhigh,
     Max,
+    Ultra,
 }
 
 impl ReasoningEffort {
@@ -80,6 +93,7 @@ impl ReasoningEffort {
             "high" => Self::High,
             "xhigh" => Self::Xhigh,
             "max" => Self::Max,
+            "ultra" => Self::Ultra,
             _ => Self::Auto,
         }
     }
@@ -94,6 +108,7 @@ impl ReasoningEffort {
             Self::High => Some("high"),
             Self::Xhigh => Some("xhigh"),
             Self::Max => Some("max"),
+            Self::Ultra => Some("ultra"),
         }
     }
 }
@@ -109,9 +124,14 @@ pub enum ReasoningMode {
 #[serde(rename_all = "kebab-case")]
 pub enum ReasoningTransport {
     None,
+    ResponsesReasoning,
     OpenaiReasoningEffort,
     OpenrouterReasoning,
     EnableThinking,
+    AnthropicAdaptive,
+    AnthropicThinkingBudget,
+    GeminiThinkingLevel,
+    GeminiThinkingBudget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +143,27 @@ pub struct ReasoningProfile {
     #[serde(default)]
     pub default_effort: Option<ReasoningEffort>,
     pub transport: ReasoningTransport,
+    #[serde(default)]
+    pub protocol_transports: BTreeMap<String, ReasoningTransport>,
+}
+
+impl ReasoningProfile {
+    pub fn transport_for_wire_api(&self, wire_api: ModelWireApi) -> ReasoningTransport {
+        let key = match wire_api {
+            ModelWireApi::Auto | ModelWireApi::Responses => "responses",
+            ModelWireApi::ChatCompletions => "chat_completions",
+            ModelWireApi::AnthropicMessages => "anthropic_messages",
+            ModelWireApi::GeminiGenerateContent => "gemini_generate_content",
+        };
+        if self.protocol_transports.is_empty() {
+            self.transport
+        } else {
+            self.protocol_transports
+                .get(key)
+                .copied()
+                .unwrap_or(ReasoningTransport::None)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -133,6 +174,7 @@ pub struct ModelOverrides {
     pub output_modalities: Option<Vec<ModelModality>>,
     pub capabilities: BTreeMap<ModelCapability, bool>,
     pub reasoning: Option<ReasoningProfile>,
+    pub wire_api: Option<ModelWireApi>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +191,10 @@ pub struct ModelInfo {
     pub capabilities: Vec<ModelCapability>,
     #[serde(default)]
     pub reasoning: Option<ReasoningProfile>,
+    #[serde(default)]
+    pub supported_wire_apis: Vec<ModelWireApi>,
+    #[serde(default)]
+    pub default_wire_api: Option<ModelWireApi>,
     #[serde(default)]
     pub context_window: Option<u64>,
     #[serde(default)]
@@ -171,6 +217,8 @@ impl ModelInfo {
             output_modalities,
             capabilities: Vec::new(),
             reasoning: None,
+            supported_wire_apis: Vec::new(),
+            default_wire_api: None,
             context_window: Some(DEFAULT_CONTEXT_WINDOW_TOKENS),
             max_output_tokens: None,
             capability_source: default_capability_source(),
@@ -203,6 +251,14 @@ impl ModelInfo {
             .reasoning
             .as_ref()
             .or(self.reasoning.as_ref())
+    }
+
+    pub fn effective_wire_api(&self) -> Option<ModelWireApi> {
+        self.overrides
+            .wire_api
+            .or(self.default_wire_api)
+            .or_else(|| self.supported_wire_apis.first().copied())
+            .filter(|wire_api| *wire_api != ModelWireApi::Auto)
     }
 
     pub fn merge_overrides_from(&mut self, previous: &Self) {
@@ -544,6 +600,62 @@ mod tests {
             ]
         );
         assert!(!profile.supported_efforts.contains(&ReasoningEffort::Max));
+        assert_eq!(
+            profile.transport_for_wire_api(ModelWireApi::ChatCompletions),
+            ReasoningTransport::OpenaiReasoningEffort
+        );
+        assert_eq!(
+            profile.transport_for_wire_api(ModelWireApi::AnthropicMessages),
+            ReasoningTransport::AnthropicAdaptive
+        );
+    }
+
+    #[test]
+    fn active_gateway_models_use_probed_effort_sets() {
+        let cases = [
+            (
+                "gpt-5.4",
+                vec![
+                    ReasoningEffort::Off,
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Xhigh,
+                ],
+            ),
+            (
+                "gpt-5.6-terra",
+                vec![
+                    ReasoningEffort::Off,
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                    ReasoningEffort::Xhigh,
+                    ReasoningEffort::Max,
+                ],
+            ),
+            (
+                "sensenova-6.7-flash-lite",
+                vec![
+                    ReasoningEffort::Off,
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High,
+                ],
+            ),
+        ];
+        for (id, expected) in cases {
+            let model = ModelInfo::new(id);
+            assert_eq!(
+                model.effective_reasoning().unwrap().supported_efforts,
+                expected,
+                "{id}"
+            );
+        }
+        assert_eq!(
+            ReasoningEffort::from_setting("ultra"),
+            ReasoningEffort::Ultra
+        );
     }
 
     #[test]

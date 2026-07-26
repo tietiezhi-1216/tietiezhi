@@ -15,6 +15,8 @@ use thiserror::Error;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+mod protocol_transport;
+
 const OPENAI_MODEL_HEADER: &str = "openai-model";
 const X_REASONING_INCLUDED_HEADER: &str = "x-reasoning-included";
 const X_MODELS_ETAG_HEADER: &str = "x-models-etag";
@@ -215,13 +217,36 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            max_retries: 4,
+            max_retries: 1,
             base_delay: Duration::from_millis(200),
             retry_429: false,
             retry_5xx: true,
             retry_transport: true,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WireApi {
+    #[default]
+    Responses,
+    ChatCompletions,
+    AnthropicMessages,
+    GeminiGenerateContent,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReasoningWireFormat {
+    #[default]
+    Auto,
+    ResponsesReasoning,
+    ChatReasoningEffort,
+    OpenRouterReasoning,
+    EnableThinking,
+    AnthropicAdaptive,
+    AnthropicThinkingBudget,
+    GeminiThinkingLevel,
+    GeminiThinkingBudget,
 }
 
 #[derive(Debug, Clone)]
@@ -234,6 +259,8 @@ pub struct Provider {
     pub retry: RetryConfig,
     pub stream_max_retries: u64,
     pub stream_idle_timeout: Duration,
+    pub wire_api: WireApi,
+    pub reasoning_wire_format: ReasoningWireFormat,
 }
 
 impl Provider {
@@ -249,9 +276,21 @@ impl Provider {
             headers: HeaderMap::new(),
             query_params: HashMap::new(),
             retry: RetryConfig::default(),
-            stream_max_retries: 5,
+            stream_max_retries: 1,
             stream_idle_timeout: Duration::from_secs(300),
+            wire_api: WireApi::Responses,
+            reasoning_wire_format: ReasoningWireFormat::Auto,
         }
+    }
+
+    pub fn with_wire_api(mut self, wire_api: WireApi) -> Self {
+        self.wire_api = wire_api;
+        self
+    }
+
+    pub fn with_reasoning_wire_format(mut self, format: ReasoningWireFormat) -> Self {
+        self.reasoning_wire_format = format;
+        self
     }
 
     pub fn url_for_path(&self, path: &str) -> String {
@@ -364,6 +403,10 @@ impl ResponsesClient {
         Self { http, provider }
     }
 
+    pub fn wire_api(&self) -> WireApi {
+        self.provider.wire_api
+    }
+
     /// Probe the Responses route without creating a model response.
     ///
     /// Responses endpoints are POST-only. An empty JSON object must fail
@@ -409,10 +452,28 @@ impl ResponsesClient {
     {
         let mut stream_attempt = 0;
         loop {
-            match self.stream_once(request, &mut on_event).await {
+            let mut output_seen = false;
+            let result = self
+                .stream_once(request, &mut |event| {
+                    if matches!(
+                        event,
+                        ResponseEvent::OutputItemAdded(_)
+                            | ResponseEvent::OutputItemDone(_)
+                            | ResponseEvent::OutputTextDelta(_)
+                            | ResponseEvent::ToolCallInputDelta { .. }
+                            | ResponseEvent::ReasoningSummaryDelta { .. }
+                            | ResponseEvent::ReasoningContentDelta { .. }
+                    ) {
+                        output_seen = true;
+                    }
+                    on_event(event)
+                })
+                .await;
+            match result {
                 Ok(()) => return Ok(()),
                 Err(error)
                     if error.is_retryable()
+                        && !output_seen
                         && stream_attempt < self.provider.stream_max_retries =>
                 {
                     stream_attempt += 1;
@@ -439,6 +500,16 @@ impl ResponsesClient {
         F: FnMut(ResponseEvent) -> Result<(), ModelError>,
     {
         let response = self.send_with_retry(request).await?;
+        if self.provider.wire_api != WireApi::Responses {
+            return protocol_transport::consume_compatible_stream(
+                response,
+                self.provider.wire_api,
+                request,
+                self.provider.stream_idle_timeout,
+                on_event,
+            )
+            .await;
+        }
         let headers = response.headers().clone();
         if let Some(model) = header_string(&headers, OPENAI_MODEL_HEADER) {
             on_event(ResponseEvent::ServerModel(model))?;
@@ -533,8 +604,10 @@ impl ResponsesClient {
                     return Err(error);
                 }
                 Err(error) => {
-                    let error = ModelError::Transport(error.to_string());
-                    if self.provider.retry.retry_transport && attempt < max_retries {
+                    if self.provider.retry.retry_transport
+                        && error.is_retryable()
+                        && attempt < max_retries
+                    {
                         tokio::time::sleep(request_backoff(
                             self.provider.retry.base_delay,
                             attempt + 1,
@@ -553,26 +626,43 @@ impl ResponsesClient {
     async fn send_once(
         &self,
         request: &ResponsesApiRequest,
-    ) -> Result<reqwest::Response, reqwest::Error> {
+    ) -> Result<reqwest::Response, ModelError> {
+        let wire_request = protocol_transport::build_wire_request(
+            &self.provider,
+            self.provider.wire_api,
+            request,
+        )?;
         let mut builder = self
             .http
-            .post(self.provider.url_for_path("responses"))
-            .header(ACCEPT, "text/event-stream")
+            .post(wire_request.url)
+            .header(ACCEPT, wire_request.accept)
             .header(CONTENT_TYPE, "application/json")
             .header("x-client-request-id", Uuid::new_v4().to_string())
-            .json(request);
+            .json(&wire_request.body);
         if let Some(token) = self
             .provider
             .bearer_token
             .as_deref()
             .filter(|token| !token.is_empty())
         {
-            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+            builder = match self.provider.wire_api {
+                WireApi::AnthropicMessages => builder
+                    .header("x-api-key", token)
+                    .header("anthropic-version", "2023-06-01"),
+                WireApi::GeminiGenerateContent => builder.header("x-goog-api-key", token),
+                _ => builder.header(AUTHORIZATION, format!("Bearer {token}")),
+            };
+        }
+        for (name, value) in wire_request.headers {
+            builder = builder.header(name, value);
         }
         for (name, value) in &self.provider.headers {
             builder = builder.header(name, value);
         }
-        builder.send().await
+        builder
+            .send()
+            .await
+            .map_err(|error| ModelError::Transport(error.to_string()))
     }
 }
 
@@ -1561,6 +1651,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compatible_transports_use_native_endpoints_auth_and_streams() {
+        let cases = [
+            (
+                WireApi::ChatCompletions,
+                "/v1/chat/completions",
+                "authorization: bearer secret",
+                concat!(
+                    "data: {\"id\":\"chat-1\",\"choices\":[{\"delta\":{\"content\":\"chat\"}}]}\n\n",
+                    "data: [DONE]\n\n"
+                ),
+                "chat",
+            ),
+            (
+                WireApi::AnthropicMessages,
+                "/v1/messages",
+                "x-api-key: secret",
+                concat!(
+                    "event: content_block_delta\n",
+                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"anthropic\"}}\n\n",
+                    "event: message_stop\n",
+                    "data: {\"type\":\"message_stop\"}\n\n"
+                ),
+                "anthropic",
+            ),
+            (
+                WireApi::GeminiGenerateContent,
+                "/v1beta/models/model-x:streamGenerateContent?alt=sse",
+                "x-goog-api-key: secret",
+                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini\"}]},\"finishReason\":\"STOP\"}]}\n\n",
+                "gemini",
+            ),
+        ];
+
+        for (wire_api, path, auth_header, body, expected_text) in cases {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let body = body.to_owned();
+            let path = path.to_ascii_lowercase();
+            let auth_header = auth_header.to_owned();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 16_384];
+                let size = socket.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..size]).to_ascii_lowercase();
+                assert!(
+                    request.starts_with(&format!("post {path} http/1.1")),
+                    "unexpected request line: {}",
+                    request.lines().next().unwrap_or_default()
+                );
+                assert!(request.contains(&auth_header));
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            });
+            let provider = Provider::openai_compatible(
+                "test",
+                format!("http://{address}/v1"),
+                Some("secret".into()),
+            )
+            .with_wire_api(wire_api);
+            let client = ResponsesClient::new(reqwest::Client::new(), provider);
+            let mut events = Vec::new();
+            client
+                .stream(&ResponsesApiRequest::text("model-x", Vec::new()), |event| {
+                    events.push(event);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            server.await.unwrap();
+            assert!(events.contains(&ResponseEvent::OutputTextDelta(expected_text.into())));
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, ResponseEvent::Completed { .. }))
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn request_transport_retries_5xx_before_opening_stream() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1650,36 +1823,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disconnected_sse_stream_reconnects_with_retry_notification() {
+    async fn disconnected_sse_stream_does_not_replay_after_partial_output() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            for attempt in 0..2 {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let mut request = vec![0; 4096];
-                let _ = socket.read(&mut request).await.unwrap();
-                let body = if attempt == 0 {
-                    concat!(
-                        "data: {\"type\":\"response.created\",\"response\":{}}\n\n",
-                        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
-                    )
-                } else {
-                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_reconnected\",\"end_turn\":true}}\n\n"
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                socket.write_all(response.as_bytes()).await.unwrap();
-            }
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            let body = concat!(
+                "data: {\"type\":\"response.created\",\"response\":{}}\n\n",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
         });
         let mut provider =
             Provider::openai_compatible("test", format!("http://{address}/v1"), None);
         provider.stream_max_retries = 1;
         let client = ResponsesClient::new(reqwest::Client::new(), provider);
         let mut events = Vec::new();
-        client
+        let error = client
             .stream(
                 &ResponsesApiRequest::text("gpt-test", Vec::new()),
                 |event| {
@@ -1688,18 +1855,65 @@ mod tests {
                 },
             )
             .await
-            .unwrap();
+            .unwrap_err();
         server.await.unwrap();
-        assert!(events.iter().any(|event| matches!(
-            event,
-            ResponseEvent::Retrying {
-                error: ModelError::Stream(message),
-                attempt: 1
-            } if message == "stream closed before response.completed"
-        )));
-        assert!(events.iter().any(
-            |event| matches!(event, ResponseEvent::Completed { response_id, .. } if response_id == "resp_reconnected")
-        ));
+        assert_eq!(
+            error,
+            ModelError::Stream("stream closed before response.completed".into())
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ResponseEvent::Retrying { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn compatible_disconnected_stream_does_not_replay_or_silently_complete() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            let body =
+                "data: {\"id\":\"chat-1\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let mut provider =
+            Provider::openai_compatible("test", format!("http://{address}/v1"), None)
+                .with_wire_api(WireApi::ChatCompletions);
+        provider.stream_max_retries = 1;
+        let client = ResponsesClient::new(reqwest::Client::new(), provider);
+        let mut events = Vec::new();
+        let error = client
+            .stream(&ResponsesApiRequest::text("model-x", Vec::new()), |event| {
+                events.push(event);
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert_eq!(
+            error,
+            ModelError::Stream("stream closed before protocol completion".into())
+        );
+        assert!(events.contains(&ResponseEvent::OutputTextDelta("partial".into())));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ResponseEvent::Retrying { .. }))
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ResponseEvent::Completed { .. }))
+        );
     }
 
     #[tokio::test]

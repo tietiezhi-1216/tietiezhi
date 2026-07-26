@@ -365,7 +365,12 @@ export function installedCodexApps(
 }
 
 export type ProviderType = "openai" | "mimo";
-export type WireApi = "auto" | "responses" | "chatCompletions";
+export type WireApi =
+  | "auto"
+  | "responses"
+  | "chatCompletions"
+  | "anthropicMessages"
+  | "geminiGenerateContent";
 
 /** What a model can be used for. Rust merges provider metadata with local fallbacks. */
 export type ModelKind =
@@ -394,17 +399,32 @@ export type ReasoningEffort =
   | "medium"
   | "high"
   | "xhigh"
-  | "max";
+  | "max"
+  | "ultra";
+
+export type ReasoningTransport =
+  | "none"
+  | "responses-reasoning"
+  | "openai-reasoning-effort"
+  | "openrouter-reasoning"
+  | "enable-thinking"
+  | "anthropic-adaptive"
+  | "anthropic-thinking-budget"
+  | "gemini-thinking-level"
+  | "gemini-thinking-budget";
+
+export type ReasoningProtocol =
+  | "responses"
+  | "chat_completions"
+  | "anthropic_messages"
+  | "gemini_generate_content";
 
 export interface ReasoningProfile {
   mode: "fixed" | "effort";
   supportedEfforts: ReasoningEffort[];
   defaultEffort?: ReasoningEffort;
-  transport:
-    | "none"
-    | "openai-reasoning-effort"
-    | "openrouter-reasoning"
-    | "enable-thinking";
+  transport: ReasoningTransport;
+  protocolTransports?: Partial<Record<ReasoningProtocol, ReasoningTransport>>;
 }
 
 export interface ModelOverrides {
@@ -413,6 +433,7 @@ export interface ModelOverrides {
   outputModalities?: ModelModality[];
   capabilities?: Partial<Record<ModelCapability, boolean>>;
   reasoning?: ReasoningProfile;
+  wireApi?: WireApi;
 }
 
 export interface ModelInfo {
@@ -422,6 +443,8 @@ export interface ModelInfo {
   outputModalities?: ModelModality[];
   capabilities?: ModelCapability[];
   reasoning?: ReasoningProfile;
+  supportedWireApis?: WireApi[];
+  defaultWireApi?: WireApi;
   contextWindow?: number;
   maxOutputTokens?: number;
   capabilitySource?: "inferred" | "registry" | "provider" | string;
