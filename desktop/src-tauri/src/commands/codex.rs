@@ -6318,6 +6318,7 @@ async fn run_turn_executor(
     let base_url = super::api_url(&resolved.base_url, "")
         .trim_end_matches('/')
         .to_owned();
+    let response_model = workspace_response_model(&resolved, &initial.model);
     let provider_id = resolved.id;
     let provider_name = resolved.kind;
     let mut bearer_token = app
@@ -6333,7 +6334,7 @@ async fn run_turn_executor(
     let mut client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
     ensure_responses_capability(&app, &capability_key, wire_api, &client).await?;
     let mut projection = ResponseProjection::new(
-        initial.model.clone(),
+        response_model.clone(),
         initial.model_context_window,
         initial.cwd.clone(),
     );
@@ -6436,6 +6437,7 @@ async fn run_turn_executor(
             output_schema = Some(schema);
         }
         let mut request = response_request(&snapshot, output_schema.clone(), tool_specs);
+        request.model.clone_from(&response_model);
         if !projection.memory_polluted() {
             if let Some(instructions) = &memory_instructions {
                 request.input.insert(
@@ -7135,6 +7137,40 @@ fn responses_client(
         http.clone(),
         tietiezhi_agent_model::Provider::openai_compatible(provider_name, base_url, bearer_token),
     )
+}
+
+fn workspace_response_model(resolved: &super::providers::Resolved, requested: &str) -> String {
+    if !resolved.built_in {
+        return requested.to_owned();
+    }
+    let supported = tietiezhi_agent_model::bundled_models(false)
+        .into_iter()
+        .filter_map(|model| {
+            model
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_ascii_lowercase)
+        })
+        .collect::<HashSet<_>>();
+    if supported.contains(&requested.trim().to_ascii_lowercase()) {
+        return requested.to_owned();
+    }
+    [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.2",
+    ]
+    .into_iter()
+    .find(|candidate| {
+        resolved
+            .models
+            .iter()
+            .any(|model| model.id.eq_ignore_ascii_case(candidate))
+    })
+    .unwrap_or("gpt-5.6-sol")
+    .to_owned()
 }
 
 async fn refresh_external_auth(
@@ -9941,9 +9977,9 @@ mod tests {
         merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, parse_plugin_mcp_source,
         permission_profile_list, permission_profile_to_tool, permission_profile_to_v2,
         plugin_enablement_edits, response_request, review_tool_allowed, rewrite_external_terms,
-        sanitize_collaboration_fork_history, write_atomic, ConfigPaths, ConfigRuntime,
-        ExternalMigrationSource, PluginMcpSource, ResponseEvent, ResponseProjection, SkillsPaths,
-        SkillsRuntime,
+        sanitize_collaboration_fork_history, workspace_response_model, write_atomic, ConfigPaths,
+        ConfigRuntime, ExternalMigrationSource, PluginMcpSource, ResponseEvent, ResponseProjection,
+        SkillsPaths, SkillsRuntime,
     };
     use crate::commands::gateway_auth::{
         GatewayOwnedPackage, GatewayPaymentChannels, GatewayQuotaView, GatewayWallet,
@@ -9955,6 +9991,31 @@ mod tests {
         CompactionExecutionSnapshot, RuntimeDefaults, ThreadManager, TurnExecutionSnapshot,
     };
     use tietiezhi_agent_tools::{ToolCall, ToolPayload};
+
+    #[test]
+    fn built_in_workspace_models_follow_the_pinned_codex_catalog() {
+        let resolved = crate::commands::providers::Resolved {
+            id: "gateway".into(),
+            base_url: "https://gateway.example.test/v1".into(),
+            key: None,
+            kind: "openai".into(),
+            wire_api: crate::commands::settings::WireApi::Responses,
+            models: vec![
+                crate::commands::models::ModelInfo::new("deepseek-v4-flash"),
+                crate::commands::models::ModelInfo::new("gpt-5.6-sol"),
+            ],
+            built_in: true,
+        };
+
+        assert_eq!(
+            workspace_response_model(&resolved, "deepseek-v4-flash"),
+            "gpt-5.6-sol"
+        );
+        assert_eq!(
+            workspace_response_model(&resolved, "gpt-5.6-sol"),
+            "gpt-5.6-sol"
+        );
+    }
 
     #[test]
     fn external_agent_migration_rewrites_terms_and_extracts_text() {

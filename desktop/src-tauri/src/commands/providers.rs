@@ -30,6 +30,7 @@ pub(crate) struct Resolved {
     pub kind: String,
     pub wire_api: WireApi,
     pub models: Vec<ModelInfo>,
+    pub built_in: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,12 +101,18 @@ pub(crate) fn resolve(app: &AppHandle, provider_id: &str) -> Result<Resolved, St
         .ok_or("未找到所选供应商，请到「设置」检查")?;
 
     let gateway_key = super::gateway_auth::gateway_api_key(provider_id, &provider.base_url)?;
-    let stored_provider_key = if provider.built_in {
-        None
-    } else {
+    let legacy_builtin =
+        provider.built_in && super::settings::is_legacy_builtin_provider_url(&provider.base_url);
+    let stored_provider_key = if !provider.built_in || legacy_builtin {
         secrets::get_provider_key(provider_id)?
+    } else {
+        None
     };
-    let key = select_provider_api_key(gateway_key, stored_provider_key, provider.built_in)?;
+    let key = select_provider_api_key(
+        gateway_key,
+        stored_provider_key,
+        provider.built_in && !legacy_builtin,
+    )?;
 
     Ok(Resolved {
         id: provider.id.clone(),
@@ -114,6 +121,7 @@ pub(crate) fn resolve(app: &AppHandle, provider_id: &str) -> Result<Resolved, St
         kind: provider.kind.clone(),
         wire_api: provider.wire_api,
         models: provider.models.clone(),
+        built_in: provider.built_in,
     })
 }
 
@@ -234,7 +242,8 @@ pub async fn fetch_provider_models(
         .or_else(|| stored.as_ref().map(|p| p.kind.clone()))
         .unwrap_or_else(|| "openai".into());
     let built_in = stored.as_ref().is_some_and(|provider| provider.built_in);
-    let key = if built_in {
+    let legacy_builtin = built_in && super::settings::is_legacy_builtin_provider_url(&base);
+    let key = if built_in && !legacy_builtin {
         let gateway_key = super::gateway_auth::gateway_api_key(&id, &base)?;
         select_provider_api_key(gateway_key, None, true)?
     } else {
@@ -486,6 +495,13 @@ mod builtin_tests {
         let selected = select_provider_api_key(None, Some("stale-provider-key".into()), true);
 
         assert_eq!(selected.unwrap_err(), "请先登录中转站");
+    }
+
+    #[test]
+    fn legacy_builtin_can_reuse_its_existing_provider_key() {
+        let selected = select_provider_api_key(None, Some("legacy-provider-key".into()), false);
+
+        assert_eq!(selected.unwrap().as_deref(), Some("legacy-provider-key"));
     }
 
     #[test]

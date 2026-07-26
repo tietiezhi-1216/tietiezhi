@@ -1,5 +1,11 @@
 import { lazy, Suspense, useEffect } from "react";
-import { LoaderCircle, Settings, SquarePen } from "lucide-react";
+import {
+  LoaderCircle,
+  PanelRight,
+  PanelRightClose,
+  Settings,
+  SquarePen,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { UpdateReadyButton } from "@/components/update-ready-button";
 import {
@@ -106,7 +112,12 @@ function AppHeader({
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
   const newConversation = useChatStore((s) => s.newConversation);
+  const activeId = useChatStore((s) => s.activeId);
   const openSettings = useUiStore((state) => state.openSettings);
+  const workspacePanelOpen = useUiStore((state) => state.workspacePanelOpen);
+  const toggleWorkspacePanel = useUiStore(
+    (state) => state.toggleWorkspacePanel,
+  );
 
   const workspace = productArea === "workspace";
 
@@ -167,6 +178,23 @@ function AppHeader({
           <>
             <WorkspaceModeSwitcher />
             <AgentSelect />
+            {activeId && (
+              <Button
+                type="button"
+                variant={workspacePanelOpen ? "secondary" : "ghost"}
+                size="icon-sm"
+                onClick={toggleWorkspacePanel}
+                aria-label={
+                  workspacePanelOpen ? "收起工作区面板" : "展开工作区面板"
+                }
+                aria-pressed={workspacePanelOpen}
+                title={
+                  workspacePanelOpen ? "收起工作区面板" : "展开工作区面板"
+                }
+              >
+                {workspacePanelOpen ? <PanelRightClose /> : <PanelRight />}
+              </Button>
+            )}
           </>
         )}
         {productArea === "tietiezhi" && (

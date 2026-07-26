@@ -6,7 +6,7 @@ use super::models::{
 };
 use crate::secrets;
 
-const CURRENT_SETTINGS_VERSION: u32 = 7;
+const CURRENT_SETTINGS_VERSION: u32 = 8;
 pub(crate) const BUILTIN_PROVIDER_ID: &str = "builtin-official";
 pub(crate) const BUILTIN_PROVIDER_NAME: &str = "Tietiezhi Gateway";
 pub(crate) const BUILTIN_PROVIDER_URL: &str = "https://tietiezhi.vip/v1";
@@ -175,6 +175,9 @@ pub(crate) fn read_settings(app: &AppHandle) -> Result<AppSettings, String> {
         }
         changed = true;
     }
+    if settings.settings_version < 8 && migrate_builtin_agent_selection(&mut settings) {
+        changed = true;
+    }
     if normalize_known_model_capabilities(&mut settings) {
         changed = true;
     }
@@ -272,9 +275,52 @@ fn builtin_provider() -> Provider {
     }
 }
 
+fn is_builtin_codex_agent_model(model: &str) -> bool {
+    matches!(
+        model.trim().to_ascii_lowercase().as_str(),
+        "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-5.5" | "gpt-5.2"
+    )
+}
+
+fn migrate_builtin_agent_selection(settings: &mut AppSettings) -> bool {
+    let Some(provider) = settings
+        .providers
+        .iter()
+        .find(|provider| provider.id == settings.chat_provider_id && provider.built_in)
+    else {
+        return false;
+    };
+    if settings.chat_model.is_empty() || is_builtin_codex_agent_model(&settings.chat_model) {
+        return false;
+    }
+    let replacement = [
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.2",
+    ]
+    .into_iter()
+    .find(|candidate| {
+        provider
+            .models
+            .iter()
+            .any(|model| model.id.eq_ignore_ascii_case(candidate))
+    });
+    let Some(replacement) = replacement else {
+        return false;
+    };
+    settings.chat_model = replacement.into();
+    true
+}
+
 fn normalized_provider_url(value: &str) -> &str {
     let trimmed = value.trim().trim_end_matches('/');
     trimmed.strip_suffix("/v1").unwrap_or(trimmed)
+}
+
+pub(crate) fn is_legacy_builtin_provider_url(value: &str) -> bool {
+    normalized_provider_url(value) == normalized_provider_url(LEGACY_BUILTIN_PROVIDER_URL)
 }
 
 /// Reuse an existing official-endpoint entry when possible so upgrades neither
@@ -287,18 +333,13 @@ fn ensure_builtin_provider(settings: &mut AppSettings) -> bool {
         provider.built_in || provider_url == official_url || provider_url == legacy_url
     }) {
         let mut provider = settings.providers.remove(index);
-        let migrate_legacy_url = normalized_provider_url(&provider.base_url) == legacy_url;
         let changed = index != 0
             || !provider.built_in
             || provider.name != BUILTIN_PROVIDER_NAME
-            || migrate_legacy_url
             || provider.wire_api != WireApi::Responses;
         provider.built_in = true;
         provider.name = BUILTIN_PROVIDER_NAME.into();
         provider.wire_api = WireApi::Responses;
-        if migrate_legacy_url {
-            provider.base_url = BUILTIN_PROVIDER_URL.into();
-        }
         settings.providers.insert(0, provider);
         return changed;
     }
@@ -495,6 +536,21 @@ mod tests {
     }
 
     #[test]
+    fn builtin_agent_selection_migrates_to_codex_default() {
+        let mut settings = initial_settings();
+        settings.chat_provider_id = BUILTIN_PROVIDER_ID.into();
+        settings.chat_model = "deepseek-v4-flash".into();
+        settings.providers[0].models = vec![
+            ModelInfo::new("deepseek-v4-flash"),
+            ModelInfo::new("gpt-5.6-sol"),
+        ];
+
+        assert!(migrate_builtin_agent_selection(&mut settings));
+        assert_eq!(settings.chat_model, "gpt-5.6-sol");
+        assert!(!migrate_builtin_agent_selection(&mut settings));
+    }
+
+    #[test]
     fn registry_refresh_fixes_stale_reasoning_levels_and_keeps_overrides() {
         use crate::commands::models::{
             ModelCapability, ReasoningEffort, ReasoningMode, ReasoningProfile, ReasoningTransport,
@@ -556,7 +612,7 @@ mod tests {
         assert!(settings.providers[0].built_in);
         assert_eq!(settings.providers[0].id, "existing");
         assert_eq!(settings.providers[0].name, BUILTIN_PROVIDER_NAME);
-        assert_eq!(settings.providers[0].base_url, BUILTIN_PROVIDER_URL);
+        assert_eq!(settings.providers[0].base_url, "https://api.terln.com/v1/");
         assert_eq!(settings.providers[0].wire_api, WireApi::Responses);
     }
 

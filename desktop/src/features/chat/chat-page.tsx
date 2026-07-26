@@ -47,9 +47,7 @@ import { PermissionPrompt } from "@/features/chat/permission-prompt";
 import { ProjectSelect } from "@/features/chat/project-select";
 import { StarterSuggestions } from "@/features/chat/starter-suggestions";
 import { ToolCallCard } from "@/features/chat/tool-call-card";
-import { IntegratedTerminalPanel } from "@/features/chat/integrated-terminal-panel";
-import { RemoteRealtimePanel } from "@/features/chat/remote-realtime-panel";
-import { WorkspaceModePanel } from "@/features/chat/workspace-mode-panel";
+import { WorkspaceToolsPanel } from "@/features/chat/workspace-tools-panel";
 import { GIT_REVIEW_PROMPT_EVENT } from "@/features/chat/workspace-git-panel";
 import {
   dictationToggle,
@@ -66,7 +64,7 @@ import {
 } from "@/lib/api";
 import type { ChatAttachment, Provider } from "@/lib/api";
 import {
-  effectiveModelKind,
+  isWorkspaceAgentModel,
   modelHasCapability,
   modelInputModalities,
 } from "@/lib/model-capabilities";
@@ -86,6 +84,7 @@ export function ChatPage() {
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: loadSettings });
   const agentsQuery = useQuery({ queryKey: ["agents"], queryFn: listAgents });
   const openSettings = useUiStore((s) => s.openSettings);
+  const workspacePanelOpen = useUiStore((s) => s.workspacePanelOpen);
   const activeId = useChatStore((s) => s.activeId);
   const activeAgentId = useChatStore((s) => s.activeAgentId);
   const projectId = useChatStore((s) => s.projectId);
@@ -160,7 +159,7 @@ export function ChatPage() {
     () =>
       (settings?.providers ?? []).flatMap((provider) =>
         provider.models
-          .filter((candidate) => effectiveModelKind(candidate) === "chat")
+          .filter((candidate) => isWorkspaceAgentModel(provider, candidate))
           .map((candidate) => ({
             providerId: provider.id,
             model: candidate.id,
@@ -655,7 +654,11 @@ export function ChatPage() {
     Date.now() - compositionEndAt.current < 100;
 
   return (
-    <div ref={pageRef} className="relative flex h-full flex-col overflow-hidden">
+    <div className="relative flex h-full min-w-0 overflow-hidden">
+      <div
+        ref={pageRef}
+        className="relative flex min-w-0 flex-1 flex-col overflow-hidden"
+      >
       <div className="relative min-h-0 flex-1">
         <div
           aria-hidden={hasConversation}
@@ -719,6 +722,7 @@ export function ChatPage() {
               {readiness === "choose-model" && settings ? (
                 <div className="mt-1 flex justify-center">
                   <ModelSelect
+                    agentOnly
                     prominent
                     promptText={
                       lockedAgentSelection
@@ -942,14 +946,6 @@ export function ChatPage() {
           </div>
         )}
 
-        {activeId != null && <WorkspaceModePanel />}
-        {activeId != null && taskMode === "code" && (
-          <RemoteRealtimePanel threadId={activeId} />
-        )}
-        {activeId != null && taskMode === "code" && (
-          <IntegratedTerminalPanel taskId={activeId} />
-        )}
-
         <ChatComposerSurface dragActive={dragActive}>
           {commandQuery != null && (
             <ContextCommandMenu
@@ -1060,6 +1056,7 @@ export function ChatPage() {
             </span>
             {settings && (
               <ModelSelect
+                agentOnly
                 settings={settings}
                 lockedSelection={lockedAgentSelection}
                 effortOverride={activeAgent?.reasoningEffort || undefined}
@@ -1115,6 +1112,10 @@ export function ChatPage() {
           </div>
         </ChatComposerSurface>
       </div>
+      )}
+      </div>
+      {activeId != null && workspacePanelOpen && (
+        <WorkspaceToolsPanel taskId={activeId} taskMode={taskMode} />
       )}
     </div>
   );

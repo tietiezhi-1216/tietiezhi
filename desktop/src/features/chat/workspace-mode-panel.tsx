@@ -60,7 +60,7 @@ const formatBytes = (bytes: number): string => {
 
 const shortCommit = (commit: string): string => commit.slice(0, 8);
 
-export function WorkspaceModePanel() {
+export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean }) {
   const queryClient = useQueryClient();
   const activeId = useChatStore((state) => state.activeId);
   const taskMode = useChatStore((state) => state.taskMode);
@@ -177,13 +177,14 @@ export function WorkspaceModePanel() {
     <>
       <section
         className={cn(
-          "relative z-10 mx-1 mb-2 overflow-hidden rounded-xl border px-3 py-2.5 shadow-sm",
+          "overflow-hidden rounded-xl border px-3 py-2.5 shadow-sm",
+          !embedded && "relative z-10 mx-1 mb-2",
           taskMode === "work"
             ? "border-cyan-500/20 bg-cyan-500/[0.045]"
             : "border-violet-500/20 bg-violet-500/[0.045]",
         )}
       >
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
           <span
             className={cn(
               "grid size-8 shrink-0 place-items-center rounded-lg border",
@@ -194,7 +195,7 @@ export function WorkspaceModePanel() {
           >
             <Icon className="size-4" />
           </span>
-          <div className="min-w-0 flex-1">
+          <div className="min-w-0 flex-1 basis-48">
             <div className="flex items-center gap-2">
               <span className="text-xs font-semibold">{definition.name}</span>
               <Badge variant="outline" className="h-4 px-1.5 text-[9px] font-normal">
@@ -225,7 +226,7 @@ export function WorkspaceModePanel() {
                   <span className="text-muted-foreground">{resultFiles.length}</span>
                 </Button>
               </PopoverTrigger>
-              <PopoverContent align="end" side="top" className="w-80 p-2">
+              <PopoverContent align="end" side="left" className="w-80 p-2">
                 <WorkspaceFileList
                   title={taskMode === "work" ? "共享工作区成果" : "共享工作区变更"}
                   files={resultFiles}
@@ -243,7 +244,7 @@ export function WorkspaceModePanel() {
                   环境
                 </Button>
               </PopoverTrigger>
-              <PopoverContent align="end" side="top" className="w-80 p-3">
+              <PopoverContent align="end" side="left" className="w-80 p-3">
                 <p className="text-xs font-medium">执行环境</p>
                 <p className="text-muted-foreground mt-1 text-[10px] leading-4">
                   Work 与 Code 共享此环境。Worktree 隔离修改，Local 直接使用项目目录。
@@ -279,7 +280,7 @@ export function WorkspaceModePanel() {
                   )}
                 </Button>
               </PopoverTrigger>
-              <PopoverContent align="end" side="top" className="w-96 p-3">
+              <PopoverContent align="end" side="left" className="w-96 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-medium">工作区快照</p>
@@ -354,7 +355,7 @@ export function WorkspaceModePanel() {
           {activeId && <CodexAppsPanel threadId={activeId} disabled={streaming} />}
         </div>
 
-        <div className="mt-2 flex items-center gap-1.5 overflow-hidden">
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 overflow-hidden">
           {definition.capabilities.map((capability) => (
             <span
               key={capability}

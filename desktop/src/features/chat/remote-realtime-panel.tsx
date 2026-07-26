@@ -42,7 +42,13 @@ import { useCodexTimelineStore } from "@/stores/codex-timeline";
 
 const INPUT_SAMPLE_RATE = 24_000;
 
-export function RemoteRealtimePanel({ threadId }: { threadId: string }) {
+export function RemoteRealtimePanel({
+  threadId,
+  embedded = false,
+}: {
+  threadId: string;
+  embedded?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<RemoteControlStatus | null>(null);
   const [pairing, setPairing] = useState<RemoteControlPairing | null>(null);
@@ -195,7 +201,14 @@ export function RemoteRealtimePanel({ threadId }: { threadId: string }) {
     });
 
   return (
-    <section className="bg-card/75 relative z-10 mx-3 -mb-2 overflow-hidden rounded-t-xl border shadow-sm">
+    <section
+      className={cn(
+        "bg-card/75 overflow-hidden border shadow-sm",
+        embedded
+          ? "rounded-xl"
+          : "relative z-10 mx-3 -mb-2 rounded-t-xl",
+      )}
+    >
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -212,7 +225,14 @@ export function RemoteRealtimePanel({ threadId }: { threadId: string }) {
       </button>
 
       {open && (
-        <div className="grid max-h-[min(48vh,34rem)] gap-4 overflow-y-auto border-t p-3 lg:grid-cols-2">
+        <div
+          className={cn(
+            "grid gap-4 border-t p-3",
+            embedded
+              ? "grid-cols-1"
+              : "max-h-[min(48vh,34rem)] overflow-y-auto lg:grid-cols-2",
+          )}
+        >
           <div className="space-y-3">
             <div className="flex items-center gap-2">
               <Smartphone className="size-4" />
@@ -356,7 +376,13 @@ export function RemoteRealtimePanel({ threadId }: { threadId: string }) {
           </div>
 
           {failure && (
-            <p className="text-destructive lg:col-span-2 text-xs" role="alert">
+            <p
+              className={cn(
+                "text-destructive text-xs",
+                !embedded && "lg:col-span-2",
+              )}
+              role="alert"
+            >
               {failure}
             </p>
           )}

@@ -52,6 +52,10 @@ interface UiState {
   setProjectsSectionExpanded: (expanded: boolean) => void;
   tasksSectionExpanded: boolean;
   setTasksSectionExpanded: (expanded: boolean) => void;
+  /** Codex-style docked workspace tools panel on the right. */
+  workspacePanelOpen: boolean;
+  setWorkspacePanelOpen: (open: boolean) => void;
+  toggleWorkspacePanel: () => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -86,6 +90,10 @@ export const useUiStore = create<UiState>()(
       tasksSectionExpanded: false,
       setTasksSectionExpanded: (tasksSectionExpanded) =>
         set({ tasksSectionExpanded }),
+      workspacePanelOpen: false,
+      setWorkspacePanelOpen: (workspacePanelOpen) => set({ workspacePanelOpen }),
+      toggleWorkspacePanel: () =>
+        set((state) => ({ workspacePanelOpen: !state.workspacePanelOpen })),
     }),
     {
       name: "tietiezhi-ui",
@@ -95,8 +103,9 @@ export const useUiStore = create<UiState>()(
         expandedProjects: state.expandedProjects,
         projectsSectionExpanded: state.projectsSectionExpanded,
         tasksSectionExpanded: state.tasksSectionExpanded,
+        workspacePanelOpen: state.workspacePanelOpen,
       }),
-      version: 2,
+      version: 3,
       migrate: (persisted) => {
         const previous =
           typeof persisted === "object" && persisted != null
@@ -138,6 +147,10 @@ export const useUiStore = create<UiState>()(
           tasksSectionExpanded:
             typeof previous.tasksSectionExpanded === "boolean"
               ? previous.tasksSectionExpanded
+              : false,
+          workspacePanelOpen:
+            typeof previous.workspacePanelOpen === "boolean"
+              ? previous.workspacePanelOpen
               : false,
         };
       },

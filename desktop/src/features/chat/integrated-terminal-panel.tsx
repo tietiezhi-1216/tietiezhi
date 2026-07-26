@@ -26,7 +26,13 @@ import { cn } from "@/lib/utils";
 
 const MAX_RENDERED_OUTPUT = 160_000;
 
-export function IntegratedTerminalPanel({ taskId }: { taskId: string }) {
+export function IntegratedTerminalPanel({
+  taskId,
+  embedded = false,
+}: {
+  taskId: string;
+  embedded?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -202,7 +208,14 @@ export function IntegratedTerminalPanel({ taskId }: { taskId: string }) {
   };
 
   return (
-    <section className="relative z-10 mx-3 -mb-2 overflow-hidden rounded-t-xl border bg-zinc-950 text-zinc-100 shadow-lg">
+    <section
+      className={cn(
+        "overflow-hidden border bg-zinc-950 text-zinc-100 shadow-lg",
+        embedded
+          ? "rounded-xl"
+          : "relative z-10 mx-3 -mb-2 rounded-t-xl",
+      )}
+    >
       <div className="flex h-9 items-center gap-1 border-b border-white/10 px-2">
         <Button
           type="button"
