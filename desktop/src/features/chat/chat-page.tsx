@@ -64,7 +64,7 @@ import {
 } from "@/lib/api";
 import type { ChatAttachment, Provider } from "@/lib/api";
 import {
-  isWorkspaceAgentModel,
+  effectiveModelKind,
   modelHasCapability,
   modelInputModalities,
 } from "@/lib/model-capabilities";
@@ -159,7 +159,7 @@ export function ChatPage() {
     () =>
       (settings?.providers ?? []).flatMap((provider) =>
         provider.models
-          .filter((candidate) => isWorkspaceAgentModel(provider, candidate))
+          .filter((candidate) => effectiveModelKind(candidate) === "chat")
           .map((candidate) => ({
             providerId: provider.id,
             model: candidate.id,
@@ -722,7 +722,6 @@ export function ChatPage() {
               {readiness === "choose-model" && settings ? (
                 <div className="mt-1 flex justify-center">
                   <ModelSelect
-                    agentOnly
                     prominent
                     promptText={
                       lockedAgentSelection
@@ -1056,7 +1055,6 @@ export function ChatPage() {
             </span>
             {settings && (
               <ModelSelect
-                agentOnly
                 settings={settings}
                 lockedSelection={lockedAgentSelection}
                 effortOverride={activeAgent?.reasoningEffort || undefined}

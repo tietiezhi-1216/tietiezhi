@@ -45,7 +45,6 @@ import { saveSettings } from "@/lib/api";
 import type { AppSettings, ModelInfo, ReasoningEffort } from "@/lib/api";
 import {
   effectiveModelKind,
-  isWorkspaceAgentModel,
   modelHasCapability,
   modelInputModalities,
   modelReasoning,
@@ -82,8 +81,6 @@ interface ModelSelectProps {
   lockedSelection?: { providerId: string; model: string };
   /** Reasoning effort forced by the active agent — shown read-only when set. */
   effortOverride?: ReasoningEffort;
-  /** Limit the built-in Gateway to models in Codex's pinned Agent catalog. */
-  agentOnly?: boolean;
 }
 
 // Family rules affect presentation only. The untouched model id is always sent
@@ -221,7 +218,6 @@ export function ModelSelect({
   settings,
   lockedSelection,
   effortOverride,
-  agentOnly = false,
 }: ModelSelectProps) {
   const queryClient = useQueryClient();
   const openSettings = useUiStore((s) => s.openSettings);
@@ -270,15 +266,11 @@ export function ModelSelect({
           name: provider.name,
           builtIn: provider.builtIn,
           models: provider.models
-            .filter((model) =>
-              agentOnly
-                ? isWorkspaceAgentModel(provider, model)
-                : effectiveModelKind(model) === "chat",
-            )
+            .filter((model) => effectiveModelKind(model) === "chat")
             .sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true })),
         }))
         .filter((provider) => provider.models.length > 0),
-    [agentOnly, settings],
+    [settings],
   );
 
   const groups = useMemo<ModelGroup[]>(

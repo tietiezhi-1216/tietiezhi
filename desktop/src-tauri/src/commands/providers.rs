@@ -30,7 +30,6 @@ pub(crate) struct Resolved {
     pub kind: String,
     pub wire_api: WireApi,
     pub models: Vec<ModelInfo>,
-    pub built_in: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,7 +120,6 @@ pub(crate) fn resolve(app: &AppHandle, provider_id: &str) -> Result<Resolved, St
         kind: provider.kind.clone(),
         wire_api: provider.wire_api,
         models: provider.models.clone(),
-        built_in: provider.built_in,
     })
 }
 

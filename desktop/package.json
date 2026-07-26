@@ -20,6 +20,7 @@
     "test:conversation-migration": "node scripts/check-conversation-migration.mjs",
     "test:workspace-environment-ui": "node scripts/check-workspace-environment-ui.mjs",
     "test:workspace-tools-panel": "node scripts/check-workspace-tools-panel.mjs",
+    "test:workspace-model-list": "node scripts/check-workspace-model-list.mjs",
     "test:integrated-terminal-ui": "node scripts/check-integrated-terminal-ui.mjs",
     "test:codex-timeline-ui": "node scripts/check-codex-timeline.mjs",
     "test:workspace-git-ui": "node scripts/check-workspace-git-ui.mjs",

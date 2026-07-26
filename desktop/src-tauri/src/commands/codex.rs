@@ -6318,7 +6318,6 @@ async fn run_turn_executor(
     let base_url = super::api_url(&resolved.base_url, "")
         .trim_end_matches('/')
         .to_owned();
-    let response_model = workspace_response_model(&resolved, &initial.model);
     let provider_id = resolved.id;
     let provider_name = resolved.kind;
     let mut bearer_token = app
@@ -6334,7 +6333,7 @@ async fn run_turn_executor(
     let mut client = responses_client(&http, &provider_name, &base_url, bearer_token.clone());
     ensure_responses_capability(&app, &capability_key, wire_api, &client).await?;
     let mut projection = ResponseProjection::new(
-        response_model.clone(),
+        initial.model.clone(),
         initial.model_context_window,
         initial.cwd.clone(),
     );
@@ -6437,7 +6436,6 @@ async fn run_turn_executor(
             output_schema = Some(schema);
         }
         let mut request = response_request(&snapshot, output_schema.clone(), tool_specs);
-        request.model.clone_from(&response_model);
         if !projection.memory_polluted() {
             if let Some(instructions) = &memory_instructions {
                 request.input.insert(
@@ -7139,40 +7137,6 @@ fn responses_client(
     )
 }
 
-fn workspace_response_model(resolved: &super::providers::Resolved, requested: &str) -> String {
-    if !resolved.built_in {
-        return requested.to_owned();
-    }
-    let supported = tietiezhi_agent_model::bundled_models(false)
-        .into_iter()
-        .filter_map(|model| {
-            model
-                .get("model")
-                .and_then(Value::as_str)
-                .map(str::to_ascii_lowercase)
-        })
-        .collect::<HashSet<_>>();
-    if supported.contains(&requested.trim().to_ascii_lowercase()) {
-        return requested.to_owned();
-    }
-    [
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.2",
-    ]
-    .into_iter()
-    .find(|candidate| {
-        resolved
-            .models
-            .iter()
-            .any(|model| model.id.eq_ignore_ascii_case(candidate))
-    })
-    .unwrap_or("gpt-5.6-sol")
-    .to_owned()
-}
-
 async fn refresh_external_auth(
     app: &AppHandle,
     provider_id: &str,
@@ -7592,24 +7556,29 @@ impl DeviceAppToolHandler {
     }
 }
 
+fn device_app_tool_spec(tool: &AppToolDefinition) -> ToolSpec {
+    let name = ToolName::namespaced(DEVICE_TOOL_NAMESPACE, tool.name.clone());
+    let mut spec = ToolSpec::function(name, tool.description.clone(), tool.input_schema.clone());
+    spec.output_schema.clone_from(&tool.output_schema);
+    spec.namespace_description = Some(
+        "Discover and invoke Tietiezhi Device Fabric capabilities through the Codex Apps lifecycle."
+            .into(),
+    );
+    // App inputs are dynamic by design. In particular, `invoke.input`
+    // intentionally accepts capability-specific fields, so advertising it as
+    // a strict function would make the Responses API reject the entire request
+    // before the model runs.
+    spec.strict = false;
+    spec
+}
+
 impl ToolHandler for DeviceAppToolHandler {
     fn tool_name(&self) -> ToolName {
         ToolName::namespaced(DEVICE_TOOL_NAMESPACE, self.tool.name.clone())
     }
 
     fn spec(&self) -> ToolSpec {
-        let mut spec = ToolSpec::function(
-            self.tool_name(),
-            self.tool.description.clone(),
-            self.tool.input_schema.clone(),
-        );
-        spec.output_schema.clone_from(&self.tool.output_schema);
-        spec.namespace_description = Some(
-            "Discover and invoke Tietiezhi Device Fabric capabilities through the Codex Apps lifecycle."
-                .into(),
-        );
-        spec.strict = true;
-        spec
+        device_app_tool_spec(&self.tool)
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -9972,12 +9941,12 @@ mod tests {
         assistant_response_text, automation_thread_start_request, automation_turn_start_request,
         checked_external_import_notification, checked_external_session,
         collaboration_timeline_item, compaction_response_request, copy_tree_without_links,
-        dispatch_windows_sandbox, empty_rate_limits, external_message_text, format_micro,
-        gateway_quota_allows_memory_startup, gateway_rate_limits, local_tool_timeline_item,
-        merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type, parse_plugin_mcp_source,
-        permission_profile_list, permission_profile_to_tool, permission_profile_to_v2,
-        plugin_enablement_edits, response_request, review_tool_allowed, rewrite_external_terms,
-        sanitize_collaboration_fork_history, workspace_response_model, write_atomic, ConfigPaths,
+        device_app_tool_spec, dispatch_windows_sandbox, empty_rate_limits, external_message_text,
+        format_micro, gateway_quota_allows_memory_startup, gateway_rate_limits,
+        local_tool_timeline_item, merge_tool_specs, nonempty_or_unconfigured, normalized_plan_type,
+        parse_plugin_mcp_source, permission_profile_list, permission_profile_to_tool,
+        permission_profile_to_v2, plugin_enablement_edits, response_request, review_tool_allowed,
+        rewrite_external_terms, sanitize_collaboration_fork_history, write_atomic, ConfigPaths,
         ConfigRuntime, ExternalMigrationSource, PluginMcpSource, ResponseEvent, ResponseProjection,
         SkillsPaths, SkillsRuntime,
     };
@@ -9993,27 +9962,22 @@ mod tests {
     use tietiezhi_agent_tools::{ToolCall, ToolPayload};
 
     #[test]
-    fn built_in_workspace_models_follow_the_pinned_codex_catalog() {
-        let resolved = crate::commands::providers::Resolved {
-            id: "gateway".into(),
-            base_url: "https://gateway.example.test/v1".into(),
-            key: None,
-            kind: "openai".into(),
-            wire_api: crate::commands::settings::WireApi::Responses,
-            models: vec![
-                crate::commands::models::ModelInfo::new("deepseek-v4-flash"),
-                crate::commands::models::ModelInfo::new("gpt-5.6-sol"),
-            ],
-            built_in: true,
-        };
+    fn device_app_dynamic_input_is_not_advertised_as_strict() {
+        let invoke = tietiezhi_agent_apps::device_app()
+            .tools
+            .into_iter()
+            .find(|tool| tool.name == tietiezhi_agent_apps::DEVICE_TOOL_NAME)
+            .expect("device invoke tool");
+        let wire = tietiezhi_agent_tools::wire_specs([device_app_tool_spec(&invoke)]);
+        let invoke_wire = wire[0]["tools"]
+            .as_array()
+            .and_then(|tools| tools.iter().find(|tool| tool["name"] == "invoke"))
+            .expect("namespaced invoke wire");
 
+        assert_eq!(invoke_wire["strict"], false);
         assert_eq!(
-            workspace_response_model(&resolved, "deepseek-v4-flash"),
-            "gpt-5.6-sol"
-        );
-        assert_eq!(
-            workspace_response_model(&resolved, "gpt-5.6-sol"),
-            "gpt-5.6-sol"
+            invoke_wire["parameters"]["properties"]["input"]["additionalProperties"],
+            true
         );
     }
 

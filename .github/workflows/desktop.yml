@@ -122,6 +122,9 @@ jobs:
       - name: Check Codex workspace tools side panel
         run: pnpm test:workspace-tools-panel
 
+      - name: Check Workspace full chat model list
+        run: pnpm test:workspace-model-list
+
       - name: Check integrated Thread terminal UI
         run: pnpm test:integrated-terminal-ui
 

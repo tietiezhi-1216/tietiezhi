@@ -6,7 +6,7 @@ use super::models::{
 };
 use crate::secrets;
 
-const CURRENT_SETTINGS_VERSION: u32 = 8;
+const CURRENT_SETTINGS_VERSION: u32 = 9;
 pub(crate) const BUILTIN_PROVIDER_ID: &str = "builtin-official";
 pub(crate) const BUILTIN_PROVIDER_NAME: &str = "Tietiezhi Gateway";
 pub(crate) const BUILTIN_PROVIDER_URL: &str = "https://tietiezhi.vip/v1";
@@ -175,9 +175,6 @@ pub(crate) fn read_settings(app: &AppHandle) -> Result<AppSettings, String> {
         }
         changed = true;
     }
-    if settings.settings_version < 8 && migrate_builtin_agent_selection(&mut settings) {
-        changed = true;
-    }
     if normalize_known_model_capabilities(&mut settings) {
         changed = true;
     }
@@ -273,45 +270,6 @@ fn builtin_provider() -> Provider {
         built_in: true,
         models: Vec::new(),
     }
-}
-
-fn is_builtin_codex_agent_model(model: &str) -> bool {
-    matches!(
-        model.trim().to_ascii_lowercase().as_str(),
-        "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-5.5" | "gpt-5.2"
-    )
-}
-
-fn migrate_builtin_agent_selection(settings: &mut AppSettings) -> bool {
-    let Some(provider) = settings
-        .providers
-        .iter()
-        .find(|provider| provider.id == settings.chat_provider_id && provider.built_in)
-    else {
-        return false;
-    };
-    if settings.chat_model.is_empty() || is_builtin_codex_agent_model(&settings.chat_model) {
-        return false;
-    }
-    let replacement = [
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.2",
-    ]
-    .into_iter()
-    .find(|candidate| {
-        provider
-            .models
-            .iter()
-            .any(|model| model.id.eq_ignore_ascii_case(candidate))
-    });
-    let Some(replacement) = replacement else {
-        return false;
-    };
-    settings.chat_model = replacement.into();
-    true
 }
 
 fn normalized_provider_url(value: &str) -> &str {
@@ -533,21 +491,6 @@ mod tests {
 
         assert_eq!(provider.wire_api, WireApi::Auto);
         assert_eq!(serde_json::to_value(provider).unwrap()["wireApi"], "auto");
-    }
-
-    #[test]
-    fn builtin_agent_selection_migrates_to_codex_default() {
-        let mut settings = initial_settings();
-        settings.chat_provider_id = BUILTIN_PROVIDER_ID.into();
-        settings.chat_model = "deepseek-v4-flash".into();
-        settings.providers[0].models = vec![
-            ModelInfo::new("deepseek-v4-flash"),
-            ModelInfo::new("gpt-5.6-sol"),
-        ];
-
-        assert!(migrate_builtin_agent_selection(&mut settings));
-        assert_eq!(settings.chat_model, "gpt-5.6-sol");
-        assert!(!migrate_builtin_agent_selection(&mut settings));
     }
 
     #[test]
