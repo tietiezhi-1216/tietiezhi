@@ -139,7 +139,7 @@ task build
 task test
 ```
 
-Read [`CLAUDE.md`](./CLAUDE.md) before contributing; it contains the engineering conventions for every contributor and coding agent in this repository. Bug reports, ideas, and roadmap discussions are welcome in [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues). Never post API keys or other secrets in public issues.
+Read [`AGENTS.md`](./AGENTS.md) before contributing; it contains the engineering conventions for every contributor and coding agent in this repository. Bug reports, ideas, and roadmap discussions are welcome in [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues). Never post API keys or other secrets in public issues.
 
 ## License and code signing
 

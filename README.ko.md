@@ -96,7 +96,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-기여하기 전에 저장소 개발 규칙인 [`CLAUDE.md`](./CLAUDE.md)를 읽어 주세요. 버그와 제안은 [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues)에 남길 수 있습니다. 공개 Issue에 API Key나 민감한 정보를 게시하지 마세요.
+기여하기 전에 저장소 개발 규칙인 [`AGENTS.md`](./AGENTS.md)를 읽어 주세요. 버그와 제안은 [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues)에 남길 수 있습니다. 공개 Issue에 API Key나 민감한 정보를 게시하지 마세요.
 
 ## 라이선스
 

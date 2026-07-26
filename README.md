@@ -139,7 +139,7 @@ task build
 task test
 ```
 
-开始贡献前请阅读 [`CLAUDE.md`](./CLAUDE.md)；它是本仓库所有编码代理和贡献者的工程约定。Bug、建议和路线图讨论都欢迎通过 [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues) 提交，请不要公开粘贴 API Key 或其他敏感信息。
+开始贡献前请阅读 [`AGENTS.md`](./AGENTS.md)；它是本仓库所有编码代理和贡献者的工程约定。Bug、建议和路线图讨论都欢迎通过 [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues) 提交，请不要公开粘贴 API Key 或其他敏感信息。
 
 ## 开源许可与签名
 

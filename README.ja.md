@@ -96,7 +96,7 @@ pnpm install
 pnpm tauri dev
 ```
 
-開発に参加する前に、リポジトリの開発規約 [`CLAUDE.md`](./CLAUDE.md) をお読みください。バグ報告や提案は [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues) で受け付けています。公開 Issue に API Key や機密情報を投稿しないでください。
+開発に参加する前に、リポジトリの開発規約 [`AGENTS.md`](./AGENTS.md) をお読みください。バグ報告や提案は [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues) で受け付けています。公開 Issue に API Key や機密情報を投稿しないでください。
 
 ## ライセンス
 
