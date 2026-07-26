@@ -1449,6 +1449,8 @@ async function codexWorkspaceRequest<T>(
 export async function codexStartWorkspaceThread(
   providerId: string,
   model: string,
+  projectId: string,
+  taskMode: TaskMode,
   agentId?: string,
 ): Promise<ThreadStartResponse> {
   const agent = agentId
@@ -1460,6 +1462,13 @@ export async function codexStartWorkspaceThread(
     developerInstructions: agent?.systemPrompt || null,
     ephemeral: false,
     threadSource: "app",
+    config: {
+      tietiezhiTask: {
+        projectId,
+        taskMode,
+        agentId: agentId ?? "",
+      },
+    },
   });
 }
 

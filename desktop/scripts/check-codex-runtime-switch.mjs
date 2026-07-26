@@ -11,6 +11,7 @@ const api = read("desktop/src/lib/api.ts");
 const store = read("desktop/src/stores/chat.ts");
 const timeline = read("desktop/src/features/chat/codex-timeline.tsx");
 const tauri = read("desktop/src-tauri/src/lib.rs");
+const codex = read("desktop/src-tauri/src/commands/codex.rs");
 const chat = read("desktop/src-tauri/src/commands/chat.rs");
 const loop = read("desktop/src-tauri/src/agent/loop_.rs");
 
@@ -41,6 +42,9 @@ assert.match(api, /turn\/start/);
 assert.match(api, /turn\/interrupt/);
 assert.match(store, /codexStartWorkspaceThread/);
 assert.match(store, /codexResumeWorkspaceThread/);
+assert.match(api, /tietiezhiTask/);
+assert.match(codex, /bind_task_context/);
+assert.match(codex, /resolve_task_workspace/);
 assert.match(timeline, /CodexApprovalPrompt/);
 assert.match(timeline, /codexV2ServerResponse/);
 

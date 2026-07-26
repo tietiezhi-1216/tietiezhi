@@ -26,7 +26,7 @@ try {
       work: {
         mode: "work",
         initialized: true,
-        rootPath: "/tmp/worktree",
+        rootPath: "/tmp/project",
         isGit: true,
         fileCount: 2,
         fileCountCapped: false,
@@ -37,7 +37,7 @@ try {
       code: {
         mode: "code",
         initialized: true,
-        rootPath: "/tmp/worktree",
+        rootPath: "/tmp/project",
         isGit: true,
         fileCount: 2,
         fileCountCapped: false,
@@ -45,13 +45,13 @@ try {
         deliverables: [],
         transferableFiles: [],
       },
-      environment: "worktree",
+      environment: "local",
       initialized: true,
-      rootPath: "/tmp/worktree",
+      rootPath: "/tmp/project",
       projectRoot: "/tmp/project",
       head: "1234567890abcdef",
-      branch: null,
-      detached: true,
+      branch: "main",
+      detached: false,
       snapshots: [
         {
           id: "snapshot-1",
@@ -71,7 +71,7 @@ try {
       React.createElement(WorkspaceModePanel),
     ),
   );
-  for (const label of ["Worktree", "Code"]) {
+  for (const label of ["Local", "Code"]) {
     if (!html.includes(label)) {
       throw new Error(`工作区环境界面缺少内容：${label}`);
     }
@@ -80,16 +80,14 @@ try {
     new URL("../src/features/chat/workspace-mode-panel.tsx", import.meta.url),
     "utf8",
   );
-  for (const label of [
-    "Local",
-    "共享工作区变更",
-    "创建快照",
-    "恢复",
-    "Handoff",
-    "detached HEAD",
-  ]) {
+  for (const label of ["Local", "共享工作区变更", "创建快照", "Code"]) {
     if (!source.includes(label)) {
       throw new Error(`工作区环境交互缺少内容：${label}`);
+    }
+  }
+  for (const banned of ["Worktree", "恢复", "Handoff", "detached HEAD"]) {
+    if (source.includes(banned)) {
+      throw new Error(`工作区环境仍暴露已禁用交互：${banned}`);
     }
   }
   if (source.includes("从 Work 导入") || source.includes("从 Code 导入")) {

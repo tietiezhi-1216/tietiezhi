@@ -140,7 +140,7 @@ export function AutomationList() {
           <div className="col-start-1 row-start-1">
             <h1 className="text-2xl font-semibold tracking-tight">工作流</h1>
             <p className="text-muted-foreground mt-1.5 text-sm">
-              在隔离 Worktree 中运行 Agent、Skills、MCP 和本地工具。
+              在选定项目目录或共享 Local 工作区中运行 Agent、Skills、MCP 和本地工具。
             </p>
           </div>
           <ProductMotionStage
@@ -255,7 +255,7 @@ export function AutomationList() {
           <AlertDialogHeader>
             <AlertDialogTitle>永久删除 Automation？</AlertDialogTitle>
             <AlertDialogDescription>
-              “{deleteTarget?.name}”的草稿、发布快照、Worktree 与运行记录都将被删除，此操作无法撤销。
+              “{deleteTarget?.name}”的草稿、发布快照、本地工作目录与运行记录都将被删除，此操作无法撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -395,7 +395,7 @@ function RunsPanel({
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-medium">运行记录</h2>
           <p className="text-muted-foreground mt-0.5 text-xs">
-            每次运行关联独立 Thread、Turn 和 Worktree
+            每次运行关联独立 Thread、Turn 和 Local 工作目录
           </p>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={onRefresh}>
@@ -483,7 +483,7 @@ function RunsPanel({
                   <RunDetail label="Thread" value={run.threadId || "尚未创建"} />
                   <RunDetail label="Turn" value={run.turnId || "尚未创建"} />
                   <RunDetail
-                    label="Worktree"
+                    label="Local"
                     value={run.workspacePath}
                     className="sm:col-span-2"
                   />

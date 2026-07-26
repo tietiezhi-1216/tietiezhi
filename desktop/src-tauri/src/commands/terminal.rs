@@ -99,7 +99,7 @@ pub async fn terminal_start(
     cols: Option<u16>,
 ) -> Result<TerminalSessionView, String> {
     super::conversations::validate_id(&task_id)?;
-    let conversation = super::conversations::load_conversation(app.clone(), task_id.clone())?;
+    let (project_id, _) = super::conversations::task_context(&app, &task_id)?;
     let current_count = state
         .terminal_sessions
         .lock()
@@ -110,10 +110,12 @@ pub async fn terminal_start(
     if current_count >= MAX_SESSIONS_PER_TASK {
         return Err(format!("每个任务最多创建 {MAX_SESSIONS_PER_TASK} 个终端"));
     }
-    let project_id =
-        (!conversation.project_id.trim().is_empty()).then_some(conversation.project_id.as_str());
-    let cwd =
-        super::workspace::resolve_task_workspace(&app, project_id, Some(&task_id), TaskMode::Code)?;
+    let cwd = super::workspace::resolve_task_workspace(
+        &app,
+        project_id.as_deref(),
+        Some(&task_id),
+        TaskMode::Code,
+    )?;
     let id = Uuid::now_v7().to_string();
     let title = format!("Terminal {}", current_count + 1);
     let record = TerminalRecord {

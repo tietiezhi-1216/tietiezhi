@@ -67,7 +67,7 @@ try {
           source: "agent",
           status: "completed",
           commandActions: [],
-          aggregatedOutput: "ok",
+          aggregatedOutput: "OUTPUT_MUST_STAY_COLLAPSED",
           exitCode: 0,
           durationMs: 12,
         },
@@ -75,7 +75,13 @@ try {
     }),
   );
   if (!commandHtml.includes("cargo test") || !commandHtml.includes("终端")) {
-    throw new Error("CommandExecution 时间线卡片渲染失败");
+    throw new Error("CommandExecution 紧凑提示行渲染失败");
+  }
+  if (
+    commandHtml.includes("OUTPUT_MUST_STAY_COLLAPSED") ||
+    !commandHtml.includes('aria-expanded="false"')
+  ) {
+    throw new Error("CommandExecution 输出不应默认占用会话空间");
   }
 
   const source = fs.readFileSync(

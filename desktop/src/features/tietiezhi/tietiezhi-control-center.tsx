@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  BookOpenText,
   Bot,
   BrainCircuit,
-  Check,
   ChevronRight,
   CircleGauge,
   Copy,
@@ -57,9 +55,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { SettingsSection } from "@/features/settings/settings-section";
 import {
   deleteTietiezhiFile,
   deleteTietiezhiSecret,
@@ -112,6 +110,12 @@ const SECTIONS: SectionDefinition[] = [
   { key: "secrets", label: "密钥库", icon: KeyRound },
   { key: "files", label: "文件", icon: Files },
   { key: "security", label: "权限与工具", icon: ShieldCheck },
+];
+
+const SECTION_GROUPS: { label: string; items: SectionDefinition[] }[] = [
+  { label: "铁铁汁", items: SECTIONS.slice(0, 3) },
+  { label: "能力", items: SECTIONS.slice(3, 6) },
+  { label: "数据与安全", items: SECTIONS.slice(6) },
 ];
 
 const TOOL_OPTIONS = [
@@ -239,40 +243,38 @@ export function TietiezhiControlCenter() {
         className="flex h-[760px] max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-5xl"
       >
         <ScrollArea className="bg-muted/30 w-56 shrink-0 border-r">
-          <nav className="flex min-h-full flex-col gap-1 p-3">
-            <div className="px-2 pt-1 pb-4">
-              <DialogTitle className="text-sm font-semibold">铁铁汁控制中心</DialogTitle>
-              <p className="text-muted-foreground mt-1 text-xs">记忆、能力与 Home</p>
-            </div>
-            {SECTIONS.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => setSection(item.key)}
-                className={cn(
-                  "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors",
-                  section === item.key
-                    ? "bg-accent text-accent-foreground font-medium"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                )}
-              >
-                <item.icon className="size-4 shrink-0" />
-                <span>{item.label}</span>
-              </button>
-            ))}
-            <div className="mt-auto p-2">
-              <div className="bg-background/70 rounded-lg border p-3">
-                <p className="text-xs font-medium">独立运行空间</p>
-                <p className="text-muted-foreground mt-1 text-[11px] leading-relaxed">
-                  不与 Work / Code 任务目录混用。
-                </p>
+          <nav className="flex min-h-full flex-col gap-4 p-3">
+            <DialogTitle className="px-2 pt-1 text-sm font-semibold">
+              铁铁汁控制中心
+            </DialogTitle>
+            {SECTION_GROUPS.map((group) => (
+              <div key={group.label} className="flex flex-col gap-1">
+                <span className="text-muted-foreground px-2 pb-0.5 text-[11px] font-medium">
+                  {group.label}
+                </span>
+                {group.items.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setSection(item.key)}
+                    className={cn(
+                      "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-sm transition-colors",
+                      section === item.key
+                        ? "bg-accent text-accent-foreground font-medium"
+                        : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
+                    )}
+                  >
+                    <item.icon className="size-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </button>
+                ))}
               </div>
-            </div>
+            ))}
           </nav>
         </ScrollArea>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex h-14 shrink-0 items-center gap-3 border-b px-6">
+          <header className="flex h-14 shrink-0 items-center gap-3 border-b px-7">
             <h2 className="text-base font-semibold">{sectionLabel(section)}</h2>
             <div className="ml-auto flex items-center gap-2 pr-8">
               {error && <span className="text-destructive max-w-64 truncate text-xs">{error}</span>}
@@ -399,63 +401,54 @@ function OverviewSection({
   ];
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="from-primary/10 via-background to-background relative overflow-hidden rounded-2xl border bg-gradient-to-br p-6">
-        <div className="relative flex items-start gap-5">
-          <div className="bg-primary/10 text-primary grid size-12 shrink-0 place-items-center rounded-2xl">
-            <BrainCircuit className="size-6" />
-          </div>
-          <div className="min-w-0">
-            <h3 className="text-lg font-semibold">一个独立、可控的个人 Agent 空间</h3>
-            <p className="text-muted-foreground mt-1 max-w-xl text-sm leading-relaxed">
-              配置会直接参与下一轮对话。长期资料留在本机 Home，Skills 与 MCP
-              从全局资源库中按需分配。
-            </p>
-          </div>
+    <div className="flex flex-col gap-8">
+      <SettingsSection
+        title="运行状态"
+        description="配置会在下一轮对话生效，铁铁汁使用独立 Home，不与 Work / Code 任务目录混用。"
+      >
+        <div className="divide-y rounded-lg border">
+          {cards.map((card) => (
+            <button
+              type="button"
+              key={card.label}
+              onClick={() => onNavigate(card.section)}
+              className="hover:bg-accent/50 flex w-full items-center gap-3 px-4 py-3 text-left transition-colors"
+            >
+              <card.icon className="text-muted-foreground size-4 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">{card.label}</p>
+                <p className="text-muted-foreground mt-0.5 text-xs">{card.detail}</p>
+              </div>
+              <span className="text-muted-foreground text-xs">{card.value}</span>
+              <ChevronRight className="text-muted-foreground size-4 shrink-0" />
+            </button>
+          ))}
         </div>
-      </div>
+      </SettingsSection>
 
-      <div className="grid grid-cols-2 gap-3">
-        {cards.map((card) => (
-          <button
-            type="button"
-            key={card.label}
-            onClick={() => onNavigate(card.section)}
-            className="group rounded-xl border p-4 text-left transition-colors hover:bg-accent/50"
-          >
-            <div className="flex items-center justify-between">
-              <card.icon className="text-muted-foreground size-4" />
-              <ChevronRight className="text-muted-foreground size-4 transition-transform group-hover:translate-x-0.5" />
+      <SettingsSection title="本地存储" description="记忆、记录和文件均保存在本机。">
+        <div className="divide-y rounded-lg border">
+          <div className="flex items-center gap-3 px-4 py-3">
+            <FolderOpen className="text-muted-foreground size-4 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">铁铁汁 Home</p>
+              <p className="text-muted-foreground truncate font-mono text-xs">
+                {overview?.path ?? "正在读取…"}
+              </p>
             </div>
-            <p className="mt-5 text-sm font-medium">{card.label}</p>
-            <p className="mt-1 text-lg font-semibold">{card.value}</p>
-            <p className="text-muted-foreground mt-1 text-xs">{card.detail}</p>
-          </button>
-        ))}
-      </div>
-
-      <div className="rounded-xl border">
-        <div className="flex items-center gap-3 px-4 py-3">
-          <FolderOpen className="text-muted-foreground size-4" />
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium">铁铁汁 Home</p>
-            <p className="text-muted-foreground truncate font-mono text-xs">
-              {overview?.path ?? "正在读取…"}
-            </p>
+            <Badge variant="outline">{overview?.fileCount ?? 0} 个文件</Badge>
+            <Badge variant="outline">{formatBytes(overview?.totalSize ?? 0)}</Badge>
+            <Button size="sm" variant="outline" onClick={() => void revealTietiezhiHome()}>
+              <ExternalLink />
+              打开文件夹
+            </Button>
           </div>
-          <Badge variant="outline">{overview?.fileCount ?? 0} 个文件</Badge>
-          <Badge variant="outline">{formatBytes(overview?.totalSize ?? 0)}</Badge>
-          <Button size="sm" variant="outline" onClick={() => void revealTietiezhiHome()}>
-            <ExternalLink />
-            在访达中打开
-          </Button>
+          <div className="text-muted-foreground grid grid-cols-2 gap-4 px-4 py-3 text-xs">
+            <span>会话记录：{overview?.timelineCount ?? 0} 条</span>
+            <span>权限模式：{draft.permissionMode}</span>
+          </div>
         </div>
-        <Separator />
-        <div className="text-muted-foreground grid grid-cols-2 gap-4 px-4 py-3 text-xs">
-          <span>会话记录：{overview?.timelineCount ?? 0} 条</span>
-          <span>权限模式：{draft.permissionMode}</span>
-        </div>
-      </div>
+      </SettingsSection>
     </div>
   );
 }
@@ -468,14 +461,11 @@ function IdentitySection({
   onPatch: (patch: Partial<TietiezhiConfig>) => void;
 }) {
   return (
-    <div className="flex flex-col gap-6">
-      <section className="flex flex-col gap-2">
-        <div>
-          <Label htmlFor="tietiezhi-system-prompt">系统指令</Label>
-          <p className="text-muted-foreground mt-1 text-xs">
-            留空时使用内置陪伴指令；填写后将作为铁铁汁的主要身份指令。
-          </p>
-        </div>
+    <div className="flex flex-col gap-8">
+      <SettingsSection
+        title="系统指令"
+        description="留空时使用内置陪伴指令；填写后将作为铁铁汁的主要身份指令。"
+      >
         <Textarea
           id="tietiezhi-system-prompt"
           value={draft.systemPrompt}
@@ -483,18 +473,24 @@ function IdentitySection({
           placeholder="例如：你是一个了解我工作方式的个人助理……"
           className="min-h-36 resize-y leading-relaxed"
         />
-      </section>
-      <Separator />
-      <ManagedDocument
-        path="SOUL.md"
-        title="SOUL.md"
-        description="稳定的身份、表达方式和行为边界，会在开启记忆时注入每轮上下文。"
-      />
-      <ManagedDocument
-        path="USER.md"
-        title="USER.md"
-        description="用户档案、称呼和长期偏好。只记录你愿意长期保留的信息。"
-      />
+      </SettingsSection>
+      <SettingsSection
+        title="身份文件"
+        description="身份文件是普通 Markdown，可随时查看、编辑和备份。"
+      >
+        <div className="flex flex-col gap-6">
+          <ManagedDocument
+            path="SOUL.md"
+            title="SOUL.md"
+            description="稳定的身份、表达方式和行为边界，会在开启记忆时注入每轮上下文。"
+          />
+          <ManagedDocument
+            path="USER.md"
+            title="USER.md"
+            description="用户档案、称呼和长期偏好。只记录你愿意长期保留的信息。"
+          />
+        </div>
+      </SettingsSection>
     </div>
   );
 }
@@ -507,35 +503,32 @@ function MemorySection({
   onPatch: (patch: Partial<TietiezhiConfig>) => void;
 }) {
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between rounded-xl border p-4">
-        <div className="pr-6">
-          <p className="text-sm font-medium">在对话中使用长期记忆</p>
-          <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
-            开启后，SOUL.md、USER.md 和 MEMORY.md 会参与每轮上下文；铁铁汁也可以在权限允许时更新这些文件。
-          </p>
-        </div>
-        <Switch
-          checked={draft.memoryEnabled}
-          onCheckedChange={(memoryEnabled) => onPatch({ memoryEnabled })}
+    <div className="flex flex-col gap-8">
+      <SettingsSection
+        title="长期记忆"
+        description="开启后，SOUL.md、USER.md 和 MEMORY.md 会参与每轮上下文；铁铁汁也可以在权限允许时更新这些文件。"
+        action={
+          <Switch
+            checked={draft.memoryEnabled}
+            onCheckedChange={(memoryEnabled) => onPatch({ memoryEnabled })}
+          />
+        }
+      >
+        <ManagedDocument
+          path="MEMORY.md"
+          title="MEMORY.md"
+          description="长期事实与决定的主索引。适合保存偏好、约定和需要跨会话延续的事项。"
+          disabled={!draft.memoryEnabled}
         />
-      </div>
-      <ManagedDocument
-        path="MEMORY.md"
-        title="MEMORY.md"
-        description="长期事实与决定的主索引。适合保存偏好、约定和需要跨会话延续的事项。"
-        disabled={!draft.memoryEnabled}
-      />
-      <div className="bg-muted/35 rounded-xl border p-4">
-        <div className="flex items-center gap-2">
-          <BookOpenText className="text-muted-foreground size-4" />
-          <p className="text-sm font-medium">分层记忆结构</p>
+      </SettingsSection>
+      <SettingsSection
+        title="存储结构"
+        description="MEMORY.md 保存长期索引，memory/ 可继续拆分日记或专题记录。当前版本采用可读、可编辑的本地 Markdown，不使用不可见的向量记忆。"
+      >
+        <div className="text-muted-foreground rounded-lg border px-4 py-3 font-mono text-xs">
+          MEMORY.md · memory/
         </div>
-        <p className="text-muted-foreground mt-2 text-xs leading-relaxed">
-          `MEMORY.md` 保存长期索引，`memory/` 可继续拆分日记或专题记录。当前版本采用可读、可编辑的本地
-          Markdown，不做不可见的向量记忆。
-        </p>
-      </div>
+      </SettingsSection>
     </div>
   );
 }
@@ -632,9 +625,7 @@ function SkillsAssignment({
     >
       {skills.map((skill) => (
         <div key={skill.name} className="flex items-center gap-3 px-4 py-3">
-          <div className="bg-muted grid size-8 shrink-0 place-items-center rounded-lg">
-            <Sparkles className="size-4" />
-          </div>
+          <Sparkles className="text-muted-foreground size-4 shrink-0" />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="truncate font-mono text-sm font-medium">{skill.name}</span>
@@ -682,9 +673,7 @@ function McpAssignment({
         const status = statuses.find((item) => item.id === server.id);
         return (
           <div key={server.id} className="flex items-center gap-3 px-4 py-3">
-            <div className="bg-muted grid size-8 shrink-0 place-items-center rounded-lg">
-              <Plug className="size-4" />
-            </div>
+            <Plug className="text-muted-foreground size-4 shrink-0" />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="truncate text-sm font-medium">{server.name}</span>
@@ -735,25 +724,24 @@ function AssignmentLayout({
 }) {
   const hasChildren = Array.isArray(children) ? children.length > 0 : Boolean(children);
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-start gap-4">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-medium">{title}</h3>
-          <p className="text-muted-foreground mt-1 text-xs leading-relaxed">{description}</p>
-        </div>
+    <SettingsSection
+      title={title}
+      description={description}
+      action={
         <Button variant="outline" size="sm" onClick={onManage}>
           <ExternalLink />
           {manageLabel}
         </Button>
-      </div>
-      <div className="divide-y rounded-xl border">
+      }
+    >
+      <div className="divide-y rounded-lg border">
         {hasChildren ? (
           children
         ) : (
           <p className="text-muted-foreground px-4 py-10 text-center text-sm">{empty}</p>
         )}
       </div>
-    </div>
+    </SettingsSection>
   );
 }
 
@@ -765,62 +753,45 @@ function SecuritySection({
   onPatch: (patch: Partial<TietiezhiConfig>) => void;
 }) {
   return (
-    <div className="flex flex-col gap-6">
-      <section className="flex items-start justify-between gap-6">
-        <div>
-          <Label>操作确认</Label>
-          <p className="text-muted-foreground mt-1 max-w-lg text-xs leading-relaxed">
-            文件写入、设备与 MCP 操作是否需要确认。所有内置文件工具始终限制在铁铁汁 Home。
+    <div className="flex flex-col gap-8">
+      <SettingsSection
+        title="操作确认"
+        description="文件写入、设备与 MCP 操作是否需要确认。所有内置文件工具始终限制在铁铁汁 Home。"
+      >
+        <div className="flex max-w-md flex-col gap-2">
+          <Label>权限模式</Label>
+          <Select
+            value={draft.permissionMode}
+            onValueChange={(value) =>
+              onPatch({ permissionMode: value as TietiezhiConfig["permissionMode"] })
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ask">每次询问</SelectItem>
+              <SelectItem value="auto">安全操作自动</SelectItem>
+              <SelectItem value="full">全部自动</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            “每次询问”会在写文件、调用设备或 MCP 前请求批准。
           </p>
         </div>
-        <Select
-          value={draft.permissionMode}
-          onValueChange={(value) =>
-            onPatch({ permissionMode: value as TietiezhiConfig["permissionMode"] })
-          }
-        >
-          <SelectTrigger className="w-44">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="ask">每次询问</SelectItem>
-            <SelectItem value="auto">安全操作自动</SelectItem>
-            <SelectItem value="full">全部自动</SelectItem>
-          </SelectContent>
-        </Select>
-      </section>
-      <Separator />
-      <section>
-        <div className="mb-3">
-          <Label>内置工具</Label>
-          <p className="text-muted-foreground mt-1 text-xs">
-            采用显式白名单。铁铁汁不会获得终端 Bash 工具。
-          </p>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
+      </SettingsSection>
+      <SettingsSection
+        title="内置工具"
+        description="采用显式白名单。铁铁汁不会获得终端 Bash 工具。"
+      >
+        <div className="divide-y rounded-lg border">
           {TOOL_OPTIONS.map((tool) => {
             const checked = draft.tools.includes(tool.id);
             return (
-              <div
-                key={tool.id}
-                className={cn(
-                  "flex items-center gap-3 rounded-xl border p-3 transition-colors",
-                  checked && "bg-accent/45 border-primary/20",
-                )}
-              >
-                <div
-                  className={cn(
-                    "grid size-7 shrink-0 place-items-center rounded-lg border",
-                    checked
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-background text-muted-foreground",
-                  )}
-                >
-                  {checked ? <Check className="size-3.5" /> : <LockKeyhole className="size-3.5" />}
-                </div>
+              <div key={tool.id} className="flex items-center gap-3 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{tool.label}</p>
-                  <p className="text-muted-foreground truncate text-xs">{tool.detail}</p>
+                  <p className="text-muted-foreground mt-0.5 text-xs">{tool.detail}</p>
                 </div>
                 <Switch
                   checked={checked}
@@ -832,7 +803,7 @@ function SecuritySection({
             );
           })}
         </div>
-      </section>
+      </SettingsSection>
     </div>
   );
 }
@@ -933,13 +904,10 @@ function SecretsVault() {
   if (draft) {
     const existing = draft.originalName != null;
     return (
-      <div className="flex flex-col gap-5">
-        <div>
-          <h3 className="text-sm font-medium">{existing ? "编辑密钥" : "新增密钥"}</h3>
-          <p className="text-muted-foreground mt-1 text-xs">
-            Markdown 只记录引用和用途，真实值会写入系统安全存储。
-          </p>
-        </div>
+      <SettingsSection
+        title={existing ? "编辑密钥" : "新增密钥"}
+        description="Markdown 只记录引用和用途，真实值会写入系统安全存储。"
+      >
         <div className="grid grid-cols-2 gap-4">
           <div className="flex flex-col gap-2">
             <Label htmlFor="secret-name">引用名称</Label>
@@ -1007,9 +975,13 @@ function SecretsVault() {
             </button>
           </div>
         </div>
-        <div className="bg-muted/35 rounded-lg border px-3 py-2.5">
-          <p className="text-muted-foreground text-xs">保存后引用</p>
-          <code className="mt-1 block text-sm">{`\${secret:${draft.name || "name"}}`}</code>
+        <div className="flex flex-col gap-2">
+          <Label>保存后引用</Label>
+          <Input
+            value={`\${secret:${draft.name || "name"}}`}
+            readOnly
+            className="font-mono"
+          />
         </div>
         {error && <p className="text-destructive text-xs">{error}</p>}
         <div className="flex items-center gap-2">
@@ -1036,20 +1008,15 @@ function SecretsVault() {
             取消
           </Button>
         </div>
-      </div>
+      </SettingsSection>
     );
   }
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-start gap-4">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-medium">文件式密钥库</h3>
-          <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
-            `secrets/` 保存可读的 Markdown 索引，真实值保存在系统安全存储。MCP
-            环境变量和 HTTP 请求头、设备调用参数支持引用。
-          </p>
-        </div>
+    <SettingsSection
+      title="文件式密钥库"
+      description="secrets/ 保存可读的 Markdown 索引，真实值保存在系统安全存储。MCP 环境变量和 HTTP 请求头、设备调用参数支持引用。"
+      action={
         <Button
           size="sm"
           onClick={() =>
@@ -1059,10 +1026,10 @@ function SecretsVault() {
           <Plus />
           新增密钥
         </Button>
-      </div>
-
-      <div className="rounded-xl border">
-        <div className="bg-muted/25 border-b px-4 py-3">
+      }
+    >
+      <div className="rounded-lg border">
+        <div className="border-b px-4 py-3">
           <p className="text-xs font-medium">引用示例</p>
           <code className="text-muted-foreground mt-1 block text-xs">
             Authorization: Bearer {"${secret:github_token}"}
@@ -1087,9 +1054,7 @@ function SecretsVault() {
               const visible = revealed?.name === secret.name;
               return (
                 <div key={secret.name} className="flex items-center gap-3 px-4 py-3">
-                  <div className="bg-muted grid size-9 shrink-0 place-items-center rounded-lg">
-                    <KeyRound className="size-4" />
-                  </div>
+                  <KeyRound className="text-muted-foreground size-4 shrink-0" />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium">{secret.label}</span>
@@ -1191,7 +1156,7 @@ function SecretsVault() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </SettingsSection>
   );
 }
 
@@ -1237,8 +1202,8 @@ function FileWorkbench() {
   });
 
   return (
-    <div className="flex min-h-[590px] overflow-hidden rounded-xl border">
-      <div className="bg-muted/20 flex w-64 shrink-0 flex-col border-r">
+    <div className="flex min-h-[590px] overflow-hidden rounded-lg border">
+      <div className="bg-muted/30 flex w-64 shrink-0 flex-col border-r">
         <div className="border-b p-3">
           <div className="flex gap-2">
             <Input

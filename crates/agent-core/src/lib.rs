@@ -416,6 +416,41 @@ impl ThreadManager {
         Ok(manager)
     }
 
+    /// Attach desktop task ownership to a canonical App Server thread.
+    ///
+    /// Project, mode, and agent are desktop index fields rather than Codex
+    /// wire fields. Keeping them on the loaded metadata prevents later Turn
+    /// persistence from resetting the task back to a standalone Code thread.
+    pub fn bind_task_context(
+        &self,
+        thread_id: &str,
+        project_id: &str,
+        task_mode: &str,
+        agent_id: &str,
+    ) -> RpcResult<()> {
+        validate_thread_id(thread_id)?;
+        if !matches!(task_mode, "work" | "code") {
+            return Err(RpcError::invalid("task mode must be work or code"));
+        }
+        let mut state = self.state()?;
+        let (mut loaded, was_loaded) = self.thread_for_update_locked(thread_id, &state)?;
+        let metadata = loaded
+            .metadata
+            .as_mut()
+            .ok_or_else(|| RpcError::invalid("ephemeral threads cannot own desktop tasks"))?;
+        metadata.project_id = project_id.trim().to_owned();
+        metadata.task_mode = task_mode.into();
+        metadata.agent_id = agent_id.trim().to_owned();
+        self.inner
+            .store
+            .upsert_metadata(metadata)
+            .map_err(state_error)?;
+        if was_loaded {
+            state.loaded.insert(thread_id.into(), loaded);
+        }
+        Ok(())
+    }
+
     /// Upgrade an R4 task checkpoint in place to a canonical Codex Thread.
     ///
     /// The Thread id and task directory are retained so existing worktrees,
@@ -7131,6 +7166,35 @@ mod tests {
             serde_json::from_value::<ServerNotification>(output.notifications[0].wire_message())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn bound_desktop_task_context_survives_thread_persistence() {
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        manager
+            .bind_task_context(&id, "project-1", "work", "agent-1")
+            .unwrap();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId":id,
+                    "input":[{"type":"text","text":"inspect","textElements":[]}]
+                }),
+            ),
+        );
+        assert!(turn.response.get("error").is_none(), "{:?}", turn.response);
+        let metadata = manager.inner.store.thread(&id).unwrap().unwrap();
+        assert_eq!(metadata.project_id, "project-1");
+        assert_eq!(metadata.task_mode, "work");
+        assert_eq!(metadata.agent_id, "agent-1");
     }
 
     #[test]

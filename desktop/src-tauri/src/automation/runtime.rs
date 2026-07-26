@@ -230,7 +230,7 @@ pub fn delete(app: &AppHandle, automation_id: &str) -> Result<(), String> {
         }
         workspace_runtime
             .cleanup(&run.id)
-            .map_err(|error| format!("清理 Automation Worktree 失败：{error}"))?;
+            .map_err(|error| format!("清理 Automation 工作目录失败：{error}"))?;
     }
     store::delete(app, automation_id)
 }
@@ -398,9 +398,9 @@ fn prepare_workspace(
             run_id,
             project_root.as_deref(),
             &managed,
-            Some(ExecutionEnvironment::Worktree),
+            Some(ExecutionEnvironment::Local),
         )
-        .map_err(|error| format!("创建 Automation 独立 Worktree 失败：{error}"))?;
+        .map_err(|error| format!("创建 Automation 本地工作目录失败：{error}"))?;
     Ok(descriptor.active_root)
 }
 
@@ -423,7 +423,7 @@ Rules:\n\
 - Execute enabled nodes in the declared DAG order and honor every edge, input binding, condition branch, merge strategy and output node.\n\
 - Use only capabilities declared by the workflow. Do not invent missing credentials, tools, paths or user answers.\n\
 - Never ask for user input or approval. The runtime uses approvalPolicy=never; report a blocked step instead of bypassing it.\n\
-- Keep all filesystem changes inside the current isolated workspace and finish with a concise run result.\n\
+- Keep all filesystem changes inside the current Local workspace and finish with a concise run result.\n\
 \n\
 Trigger input:\n{input}\n\
 \n\

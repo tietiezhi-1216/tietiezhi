@@ -561,7 +561,7 @@ export function installTauriMock(): void {
       },
     ] as TietiezhiDevice[],
     conversations: new Map<string, Record<string, unknown>>(),
-    workspaceEnvironment: "worktree" as "local" | "worktree",
+    workspaceEnvironment: "local" as "local" | "worktree",
     workspaceSnapshots: [] as Array<{
       id: string;
       label: string;
@@ -873,7 +873,7 @@ export function installTauriMock(): void {
         if (run.status !== "running") return;
         run.status = "completed";
         run.finishedAt = Date.now();
-        run.output = "已完成工作流执行，并将结果写入隔离 Worktree。";
+        run.output = "已完成工作流执行，并将结果写入本地工作目录。";
         runtime.lastRunAt = run.finishedAt;
         runtime.lastRunStatus = "completed";
       }, 1_200);
@@ -1266,7 +1266,7 @@ export function installTauriMock(): void {
           ? { type: "active", activeFlags: [] }
           : { type: "idle" },
         path: `/mock/tasks/${thread.id}/rollout.jsonl`,
-        cwd: "/mock/tasks/shared-worktree",
+        cwd: "/mock/tasks/shared-local",
         cliVersion: "mock",
         source: "appServer",
         threadSource: "app",
@@ -1302,13 +1302,13 @@ export function installTauriMock(): void {
               model: request.params?.model ?? "gpt-5.6-luna",
               modelProvider: request.params?.modelProvider ?? "builtin-official",
               serviceTier: null,
-              cwd: "/mock/tasks/shared-worktree",
+              cwd: "/mock/tasks/shared-local",
               instructionSources: [],
               approvalPolicy: "on-request",
               approvalsReviewer: "user",
               sandbox: {
                 type: "workspaceWrite",
-                writableRoots: ["/mock/tasks/shared-worktree"],
+                writableRoots: ["/mock/tasks/shared-local"],
                 networkAccess: false,
                 excludeTmpdirEnvVar: false,
                 excludeSlashTmp: false,
@@ -1337,13 +1337,13 @@ export function installTauriMock(): void {
                     model: "gpt-5.6-luna",
                     modelProvider: "builtin-official",
                     serviceTier: null,
-                    cwd: "/mock/tasks/shared-worktree",
+                    cwd: "/mock/tasks/shared-local",
                     instructionSources: [],
                     approvalPolicy: "on-request",
                     approvalsReviewer: "user",
                     sandbox: {
                       type: "workspaceWrite",
-                      writableRoots: ["/mock/tasks/shared-worktree"],
+                      writableRoots: ["/mock/tasks/shared-local"],
                       networkAccess: false,
                       excludeTmpdirEnvVar: false,
                       excludeSlashTmp: false,
@@ -2070,7 +2070,7 @@ export function installTauriMock(): void {
         work: {
           mode: "work",
           initialized,
-          rootPath: "/mock/tasks/shared-worktree",
+          rootPath: "/mock/tasks/shared-local",
           isGit: true,
           fileCount: 4,
           fileCountCapped: false,
@@ -2087,7 +2087,7 @@ export function installTauriMock(): void {
         code: {
           mode: "code",
           initialized,
-          rootPath: "/mock/tasks/shared-worktree",
+          rootPath: "/mock/tasks/shared-local",
           isGit: true,
           fileCount: 128,
           fileCountCapped: false,
@@ -2104,17 +2104,17 @@ export function installTauriMock(): void {
         },
         environment: state.workspaceEnvironment,
         initialized,
-        rootPath: "/mock/tasks/shared-worktree",
+        rootPath: "/mock/tasks/shared-local",
         projectRoot: "/mock/projects/demo",
         head: "1234567890abcdef",
         branch: state.workspaceEnvironment === "local" ? "main" : null,
-        detached: state.workspaceEnvironment === "worktree",
+        detached: false,
         snapshots: state.workspaceSnapshots,
-        handoffs: state.workspaceHandoffs,
+        handoffs: [],
       };
     },
     set_task_workspace_environment: (a) => {
-      state.workspaceEnvironment = a.environment as "local" | "worktree";
+      state.workspaceEnvironment = "local";
       return handlers.task_workspace_overview(a);
     },
     create_task_workspace_snapshot: (a) => {
@@ -2205,7 +2205,7 @@ export function installTauriMock(): void {
         id,
         taskId: String(a.taskId),
         title: `Terminal ${state.terminalSessions.size + 1}`,
-        cwd: "/mock/tasks/shared-worktree",
+        cwd: "/mock/tasks/shared-local",
         createdAtMs: Date.now(),
         running: true,
         exitCode: null,

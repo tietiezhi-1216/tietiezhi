@@ -113,7 +113,7 @@ export function NodeInspector({ onClose }: { onClose?: () => void } = {}) {
                   </Button>
                 </div>
                 <p className="text-muted-foreground mt-1.5 text-[10px] leading-4">
-                  发布时验证 Git 工作树；每次运行从该项目创建隔离 Worktree。
+                  发布时验证 Git 仓库；每次运行直接在该项目目录或共享 Local 工作区执行。
                 </p>
               </Field>
               <Field label="时区" htmlFor="automation-timezone">

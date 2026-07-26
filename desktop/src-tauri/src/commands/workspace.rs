@@ -125,8 +125,8 @@ pub async fn set_task_workspace_environment(
         super::conversations::validate_id(&task_id)?;
         let project_id = conversation_project_id(&app, &task_id)?;
         let project_root = project_root_for_id(&app, project_id.as_deref())?;
-        if project_root.is_none() && environment == ExecutionEnvironment::Worktree {
-            return Err("未绑定项目的任务只能使用 Local 环境".into());
+        if environment != ExecutionEnvironment::Local {
+            return Err("已禁用 Git Worktree，任务只允许使用 Local 环境".into());
         }
         let runtime = workspace_runtime(&app)?;
         let _ = adopt_legacy_workspace(&app, &runtime, &task_id, project_id.as_deref())?;
@@ -373,18 +373,10 @@ fn task_workspace_overview_sync(
     let descriptor = adopt_legacy_workspace(app, &runtime, task_id, project_id.as_deref())?
         .or(runtime.read(task_id).map_err(workspace_error)?);
 
-    let predicted_environment = if project_root.as_deref().is_some_and(is_git_directory) {
-        ExecutionEnvironment::Worktree
-    } else {
-        ExecutionEnvironment::Local
-    };
-    let predicted_root = if predicted_environment == ExecutionEnvironment::Local {
-        project_root
-            .clone()
-            .unwrap_or(shared_workspace_path(app, task_id)?)
-    } else {
-        shared_workspace_path(app, task_id)?
-    };
+    let predicted_environment = ExecutionEnvironment::Local;
+    let predicted_root = project_root
+        .clone()
+        .unwrap_or(shared_workspace_path(app, task_id)?);
 
     let Some(descriptor) = descriptor else {
         let work = empty_mode_status(TaskMode::Work, &predicted_root);
@@ -535,8 +527,7 @@ fn ensure_workspace_descriptor(
 }
 
 fn conversation_project_id(app: &AppHandle, task_id: &str) -> Result<Option<String>, String> {
-    let conversation = super::conversations::load_conversation(app.clone(), task_id.to_string())?;
-    Ok((!conversation.project_id.trim().is_empty()).then_some(conversation.project_id))
+    super::conversations::task_context(app, task_id).map(|(project_id, _)| project_id)
 }
 
 fn workspace_runtime(app: &AppHandle) -> Result<WorkspaceRuntime, String> {

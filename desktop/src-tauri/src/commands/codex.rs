@@ -3066,6 +3066,44 @@ pub async fn codex_v2_request(
     result
 }
 
+#[derive(Debug, Clone)]
+struct WorkspaceThreadBinding {
+    project_id: String,
+    task_mode: super::workspace::TaskMode,
+    agent_id: String,
+}
+
+fn workspace_thread_binding(request: &Value) -> Result<Option<WorkspaceThreadBinding>, String> {
+    if request.get("method").and_then(Value::as_str) != Some("thread/start") {
+        return Ok(None);
+    }
+    let Some(task) = request.pointer("/params/config/tietiezhiTask") else {
+        return Ok(None);
+    };
+    let project_id = task
+        .get("projectId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let task_mode = match task.get("taskMode").and_then(Value::as_str) {
+        Some("work") => super::workspace::TaskMode::Work,
+        Some("code") => super::workspace::TaskMode::Code,
+        _ => return Err("Tietiezhi 任务模式必须是 work 或 code".into()),
+    };
+    let agent_id = task
+        .get("agentId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    Ok(Some(WorkspaceThreadBinding {
+        project_id,
+        task_mode,
+        agent_id,
+    }))
+}
+
 pub(crate) async fn codex_v2_request_inner(
     app: &AppHandle,
     state: &AppState,
@@ -3244,6 +3282,15 @@ pub(crate) async fn codex_v2_request_inner(
                 || source.starts_with("subAgent")
         });
 
+    let workspace_binding = workspace_thread_binding(&request)?;
+    if let Some(binding) = workspace_binding.as_ref() {
+        if !binding.project_id.is_empty()
+            && super::projects::find_project(app, &binding.project_id)?.is_none()
+        {
+            return Ok(dispatch_error(&request, -32602, "任务关联的项目不存在"));
+        }
+    }
+
     let manager = thread_manager(app, state)?;
     if method == "thread/delete" {
         if let Some(thread_id) = thread_id.as_deref() {
@@ -3292,7 +3339,83 @@ pub(crate) async fn codex_v2_request_inner(
             }
         }
     }
-    let output = manager.dispatch(&connection_id, request);
+    let mut output = manager.dispatch(&connection_id, request.clone());
+    if output.response.get("error").is_none() {
+        if let Some(binding) = workspace_binding {
+            let thread_id = output
+                .response
+                .pointer("/result/thread/id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "thread/start 未返回 Thread ID".to_string())?
+                .to_owned();
+            let configure_result = (|| -> Result<DispatchOutput, String> {
+                manager
+                    .bind_task_context(
+                        &thread_id,
+                        &binding.project_id,
+                        binding.task_mode.as_str(),
+                        &binding.agent_id,
+                    )
+                    .map_err(|error| error.message)?;
+                let cwd = super::workspace::resolve_task_workspace(
+                    app,
+                    (!binding.project_id.is_empty()).then_some(binding.project_id.as_str()),
+                    Some(&thread_id),
+                    binding.task_mode,
+                )?;
+                let sandbox = if output
+                    .response
+                    .pointer("/result/sandbox/type")
+                    .and_then(Value::as_str)
+                    == Some("dangerFullAccess")
+                {
+                    "danger-full-access"
+                } else {
+                    "workspace-write"
+                };
+                let resumed = manager.dispatch(
+                    &connection_id,
+                    json!({
+                        "id":request.get("id").cloned().unwrap_or(Value::Null),
+                        "method":"thread/resume",
+                        "params":{
+                            "threadId":thread_id,
+                            "cwd":cwd,
+                            "sandbox":sandbox
+                        }
+                    }),
+                );
+                if let Some(error) = resumed.response.get("error") {
+                    return Err(error
+                        .get("message")
+                        .and_then(Value::as_str)
+                        .unwrap_or("配置任务执行目录失败")
+                        .to_owned());
+                }
+                Ok(resumed)
+            })();
+            match configure_result {
+                Ok(configured) => {
+                    output.response = configured.response;
+                    output.notifications = configured.notifications;
+                }
+                Err(error) => {
+                    if let Ok(root) = super::conversations::task_root(app, &thread_id) {
+                        super::workspace::cleanup_task_workspaces(app, &binding.project_id, &root);
+                    }
+                    let _ = manager.dispatch(
+                        &connection_id,
+                        json!({
+                            "id":request.get("id").cloned().unwrap_or(Value::Null),
+                            "method":"thread/delete",
+                            "params":{"threadId":thread_id}
+                        }),
+                    );
+                    return Ok(dispatch_error(&request, -32603, error));
+                }
+            }
+        }
+    }
     if method == "thread/memoryMode/set" && output.response.get("error").is_none() {
         if let (Some(thread_id), Some(mode)) = (thread_id.as_deref(), requested_memory_mode) {
             memory_runtime(app, state)?
@@ -10072,9 +10195,9 @@ mod tests {
         parse_plugin_mcp_source, permission_profile_list, permission_profile_to_tool,
         permission_profile_to_v2, plugin_enablement_edits, resolve_runtime_reasoning_effort,
         response_request, review_tool_allowed, rewrite_external_terms,
-        sanitize_collaboration_fork_history, write_atomic, ConfigPaths, ConfigRuntime,
-        ExternalMigrationSource, PluginMcpSource, ResponseEvent, ResponseProjection, SkillsPaths,
-        SkillsRuntime,
+        sanitize_collaboration_fork_history, workspace_thread_binding, write_atomic, ConfigPaths,
+        ConfigRuntime, ExternalMigrationSource, PluginMcpSource, ResponseEvent, ResponseProjection,
+        SkillsPaths, SkillsRuntime,
     };
     use crate::commands::gateway_auth::{
         GatewayOwnedPackage, GatewayPaymentChannels, GatewayQuotaView, GatewayWallet,
@@ -10086,6 +10209,31 @@ mod tests {
         CompactionExecutionSnapshot, RuntimeDefaults, ThreadManager, TurnExecutionSnapshot,
     };
     use tietiezhi_agent_tools::{ToolCall, ToolPayload};
+
+    #[test]
+    fn workspace_thread_binding_reads_selected_project_and_mode() {
+        let binding = workspace_thread_binding(&json!({
+            "id":1,
+            "method":"thread/start",
+            "params":{
+                "config":{
+                    "tietiezhiTask":{
+                        "projectId":" project-1 ",
+                        "taskMode":"work",
+                        "agentId":" agent-1 "
+                    }
+                }
+            }
+        }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(binding.project_id, "project-1");
+        assert_eq!(
+            binding.task_mode,
+            crate::commands::workspace::TaskMode::Work
+        );
+        assert_eq!(binding.agent_id, "agent-1");
+    }
 
     #[test]
     fn runtime_reasoning_honors_explicit_off_and_rejects_stale_max() {

@@ -67,7 +67,7 @@ pub fn validate(document: &AutomationDocument, publish: bool) -> Vec<AutomationV
         } else if publish && !is_git_work_tree(path) {
             issues.push(issue(
                 "project_root_not_git",
-                "发布到项目目录的 Automation 必须使用 Git 工作树，以便每次运行创建独立 Worktree",
+                "发布到项目目录的 Automation 必须指向 Git 仓库根目录或其工作目录",
             ));
         }
     }

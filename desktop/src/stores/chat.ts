@@ -964,6 +964,8 @@ export const useChatStore = create<ChatState>()((set, get) => {
           const started = await codexStartWorkspaceThread(
             providerId,
             model,
+            get().projectId,
+            taskMode,
             get().activeAgentId || undefined,
           );
           convId = started.thread.id;

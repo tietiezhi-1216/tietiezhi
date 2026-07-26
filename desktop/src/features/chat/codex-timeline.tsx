@@ -2,12 +2,14 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   Bot,
   BrainCircuit,
+  CheckCircle2,
   ChevronDown,
   CircleDot,
   Clock3,
   FileCode2,
   GitCompareArrows,
   Image,
+  Loader2,
   MessageSquare,
   Search,
   ShieldCheck,
@@ -15,8 +17,8 @@ import {
   User,
   Users,
   Wrench,
+  XCircle,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { codexV2ServerResponse } from "@/lib/api";
 import {
   Collapsible,
@@ -140,6 +142,11 @@ function itemBody(item: ThreadItem): ReactNode {
     case "commandExecution":
       return (
         <div className="space-y-2">
+          <div className="text-muted-foreground flex flex-wrap gap-x-3 text-[11px]">
+            <span className="truncate">{item.cwd}</span>
+            {item.durationMs != null && <span>{formatDuration(item.durationMs)}</span>}
+            {item.exitCode != null && <span>退出码 {item.exitCode}</span>}
+          </div>
           <code className="bg-background/70 block overflow-x-auto rounded-lg border px-3 py-2 text-xs">
             {item.command}
           </code>
@@ -271,37 +278,137 @@ function ToolBody({
   );
 }
 
+function formatDuration(durationMs: number): string {
+  return durationMs < 1_000
+    ? `${durationMs}ms`
+    : `${Math.floor(durationMs / 1_000)}s`;
+}
+
+function compactText(value: string, limit = 96): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
+}
+
+function itemSummary(item: ThreadItem): string {
+  switch (item.type) {
+    case "userMessage":
+      return compactText(userInputText(item)) || "已发送消息";
+    case "agentMessage":
+      return compactText(item.text) || "正在生成回复";
+    case "plan":
+      return compactText(item.text) || "更新计划";
+    case "reasoning":
+      return compactText(item.summary.join(" ")) || "正在分析";
+    case "commandExecution":
+      return compactText(item.command) || "执行命令";
+    case "fileChange":
+      return item.changes.length === 1
+        ? item.changes[0].path
+        : `修改 ${item.changes.length} 个文件`;
+    case "mcpToolCall":
+      return `${item.server}/${item.tool}`;
+    case "dynamicToolCall":
+      return [item.namespace, item.tool].filter(Boolean).join("/");
+    case "collabAgentToolCall":
+      return `${item.tool} · ${item.receiverThreadIds.length || 1} 个目标`;
+    case "subAgentActivity":
+      return `${item.kind} · ${item.agentPath}`;
+    case "webSearch":
+      return compactText(item.query);
+    case "imageView":
+      return item.path;
+    case "sleep":
+      return `等待 ${formatDuration(item.durationMs)}`;
+    case "imageGeneration":
+      return compactText(item.revisedPrompt ?? item.savedPath ?? item.result);
+    case "enteredReviewMode":
+    case "exitedReviewMode":
+      return compactText(item.review);
+    case "contextCompaction":
+      return "整理当前 Thread 上下文";
+    case "hookPrompt":
+      return "运行 Hook";
+  }
+}
+
+function itemStatus(item: ThreadItem, lifecycle: CodexTimelineEntry["lifecycle"]): string {
+  const raw = "status" in item ? String(item.status) : lifecycle;
+  switch (raw) {
+    case "inProgress":
+    case "running":
+    case "started":
+      return "执行中";
+    case "completed":
+    case "success":
+      return "完成";
+    case "failed":
+    case "error":
+      return "失败";
+    case "declined":
+      return "已拒绝";
+    case "cancelled":
+      return "已停止";
+    default:
+      return raw;
+  }
+}
+
+function statusIcon(
+  item: ThreadItem,
+  lifecycle: CodexTimelineEntry["lifecycle"],
+): ReactNode {
+  const status = itemStatus(item, lifecycle);
+  if (status === "执行中") {
+    return <Loader2 className="size-3.5 animate-spin" />;
+  }
+  if (status === "失败" || status === "已拒绝" || status === "已停止") {
+    return <XCircle className="size-3.5" />;
+  }
+  return <CheckCircle2 className="size-3.5" />;
+}
+
 export function CodexTimelineItem({ entry }: { entry: CodexTimelineEntry }) {
+  const [open, setOpen] = useState(false);
   const item = entry.item;
+  const status = itemStatus(item, entry.lifecycle);
+  const duration =
+    "durationMs" in item && typeof item.durationMs === "number"
+      ? formatDuration(item.durationMs)
+      : null;
   return (
-    <article
-      data-codex-item={item.type}
-      className={cn(
-        "border-border/70 bg-card/60 overflow-hidden rounded-2xl border shadow-sm",
-        item.type === "userMessage" && "ml-auto w-[min(88%,42rem)] bg-primary/5",
-      )}
-    >
-      <header className="border-border/60 flex items-center gap-2 border-b px-3 py-2">
-        <span className="text-muted-foreground">{iconFor(item)}</span>
-        <span className="text-xs font-semibold">{ITEM_LABELS[item.type]}</span>
-        {"status" in item && (
-          <Badge variant="outline" className="ml-auto">
-            {String(item.status)}
-          </Badge>
-        )}
-        {!("status" in item) && entry.lifecycle === "running" && (
-          <Badge variant="secondary" className="ml-auto">
-            执行中
-          </Badge>
-        )}
-      </header>
-      <div className="px-4 py-3">{itemBody(item)}</div>
-      {entry.progress && (
-        <footer className="text-muted-foreground border-border/60 border-t px-4 py-2 text-xs">
-          {entry.progress}
-        </footer>
-      )}
-    </article>
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <article
+        data-codex-item={item.type}
+        className="border-border/60 bg-muted/20 overflow-hidden rounded-lg border"
+      >
+        <CollapsibleTrigger className="group/tool-row hover:bg-muted/50 flex min-h-9 w-full items-center gap-2 px-3 py-1.5 text-left transition-colors">
+          <span
+            className={cn(
+              "text-muted-foreground shrink-0",
+              status === "执行中" && "text-foreground",
+              status === "失败" && "text-destructive",
+            )}
+          >
+            {statusIcon(item, entry.lifecycle)}
+          </span>
+          <span className="text-muted-foreground shrink-0">{iconFor(item)}</span>
+          <span className="shrink-0 text-xs font-medium">{ITEM_LABELS[item.type]}</span>
+          <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[11px]">
+            {entry.progress ? compactText(entry.progress) : itemSummary(item)}
+          </span>
+          <span className="text-muted-foreground shrink-0 text-[10px] tabular-nums">
+            {status}
+            {duration && ` · ${duration}`}
+          </span>
+          <ChevronDown className="text-muted-foreground size-3.5 shrink-0 transition-transform group-data-[state=open]/tool-row:rotate-180" />
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="border-border/60 border-t px-3 py-2.5">
+            {itemBody(item)}
+          </div>
+        </CollapsibleContent>
+      </article>
+    </Collapsible>
   );
 }
 
@@ -323,7 +430,7 @@ export function CodexTimeline({ threadId }: { threadId: string }) {
   );
 
   return (
-    <section aria-label="Codex 执行时间线" className="space-y-4">
+    <section aria-label="Codex 执行时间线" className="space-y-1.5">
       {timeline.pendingRequests.length > 0 && (
         <div className="border-amber-500/30 bg-amber-500/10 flex items-center gap-2 rounded-xl border px-3 py-2 text-sm">
           <MessageSquare className="size-4" />

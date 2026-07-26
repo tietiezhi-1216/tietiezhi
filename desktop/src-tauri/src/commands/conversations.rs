@@ -357,6 +357,26 @@ fn persist_conversation(
     store: &StateStore,
     conversation: &Conversation,
 ) -> Result<(), String> {
+    if let Some(mut metadata) = store
+        .thread(&conversation.id)
+        .map_err(|error| format!("读取任务索引失败：{error}"))?
+        .filter(|metadata| metadata.canonical.is_some())
+    {
+        metadata.created_at_ms = conversation_created_at(conversation);
+        metadata.updated_at_ms = conversation.updated_at;
+        metadata.title = conversation.title.clone();
+        metadata.project_id = conversation.project_id.clone();
+        metadata.task_mode = conversation.task_mode.as_str().into();
+        metadata.archived_at_ms = conversation.archived_at;
+        metadata.pinned_at_ms = conversation.pinned_at;
+        metadata.agent_id = conversation.agent_id.clone();
+        metadata.preview = conversation_preview(conversation);
+        store
+            .upsert_metadata(&metadata)
+            .map_err(|error| format!("更新 Codex 任务索引失败：{error}"))?;
+        return write_conversation(&conversation_path(app, &conversation.id)?, conversation);
+    }
+
     let path = rollout_path(app, &conversation.id)?;
     let payload = serde_json::to_value(conversation)
         .map_err(|error| format!("序列化任务 checkpoint 失败：{error}"))?;
@@ -755,6 +775,45 @@ fn load_runtime_conversation(
     let recovery = store
         .recover_rollout(&path)
         .map_err(|error| format!("恢复任务 rollout 失败：{error}"))?;
+    if let Some(metadata) = indexed
+        .as_ref()
+        .filter(|metadata| metadata.canonical.is_some())
+    {
+        let disk = read_task_json(&task_path).filter(|conversation| conversation.id == id);
+        let mut conversation = disk.unwrap_or_else(|| Conversation {
+            id: id.into(),
+            title: if metadata.title.trim().is_empty() {
+                DEFAULT_CONVERSATION_TITLE.into()
+            } else {
+                metadata.title.clone()
+            },
+            created_at: metadata.created_at_ms,
+            updated_at: metadata.updated_at_ms,
+            messages: Vec::new(),
+            agent_id: metadata.agent_id.clone(),
+            project_id: metadata.project_id.clone(),
+            task_mode: TaskMode::default(),
+            archived_at: metadata.archived_at_ms,
+            pinned_at: metadata.pinned_at_ms,
+            workspace: String::new(),
+        });
+        if !metadata.title.trim().is_empty() {
+            conversation.title = metadata.title.clone();
+        }
+        conversation.created_at = metadata.created_at_ms;
+        conversation.updated_at = metadata.updated_at_ms;
+        conversation.agent_id = metadata.agent_id.clone();
+        conversation.project_id = metadata.project_id.clone();
+        conversation.task_mode = task_mode_from_store(&metadata.task_mode)?;
+        conversation.archived_at = metadata.archived_at_ms;
+        conversation.pinned_at = metadata.pinned_at_ms;
+        conversation.workspace.clear();
+        if repair && !task_path.is_file() {
+            write_conversation(&task_path, &conversation)?;
+        }
+        return Ok(conversation);
+    }
+
     let mut rollout_conversation = conversation_from_recovery(&recovery, id);
     if let Some(conversation) = &mut rollout_conversation {
         replay_trailing_events(conversation, &recovery);
@@ -1070,6 +1129,23 @@ pub fn load_conversation(app: AppHandle, id: String) -> Result<Conversation, Str
     })
 }
 
+pub(crate) fn task_context(
+    app: &AppHandle,
+    id: &str,
+) -> Result<(Option<String>, TaskMode), String> {
+    validate_id(id)?;
+    with_store(app, |store| {
+        let metadata = store
+            .thread(id)
+            .map_err(|error| format!("读取任务索引失败：{error}"))?
+            .ok_or_else(|| "任务记录不存在或已损坏".to_string())?;
+        Ok((
+            (!metadata.project_id.trim().is_empty()).then_some(metadata.project_id),
+            task_mode_from_store(&metadata.task_mode)?,
+        ))
+    })
+}
+
 #[tauri::command]
 pub fn save_conversation(
     app: AppHandle,
@@ -1077,13 +1153,6 @@ pub fn save_conversation(
 ) -> Result<SaveConversationResult, String> {
     with_store(&app, |store| {
         validate_id(&conversation.id)?;
-        if store
-            .thread(&conversation.id)
-            .map_err(|error| format!("读取任务索引失败：{error}"))?
-            .is_some_and(|thread| thread.canonical.is_some())
-        {
-            return Err("该任务由 Codex Runtime 管理，请使用 App Server V2 接口".into());
-        }
         if conversation.title.trim().is_empty() {
             conversation.title = DEFAULT_CONVERSATION_TITLE.into();
         }

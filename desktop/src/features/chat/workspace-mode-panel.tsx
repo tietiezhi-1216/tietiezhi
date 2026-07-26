@@ -7,25 +7,12 @@ import {
   Code2,
   FileOutput,
   Files,
-  FolderGit2,
   GitBranch,
-  GitFork,
   History,
   Loader2,
   MapPin,
   Milestone,
-  RotateCcw,
 } from "lucide-react";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -36,16 +23,9 @@ import {
 import {
   createTaskWorkspaceSnapshot,
   errorMessage,
-  handoffTaskWorkspace,
-  restoreTaskWorkspaceSnapshot,
-  setTaskWorkspaceEnvironment,
   taskWorkspaceOverview,
 } from "@/lib/api";
-import type {
-  ExecutionEnvironment,
-  WorkspaceFileEntry,
-  WorkspaceSnapshot,
-} from "@/lib/api";
+import type { WorkspaceFileEntry } from "@/lib/api";
 import { getTaskMode } from "@/lib/task-mode";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat";
@@ -66,7 +46,6 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
   const taskMode = useChatStore((state) => state.taskMode);
   const streaming = useChatStore((state) => state.streaming);
   const [operation, setOperation] = useState<string | null>(null);
-  const [pendingRestore, setPendingRestore] = useState<WorkspaceSnapshot | null>(null);
   const [feedback, setFeedback] = useState<{
     kind: "success" | "error";
     text: string;
@@ -90,8 +69,7 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
           size: 0,
           modifiedAt: 0,
         }));
-  const environment = overview?.environment ?? "worktree";
-  const environmentName = environment === "worktree" ? "Worktree" : "Local";
+  const environmentName = "Local";
   const canOperate = Boolean(activeId) && !streaming && operation == null;
   const canSnapshot = canOperate && Boolean(activeStatus?.isGit);
 
@@ -136,12 +114,6 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
     }
   };
 
-  const switchEnvironment = (next: ExecutionEnvironment) =>
-    runOperation(`environment-${next}`, async () => {
-      await setTaskWorkspaceEnvironment({ taskId: activeId!, environment: next });
-      return `已切换到 ${next === "worktree" ? "Worktree" : "Local"} 环境`;
-    });
-
   const createSnapshot = () =>
     runOperation("snapshot", async () => {
       const snapshot = await createTaskWorkspaceSnapshot({
@@ -150,28 +122,6 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
       });
       return `已创建快照 ${shortCommit(snapshot.commit)}`;
     });
-
-  const createHandoff = () =>
-    runOperation("handoff", async () => {
-      const handoff = await handoffTaskWorkspace({
-        taskId: activeId!,
-        label: "Codex handoff",
-      });
-      return `已创建分支 ${handoff.branch}`;
-    });
-
-  const restoreSnapshot = () => {
-    const snapshot = pendingRestore;
-    setPendingRestore(null);
-    if (!snapshot) return;
-    void runOperation(`restore-${snapshot.id}`, async () => {
-      await restoreTaskWorkspaceSnapshot({
-        taskId: activeId!,
-        snapshotId: snapshot.id,
-      });
-      return `已恢复快照 ${shortCommit(snapshot.commit)}`;
-    });
-  };
 
   return (
     <>
@@ -205,7 +155,7 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
                 variant="secondary"
                 className="h-4 gap-1 px-1.5 text-[9px] font-normal"
               >
-                {environment === "worktree" ? <GitFork /> : <MapPin />}
+                <MapPin />
                 {environmentName}
               </Badge>
             </div>
@@ -237,36 +187,10 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
           )}
 
           {activeId && (
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2 text-[11px]">
-                  {environment === "worktree" ? <FolderGit2 /> : <MapPin />}
-                  环境
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" side="left" className="w-80 p-3">
-                <p className="text-xs font-medium">执行环境</p>
-                <p className="text-muted-foreground mt-1 text-[10px] leading-4">
-                  Work 与 Code 共享此环境。Worktree 隔离修改，Local 直接使用项目目录。
-                </p>
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  {(["worktree", "local"] as const).map((item) => (
-                    <Button
-                      key={item}
-                      type="button"
-                      variant={environment === item ? "default" : "outline"}
-                      size="sm"
-                      disabled={!canOperate || (item === "worktree" && !overview?.projectRoot)}
-                      onClick={() => void switchEnvironment(item)}
-                      className="justify-start"
-                    >
-                      {item === "worktree" ? <GitFork /> : <MapPin />}
-                      {item === "worktree" ? "Worktree" : "Local"}
-                    </Button>
-                  ))}
-                </div>
-              </PopoverContent>
-            </Popover>
+            <Badge variant="outline" className="h-7 gap-1.5 px-2 text-[11px] font-normal">
+              <MapPin />
+              Local
+            </Badge>
           )}
 
           {activeId && activeStatus?.isGit && (
@@ -312,20 +236,6 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
                             {shortCommit(snapshot.commit)}
                           </p>
                         </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          disabled={
-                            !canOperate ||
-                            environment !== "worktree" ||
-                            operation === `restore-${snapshot.id}`
-                          }
-                          onClick={() => setPendingRestore(snapshot)}
-                        >
-                          <RotateCcw />
-                          恢复
-                        </Button>
                       </div>
                     ))
                   ) : (
@@ -336,19 +246,6 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
             </Popover>
           )}
 
-          {activeId && environment === "worktree" && activeStatus?.isGit && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!canOperate}
-              onClick={() => void createHandoff()}
-              className="h-7 gap-1.5 px-2 text-[11px]"
-            >
-              <GitBranch />
-              Handoff
-            </Button>
-          )}
           {activeId && activeStatus?.isGit && (
             <WorkspaceGitPanel taskId={activeId} disabled={!canOperate} />
           )}
@@ -365,7 +262,7 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
             </span>
           ))}
           <span className="text-muted-foreground ml-auto truncate text-[10px]">
-            {overview?.detached ? "detached HEAD" : overview?.branch || definition.toolSummary}
+            {overview?.branch || definition.toolSummary}
           </span>
         </div>
         {feedback && (
@@ -384,27 +281,6 @@ export function WorkspaceModePanel({ embedded = false }: { embedded?: boolean })
           </p>
         )}
       </section>
-
-      <AlertDialog
-        open={pendingRestore != null}
-        onOpenChange={(open) => {
-          if (!open) setPendingRestore(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>恢复工作区快照？</AlertDialogTitle>
-            <AlertDialogDescription>
-              当前未保存修改会先自动创建快照，然后工作区恢复到{" "}
-              {pendingRestore ? shortCommit(pendingRestore.commit) : ""}。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={restoreSnapshot}>恢复</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </>
   );
 }
