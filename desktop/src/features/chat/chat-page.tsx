@@ -901,43 +901,49 @@ export function ChatPage() {
           aria-hidden
           className="to-background/60 pointer-events-none absolute inset-x-0 -top-10 h-10 bg-linear-to-b from-transparent"
         />
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            stickToBottomRef.current = true;
-            scrollToBottom("smooth");
-          }}
-          onMouseEnter={startPeekReaction}
-          onMouseLeave={stopPeekReaction}
-          onFocus={startPeekReaction}
-          onBlur={stopPeekReaction}
-          aria-label="返回最新消息"
-          aria-hidden={!peekVisible}
-          title="返回最新消息"
-          tabIndex={peekVisible ? 0 : -1}
-          className={cn(
-            "group absolute top-0 right-5 z-0 h-16 w-16 origin-bottom overflow-visible rounded-full bg-transparent p-0 shadow-none transition-[opacity,transform] duration-500 ease-out hover:-translate-y-10 hover:-rotate-6 hover:bg-transparent focus-visible:-translate-y-10 focus-visible:-rotate-6 focus-visible:ring-0 active:scale-95 motion-reduce:transition-none",
-            peekVisible
-              ? "-translate-y-8 opacity-100"
-              : "pointer-events-none translate-y-2 scale-90 opacity-0",
-          )}
-        >
-          <span aria-hidden className="relative block size-16">
-            <img
-              src={peekImage}
-              alt=""
-              draggable={false}
-              className="absolute inset-0 size-16 max-w-none object-contain drop-shadow-sm transition-transform duration-500 ease-out group-hover:scale-105 group-focus-visible:scale-105"
-            />
-            <img
-              src="/octopus-loader/decor-05.png"
-              alt=""
-              draggable={false}
-              className="absolute top-1 right-0 size-4 translate-x-1 translate-y-2 rotate-12 opacity-0 transition-[opacity,transform] delay-100 duration-300 group-hover:translate-x-2 group-hover:-translate-y-1 group-hover:rotate-45 group-hover:opacity-100 group-focus-visible:translate-x-2 group-focus-visible:-translate-y-1 group-focus-visible:rotate-45 group-focus-visible:opacity-100"
-            />
-          </span>
-        </Button>
+        {/* The clipping window ends exactly at the composer edge. Keeping the
+            button above both transcript and composer makes the visible head
+            clickable without letting its body show through the translucent
+            composer surface. */}
+        <div className="pointer-events-none absolute -top-14 right-3 z-30 h-16 w-20 overflow-hidden">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              stickToBottomRef.current = true;
+              scrollToBottom("smooth");
+            }}
+            onMouseEnter={startPeekReaction}
+            onMouseLeave={stopPeekReaction}
+            onFocus={startPeekReaction}
+            onBlur={stopPeekReaction}
+            aria-label="返回最新消息"
+            aria-hidden={!peekVisible}
+            title="返回最新消息"
+            tabIndex={peekVisible ? 0 : -1}
+            className={cn(
+              "group pointer-events-auto absolute top-6 left-2 h-16 w-16 origin-bottom overflow-visible rounded-full bg-transparent p-0 shadow-none transition-[opacity,transform] duration-500 ease-out hover:-translate-y-2 hover:-rotate-6 hover:bg-transparent focus-visible:-translate-y-2 focus-visible:-rotate-6 focus-visible:ring-0 active:scale-95 motion-reduce:transition-none",
+              peekVisible
+                ? "translate-y-0 opacity-100"
+                : "pointer-events-none translate-y-10 scale-90 opacity-0",
+            )}
+          >
+            <span aria-hidden className="relative block size-16">
+              <img
+                src={peekImage}
+                alt=""
+                draggable={false}
+                className="absolute inset-0 size-16 max-w-none object-contain drop-shadow-sm transition-transform duration-500 ease-out group-hover:scale-105 group-focus-visible:scale-105"
+              />
+              <img
+                src="/octopus-loader/decor-05.png"
+                alt=""
+                draggable={false}
+                className="absolute top-1 right-0 size-4 translate-x-1 translate-y-2 rotate-12 opacity-0 transition-[opacity,transform] delay-100 duration-300 group-hover:translate-x-2 group-hover:-translate-y-1 group-hover:rotate-45 group-hover:opacity-100 group-focus-visible:translate-x-2 group-focus-visible:-translate-y-1 group-focus-visible:rotate-45 group-focus-visible:opacity-100"
+              />
+            </span>
+          </Button>
+        </div>
 
         {activeId == null && items.length === 0 && (
           <div className="bg-muted/70 relative z-10 mx-3 -mb-2 flex h-10 items-start rounded-t-xl border px-1.5 pt-1 shadow-sm">
