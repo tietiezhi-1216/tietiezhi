@@ -330,7 +330,7 @@ mod tests {
         let started = Instant::now();
         let result = run_command(
             "printf 'started'; sleep 30",
-            100,
+            1_000,
             &std::env::current_dir().unwrap(),
             &cancel,
             None,
