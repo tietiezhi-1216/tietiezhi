@@ -12,6 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 6. **兼容性按 Safari（WKWebView）基线开发**——使用新 CSS/JS 特性前先确认 WKWebView 支持。browserslist（`desktop/package.json`）= `Chrome >= 111 / Safari >= 16.4`，经 `browserslist-to-esbuild` 接到 Vite 的 `build.target`。macOS 最低 **13.3**（= Safari 16.4，Tailwind v4 的硬底线）；Windows 用 evergreen WebView2（打包配置了 `downloadBootstrapper` 引导安装）。
 7. **优先用主流方案**——状态管理 zustand（轻量优先）、数据请求 TanStack Query、构建 Vite、包管理统一 **pnpm**。能用现有抽象就不要自造轮子。
 8. **禁止使用 Git Worktree 进行开发或任务隔离**——Workspace、Automation 与本地调试一律直接使用选中的项目目录或共享 Local 工作区，不再创建、切换或依赖 Git Worktree。
+9. **禁止使用其他 Git 分支进行日常开发**——默认始终直接在 `main` 分支修改、提交与发布；不要新建、切换或长期保留用于开发的功能分支。
 
 ## 项目定位
 
