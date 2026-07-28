@@ -49,14 +49,24 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
 use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
-const SETUP_VERSION: u32 = 1;
+/// Bumped when provisioning changes in a way that invalidates an existing
+/// marker (v2 renamed the sandbox accounts to fit the SAM length limit).
+const SETUP_VERSION: u32 = 2;
 const SETUP_ARG: &str = "--tietiezhi-windows-sandbox-setup";
 const LAUNCH_ARG: &str = "--tietiezhi-windows-sandbox-launch";
 const INLINE_ARG: &str = "--tietiezhi-windows-sandbox-inline";
 const INLINE_ENV: &str = "TIETIEZHI_WINDOWS_SANDBOX_REQUEST";
-const OFFLINE_USERNAME: &str = "TietiezhiSandboxOffline";
-const ONLINE_USERNAME: &str = "TietiezhiSandboxOnline";
+const OFFLINE_USERNAME: &str = "TietiezhiSbxOffline";
+const ONLINE_USERNAME: &str = "TietiezhiSbxOnline";
 const USERS_GROUP: &str = "TietiezhiSandboxUsers";
+
+/// Windows caps local (SAM) account names at 20 characters. A longer name
+/// makes `NetUserAdd` fail with `NERR_BadUsername` (2202), which took down
+/// the whole sandbox provisioning. Group names allow up to 256, so only the
+/// user names are constrained here.
+const MAX_LOCAL_USERNAME_LEN: usize = 20;
+const _: () = assert!(OFFLINE_USERNAME.len() <= MAX_LOCAL_USERNAME_LEN);
+const _: () = assert!(ONLINE_USERNAME.len() <= MAX_LOCAL_USERNAME_LEN);
 const USERS_GROUP_COMMENT: &str = "Tietiezhi sandbox internal group (managed)";
 const SECURITY_BUILTIN_DOMAIN_RID: u32 = 0x20;
 const DOMAIN_ALIAS_RID_ADMINS: u32 = 0x220;
@@ -564,8 +574,8 @@ fn ensure_local_group(name: &str, comment: &str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_local_user(name: &str, password: &str) -> Result<()> {
-    let name = to_wide(name);
+fn ensure_local_user(username: &str, password: &str) -> Result<()> {
+    let name = to_wide(username);
     let password = to_wide(password);
     let info = USER_INFO_1 {
         usri1_name: name.as_ptr() as *mut u16,
@@ -601,8 +611,10 @@ fn ensure_local_user(name: &str, password: &str) -> Result<()> {
         )
     };
     if updated != NERR_Success {
+        // NERR_BadUsername(2202) here almost always means the name exceeds the
+        // 20-character SAM limit; ERROR_ACCESS_DENIED(5) means not elevated.
         return Err(anyhow!(
-            "create/update sandbox user failed: {status}/{updated}"
+            "create/update sandbox user {username:?} failed: NetUserAdd={status}, NetUserSetInfo={updated}"
         ));
     }
     Ok(())

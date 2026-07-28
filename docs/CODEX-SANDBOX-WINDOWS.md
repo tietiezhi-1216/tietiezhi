@@ -4,7 +4,7 @@
 
 R16 在仓库源码中实现 Windows Restricted Token 沙箱，R17 增加与 pinned Codex 一致的提升权限身份与网络边界。不下载、运行或打包 Codex 二进制。桌面程序和测试 runner 都从自身源码构建的可执行文件重新进入 launcher/wrapper，随后创建受限子进程。
 
-- UAC setup helper 创建 `TietiezhiSandboxOffline`、`TietiezhiSandboxOnline` 和内部本地组，密码随机轮换并用机器域 DPAPI 加密。
+- UAC setup helper 创建 `TietiezhiSbxOffline`、`TietiezhiSbxOnline` 和内部本地组，密码随机轮换并用机器域 DPAPI 加密。
 - restricted network 由 Offline 身份执行；direct network 使用 Online 身份。身份 token 之上仍应用 `CreateRestrictedToken`。
 - `CreateRestrictedToken` 使用 `DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED`。
 - 路径能力使用稳定、路径隔离的 capability SID。
