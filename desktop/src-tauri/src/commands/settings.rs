@@ -116,6 +116,25 @@ fn write_settings(app: &AppHandle, settings: &AppSettings) -> Result<(), String>
     std::fs::write(&path, raw).map_err(|e| format!("写入设置失败：{e}"))
 }
 
+/// Repoint a legacy builtin provider at the official gateway. Called after a
+/// successful gateway login: the fresh session belongs to the official host,
+/// so keeping the legacy chat URL would split account and traffic.
+pub(crate) fn upgrade_legacy_builtin_provider_url(app: &AppHandle) -> Result<bool, String> {
+    let mut settings = read_settings(app)?;
+    let mut changed = false;
+    for provider in &mut settings.providers {
+        if provider.id == BUILTIN_PROVIDER_ID && is_legacy_builtin_provider_url(&provider.base_url)
+        {
+            provider.base_url = BUILTIN_PROVIDER_URL.into();
+            changed = true;
+        }
+    }
+    if changed {
+        write_settings(app, &settings)?;
+    }
+    Ok(changed)
+}
+
 /// Read stored settings and run one-time migrations. Also used internally by
 /// request commands so the frontend never has to pass connection details back
 /// to Rust.

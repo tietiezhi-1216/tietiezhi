@@ -577,7 +577,7 @@ pub(crate) async fn complete_gateway_login(
         verifier,
         ..
     } = attempt;
-    let (code, returned_state) = wait_for_callback(listener, app).await?;
+    let (code, returned_state) = wait_for_callback(listener, app.clone()).await?;
     if returned_state != state_value {
         return Err("登录状态校验失败，请重试".into());
     }
@@ -602,6 +602,13 @@ pub(crate) async fn complete_gateway_login(
     {
         let _ = clear_gateway_secrets(&provider_id);
         return Err(error);
+    }
+    // The new session belongs to the official gateway; migrate a leftover
+    // legacy builtin URL so chat and account use the same host from now on.
+    if provider_id == super::settings::BUILTIN_PROVIDER_ID {
+        if let Err(error) = super::settings::upgrade_legacy_builtin_provider_url(&app) {
+            eprintln!("[gateway] 迁移旧版内置中转站地址失败：{error}");
+        }
     }
     Ok(GatewayAccountView {
         provider_id,
@@ -773,12 +780,22 @@ async fn native_billing_context(
 }
 
 fn provider_base_url(app: &AppHandle, provider_id: &str) -> Result<String, String> {
-    read_settings(app)?
+    let base_url = read_settings(app)?
         .providers
         .into_iter()
         .find(|provider| provider.id == provider_id)
         .map(|provider| provider.base_url)
-        .ok_or_else(|| "未找到当前中转站".into())
+        .ok_or_else(|| "未找到当前中转站".to_string())?;
+    // The legacy builtin host has no account endpoints (its discovery route
+    // answers HTTP 200 "Not Found", which surfaced as「中转站登录配置无效」).
+    // Builtin accounts live on the official gateway, so auth/billing flows
+    // must target it even while chat still uses the stored legacy URL.
+    if provider_id == super::settings::BUILTIN_PROVIDER_ID
+        && super::settings::is_legacy_builtin_provider_url(&base_url)
+    {
+        return Ok(super::settings::BUILTIN_PROVIDER_URL.into());
+    }
+    Ok(base_url)
 }
 
 async fn fetch_discovery(http: &reqwest::Client, base_url: &str) -> Result<Discovery, String> {
@@ -796,7 +813,7 @@ async fn fetch_discovery(http: &reqwest::Client, base_url: &str) -> Result<Disco
     let discovery = response
         .json::<Discovery>()
         .await
-        .map_err(|_| "中转站登录配置无效".to_string())?;
+        .map_err(|_| "中转站登录配置无效（服务返回了无法识别的内容，可能是旧版或不兼容的中转站）".to_string())?;
     validate_discovery(&expected_issuer, &discovery)?;
     Ok(discovery)
 }
