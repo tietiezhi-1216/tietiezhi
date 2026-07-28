@@ -63,6 +63,31 @@ const emptyTimeline = (): CodexThreadTimeline => ({
   pendingRequests: [],
 });
 
+/**
+ * Cap for command output kept in the store. Unbounded accumulation (e.g. a
+ * command dumping a binary) has crashed the webview renderer with a black
+ * window; the UI never needs more than the head and the freshest tail.
+ */
+const COMMAND_OUTPUT_MAX_CHARS = 200_000;
+
+function capCommandOutput(text: string): string {
+  if (text.length <= COMMAND_OUTPUT_MAX_CHARS) return text;
+  const head = Math.floor(COMMAND_OUTPUT_MAX_CHARS / 4);
+  const tail = COMMAND_OUTPUT_MAX_CHARS - head;
+  return `${text.slice(0, head)}\n… 输出过长，已省略中间部分 …\n${text.slice(-tail)}`;
+}
+
+function capThreadItem(item: ThreadItem): ThreadItem {
+  if (
+    item.type === "commandExecution" &&
+    item.aggregatedOutput &&
+    item.aggregatedOutput.length > COMMAND_OUTPUT_MAX_CHARS
+  ) {
+    return { ...item, aggregatedOutput: capCommandOutput(item.aggregatedOutput) };
+  }
+  return item;
+}
+
 function requestId(value: string | number): string {
   return String(value);
 }
@@ -76,14 +101,15 @@ function upsertEntry(
   timeline: CodexThreadTimeline,
   entry: CodexTimelineEntry,
 ): CodexThreadTimeline {
+  const capped = { ...entry, item: capThreadItem(entry.item) };
   const index = timeline.entries.findIndex(
-    (candidate) => candidate.item.id === entry.item.id,
+    (candidate) => candidate.item.id === capped.item.id,
   );
   if (index < 0) {
-    return { ...timeline, entries: [...timeline.entries, entry] };
+    return { ...timeline, entries: [...timeline.entries, capped] };
   }
   const entries = [...timeline.entries];
-  entries[index] = { ...entries[index], ...entry };
+  entries[index] = { ...entries[index], ...capped };
   return { ...timeline, entries };
 }
 
@@ -221,7 +247,9 @@ export function reduceCodexTimeline(
         item.type === "commandExecution"
           ? {
               ...item,
-              aggregatedOutput: `${item.aggregatedOutput ?? ""}${notification.params.delta}`,
+              aggregatedOutput: capCommandOutput(
+                `${item.aggregatedOutput ?? ""}${notification.params.delta}`,
+              ),
             }
           : item,
       );

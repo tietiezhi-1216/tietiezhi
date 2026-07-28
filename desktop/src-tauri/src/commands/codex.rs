@@ -2374,7 +2374,10 @@ pub(crate) async fn dispatch_remote_transport_request(
     }
 }
 
-fn emit_notifications(app: &AppHandle, notifications: &[RoutedNotification]) -> Result<(), String> {
+pub(crate) fn emit_notifications(
+    app: &AppHandle,
+    notifications: &[RoutedNotification],
+) -> Result<(), String> {
     for notification in notifications {
         if !notification.method.contains("/delta") {
             let state = app.state::<AppState>();

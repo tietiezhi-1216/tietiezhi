@@ -2209,6 +2209,13 @@ export async function archiveProjectConversations(projectId: string): Promise<nu
   return conversations.length;
 }
 
+// MARK: - Feedback
+
+/** Tail of the native panic/error log kept by the Rust side ("" if none). */
+export function readNativeErrorLog(): Promise<string> {
+  return invoke<string>("read_native_error_log");
+}
+
 /** Normalize command rejections (Rust returns plain strings). */
 export function errorMessage(err: unknown): string {
   if (typeof err === "string") return err;

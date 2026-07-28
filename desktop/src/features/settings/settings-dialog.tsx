@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Archive,
+  Bug,
   Info,
   Keyboard,
   Lightbulb,
@@ -35,6 +36,7 @@ import { DictationModelSection } from "@/features/settings/dictation-card";
 import { ArchivedTasksSection } from "@/features/settings/archived-tasks-section";
 import { DictationHotkeySection } from "@/features/settings/dictation-hotkey";
 import { DictationPromptSection } from "@/features/settings/dictation-prompt";
+import { FeedbackSection } from "@/features/settings/feedback-section";
 import { RuntimeDiagnosticsSection } from "@/features/settings/runtime-diagnostics-section";
 import { McpSection } from "@/features/settings/mcp-section";
 import { QuotaCenter } from "@/features/settings/quota-center";
@@ -97,6 +99,7 @@ const GROUPS: CategoryGroup[] = [
       { key: "archives", label: "已归档任务", icon: Archive },
       { key: "appearance", label: "外观", icon: Palette },
       { key: "diagnostics", label: "运行诊断", icon: Stethoscope },
+      { key: "feedback", label: "问题反馈", icon: Bug },
       { key: "update", label: "软件更新", icon: RefreshCw },
       { key: "about", label: "关于", icon: Info },
     ],
@@ -172,6 +175,7 @@ export function SettingsDialog() {
               {category === "archives" && <ArchivedTasksSection />}
               {category === "appearance" && <AppearanceSection />}
               {category === "diagnostics" && <RuntimeDiagnosticsSection />}
+              {category === "feedback" && <FeedbackSection />}
               {category === "update" && <UpdateCard />}
               {category === "about" && <AboutSection />}
             </div>

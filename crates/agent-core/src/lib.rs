@@ -2934,6 +2934,9 @@ impl ThreadManager {
         )
     }
 
+    /// Keep streamed command output bounded. Long-running commands (builds,
+    /// binary dumps) can emit hundreds of megabytes; storing it all in the
+    /// item explodes runtime memory, the rollout file, and the webview.
     pub fn command_execution_output_delta(
         &self,
         thread_id: &str,
@@ -2951,7 +2954,7 @@ impl ThreadManager {
                 .get("aggregatedOutput")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            item["aggregatedOutput"] = json!(format!("{output}{delta}"));
+            item["aggregatedOutput"] = json!(cap_aggregated_output(format!("{output}{delta}")));
             Ok(())
         })?;
         self.model_delta_notification(
@@ -4642,7 +4645,18 @@ impl ThreadManager {
             .as_mut()
             .ok_or_else(|| RpcError::internal("persistent thread is missing metadata"))?;
         metadata.updated_at_ms = loaded.record.updated_at_ms;
-        metadata.title = loaded.record.name.clone().unwrap_or_default();
+        match loaded.record.name.as_deref().map(str::trim) {
+            Some(name) if !name.is_empty() => metadata.title = name.into(),
+            // An unnamed thread must not clear a title the host application
+            // wrote to the index (e.g. desktop-generated conversation titles).
+            _ => {
+                if let Ok(Some(existing)) = self.inner.store.thread(&metadata.id) {
+                    if !existing.title.trim().is_empty() {
+                        metadata.title = existing.title;
+                    }
+                }
+            }
+        }
         metadata.preview = loaded.record.preview.clone();
         metadata.canonical = Some(serde_json::to_value(&loaded.record).map_err(json_error)?);
         self.inner
@@ -6853,6 +6867,29 @@ fn decode_cursor(cursor: &str) -> RpcResult<ThreadCursor> {
 
 fn milliseconds_to_seconds(milliseconds: u64) -> i64 {
     i64::try_from(milliseconds / 1_000).unwrap_or(i64::MAX)
+}
+
+/// Upper bound for a command execution's aggregated output kept on the item.
+/// The model-facing output is truncated separately by the exec tool; this cap
+/// only protects runtime memory, rollout size, and the client UI.
+const AGGREGATED_OUTPUT_MAX_CHARS: usize = 200_000;
+
+fn cap_aggregated_output(output: String) -> String {
+    if output.chars().count() <= AGGREGATED_OUTPUT_MAX_CHARS {
+        return output;
+    }
+    let head_chars = AGGREGATED_OUTPUT_MAX_CHARS / 4;
+    let tail_chars = AGGREGATED_OUTPUT_MAX_CHARS - head_chars;
+    let head: String = output.chars().take(head_chars).collect();
+    let tail_start = output
+        .char_indices()
+        .rev()
+        .nth(tail_chars.saturating_sub(1))
+        .map_or(0, |(index, _)| index);
+    format!(
+        "{head}\n… output truncated …\n{}",
+        &output[tail_start..]
+    )
 }
 
 fn now_ms() -> u64 {

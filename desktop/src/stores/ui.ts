@@ -17,6 +17,7 @@ export type SettingsCategory =
   | "archives"
   | "appearance"
   | "diagnostics"
+  | "feedback"
   | "update"
   | "about";
 

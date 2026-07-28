@@ -159,6 +159,7 @@ pub fn run() {
         .manage(commands::hotkey::HotkeyState::default())
         .setup(|app| {
             let handle = app.handle().clone();
+            commands::feedback::install_panic_hook(&handle);
             mcp::DesktopMcpHost::install(&handle)?;
             // Build the capsule up-front (hidden, non-focusing) so a hotkey press
             // shows it instantly, and bind the stored dictation trigger.
@@ -257,6 +258,7 @@ pub fn run() {
             commands::conversations::archive_project_conversations,
             commands::conversations::delete_conversation,
             commands::titles::generate_conversation_title,
+            commands::feedback::read_native_error_log,
             commands::projects::list_projects,
             commands::projects::add_project,
             commands::projects::touch_project,

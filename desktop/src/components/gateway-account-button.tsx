@@ -155,7 +155,7 @@ export function GatewayAccountButton() {
       ? "登录失败，点击菜单重试"
       : gatewaySupported
         ? "同步账号与额度"
-        : "本地模式";
+        : "本地模式 · 中转站暂不可达";
   const avatarUrl = loggedIn ? virtualAvatarUrl(account!) : undefined;
   const initials = accountInitials(account);
 
@@ -224,18 +224,30 @@ export function GatewayAccountButton() {
                   <CircleGauge />
                   <span>额度中心</span>
                 </DropdownMenuItem>
-              ) : gatewaySupported ? (
+              ) : provider ? (
+                // Keep the login entry visible even in local mode (discovery
+                // unreachable) — clicking retries discovery via the login
+                // flow, so users are never left without a way to sign in.
                 <DropdownMenuItem
                   className="min-h-9 gap-2 px-2"
                   disabled={authPending}
-                  onSelect={() => login.mutate()}
+                  onSelect={() => {
+                    void invalidateAccountState();
+                    login.mutate();
+                  }}
                 >
                   {login.isPending ? (
                     <Loader2 className="animate-spin" />
                   ) : (
                     <LogIn />
                   )}
-                  <span>{login.isError ? "重新登录" : "登录中转站"}</span>
+                  <span>
+                    {login.isError
+                      ? "重新登录"
+                      : gatewaySupported
+                        ? "登录中转站"
+                        : "重试连接并登录"}
+                  </span>
                 </DropdownMenuItem>
               ) : null}
 

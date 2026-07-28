@@ -192,6 +192,19 @@ const contextCommand = (
   }
 };
 
+/**
+ * Display cap for tool output held in memory. Legacy transcripts may carry
+ * unbounded outputs; rendering them wholesale can OOM the webview renderer.
+ */
+const TOOL_OUTPUT_MAX_CHARS = 120_000;
+
+const capToolOutput = (output: string | undefined): string | undefined => {
+  if (output == null || output.length <= TOOL_OUTPUT_MAX_CHARS) return output;
+  const head = Math.floor(TOOL_OUTPUT_MAX_CHARS / 4);
+  const tail = TOOL_OUTPUT_MAX_CHARS - head;
+  return `${output.slice(0, head)}\n… 输出过长，已省略中间部分 …\n${output.slice(-tail)}`;
+};
+
 const normalizePermissionDecision = (
   decision: StoredMessage["decision"],
 ): PermissionDecision | undefined => {
@@ -250,12 +263,13 @@ export const restoreConversationItems = (
             : m.toolStatus === "error" || m.error
               ? "error"
               : "success",
-        output:
+        output: capToolOutput(
           m.toolStatus === "running"
             ? m.toolOutput
               ? `${m.toolOutput}\n\n[上次运行未正常结束]`
               : "[上次运行未正常结束]"
             : m.toolOutput,
+        ),
         durationMs: m.toolDurationMs,
         exitCode: m.toolExitCode,
         timedOut: m.toolTimedOut,
@@ -1233,7 +1247,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
                     it.status === "running"
                       ? {
                           ...it,
-                          output: event.output,
+                          output: capToolOutput(event.output),
                           durationMs: event.elapsedMs,
                           truncated: event.truncated,
                         }
@@ -1255,7 +1269,7 @@ export const useChatStore = create<ChatState>()((set, get) => {
                             : event.isError
                               ? "error"
                               : "success",
-                          output: event.output,
+                          output: capToolOutput(event.output),
                           durationMs: event.durationMs,
                           exitCode: event.exitCode,
                           timedOut: event.timedOut,

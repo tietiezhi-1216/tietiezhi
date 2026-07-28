@@ -767,14 +767,8 @@ fn load_runtime_conversation(
     let indexed = store
         .thread(id)
         .map_err(|error| format!("读取任务索引失败：{error}"))?;
-    let path = indexed
-        .as_ref()
-        .filter(|thread| thread.rollout_path == expected_rollout_path)
-        .map(|thread| thread.rollout_path.clone())
-        .unwrap_or(expected_rollout_path);
-    let recovery = store
-        .recover_rollout(&path)
-        .map_err(|error| format!("恢复任务 rollout 失败：{error}"))?;
+    // Canonical threads never read the rollout here, so the (potentially very
+    // large) rollout.jsonl parse below only runs for legacy recovery paths.
     if let Some(metadata) = indexed
         .as_ref()
         .filter(|metadata| metadata.canonical.is_some())
@@ -814,6 +808,14 @@ fn load_runtime_conversation(
         return Ok(conversation);
     }
 
+    let path = indexed
+        .as_ref()
+        .filter(|thread| thread.rollout_path == expected_rollout_path)
+        .map(|thread| thread.rollout_path.clone())
+        .unwrap_or(expected_rollout_path);
+    let recovery = store
+        .recover_rollout(&path)
+        .map_err(|error| format!("恢复任务 rollout 失败：{error}"))?;
     let mut rollout_conversation = conversation_from_recovery(&recovery, id);
     if let Some(conversation) = &mut rollout_conversation {
         replay_trailing_events(conversation, &recovery);
@@ -1009,9 +1011,15 @@ fn with_store<T>(
     operation: impl FnOnce(&StateStore) -> Result<T, String>,
 ) -> Result<T, String> {
     let _guard = store_lock().lock().map_err(|_| "任务存储锁已损坏")?;
-    migrate_legacy(app)?;
     let store = state_store(app)?;
-    reconcile_runtime_store(app, &store)?;
+    // Legacy migration and index reconciliation are startup repairs; running
+    // them on every conversation command made each click scan every task dir.
+    static BOOTSTRAPPED: OnceLock<()> = OnceLock::new();
+    if BOOTSTRAPPED.get().is_none() {
+        migrate_legacy(app)?;
+        reconcile_runtime_store(app, &store)?;
+        let _ = BOOTSTRAPPED.set(());
+    }
     operation(&store)
 }
 
@@ -1026,7 +1034,13 @@ fn list_conversation_metas(
         .map(|thread| {
             Ok(ConversationMeta {
                 id: thread.id,
-                title: thread.title,
+                // The runtime may transiently hold an unnamed thread; never
+                // surface an empty sidebar row for it.
+                title: if thread.title.trim().is_empty() {
+                    DEFAULT_CONVERSATION_TITLE.into()
+                } else {
+                    thread.title
+                },
                 created_at: thread.created_at_ms,
                 updated_at: thread.updated_at_ms,
                 project_id: thread.project_id,
@@ -1112,21 +1126,34 @@ fn sensitive_value_pattern() -> &'static regex::Regex {
     })
 }
 
-#[tauri::command]
-pub fn list_conversations(app: AppHandle) -> Result<Vec<ConversationMeta>, String> {
-    with_store(&app, |store| list_conversation_metas(store, false))
+/// Conversation commands run heavy filesystem work; keep them off the main
+/// thread (sync Tauri commands execute on it and freeze the whole window).
+async fn run_blocking<T: Send + 'static>(
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("任务存储线程异常：{error}"))?
 }
 
 #[tauri::command]
-pub fn list_archived_conversations(app: AppHandle) -> Result<Vec<ConversationMeta>, String> {
-    with_store(&app, |store| list_conversation_metas(store, true))
+pub async fn list_conversations(app: AppHandle) -> Result<Vec<ConversationMeta>, String> {
+    run_blocking(move || with_store(&app, |store| list_conversation_metas(store, false))).await
 }
 
 #[tauri::command]
-pub fn load_conversation(app: AppHandle, id: String) -> Result<Conversation, String> {
-    with_store(&app, |store| {
-        load_runtime_conversation(&app, store, &id, true)
+pub async fn list_archived_conversations(app: AppHandle) -> Result<Vec<ConversationMeta>, String> {
+    run_blocking(move || with_store(&app, |store| list_conversation_metas(store, true))).await
+}
+
+#[tauri::command]
+pub async fn load_conversation(app: AppHandle, id: String) -> Result<Conversation, String> {
+    run_blocking(move || {
+        with_store(&app, |store| {
+            load_runtime_conversation(&app, store, &id, true)
+        })
     })
+    .await
 }
 
 pub(crate) fn task_context(
@@ -1147,21 +1174,28 @@ pub(crate) fn task_context(
 }
 
 #[tauri::command]
-pub fn save_conversation(
+pub async fn save_conversation(
     app: AppHandle,
+    conversation: Conversation,
+) -> Result<SaveConversationResult, String> {
+    run_blocking(move || save_conversation_blocking(&app, conversation)).await
+}
+
+fn save_conversation_blocking(
+    app: &AppHandle,
     mut conversation: Conversation,
 ) -> Result<SaveConversationResult, String> {
-    with_store(&app, |store| {
+    with_store(app, |store| {
         validate_id(&conversation.id)?;
         if conversation.title.trim().is_empty() {
             conversation.title = DEFAULT_CONVERSATION_TITLE.into();
         }
         if !conversation.project_id.is_empty()
-            && super::projects::find_project(&app, &conversation.project_id)?.is_none()
+            && super::projects::find_project(app, &conversation.project_id)?.is_none()
         {
             return Err("任务关联的项目不存在".into());
         }
-        match load_runtime_conversation(&app, store, &conversation.id, true) {
+        match load_runtime_conversation(app, store, &conversation.id, true) {
             Ok(existing) => {
                 conversation.created_at = conversation_created_at(&existing);
                 conversation.archived_at = existing.archived_at;
@@ -1180,7 +1214,7 @@ pub fn save_conversation(
         }
         conversation.workspace.clear();
         conversation.updated_at = now_ms();
-        persist_conversation(&app, store, &conversation)?;
+        persist_conversation(app, store, &conversation)?;
         Ok(SaveConversationResult {
             updated_at: conversation.updated_at,
             title: conversation.title,
@@ -1227,28 +1261,46 @@ fn set_archived_at(
 }
 
 #[tauri::command]
-pub fn archive_conversation(app: AppHandle, id: String) -> Result<(), String> {
-    with_store(&app, |store| set_archived_at(&app, store, &id, now_ms()))
+pub async fn archive_conversation(app: AppHandle, id: String) -> Result<(), String> {
+    run_blocking(move || with_store(&app, |store| set_archived_at(&app, store, &id, now_ms())))
+        .await
 }
 
 #[tauri::command]
-pub fn restore_conversation(app: AppHandle, id: String) -> Result<(), String> {
-    with_store(&app, |store| set_archived_at(&app, store, &id, 0))
+pub async fn restore_conversation(app: AppHandle, id: String) -> Result<(), String> {
+    run_blocking(move || with_store(&app, |store| set_archived_at(&app, store, &id, 0))).await
 }
 
 #[tauri::command]
-pub fn set_conversation_pinned(app: AppHandle, id: String, pinned: bool) -> Result<u64, String> {
-    with_store(&app, |store| {
-        let mut conversation = load_runtime_conversation(&app, store, &id, true)?;
-        conversation.pinned_at = if pinned { now_ms() } else { 0 };
-        persist_conversation(&app, store, &conversation)?;
-        Ok(conversation.pinned_at)
+pub async fn set_conversation_pinned(
+    app: AppHandle,
+    id: String,
+    pinned: bool,
+) -> Result<u64, String> {
+    run_blocking(move || {
+        with_store(&app, |store| {
+            let mut conversation = load_runtime_conversation(&app, store, &id, true)?;
+            conversation.pinned_at = if pinned { now_ms() } else { 0 };
+            persist_conversation(&app, store, &conversation)?;
+            Ok(conversation.pinned_at)
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn archive_project_conversations(app: AppHandle, project_id: String) -> Result<u64, String> {
-    with_store(&app, |store| {
+pub async fn archive_project_conversations(
+    app: AppHandle,
+    project_id: String,
+) -> Result<u64, String> {
+    run_blocking(move || archive_project_conversations_blocking(&app, &project_id)).await
+}
+
+fn archive_project_conversations_blocking(
+    app: &AppHandle,
+    project_id: &str,
+) -> Result<u64, String> {
+    with_store(app, |store| {
         let archived_at = now_ms();
         let mut count = 0;
         let active = store
@@ -1258,12 +1310,12 @@ pub fn archive_project_conversations(app: AppHandle, project_id: String) -> Resu
             if thread.project_id != project_id {
                 continue;
             }
-            let Ok(mut conversation) = load_runtime_conversation(&app, store, &thread.id, true)
+            let Ok(mut conversation) = load_runtime_conversation(app, store, &thread.id, true)
             else {
                 continue;
             };
             conversation.archived_at = archived_at;
-            persist_conversation(&app, store, &conversation)?;
+            persist_conversation(app, store, &conversation)?;
             count += 1;
         }
         Ok(count)
@@ -1271,8 +1323,13 @@ pub fn archive_project_conversations(app: AppHandle, project_id: String) -> Resu
 }
 
 #[tauri::command]
-pub fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
-    with_store(&app, |store| {
+pub async fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
+    run_blocking(move || delete_conversation_blocking(&app, &id)).await
+}
+
+fn delete_conversation_blocking(app: &AppHandle, id: &str) -> Result<(), String> {
+    let id = id.to_owned();
+    with_store(app, |store| {
         if store
             .thread(&id)
             .map_err(|error| format!("读取任务索引失败：{error}"))?
@@ -1280,18 +1337,18 @@ pub fn delete_conversation(app: AppHandle, id: String) -> Result<(), String> {
         {
             return Err("该任务由 Codex Runtime 管理，请使用 thread/delete".into());
         }
-        let root = task_root(&app, &id)?;
+        let root = task_root(app, &id)?;
         if !root.exists() {
             store
                 .delete_thread(&id)
                 .map_err(|error| format!("删除任务索引失败：{error}"))?;
             return Ok(());
         }
-        let project_id = load_runtime_conversation(&app, store, &id, true)
+        let project_id = load_runtime_conversation(app, store, &id, true)
             .ok()
             .map(|conversation| conversation.project_id)
             .unwrap_or_default();
-        super::workspace::cleanup_task_workspaces(&app, &project_id, &root);
+        super::workspace::cleanup_task_workspaces(app, &project_id, &root);
         std::fs::remove_dir_all(root).map_err(|e| format!("删除任务失败：{e}"))?;
         store
             .delete_thread(&id)

@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppMessageHost } from "@/components/app-message";
 import { ThemeProvider } from "@/components/theme-provider";
 import App from "@/App";
+import { installGlobalErrorCapture } from "@/lib/error-report";
 import "@/index.css";
 
 const queryClient = new QueryClient();
@@ -15,6 +16,7 @@ async function bootstrap() {
     const { installTauriMock } = await import("@/dev/tauri-mock");
     installTauriMock();
   }
+  installGlobalErrorCapture();
 
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>

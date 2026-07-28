@@ -1,5 +1,6 @@
+use serde_json::json;
 #[cfg(test)]
-use serde_json::{json, Value};
+use serde_json::Value;
 use tauri::{AppHandle, State};
 
 use super::conversations::{self, DEFAULT_CONVERSATION_TITLE};
@@ -18,7 +19,7 @@ pub async fn generate_conversation_title(
     user_message: String,
     assistant_message: String,
 ) -> Result<Option<String>, String> {
-    let conversation = conversations::load_conversation(app.clone(), id.clone())?;
+    let conversation = conversations::load_conversation(app.clone(), id.clone()).await?;
     if conversation.title != DEFAULT_CONVERSATION_TITLE || conversation.archived_at != 0 {
         return Ok(None);
     }
@@ -56,7 +57,39 @@ pub async fn generate_conversation_title(
     )
     .await?;
     let title = sanitize_title(&generated.text).ok_or("标题模型返回了空标题")?;
-    conversations::set_generated_title(&app, &id, &title)
+    let applied = conversations::set_generated_title(&app, &id, &title)?;
+    if let Some(applied_title) = &applied {
+        sync_runtime_thread_name(&app, &state, &id, applied_title);
+    }
+    Ok(applied)
+}
+
+/// Push the generated title into the Codex runtime's in-memory thread record.
+/// Without this the runtime's next persist writes its (empty) `name` back to
+/// the index and the sidebar title disappears until the next full save.
+fn sync_runtime_thread_name(app: &AppHandle, state: &State<'_, AppState>, id: &str, title: &str) {
+    let manager = match super::codex::thread_manager(app, state) {
+        Ok(manager) => manager,
+        Err(error) => {
+            eprintln!("[titles] 同步任务标题到 Codex Runtime 失败：{error}");
+            return;
+        }
+    };
+    let output = manager.dispatch(
+        "desktop-titles",
+        json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "method": "thread/name/set",
+            "params": {"threadId": id, "name": title},
+        }),
+    );
+    if let Some(error) = output.response.get("error") {
+        eprintln!("[titles] Codex Runtime 拒绝任务标题：{error}");
+        return;
+    }
+    if let Err(error) = super::codex::emit_notifications(app, &output.notifications) {
+        eprintln!("[titles] 广播任务标题更新失败：{error}");
+    }
 }
 
 #[cfg(test)]

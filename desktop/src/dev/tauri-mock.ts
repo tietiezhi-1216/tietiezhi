@@ -1979,6 +1979,8 @@ export function installTauriMock(): void {
     show_capsule: () => {},
     capsule_set_height: () => {},
 
+    read_native_error_log: () => "",
+
     list_conversations: () =>
       [...state.conversations.values()]
         .filter((c) => !c.archivedAt)
