@@ -186,6 +186,9 @@ pub enum ResponseEvent {
         delta: String,
     },
     ReasoningSummaryDelta {
+        /// Carried by the wire event; lets a consumer recover when an upstream
+        /// streams reasoning deltas without announcing the item first.
+        item_id: Option<String>,
         delta: String,
         summary_index: i64,
     },
@@ -195,10 +198,12 @@ pub enum ResponseEvent {
         summary_index: i64,
     },
     ReasoningContentDelta {
+        item_id: Option<String>,
         delta: String,
         content_index: i64,
     },
     ReasoningSummaryPartAdded {
+        item_id: Option<String>,
         summary_index: i64,
     },
     ModelsEtag(String),
@@ -923,6 +928,7 @@ fn process_responses_event(
         }
         "response.reasoning_summary_text.delta" => Ok(match (event.delta, event.summary_index) {
             (Some(delta), Some(summary_index)) => Some(ResponseEvent::ReasoningSummaryDelta {
+                item_id: event.item_id,
                 delta,
                 summary_index,
             }),
@@ -942,14 +948,21 @@ fn process_responses_event(
         }
         "response.reasoning_text.delta" => Ok(match (event.delta, event.content_index) {
             (Some(delta), Some(content_index)) => Some(ResponseEvent::ReasoningContentDelta {
+                item_id: event.item_id,
                 delta,
                 content_index,
             }),
             _ => None,
         }),
-        "response.reasoning_summary_part.added" => Ok(event
-            .summary_index
-            .map(|summary_index| ResponseEvent::ReasoningSummaryPartAdded { summary_index })),
+        "response.reasoning_summary_part.added" => {
+            let item_id = event.item_id;
+            Ok(event.summary_index.map(|summary_index| {
+                ResponseEvent::ReasoningSummaryPartAdded {
+                    item_id,
+                    summary_index,
+                }
+            }))
+        }
         "response.created" if event.response.is_some() => Ok(Some(ResponseEvent::Created)),
         "response.failed" => Err(classify_failed_response(event.response.as_ref())),
         "response.incomplete" => {
@@ -1418,6 +1431,15 @@ mod tests {
             (
                 json!({"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":"s"}),
                 ResponseEvent::ReasoningSummaryDelta {
+                    item_id: None,
+                    delta: "s".into(),
+                    summary_index: 0,
+                },
+            ),
+            (
+                json!({"type":"response.reasoning_summary_text.delta","item_id":"r1","summary_index":0,"delta":"s"}),
+                ResponseEvent::ReasoningSummaryDelta {
+                    item_id: Some("r1".into()),
                     delta: "s".into(),
                     summary_index: 0,
                 },
@@ -1431,15 +1453,19 @@ mod tests {
                 },
             ),
             (
-                json!({"type":"response.reasoning_text.delta","content_index":1,"delta":"r"}),
+                json!({"type":"response.reasoning_text.delta","item_id":"r1","content_index":1,"delta":"r"}),
                 ResponseEvent::ReasoningContentDelta {
+                    item_id: Some("r1".into()),
                     delta: "r".into(),
                     content_index: 1,
                 },
             ),
             (
-                json!({"type":"response.reasoning_summary_part.added","summary_index":2}),
-                ResponseEvent::ReasoningSummaryPartAdded { summary_index: 2 },
+                json!({"type":"response.reasoning_summary_part.added","item_id":"r1","summary_index":2}),
+                ResponseEvent::ReasoningSummaryPartAdded {
+                    item_id: Some("r1".into()),
+                    summary_index: 2,
+                },
             ),
             (
                 json!({"type":"response.created","response":{}}),

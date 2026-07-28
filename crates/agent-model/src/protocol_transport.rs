@@ -645,6 +645,8 @@ struct CompatibleState {
     message_id: String,
     text: String,
     message_added: bool,
+    reasoning_id: String,
+    reasoning_added: bool,
     reasoning_index: i64,
     tools: BTreeMap<usize, ToolAccumulator>,
     catalog: HashMap<String, CompatibleTool>,
@@ -662,6 +664,8 @@ impl CompatibleState {
             message_id: format!("msg_{}", Uuid::new_v4().simple()),
             text: String::new(),
             message_added: false,
+            reasoning_id: format!("rs_{}", Uuid::new_v4().simple()),
+            reasoning_added: false,
             reasoning_index: 0,
             tools: BTreeMap::new(),
             catalog,
@@ -701,7 +705,16 @@ impl CompatibleState {
     where
         F: FnMut(ResponseEvent) -> Result<(), ModelError>,
     {
+        // Announce the item before its first delta, mirroring what a native
+        // Responses stream does for the assistant message.
+        if !self.reasoning_added {
+            self.reasoning_added = true;
+            on_event(ResponseEvent::OutputItemAdded(json!({
+                "type":"reasoning","id":self.reasoning_id,"summary":[],"content":[]
+            })))?;
+        }
         on_event(ResponseEvent::ReasoningContentDelta {
+            item_id: Some(self.reasoning_id.clone()),
             delta: delta.to_owned(),
             content_index: self.reasoning_index,
         })

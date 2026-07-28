@@ -9881,22 +9881,40 @@ impl ResponseProjection {
                     .agent_message_delta(thread_id, turn_id, item_id, &delta)
                     .map_err(core_model_error)
             }
-            ResponseEvent::ReasoningSummaryPartAdded { summary_index } => {
+            ResponseEvent::ReasoningSummaryPartAdded {
+                item_id,
+                summary_index,
+            } => {
                 self.model_output_seen = true;
-                let item_id = self.reasoning_item()?;
-                manager
-                    .reasoning_summary_part_added(thread_id, turn_id, item_id, summary_index)
-                    .map_err(core_model_error)
+                let (item_id, mut notifications) =
+                    self.ensure_reasoning_item(manager, thread_id, turn_id, item_id)?;
+                notifications.extend(
+                    manager
+                        .reasoning_summary_part_added(thread_id, turn_id, &item_id, summary_index)
+                        .map_err(core_model_error)?,
+                );
+                Ok(notifications)
             }
             ResponseEvent::ReasoningSummaryDelta {
+                item_id,
                 delta,
                 summary_index,
             } => {
                 self.model_output_seen = true;
-                let item_id = self.reasoning_item()?;
-                manager
-                    .reasoning_summary_delta(thread_id, turn_id, item_id, summary_index, &delta)
-                    .map_err(core_model_error)
+                let (item_id, mut notifications) =
+                    self.ensure_reasoning_item(manager, thread_id, turn_id, item_id)?;
+                notifications.extend(
+                    manager
+                        .reasoning_summary_delta(
+                            thread_id,
+                            turn_id,
+                            &item_id,
+                            summary_index,
+                            &delta,
+                        )
+                        .map_err(core_model_error)?,
+                );
+                Ok(notifications)
             }
             ResponseEvent::ReasoningSummaryDone {
                 item_id,
@@ -9910,14 +9928,19 @@ impl ResponseProjection {
                 Ok(Vec::new())
             }
             ResponseEvent::ReasoningContentDelta {
+                item_id,
                 delta,
                 content_index,
             } => {
                 self.model_output_seen = true;
-                let item_id = self.reasoning_item()?;
-                manager
-                    .reasoning_text_delta(thread_id, turn_id, item_id, content_index, &delta)
-                    .map_err(core_model_error)
+                let (item_id, mut notifications) =
+                    self.ensure_reasoning_item(manager, thread_id, turn_id, item_id)?;
+                notifications.extend(
+                    manager
+                        .reasoning_text_delta(thread_id, turn_id, &item_id, content_index, &delta)
+                        .map_err(core_model_error)?,
+                );
+                Ok(notifications)
             }
             ResponseEvent::ToolCallInputDelta {
                 item_id,
@@ -10095,10 +10118,38 @@ impl ResponseProjection {
         Ok(notifications)
     }
 
-    fn reasoning_item(&self) -> Result<&str, ModelError> {
-        self.current_reasoning_item.as_deref().ok_or_else(|| {
-            ModelError::Consumer("reasoning delta arrived before reasoning item".into())
-        })
+    /// Resolve the reasoning item a delta belongs to, opening one on the fly.
+    ///
+    /// Strictly compliant Responses streams announce the reasoning item with
+    /// `response.output_item.added` before any delta, but some upstreams (and
+    /// gateway conversion layers) stream deltas first. Failing the whole turn
+    /// over event ordering loses an otherwise good answer, so synthesize the
+    /// missing item and keep going.
+    fn ensure_reasoning_item(
+        &mut self,
+        manager: &ThreadManager,
+        thread_id: &str,
+        turn_id: &str,
+        wire_item_id: Option<String>,
+    ) -> Result<(String, Vec<RoutedNotification>), ModelError> {
+        if let Some(item_id) = &self.current_reasoning_item {
+            return Ok((item_id.clone(), Vec::new()));
+        }
+        let item_id = wire_item_id.unwrap_or_else(|| format!("reasoning-{}", Uuid::new_v4()));
+        let notifications = manager
+            .model_item_started(
+                thread_id,
+                turn_id,
+                json!({
+                    "type":"reasoning",
+                    "id":item_id,
+                    "summary":[],
+                    "content":[]
+                }),
+            )
+            .map_err(core_model_error)?;
+        self.current_reasoning_item = Some(item_id.clone());
+        Ok((item_id, notifications))
     }
 
     fn take_needs_follow_up(&mut self) -> bool {
@@ -10653,6 +10704,87 @@ mod tests {
         assert_eq!(forked.len(), 3);
         assert_eq!(forked[1]["call_id"], "old");
         assert_eq!(forked[2]["call_id"], "old");
+    }
+
+    #[test]
+    fn reasoning_delta_without_announced_item_opens_one_instead_of_failing() {
+        let temp = TempDir::new().unwrap();
+        let cwd = temp.path().join("workspace");
+        std::fs::create_dir(&cwd).unwrap();
+        let manager = ThreadManager::open(
+            temp.path().join("state"),
+            temp.path().join("threads"),
+            RuntimeDefaults {
+                model: "gpt-test".into(),
+                model_provider: "test".into(),
+                cwd: cwd.clone(),
+                ..RuntimeDefaults::default()
+            },
+        )
+        .unwrap();
+        let started = manager.dispatch(
+            "desktop",
+            json!({"id":1,"method":"thread/start","params":{}}),
+        );
+        let thread_id = started.response["result"]["thread"]["id"].as_str().unwrap();
+        let turn = manager.dispatch(
+            "desktop",
+            json!({
+                "id":2,
+                "method":"turn/start",
+                "params":{
+                    "threadId":thread_id,
+                    "input":[{"type":"text","text":"think","textElements":[]}]
+                }
+            }),
+        );
+        let turn_id = turn.response["result"]["turn"]["id"].as_str().unwrap();
+        let mut projection = ResponseProjection::new("gpt-test".into(), None, cwd);
+
+        // No response.output_item.added for the reasoning item: some gateway
+        // conversion layers stream the delta first.
+        let notifications = projection
+            .apply(
+                &manager,
+                thread_id,
+                turn_id,
+                ResponseEvent::ReasoningSummaryDelta {
+                    item_id: Some("rs_gateway".into()),
+                    delta: "分析中".into(),
+                    summary_index: 0,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            ["item/started", "item/reasoning/summaryTextDelta"]
+        );
+        assert_eq!(notifications[0].params["item"]["id"], "rs_gateway");
+        assert_eq!(projection.current_reasoning_item.as_deref(), Some("rs_gateway"));
+
+        // The item is opened once; later deltas reuse it.
+        let followup = projection
+            .apply(
+                &manager,
+                thread_id,
+                turn_id,
+                ResponseEvent::ReasoningContentDelta {
+                    item_id: None,
+                    delta: "继续".into(),
+                    content_index: 0,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            followup
+                .iter()
+                .map(|notification| notification.method.as_str())
+                .collect::<Vec<_>>(),
+            ["item/reasoning/textDelta"]
+        );
     }
 
     #[test]
