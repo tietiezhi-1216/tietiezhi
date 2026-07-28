@@ -357,10 +357,14 @@ prefix_rule(pattern = ["curl"], decision = "forbidden", justification = "offline
     fn alternatives_and_host_executable_match() {
         let executable = std::env::current_exe().unwrap();
         let executable_name = executable.file_name().unwrap().to_string_lossy();
+        // Rules are Starlark: a Windows path pasted raw would have its
+        // backslashes read as escape sequences. JSON quoting escapes them.
+        let quote = |value: &str| serde_json::to_string(value).unwrap();
         let source = format!(
-            "host_executable(name = \"{executable_name}\", paths = [\"{}\"])\n\
-             prefix_rule(pattern = [\"{executable_name}\", [\"check\", \"test\"]], decision = \"allow\")",
-            executable.display()
+            "host_executable(name = {name}, paths = [{path}])\n\
+             prefix_rule(pattern = [{name}, [\"check\", \"test\"]], decision = \"allow\")",
+            name = quote(&executable_name),
+            path = quote(&executable.to_string_lossy())
         );
         let runtime = ExecPolicyRuntime::parse("test.rules", &source).unwrap();
         let command = vec![executable.to_string_lossy().into_owned(), "test".into()];

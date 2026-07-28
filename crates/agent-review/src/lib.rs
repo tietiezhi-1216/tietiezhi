@@ -587,13 +587,26 @@ mod tests {
 
     #[test]
     fn review_output_is_structured_and_rendered_with_locations() {
-        let output = parse_review_output(
-            r#"{"findings":[{"title":"[P1] Fix","body":"Broken.","confidence_score":0.9,"priority":1,"code_location":{"absolute_file_path":"/tmp/a.rs","line_range":{"start":2,"end":3}}}],"overall_correctness":"patch is incorrect","overall_explanation":"One bug.","overall_confidence_score":0.8}"#,
-        )
+        // Findings are kept only when the location is absolute, and what
+        // counts as absolute is platform-specific (Windows needs a prefix).
+        let path = if cfg!(windows) { r"C:\tmp\a.rs" } else { "/tmp/a.rs" };
+        let output = parse_review_output(&format!(
+            r#"{{"findings":[{{"title":"[P1] Fix","body":"Broken.","confidence_score":0.9,"priority":1,"code_location":{{"absolute_file_path":{},"line_range":{{"start":2,"end":3}}}}}}],"overall_correctness":"patch is incorrect","overall_explanation":"One bug.","overall_confidence_score":0.8}}"#,
+            serde_json::to_string(path).unwrap()
+        ))
         .unwrap();
         let rendered = render_review_output(&output);
         assert!(rendered.contains("[P1] Fix"));
-        assert!(rendered.contains("/tmp/a.rs:2-3"));
+        assert!(rendered.contains(&format!("{path}:2-3")));
+    }
+
+    #[test]
+    fn review_findings_with_relative_locations_are_dropped() {
+        let output = parse_review_output(
+            r#"{"findings":[{"title":"[P1] Fix","body":"Broken.","confidence_score":0.9,"priority":1,"code_location":{"absolute_file_path":"src/a.rs","line_range":{"start":2,"end":3}}}],"overall_correctness":"patch is incorrect","overall_explanation":"One bug.","overall_confidence_score":0.8}"#,
+        )
+        .unwrap();
+        assert!(output.findings.is_empty());
     }
 
     #[test]

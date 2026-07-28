@@ -1143,18 +1143,37 @@ mod tests {
         })
     }
 
-    fn write_hook(root: &Path, script: &str, event: &str) {
+    /// Hook scripts run under `/bin/sh` on Unix and PowerShell on Windows, so
+    /// every fixture supplies both spellings.
+    struct Script {
+        posix: String,
+        windows: String,
+    }
+
+    /// Drain stdin, then write `output` to stdout with no trailing newline.
+    fn emit(output: &str) -> Script {
+        Script {
+            posix: format!("cat >/dev/null; printf '%s' '{output}'"),
+            windows: format!(
+                "$null = [Console]::In.ReadToEnd(); [Console]::Out.Write('{}')",
+                output.replace('\'', "''")
+            ),
+        }
+    }
+
+    fn write_hook(root: &Path, script: Script, event: &str) {
         write_hook_with_timeout(root, script, event, 5);
     }
 
-    fn write_hook_with_timeout(root: &Path, script: &str, event: &str, timeout: u64) {
+    fn write_hook_with_timeout(root: &Path, script: Script, event: &str, timeout: u64) {
         let file = json!({
             "hooks": {
                 event: [{
                     "matcher": ".*",
                     "hooks": [{
                         "type": "command",
-                        "command": script,
+                        "command": script.posix,
+                        "commandWindows": script.windows,
                         "timeout": timeout
                     }]
                 }]
@@ -1179,7 +1198,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         write_hook(
             root.path(),
-            "cat >/dev/null; printf '%s' '{\"hookSpecificOutput\":{\"additionalContext\":\"remember this\"}}'",
+            emit(r#"{"hookSpecificOutput":{"additionalContext":"remember this"}}"#),
             "PreToolUse",
         );
         let result = engine(root.path())
@@ -1204,7 +1223,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         write_hook(
             root.path(),
-            "cat >/dev/null; printf '%s' '{\"hookSpecificOutput\":{\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"blocked\"}}'",
+            emit(
+                r#"{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"blocked"}}"#,
+            ),
             "PreToolUse",
         );
         let result = engine(root.path())
@@ -1219,7 +1240,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         write_hook(
             root.path(),
-            "cat >/dev/null; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\",\"message\":\"policy denied\"}}}'",
+            emit(
+                r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"policy denied"}}}"#,
+            ),
             "PermissionRequest",
         );
         let result = engine(root.path())
@@ -1234,14 +1257,23 @@ mod tests {
     #[tokio::test]
     async fn timeout_and_invalid_output_fail_continue() {
         let root = tempfile::tempdir().unwrap();
-        write_hook_with_timeout(root.path(), "sleep 2", "PreToolUse", 1);
+        write_hook_with_timeout(
+            root.path(),
+            Script {
+                posix: "sleep 2".into(),
+                windows: "Start-Sleep -Seconds 2".into(),
+            },
+            "PreToolUse",
+            1,
+        );
         let result = engine(root.path())
             .dispatch(request(root.path(), HookEventName::PreToolUse))
             .await;
         assert_eq!(result.runs[0].completed.status, HookRunStatus::Failed);
         assert!(result.blocked_reason.is_none());
 
-        write_hook(root.path(), "cat >/dev/null; printf nope", "PreToolUse");
+        // Valid exit, unparsable stdout: the run fails without blocking.
+        write_hook(root.path(), emit("nope"), "PreToolUse");
         let result = engine(root.path())
             .dispatch(request(root.path(), HookEventName::PreToolUse))
             .await;
@@ -1255,9 +1287,21 @@ mod tests {
         fs::create_dir(root.path().join(".git")).unwrap();
         fs::create_dir(root.path().join(".codex")).unwrap();
         let path = root.path().join(".codex/hooks.json");
+        let script = emit("{}");
         fs::write(
             &path,
-            br#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"printf '{}'"}]}]}}"#,
+            serde_json::to_vec(&json!({
+                "hooks": {
+                    "SessionStart": [{
+                        "hooks": [{
+                            "type": "command",
+                            "command": script.posix,
+                            "commandWindows": script.windows
+                        }]
+                    }]
+                }
+            }))
+            .unwrap(),
         )
         .unwrap();
         let runtime = HookEngine::new(HookPaths {
