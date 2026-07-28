@@ -5,7 +5,9 @@ import path from "node:path";
 
 const desktop = path.resolve(import.meta.dirname, "..");
 const repo = path.resolve(desktop, "..");
-const read = (relative) => fs.readFileSync(path.join(repo, relative), "utf8");
+// Windows runners check out with CRLF; normalize so `\n` matching works.
+const read = (relative) =>
+  fs.readFileSync(path.join(repo, relative), "utf8").replaceAll("\r\n", "\n");
 const json = (relative) => JSON.parse(read(relative));
 
 const baseline = json("shared/codex/v2/upstream-baseline.json");
