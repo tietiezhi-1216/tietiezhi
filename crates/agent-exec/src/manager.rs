@@ -563,17 +563,25 @@ fn poll_snapshot(session: &Session, cursor: usize) -> Result<PollResult, ExecErr
 mod tests {
     use super::*;
 
-    fn shell_command(script: &str) -> Vec<String> {
+    /// Fixtures run under `/bin/sh` on Unix and PowerShell on Windows, which
+    /// share no syntax, so each caller supplies both spellings.
+    fn shell_command(posix: &str, windows: &str) -> Vec<String> {
         if cfg!(windows) {
             vec![
                 "powershell.exe".into(),
                 "-NoProfile".into(),
                 "-Command".into(),
-                script.into(),
+                windows.into(),
             ]
         } else {
-            vec!["/bin/sh".into(), "-c".into(), script.into()]
+            vec!["/bin/sh".into(), "-c".into(), posix.into()]
         }
+    }
+
+    /// For fixtures that are inherently Unix-only (PTY, process groups).
+    #[cfg(unix)]
+    fn sh_command(script: &str) -> Vec<String> {
+        vec!["/bin/sh".into(), "-c".into(), script.into()]
     }
 
     #[tokio::test]
@@ -585,7 +593,10 @@ mod tests {
             .spawn(
                 id.clone(),
                 ExecRequest::buffered(
-                    shell_command("printf out; printf err >&2"),
+                    shell_command(
+                        "printf out; printf err >&2",
+                        "[Console]::Out.Write('out'); [Console]::Error.Write('err')",
+                    ),
                     cwd.path().to_path_buf(),
                 ),
             )
@@ -632,8 +643,10 @@ mod tests {
         let cwd = tempfile::tempdir().unwrap();
         let manager = ExecManager::default();
         let id = SessionId::new("test", "cap");
-        let mut request =
-            ExecRequest::buffered(shell_command("printf 123456789"), cwd.path().to_path_buf());
+        let mut request = ExecRequest::buffered(
+            shell_command("printf 123456789", "[Console]::Out.Write('123456789')"),
+            cwd.path().to_path_buf(),
+        );
         request.output_bytes_cap = Some(4);
         manager.spawn(id.clone(), request).await.unwrap();
         let result = manager.wait(&id, None).await.unwrap().unwrap();
@@ -647,11 +660,7 @@ mod tests {
         let manager = ExecManager::default();
         let id = SessionId::new("test", "timeout");
         let mut request = ExecRequest::buffered(
-            if cfg!(windows) {
-                shell_command("Start-Sleep -Seconds 10")
-            } else {
-                shell_command("sleep 10")
-            },
+            shell_command("sleep 10", "Start-Sleep -Seconds 10"),
             cwd.path().to_path_buf(),
         );
         request.timeout = Some(Duration::from_millis(30));
@@ -668,7 +677,7 @@ mod tests {
         let manager = ExecManager::default();
         let id = SessionId::new("test", "pty");
         let mut request = ExecRequest::buffered(
-            shell_command("stty size; read line; stty size"),
+            sh_command("stty size; read line; stty size"),
             cwd.path().to_path_buf(),
         );
         request.tty = true;
@@ -701,7 +710,7 @@ mod tests {
             .spawn(
                 id.clone(),
                 ExecRequest::buffered(
-                    shell_command("sleep 30 & child=$!; printf '%s\\n' \"$child\"; wait"),
+                    sh_command("sleep 30 & child=$!; printf '%s\\n' \"$child\"; wait"),
                     cwd.path().to_path_buf(),
                 ),
             )
