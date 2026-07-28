@@ -38,6 +38,8 @@ jobs:
             os: windows-latest
             bundles: nsis
     runs-on: ${{ matrix.os }}
+    # A hung test must fail here, not idle until the 6h platform ceiling.
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: desktop

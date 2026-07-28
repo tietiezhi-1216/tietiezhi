@@ -19,6 +19,7 @@ use rand::{RngCore, SeedableRng};
 use serde::{Deserialize, Serialize};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_CANCELLED, ERROR_INSUFFICIENT_BUFFER, GetLastError, HLOCAL, LocalFree,
+    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::NetworkManagement::NetManagement::{
     LOCALGROUP_INFO_1, LOCALGROUP_MEMBERS_INFO_3, NERR_Success, NetLocalGroupAdd,
@@ -65,6 +66,9 @@ const USERS_GROUP: &str = "TietiezhiSandboxUsers";
 /// the whole sandbox provisioning. Group names allow up to 256, so only the
 /// user names are constrained here.
 const MAX_LOCAL_USERNAME_LEN: usize = 20;
+
+/// Upper bound for the elevated provisioning helper (users, firewall, WFP).
+const ELEVATED_SETUP_TIMEOUT_MS: u32 = 180_000;
 const _: () = assert!(OFFLINE_USERNAME.len() <= MAX_LOCAL_USERNAME_LEN);
 const _: () = assert!(ONLINE_USERNAME.len() <= MAX_LOCAL_USERNAME_LEN);
 const USERS_GROUP_COMMENT: &str = "Tietiezhi sandbox internal group (managed)";
@@ -314,8 +318,16 @@ fn run_elevated_setup(request: &SetupRequest) -> Result<()> {
         }
         return Err(anyhow!("ShellExecuteExW(runas) failed: {error}"));
     }
-    unsafe {
-        WaitForSingleObject(info.hProcess, INFINITE);
+    // Provisioning is bounded work. Waiting forever on the elevated helper
+    // means a stalled helper hangs the caller with no way out, so give up
+    // with a clear error instead.
+    let waited = unsafe { WaitForSingleObject(info.hProcess, ELEVATED_SETUP_TIMEOUT_MS) };
+    if waited == WAIT_TIMEOUT {
+        unsafe { CloseHandle(info.hProcess) };
+        return Err(anyhow!(
+            "elevated Windows sandbox setup did not finish within {}s",
+            ELEVATED_SETUP_TIMEOUT_MS / 1_000
+        ));
     }
     let mut exit_code = 1;
     unsafe {

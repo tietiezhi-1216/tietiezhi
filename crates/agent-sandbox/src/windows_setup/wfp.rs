@@ -53,13 +53,14 @@ use windows_sys::Win32::Security::Authorization::EXPLICIT_ACCESS_W;
 use windows_sys::Win32::Security::Authorization::GRANT_ACCESS;
 use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
 use windows_sys::Win32::System::Rpc::RPC_C_AUTHN_DEFAULT;
-use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::core::GUID;
 
 use filter_specs::ConditionSpec;
 use filter_specs::FILTER_SPECS;
 use filter_specs::FilterSpec;
 
+/// Bounded wait for the machine-wide WFP transaction lock.
+const TRANSACTION_WAIT_TIMEOUT_MS: u32 = 30_000;
 const SESSION_NAME: &str = "Tietiezhi Windows Sandbox WFP";
 const PROVIDER_NAME: &str = "Tietiezhi Windows Sandbox WFP";
 const PROVIDER_DESCRIPTION: &str = "Persistent WFP provider for Tietiezhi Windows sandbox filters";
@@ -107,7 +108,10 @@ impl Engine {
             name: session_name.as_ptr() as *mut _,
             description: null_mut(),
         };
-        session.txnWaitTimeoutInMSec = INFINITE;
+        // The WFP transaction lock is machine-wide: antivirus, VPN clients, or
+        // a second Tietiezhi instance can hold it. Waiting forever turns that
+        // into an unrecoverable hang, so fail after a bounded wait instead.
+        session.txnWaitTimeoutInMSec = TRANSACTION_WAIT_TIMEOUT_MS;
 
         let mut handle = HANDLE::default();
         let result = unsafe {

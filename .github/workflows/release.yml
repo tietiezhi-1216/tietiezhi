@@ -133,6 +133,8 @@ jobs:
             bundles: nsis
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
+    # Bound the build so a hang surfaces instead of idling to the 6h ceiling.
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: desktop
