@@ -36,8 +36,10 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { message } from "@/components/app-message";
 import {
   dictationHotkey,
+  errorMessage,
   gatewayAccount,
   gatewayLogin,
   gatewayLogout,
@@ -121,6 +123,11 @@ export function GatewayAccountButton() {
     onSuccess: async (account) => {
       queryClient.setQueryData(["gateway-account", provider?.id], account);
       await invalidateAccountState();
+    },
+    // Surface the concrete reason (timeout vs unreachable vs rejected) —
+    // a bare "登录失败" leaves users unable to tell what to fix.
+    onError: (error) => {
+      message.error("登录中转站失败", errorMessage(error));
     },
   });
   const logout = useMutation({
