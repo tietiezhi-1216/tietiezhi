@@ -5,7 +5,8 @@ import { app, BrowserWindow, protocol } from "electron";
 import { ASSET_PROTOCOL, assetUrlToPath, createBridge } from "./bridge/index.js";
 import { forwardHostEvents, registerHostCommands } from "./commands.js";
 import { createSessionManager, markCoreReady } from "./core-launcher.js";
-import { createMainWindow, loadRenderer } from "./window.js";
+import { createMainWindow, loadRenderer, rendererRoot } from "./window.js";
+import { handleRendererScheme, registerRendererScheme } from "./renderer-protocol.js";
 import type { AcpSessionManager } from "./acp/index.js";
 
 // Must run before `whenReady`, or the renderer cannot fetch asset URLs.
@@ -15,6 +16,7 @@ protocol.registerSchemesAsPrivileged([
     privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
   },
 ]);
+registerRendererScheme();
 
 let sessions: AcpSessionManager | null = null;
 
@@ -47,6 +49,7 @@ function trackReadiness(manager: AcpSessionManager): AcpSessionManager {
 
 async function bootstrap(): Promise<void> {
   registerAssetProtocol();
+  if (!process.env["ELECTRON_RENDERER_URL"]) handleRendererScheme(rendererRoot());
 
   sessions = trackReadiness(createSessionManager());
   registerHostCommands(sessions);

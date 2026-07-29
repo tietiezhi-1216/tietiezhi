@@ -2,13 +2,17 @@ import { join } from "node:path";
 
 import { BrowserWindow, shell } from "electron";
 
+import { RENDERER_ORIGIN } from "./renderer-protocol.js";
+
 /**
  * The renderer is the existing desktop frontend. It reaches the main process
  * only through `window.__TAURI_INTERNALS__`, which the preload injects, so
  * context isolation stays on and the renderer keeps no Node access.
  */
 const HERE = import.meta.dirname;
-const PRELOAD = join(HERE, "../preload/index.js");
+// electron-vite emits the preload as ESM (.mjs); an ESM preload also requires
+// `sandbox: false` on the window.
+const PRELOAD = join(HERE, "../preload/index.mjs");
 
 /** electron-vite exposes the dev server URL here; absent in a packaged build. */
 const DEV_SERVER_URL = process.env["ELECTRON_RENDERER_URL"];
@@ -56,6 +60,11 @@ export function loadRenderer(window: BrowserWindow, options: WindowOptions = {})
   if (DEV_SERVER_URL) {
     void window.loadURL(`${DEV_SERVER_URL}/${entry}.html`);
   } else {
-    void window.loadFile(join(HERE, `../renderer/${entry}.html`));
+    void window.loadURL(`${RENDERER_ORIGIN}/${entry}.html`);
   }
+}
+
+/** Directory the built renderer is served from. */
+export function rendererRoot(): string {
+  return join(HERE, "../renderer");
 }

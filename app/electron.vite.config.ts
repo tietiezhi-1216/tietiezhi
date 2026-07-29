@@ -38,6 +38,9 @@ export default defineConfig({
   },
   renderer: {
     root: desktopRoot,
+    // Vite resolves publicDir relative to `root`, but only when left default.
+    // Naming it explicitly keeps the mascots and loader art reachable.
+    publicDir: resolve(desktopRoot, "public"),
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
