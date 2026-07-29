@@ -4,7 +4,16 @@
 
 R7 在 `crates/agent-model`、`crates/agent-core` 和 Tauri `commands/codex.rs` 内源码级实现固定基线 `rust-v0.145.0` 的 Responses HTTP/SSE 模型路径，不运行、嵌入或分发上游 `codex` 二进制。
 
-Workspace Agent 请求只发送到供应商 `/v1/responses`，不会回退 `/v1/chat/completions`。Chat Completions 仅服务独立铁铁汁 Companion、语音润色等非 Workspace 功能，不参与 `codex_v2_request` 的 Thread/Turn 执行。
+Workspace Agent 的模型传输层支持四种 wire API，由 Provider 的 `wireApi` 配置或 `auto` 探测选定：
+
+| wire API | 端点 | 鉴权头 |
+| --- | --- | --- |
+| `responses` | `/v1/responses` | `Authorization: Bearer` |
+| `chatCompletions` | `/v1/chat/completions` | `Authorization: Bearer` |
+| `anthropicMessages` | `/v1/messages` | `x-api-key` + `anthropic-version` |
+| `geminiGenerateContent` | `/v1beta/models/{model}:streamGenerateContent?alt=sse` | `x-goog-api-key` |
+
+`responses` 是原生路径，请求与响应直接使用 canonical Responses item 形状。其余三种由 `protocol_transport.rs` 双向翻译：出站从 canonical item 构造各自的请求体，入站把 SSE 事件归一回 canonical item，统一出口是 `ResponseEvent`。官方 `Tietiezhi Gateway` 固定使用 `responses`。
 
 ## Responses 请求
 

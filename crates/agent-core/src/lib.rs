@@ -8320,6 +8320,56 @@ mod tests {
     }
 
     #[test]
+    fn reasoning_provider_blob_survives_into_the_next_turn_history() {
+        // Anthropic and Gemini reject replayed thinking whose signature was
+        // dropped, so the opaque blob has to reach model history verbatim even
+        // though the V2 timeline projection has no field for it.
+        let (_temp, manager) = manager();
+        let started = start(&manager, "desktop");
+        let thread_id = result(&started)["thread"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let turn = manager.dispatch(
+            "desktop",
+            request(
+                2,
+                "turn/start",
+                json!({
+                    "threadId": thread_id,
+                    "input": [{"type":"text","text":"hello","textElements":[]}]
+                }),
+            ),
+        );
+        let turn_id = result(&turn)["turn"]["id"].as_str().unwrap().to_owned();
+        manager
+            .model_item_completed(
+                &thread_id,
+                &turn_id,
+                json!({
+                    "type":"reasoning",
+                    "id":"reasoning_1",
+                    "summary":[],
+                    "content":[{"type":"reasoning_text","text":"thought"}],
+                    "encrypted_content":"sig-abc",
+                    "encrypted_content_format":"anthropic_thinking_signature"
+                }),
+            )
+            .unwrap();
+
+        let history = manager.injected_items(&thread_id).unwrap();
+        let reasoning = history
+            .iter()
+            .find(|item| item["type"] == "reasoning")
+            .expect("reasoning must reach model history");
+        assert_eq!(reasoning["encrypted_content"], "sig-abc");
+        assert_eq!(
+            reasoning["encrypted_content_format"],
+            "anthropic_thinking_signature"
+        );
+    }
+
+    #[test]
     fn responses_items_deltas_usage_and_model_metadata_follow_v2() {
         let (_temp, manager) = manager();
         let started = start(&manager, "desktop");

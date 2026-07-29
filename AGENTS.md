@@ -70,7 +70,7 @@ pnpm tauri icon ../assets/brand/tietiezhi-mark.png
 - Workspace 的 Work / Code 已切换到 `crates/agent-*` Codex Runtime。
 - 同一任务只有一个 Local 文件环境；禁止再创建、切换或依赖 Git Worktree。
 - 项目目录可以是普通文件夹或 Git 仓库；任务直接使用所选项目目录或共享 Local 工作区。
-- Workspace Agent 只走 OpenAI Responses API 和 App Server V2，不得回退 `/v1/chat/completions`。
+- Workspace Agent 只走 App Server V2 协议；模型传输层支持 `responses`、`chatCompletions`、`anthropicMessages`、`geminiGenerateContent` 四种 wire API，由 Provider 配置或 `auto` 探测选定，实现在 `crates/agent-model/src/protocol_transport.rs`。官方 Gateway 固定使用 `responses`。
 
 ## CI 与发布
 

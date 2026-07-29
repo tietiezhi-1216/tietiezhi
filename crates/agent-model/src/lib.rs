@@ -1943,6 +1943,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compatible_stream_survives_unparsable_frames_from_relays() {
+        // Third-party relays interleave heartbeats and vendor frames that are
+        // not protocol JSON. The native Responses path skips them; the
+        // compatible path used to fail the whole turn on the first one.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            let body = concat!(
+                "data: keep-alive\n\n",
+                "data: {\"id\":\"chat-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+                "data: {not json}\n\n",
+                "data: {\"id\":\"chat-1\",\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+                "data: [DONE]\n\n",
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let provider = Provider::openai_compatible("test", format!("http://{address}/v1"), None)
+            .with_wire_api(WireApi::ChatCompletions);
+        let client = ResponsesClient::new(reqwest::Client::new(), provider);
+        let mut events = Vec::new();
+        client
+            .stream(&ResponsesApiRequest::text("model-x", Vec::new()), |event| {
+                events.push(event);
+                Ok(())
+            })
+            .await
+            .expect("unparsable frames must not fail the turn");
+        server.await.unwrap();
+        assert!(events.contains(&ResponseEvent::OutputTextDelta("hello".into())));
+        assert!(events.contains(&ResponseEvent::OutputTextDelta(" world".into())));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ResponseEvent::Completed { .. }))
+        );
+    }
+
+    #[tokio::test]
     async fn consumer_failures_do_not_retry_the_model_request() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

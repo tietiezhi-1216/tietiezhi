@@ -14,6 +14,21 @@ use super::{
     TokenUsage, WireApi,
 };
 
+/// Tags for the opaque reasoning blob stored on the canonical reasoning item's
+/// `encrypted_content`. The tag records which wire produced the blob so it is
+/// only ever replayed back to that same wire.
+const ANTHROPIC_THINKING_SIGNATURE: &str = "anthropic_thinking_signature";
+const ANTHROPIC_REDACTED_THINKING: &str = "anthropic_redacted_thinking";
+const GEMINI_THOUGHT_SIGNATURE: &str = "gemini_thought_signature";
+
+/// Lowest output ceiling among the Claude models that support extended
+/// thinking (Opus 4.x). Used to clamp `max_tokens` until the model registry
+/// carries a real per-model value.
+const ANTHROPIC_MAX_OUTPUT_TOKENS: i64 = 32_000;
+/// Room reserved for visible output on top of the thinking budget, and the
+/// `max_tokens` used when thinking is off.
+const ANTHROPIC_OUTPUT_HEADROOM: i64 = 8_192;
+
 pub(crate) struct WireRequest {
     pub url: String,
     pub accept: &'static str,
@@ -89,6 +104,11 @@ where
 
     let mut bytes = response.bytes_stream();
     let mut decoder = SseDecoder::default();
+    // Third-party gateways interleave heartbeats, comments and vendor-specific
+    // frames that are not valid protocol JSON. Skip them like the native
+    // Responses path does instead of failing the whole turn, and keep a count
+    // so a stream that never completes can report why.
+    let mut skipped_frames = 0usize;
     while let Some(chunk) = timeout(idle_timeout, bytes.next())
         .await
         .map_err(|_| ModelError::Stream("idle timeout waiting for SSE".into()))?
@@ -103,8 +123,10 @@ where
                 state.finish(on_event)?;
                 return Ok(());
             }
-            let value = serde_json::from_str::<Value>(&frame.data)
-                .map_err(|error| ModelError::Stream(format!("invalid SSE JSON: {error}")))?;
+            let Ok(value) = serde_json::from_str::<Value>(&frame.data) else {
+                skipped_frames += 1;
+                continue;
+            };
             if process_compatible_value(
                 wire_api,
                 frame.event.as_deref(),
@@ -118,6 +140,10 @@ where
     }
     if state.finished {
         Ok(())
+    } else if skipped_frames > 0 {
+        Err(ModelError::Stream(format!(
+            "stream closed before protocol completion ({skipped_frames} unparsable frames skipped)"
+        )))
     } else {
         Err(ModelError::Stream(
             "stream closed before protocol completion".into(),
@@ -273,6 +299,65 @@ fn canonical_content_to_openai(content: Option<&Value>) -> Value {
     Value::Array(out)
 }
 
+/// Append content blocks to `messages`, merging into the previous entry when it
+/// carries the same role. Anthropic rejects consecutive same-role messages, and
+/// a single assistant turn routinely spans a thinking block, text and one or
+/// more tool_use blocks.
+fn push_anthropic_blocks(messages: &mut Vec<Value>, role: &str, blocks: Vec<Value>) {
+    if blocks.is_empty() {
+        return;
+    }
+    if let Some(last) = messages.last_mut()
+        && last.get("role").and_then(Value::as_str) == Some(role)
+        && let Some(content) = last.get_mut("content").and_then(Value::as_array_mut)
+    {
+        content.extend(blocks);
+        return;
+    }
+    messages.push(json!({ "role": role, "content": Value::Array(blocks) }));
+}
+
+/// Rebuild the provider's own thinking block from a canonical reasoning item.
+///
+/// Anthropic validates the signature against the thinking text, so a block is
+/// only replayed when the blob came from this same wire. Reasoning captured on
+/// another wire (or with no signature at all) is dropped rather than sent —
+/// an unsigned thinking block is a hard 400.
+fn canonical_reasoning_to_anthropic(item: &Value) -> Option<Value> {
+    let signature = item.get("encrypted_content").and_then(Value::as_str)?;
+    if signature.is_empty() {
+        return None;
+    }
+    match item.get("encrypted_content_format").and_then(Value::as_str) {
+        Some(ANTHROPIC_REDACTED_THINKING) => {
+            Some(json!({"type":"redacted_thinking","data":signature}))
+        }
+        Some(ANTHROPIC_THINKING_SIGNATURE) => Some(json!({
+            "type":"thinking",
+            "thinking":canonical_reasoning_text(item),
+            "signature":signature
+        })),
+        _ => None,
+    }
+}
+
+/// Concatenate the text of a canonical reasoning item's `content` parts.
+fn canonical_reasoning_text(item: &Value) -> String {
+    item.get("content")
+        .and_then(Value::as_array)
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| {
+                    part.get("text")
+                        .and_then(Value::as_str)
+                        .or_else(|| part.as_str())
+                })
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+}
+
 fn build_anthropic_request(request: &ResponsesApiRequest, format: ReasoningWireFormat) -> Value {
     let mut messages = Vec::new();
     for item in &request.input {
@@ -282,25 +367,36 @@ fn build_anthropic_request(request: &ResponsesApiRequest, format: ReasoningWireF
                     Some("assistant") => "assistant",
                     _ => "user",
                 };
-                messages.push(json!({
-                    "role":role,
-                    "content":canonical_content_to_anthropic(item.get("content"))
-                }));
+                let blocks = canonical_content_to_anthropic(item.get("content"));
+                push_anthropic_blocks(&mut messages, role, blocks);
+            }
+            Some("reasoning") => {
+                if let Some(block) = canonical_reasoning_to_anthropic(item) {
+                    push_anthropic_blocks(&mut messages, "assistant", vec![block]);
+                }
             }
             Some("function_call" | "custom_tool_call" | "tool_search_call") => {
-                messages.push(json!({"role":"assistant","content":[{
-                    "type":"tool_use",
-                    "id":item.get("call_id").cloned().unwrap_or_else(|| json!("call")),
-                    "name":canonical_wire_tool_name(item),
-                    "input":canonical_tool_arguments_value(item)
-                }]}));
+                push_anthropic_blocks(
+                    &mut messages,
+                    "assistant",
+                    vec![json!({
+                        "type":"tool_use",
+                        "id":item.get("call_id").cloned().unwrap_or_else(|| json!("call")),
+                        "name":canonical_wire_tool_name(item),
+                        "input":canonical_tool_arguments_value(item)
+                    })],
+                );
             }
             Some("function_call_output" | "custom_tool_call_output") => {
-                messages.push(json!({"role":"user","content":[{
-                    "type":"tool_result",
-                    "tool_use_id":item.get("call_id").cloned().unwrap_or_else(|| json!("call")),
-                    "content":model_output_text(item.get("output"))
-                }]}));
+                push_anthropic_blocks(
+                    &mut messages,
+                    "user",
+                    vec![json!({
+                        "type":"tool_result",
+                        "tool_use_id":item.get("call_id").cloned().unwrap_or_else(|| json!("call")),
+                        "content":model_output_text(item.get("output"))
+                    })],
+                );
             }
             _ => {}
         }
@@ -310,11 +406,18 @@ fn build_anthropic_request(request: &ResponsesApiRequest, format: ReasoningWireF
         .reasoning
         .as_ref()
         .and_then(|reasoning| reasoning.effort.as_deref());
-    let budget = effort.and_then(reasoning_budget);
+    // `max_tokens` counts thinking plus visible output and must stay under the
+    // model's output ceiling, so the effort-derived budget cannot be passed
+    // through unclamped: `max` effort alone yields 32768 + headroom, which
+    // already exceeds Opus 4.x. TODO: read the real per-model ceiling once
+    // shared/model-registry/models.json carries maxOutputTokens.
+    let budget = effort
+        .and_then(reasoning_budget)
+        .map(|value| value.min(ANTHROPIC_MAX_OUTPUT_TOKENS - ANTHROPIC_OUTPUT_HEADROOM));
     let mut body = json!({
         "model":request.model,
         "messages":messages,
-        "max_tokens":budget.map_or(8192, |value| value + 8192),
+        "max_tokens":budget.map_or(ANTHROPIC_OUTPUT_HEADROOM, |value| value + ANTHROPIC_OUTPUT_HEADROOM),
         "stream":true
     });
     if !request.instructions.trim().is_empty() {
@@ -385,9 +488,29 @@ fn anthropic_image_block(url: &str) -> Value {
     }
 }
 
+/// Append parts to `contents`, merging into the previous entry when it carries
+/// the same role, so one model turn stays a single `contents` element.
+fn push_gemini_parts(contents: &mut Vec<Value>, role: &str, parts: Vec<Value>) {
+    if parts.is_empty() {
+        return;
+    }
+    if let Some(last) = contents.last_mut()
+        && last.get("role").and_then(Value::as_str) == Some(role)
+        && let Some(existing) = last.get_mut("parts").and_then(Value::as_array_mut)
+    {
+        existing.extend(parts);
+        return;
+    }
+    contents.push(json!({ "role": role, "parts": Value::Array(parts) }));
+}
+
 fn build_gemini_request(request: &ResponsesApiRequest, format: ReasoningWireFormat) -> Value {
     let mut contents = Vec::new();
     let mut call_names = HashMap::new();
+    // Gemini expects the thought signature back on the part it was issued
+    // with — in practice the function call that the thinking produced — so it
+    // is carried forward until the next model part is emitted.
+    let mut pending_signature: Option<String> = None;
     for item in &request.input {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => {
@@ -395,19 +518,36 @@ fn build_gemini_request(request: &ResponsesApiRequest, format: ReasoningWireForm
                     Some("assistant") => "model",
                     _ => "user",
                 };
-                contents.push(json!({
-                    "role":role,
-                    "parts":canonical_content_to_gemini(item.get("content"))
-                }));
+                let mut parts = canonical_content_to_gemini(item.get("content"));
+                if role == "model"
+                    && let Some(signature) = pending_signature.take()
+                    && let Some(first) = parts.first_mut()
+                {
+                    first["thoughtSignature"] = json!(signature);
+                }
+                push_gemini_parts(&mut contents, role, parts);
+            }
+            Some("reasoning") => {
+                if item.get("encrypted_content_format").and_then(Value::as_str)
+                    == Some(GEMINI_THOUGHT_SIGNATURE)
+                    && let Some(signature) = item.get("encrypted_content").and_then(Value::as_str)
+                    && !signature.is_empty()
+                {
+                    pending_signature = Some(signature.to_owned());
+                }
             }
             Some("function_call" | "custom_tool_call" | "tool_search_call") => {
                 let name = canonical_wire_tool_name(item);
                 if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
                     call_names.insert(call_id.to_owned(), name.clone());
                 }
-                contents.push(json!({"role":"model","parts":[{
+                let mut part = json!({
                     "functionCall":{"name":name,"args":canonical_tool_arguments_value(item)}
-                }]}));
+                });
+                if let Some(signature) = pending_signature.take() {
+                    part["thoughtSignature"] = json!(signature);
+                }
+                push_gemini_parts(&mut contents, "model", vec![part]);
             }
             Some("function_call_output" | "custom_tool_call_output") => {
                 let call_id = item.get("call_id").and_then(Value::as_str).unwrap_or("");
@@ -415,12 +555,16 @@ fn build_gemini_request(request: &ResponsesApiRequest, format: ReasoningWireForm
                     .get(call_id)
                     .cloned()
                     .unwrap_or_else(|| "tool".into());
-                contents.push(json!({"role":"user","parts":[{
-                    "functionResponse":{
-                        "name":name,
-                        "response":{"output":model_output_value(item.get("output"))}
-                    }
-                }]}));
+                push_gemini_parts(
+                    &mut contents,
+                    "user",
+                    vec![json!({
+                        "functionResponse":{
+                            "name":name,
+                            "response":{"output":model_output_value(item.get("output"))}
+                        }
+                    })],
+                );
             }
             _ => {}
         }
@@ -648,6 +792,13 @@ struct CompatibleState {
     reasoning_id: String,
     reasoning_added: bool,
     reasoning_index: i64,
+    reasoning_text: String,
+    // Opaque provider blob that must be echoed back verbatim on the next turn:
+    // Anthropic's thinking `signature`, Gemini's `thoughtSignature`. Stored on
+    // the canonical reasoning item as `encrypted_content`, mirroring how the
+    // Responses wire carries the same thing.
+    reasoning_signature: Option<String>,
+    reasoning_signature_format: Option<&'static str>,
     tools: BTreeMap<usize, ToolAccumulator>,
     catalog: HashMap<String, CompatibleTool>,
     usage: Option<TokenUsage>,
@@ -667,6 +818,9 @@ impl CompatibleState {
             reasoning_id: format!("rs_{}", Uuid::new_v4().simple()),
             reasoning_added: false,
             reasoning_index: 0,
+            reasoning_text: String::new(),
+            reasoning_signature: None,
+            reasoning_signature_format: None,
             tools: BTreeMap::new(),
             catalog,
             usage: None,
@@ -707,17 +861,56 @@ impl CompatibleState {
     {
         // Announce the item before its first delta, mirroring what a native
         // Responses stream does for the assistant message.
-        if !self.reasoning_added {
-            self.reasoning_added = true;
-            on_event(ResponseEvent::OutputItemAdded(json!({
-                "type":"reasoning","id":self.reasoning_id,"summary":[],"content":[]
-            })))?;
-        }
+        self.announce_reasoning(on_event)?;
+        self.reasoning_text.push_str(delta);
         on_event(ResponseEvent::ReasoningContentDelta {
             item_id: Some(self.reasoning_id.clone()),
             delta: delta.to_owned(),
             content_index: self.reasoning_index,
         })
+    }
+
+    fn announce_reasoning<F>(&mut self, on_event: &mut F) -> Result<(), ModelError>
+    where
+        F: FnMut(ResponseEvent) -> Result<(), ModelError>,
+    {
+        if self.reasoning_added {
+            return Ok(());
+        }
+        self.reasoning_added = true;
+        on_event(ResponseEvent::OutputItemAdded(json!({
+            "type":"reasoning","id":self.reasoning_id,"summary":[],"content":[]
+        })))
+    }
+
+    /// Capture the provider's opaque thinking blob. Anthropic rejects any
+    /// replayed thinking block whose signature is missing or altered, so this
+    /// has to survive the round trip through history verbatim.
+    fn push_reasoning_signature<F>(
+        &mut self,
+        signature: &str,
+        format: &'static str,
+        on_event: &mut F,
+    ) -> Result<(), ModelError>
+    where
+        F: FnMut(ResponseEvent) -> Result<(), ModelError>,
+    {
+        if signature.is_empty() {
+            return Ok(());
+        }
+        self.announce_reasoning(on_event)?;
+        match self.reasoning_signature.as_mut() {
+            // Anthropic streams the signature as one or more `signature_delta`
+            // chunks that concatenate into the final value.
+            Some(existing) if self.reasoning_signature_format == Some(format) => {
+                existing.push_str(signature);
+            }
+            _ => {
+                self.reasoning_signature = Some(signature.to_owned());
+                self.reasoning_signature_format = Some(format);
+            }
+        }
+        Ok(())
     }
 
     fn start_tool<F>(
@@ -832,6 +1025,22 @@ impl CompatibleState {
     {
         if self.finished {
             return Ok(());
+        }
+        // Emit reasoning before the message so history keeps the provider's
+        // own ordering; Anthropic requires thinking blocks to lead the
+        // assistant turn when they are replayed.
+        if self.reasoning_added {
+            let mut item = json!({
+                "type":"reasoning",
+                "id":self.reasoning_id,
+                "summary":[],
+                "content":[{"type":"reasoning_text","text":self.reasoning_text}]
+            });
+            if let Some(signature) = self.reasoning_signature.as_deref() {
+                item["encrypted_content"] = json!(signature);
+                item["encrypted_content_format"] = json!(self.reasoning_signature_format);
+            }
+            on_event(ResponseEvent::OutputItemDone(item))?;
         }
         if self.message_added {
             on_event(ResponseEvent::OutputItemDone(json!({
@@ -966,6 +1175,24 @@ where
                     if let Some(thinking) = block.get("thinking").and_then(Value::as_str) {
                         state.push_reasoning(thinking, on_event)?;
                     }
+                    if let Some(signature) = block.get("signature").and_then(Value::as_str) {
+                        state.push_reasoning_signature(
+                            signature,
+                            ANTHROPIC_THINKING_SIGNATURE,
+                            on_event,
+                        )?;
+                    }
+                }
+                Some("redacted_thinking") => {
+                    // Redacted blocks carry no readable text, only an opaque
+                    // `data` blob that still has to be replayed verbatim.
+                    if let Some(data) = block.get("data").and_then(Value::as_str) {
+                        state.push_reasoning_signature(
+                            data,
+                            ANTHROPIC_REDACTED_THINKING,
+                            on_event,
+                        )?;
+                    }
                 }
                 _ => {}
             }
@@ -987,6 +1214,15 @@ where
                 Some("thinking_delta") => {
                     if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
                         state.push_reasoning(thinking, on_event)?;
+                    }
+                }
+                Some("signature_delta") => {
+                    if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
+                        state.push_reasoning_signature(
+                            signature,
+                            ANTHROPIC_THINKING_SIGNATURE,
+                            on_event,
+                        )?;
                     }
                 }
                 _ => {}
@@ -1054,6 +1290,12 @@ where
                     state.push_text(text, on_event)?;
                 }
             }
+            // Gemini attaches thoughtSignature to thought parts and to the
+            // function calls that follow from them; it has to be replayed on
+            // the next turn or the model loses the thinking context.
+            if let Some(signature) = part.get("thoughtSignature").and_then(Value::as_str) {
+                state.push_reasoning_signature(signature, GEMINI_THOUGHT_SIGNATURE, on_event)?;
+            }
             if let Some(call) = part.get("functionCall") {
                 let index = state.next_tool_index;
                 state.next_tool_index += 1;
@@ -1074,7 +1316,24 @@ where
                 )?;
             }
         }
-        completed |= candidate.get("finishReason").is_some();
+        // Not every finishReason is a clean stop. Treating them all as success
+        // silently truncates the turn; mirror the Responses path, which surfaces
+        // an incomplete response as a stream error.
+        if let Some(reason) = candidate.get("finishReason").and_then(Value::as_str) {
+            match reason {
+                "STOP" | "FINISH_REASON_UNSPECIFIED" => completed = true,
+                "MAX_TOKENS" => {
+                    return Err(ModelError::Stream(
+                        "Incomplete response returned, reason: max_output_tokens".into(),
+                    ));
+                }
+                other => {
+                    return Err(ModelError::Stream(format!(
+                        "Gemini stopped the response, reason: {other}"
+                    )));
+                }
+            }
+        }
     }
     if completed {
         state.finish(on_event)?;
@@ -1435,5 +1694,224 @@ mod tests {
         assert!(gemini_events.iter().any(
             |event| matches!(event, ResponseEvent::Completed { token_usage: Some(usage), .. } if usage.total_tokens == 5)
         ));
+    }
+
+    /// Feed a compatible stream and collect the canonical items it completes.
+    fn drain_items(
+        request: &ResponsesApiRequest,
+        wire_api: WireApi,
+        events: Vec<Value>,
+    ) -> Vec<Value> {
+        let mut state = CompatibleState::new(request);
+        let mut items = Vec::new();
+        let mut sink = |event: ResponseEvent| {
+            if let ResponseEvent::OutputItemDone(item) = &event {
+                items.push(item.clone());
+            }
+            Ok(())
+        };
+        for event in events {
+            process_compatible_value(wire_api, None, event, &mut state, &mut sink).unwrap();
+        }
+        state.finish(&mut sink).unwrap();
+        items
+    }
+
+    #[test]
+    fn anthropic_thinking_signature_round_trips_through_history() {
+        let request = request();
+        let items = drain_items(
+            &request,
+            WireApi::AnthropicMessages,
+            vec![
+                json!({"type":"content_block_start","index":0,
+                    "content_block":{"type":"thinking","thinking":"step "}}),
+                json!({"type":"content_block_delta","index":0,
+                    "delta":{"type":"thinking_delta","thinking":"one"}}),
+                json!({"type":"content_block_delta","index":0,
+                    "delta":{"type":"signature_delta","signature":"sig-"}}),
+                json!({"type":"content_block_delta","index":0,
+                    "delta":{"type":"signature_delta","signature":"abc"}}),
+            ],
+        );
+
+        let reasoning = items
+            .iter()
+            .find(|item| item["type"] == "reasoning")
+            .expect("compatible stream must complete the reasoning item");
+        assert_eq!(reasoning["content"][0]["text"], "step one");
+        // Signature deltas concatenate into one blob.
+        assert_eq!(reasoning["encrypted_content"], "sig-abc");
+        assert_eq!(
+            reasoning["encrypted_content_format"],
+            ANTHROPIC_THINKING_SIGNATURE
+        );
+
+        // Replaying that item must reproduce a signed thinking block.
+        let mut replay = ResponsesApiRequest::text("model-x", vec![reasoning.clone()]);
+        replay.reasoning = request.reasoning.clone();
+        let body = build_anthropic_request(&replay, ReasoningWireFormat::Auto);
+        assert_eq!(body["messages"][0]["role"], "assistant");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "thinking");
+        assert_eq!(body["messages"][0]["content"][0]["thinking"], "step one");
+        assert_eq!(body["messages"][0]["content"][0]["signature"], "sig-abc");
+    }
+
+    #[test]
+    fn anthropic_redacted_thinking_replays_verbatim() {
+        let request = request();
+        let items = drain_items(
+            &request,
+            WireApi::AnthropicMessages,
+            vec![json!({"type":"content_block_start","index":0,
+                "content_block":{"type":"redacted_thinking","data":"blob"}})],
+        );
+        let reasoning = items
+            .iter()
+            .find(|item| item["type"] == "reasoning")
+            .expect("redacted thinking must still produce a reasoning item");
+        assert_eq!(reasoning["encrypted_content"], "blob");
+
+        let replay = ResponsesApiRequest::text("model-x", vec![reasoning.clone()]);
+        let body = build_anthropic_request(&replay, ReasoningWireFormat::Auto);
+        assert_eq!(
+            body["messages"][0]["content"][0]["type"],
+            "redacted_thinking"
+        );
+        assert_eq!(body["messages"][0]["content"][0]["data"], "blob");
+    }
+
+    #[test]
+    fn anthropic_drops_reasoning_without_a_matching_signature() {
+        // An unsigned thinking block, or one captured on another wire, is a
+        // hard 400 on Anthropic — it must be dropped rather than replayed.
+        let unsigned = json!({"type":"reasoning","id":"rs_1",
+            "content":[{"type":"reasoning_text","text":"thought"}]});
+        let foreign = json!({"type":"reasoning","id":"rs_2",
+            "content":[{"type":"reasoning_text","text":"thought"}],
+            "encrypted_content":"blob",
+            "encrypted_content_format":GEMINI_THOUGHT_SIGNATURE});
+        let request = ResponsesApiRequest::text("model-x", vec![unsigned, foreign]);
+        let body = build_anthropic_request(&request, ReasoningWireFormat::Auto);
+        assert_eq!(body["messages"].as_array().map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn anthropic_merges_consecutive_same_role_blocks() {
+        // Anthropic rejects back-to-back assistant messages, and one turn
+        // routinely spans thinking, text and a tool call.
+        let request = ResponsesApiRequest::text(
+            "model-x",
+            vec![
+                json!({"type":"reasoning","id":"rs_1",
+                    "content":[{"type":"reasoning_text","text":"think"}],
+                    "encrypted_content":"sig",
+                    "encrypted_content_format":ANTHROPIC_THINKING_SIGNATURE}),
+                json!({"type":"message","role":"assistant",
+                    "content":[{"type":"output_text","text":"answer"}]}),
+                json!({"type":"function_call","call_id":"call-1","name":"lookup","arguments":"{}"}),
+                json!({"type":"function_call_output","call_id":"call-1","output":"ok"}),
+            ],
+        );
+        let body = build_anthropic_request(&request, ReasoningWireFormat::Auto);
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "assistant blocks must collapse into one");
+        assert_eq!(messages[0]["role"], "assistant");
+        let blocks = messages[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        // Thinking has to lead the assistant turn.
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[2]["type"], "tool_use");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"][0]["type"], "tool_result");
+    }
+
+    #[test]
+    fn anthropic_max_tokens_stays_within_the_model_ceiling() {
+        let provider = Provider::openai_compatible("test", "https://example.test/v1", None);
+        for effort in ["high", "xhigh", "max", "ultra"] {
+            let mut request = request();
+            request.reasoning = Some(Reasoning {
+                effort: Some(effort.into()),
+                summary: None,
+                context: None,
+            });
+            let body = build_wire_request(&provider, WireApi::AnthropicMessages, &request)
+                .unwrap()
+                .body;
+            let max_tokens = body["max_tokens"].as_i64().unwrap();
+            assert!(
+                max_tokens <= ANTHROPIC_MAX_OUTPUT_TOKENS,
+                "effort {effort} asked for {max_tokens} output tokens"
+            );
+            if let Some(budget) = body["thinking"]["budget_tokens"].as_i64() {
+                assert!(
+                    budget < max_tokens,
+                    "effort {effort}: thinking budget must leave room for output"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gemini_thought_signature_round_trips_onto_the_function_call() {
+        let request = request();
+        let items = drain_items(
+            &request,
+            WireApi::GeminiGenerateContent,
+            vec![json!({"candidates":[{"content":{"parts":[
+                {"text":"thinking","thought":true,"thoughtSignature":"gsig"}
+            ]}}]})],
+        );
+        let reasoning = items.iter().find(|item| item["type"] == "reasoning").unwrap();
+        assert_eq!(reasoning["encrypted_content"], "gsig");
+        assert_eq!(
+            reasoning["encrypted_content_format"],
+            GEMINI_THOUGHT_SIGNATURE
+        );
+
+        let replay = ResponsesApiRequest::text(
+            "model-x",
+            vec![
+                reasoning.clone(),
+                json!({"type":"function_call","call_id":"c1","name":"lookup","arguments":"{}"}),
+            ],
+        );
+        let body = build_gemini_request(&replay, ReasoningWireFormat::Auto);
+        let part = &body["contents"][0]["parts"][0];
+        assert_eq!(part["functionCall"]["name"], "lookup");
+        assert_eq!(part["thoughtSignature"], "gsig");
+    }
+
+    #[test]
+    fn gemini_non_stop_finish_reasons_do_not_look_like_success() {
+        let request = request();
+        for (reason, needle) in [
+            ("MAX_TOKENS", "max_output_tokens"),
+            ("SAFETY", "SAFETY"),
+            ("MALFORMED_FUNCTION_CALL", "MALFORMED_FUNCTION_CALL"),
+        ] {
+            let mut state = CompatibleState::new(&request);
+            let error = process_gemini_chunk(
+                &json!({"candidates":[{"finishReason":reason,"content":{"parts":[]}}]}),
+                &mut state,
+                &mut |_| Ok(()),
+            )
+            .expect_err("non-STOP finish reasons must not complete the turn");
+            assert!(
+                error.to_string().contains(needle),
+                "{reason} produced {error}"
+            );
+        }
+
+        let mut state = CompatibleState::new(&request);
+        assert!(
+            process_gemini_chunk(
+                &json!({"candidates":[{"finishReason":"STOP","content":{"parts":[]}}]}),
+                &mut state,
+                &mut |_| Ok(()),
+            )
+            .unwrap()
+        );
     }
 }

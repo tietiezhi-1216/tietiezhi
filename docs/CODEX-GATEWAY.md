@@ -13,11 +13,11 @@ R8 将固定基线 `rust-v0.145.0` 的 App Server V2 账号协议映射到 Tieti
 
 ## Responses Provider
 
-- 官方 `Tietiezhi Gateway` 固定使用 `responses` wire API，Agent Runtime 不回退到 Chat Completions。
-- 自定义 Provider 可选 `responses`、`chatCompletions` 或 `auto`。
+- 官方 `Tietiezhi Gateway` 固定使用 `responses` wire API。
+- 自定义 Provider 可选 `responses`、`chatCompletions`、`anthropicMessages`、`geminiGenerateContent` 或 `auto`，四种协议都可用于 Agent Turn。
 - `auto` 向 `/v1/responses` 发送空 JSON POST。请求会在模型路由前失败，不产生模型生成；401、403、400、405 和 429 证明路由存在，404、501 或包装的 `Not Found` 表示不支持。
 - 探测结果只在当前进程按 Provider ID 与 base URL 缓存，不写入用户配置。
-- 普通聊天仍可使用 `/v1/chat/completions`；配置为 `chatCompletions` 的 Provider 不允许启动 Agent Turn。
+- 普通聊天仍可使用 `/v1/chat/completions`。
 
 Gateway 仓库已具备 `/v1/responses`、`/v1/responses/compact`、SSE 转发、usage 计费和 vendor adapter。R8 在 Gateway 提交 `be473f1` 中增加 Discovery 能力声明和路由鉴权回归测试。生产公开入口用无凭据空 POST 验证返回标准 401，证明请求进入 API Key 中间件而不是包装为 200 的 NoRoute。
 
