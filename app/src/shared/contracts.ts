@@ -164,9 +164,34 @@ export const IPC = {
 export interface TauriInternals {
   transformCallback(callback: (payload: unknown) => void, once?: boolean): number;
   unregisterCallback(id: number): void;
-  invoke(cmd: string, args?: Record<string, unknown>): Promise<unknown>;
+  invoke(cmd: string, args?: Record<string, unknown>, options?: unknown): Promise<unknown>;
   metadata: Record<string, unknown>;
-  convertFileSrc?(path: string, protocol?: string): string;
+  /** Called unconditionally by `convertFileSrc`, so it must be present. */
+  convertFileSrc(path: string, protocol?: string): string;
+}
+
+/**
+ * Wire format a Tauri `Channel` expects, verified against
+ * `@tauri-apps/api/core.js`.
+ *
+ * A Channel serializes into an invoke argument as the string
+ * `__CHANNEL__:<callbackId>`. The backend then pushes frames to that callback
+ * id. Frames carry an `index` because the client reorders them and buffers
+ * anything that arrives early — sending frames without a monotonically
+ * increasing index makes messages silently stall.
+ */
+export type ChannelFrame<T = unknown> =
+  | { index: number; message: T }
+  | { index: number; end: true };
+
+/** Prefix a serialized Channel uses inside invoke arguments. */
+export const CHANNEL_PREFIX = "__CHANNEL__:";
+
+/** Extract a channel callback id from a serialized invoke argument. */
+export function parseChannelId(value: unknown): number | null {
+  if (typeof value !== "string" || !value.startsWith(CHANNEL_PREFIX)) return null;
+  const id = Number.parseInt(value.slice(CHANNEL_PREFIX.length), 10);
+  return Number.isInteger(id) ? id : null;
 }
 
 /** A handler registered in the main process for one `invoke()` command. */
