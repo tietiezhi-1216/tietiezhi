@@ -121,6 +121,7 @@ export const useUiStore = create<UiState>()(
         const productArea: ProductArea =
           legacyArea === "tietiezhi" ||
           legacyArea === "workspace" ||
+          legacyArea === "cores" ||
           legacyArea === "automations" ||
           legacyArea === "create"
             ? legacyArea

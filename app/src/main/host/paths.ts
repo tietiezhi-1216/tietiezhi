@@ -1,4 +1,5 @@
-import { cp, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -100,15 +101,40 @@ export async function importLegacyDataOnce(): Promise<{ imported: string[]; skip
   return { imported, skipped };
 }
 
+let tempCounter = 0;
+
 /**
  * Atomic JSON write: a torn settings.json costs the user every provider they
  * configured, so the rename has to be the only visible mutation.
+ *
+ * The temp name must be unique per call, not per process. Two writers of the
+ * same file inside one process (settings.json is written by both the settings
+ * module and the skills toggle) would otherwise share a temp path: the second
+ * `writeFile` truncates what the first is still filling, and the first
+ * `rename` publishes that half-written buffer.
+ *
+ * `rename` makes the swap atomic but says nothing about durability, so the
+ * data is fsynced before it becomes visible — otherwise a power loss can land
+ * the metadata change ahead of the contents and produce the very torn file
+ * this function exists to prevent.
  */
 export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  const temp = `${path}.${process.pid}.tmp`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(temp, path);
+  const temp = `${path}.${process.pid}.${++tempCounter}.tmp`;
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(temp, "w");
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temp, path);
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    // Leaving temp files behind would accumulate silently in the data dir.
+    await rm(temp, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 /** Reads JSON, returning `fallback` when the file is missing or unparsable. */

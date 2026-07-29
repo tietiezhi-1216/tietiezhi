@@ -1,4 +1,9 @@
-export type ProductArea = "tietiezhi" | "workspace" | "automations" | "create";
+export type ProductArea =
+  | "tietiezhi"
+  | "workspace"
+  | "cores"
+  | "automations"
+  | "create";
 
 export interface ProductAreaDefinition {
   id: ProductArea;
@@ -28,6 +33,15 @@ export const PRODUCT_AREAS = [
     blinkMascotSrc: "/mode-mascots/paper-plane/code-blink.png",
     gradientClassName: "from-sky-300 via-indigo-400 to-violet-500",
     selectedSurfaceClassName: "bg-indigo-500/10 dark:bg-indigo-400/10",
+  },
+  {
+    id: "cores",
+    name: "Cores",
+    description: "ACP 核心与 MCP 服务器",
+    mascotSrc: "/mode-mascots/paper-plane/work.png",
+    blinkMascotSrc: undefined,
+    gradientClassName: "from-emerald-300 via-teal-400 to-cyan-500",
+    selectedSurfaceClassName: "bg-teal-500/10 dark:bg-teal-400/10",
   },
   {
     id: "automations",

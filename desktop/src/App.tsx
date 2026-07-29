@@ -38,6 +38,12 @@ const AutomationsPage = lazy(async () => {
   const module = await import("@/features/automations/automations-page");
   return { default: module.AutomationsPage };
 });
+// Deferred like Automations: the cores page pulls in its own store and event
+// bridge, which the majority of sessions (Workspace) never touch.
+const CoresPage = lazy(async () => {
+  const module = await import("@/features/cores");
+  return { default: module.CoresPage };
+});
 
 export default function App() {
   const activeId = useChatStore((s) => s.activeId);
@@ -76,8 +82,12 @@ export default function App() {
             <TietiezhiPage />
           ) : productArea === "create" ? (
             <CreatePage />
+          ) : productArea === "cores" ? (
+            <Suspense fallback={<AreaLoading label="正在加载 Cores" />}>
+              <CoresPage />
+            </Suspense>
           ) : productArea === "automations" ? (
-            <Suspense fallback={<AutomationLoading />}>
+            <Suspense fallback={<AreaLoading label="正在加载 Automation" />}>
               <AutomationsPage />
             </Suspense>
           ) : (
@@ -91,12 +101,12 @@ export default function App() {
   );
 }
 
-function AutomationLoading() {
+function AreaLoading({ label }: { label: string }) {
   return (
     <div className="text-muted-foreground grid h-full place-items-center text-sm">
       <span className="flex items-center gap-2">
         <LoaderCircle className="size-4 animate-spin" />
-        正在加载 Automation
+        {label}
       </span>
     </div>
   );

@@ -4,7 +4,7 @@ import type { ProductArea } from "@/lib/product-area";
 import { getProductArea } from "@/lib/product-area";
 import { cn } from "@/lib/utils";
 
-const CONTENT: Record<Exclude<ProductArea, "workspace" | "tietiezhi">, {
+const CONTENT: Record<Exclude<ProductArea, "workspace" | "tietiezhi" | "cores">, {
   eyebrow: string;
   title: string;
   description: string;
@@ -27,7 +27,7 @@ const CONTENT: Record<Exclude<ProductArea, "workspace" | "tietiezhi">, {
 export function ProductAreaPlaceholder({
   area,
 }: {
-  area: Exclude<ProductArea, "workspace" | "tietiezhi">;
+  area: Exclude<ProductArea, "workspace" | "tietiezhi" | "cores">;
 }) {
   const definition = getProductArea(area);
   const content = CONTENT[area];
