@@ -18,8 +18,12 @@ export interface WindowOptions {
   entry?: "index" | "capsule";
 }
 
-export function createMainWindow(options: WindowOptions = {}): BrowserWindow {
-  const entry = options.entry ?? "index";
+/**
+ * Creates the window without loading anything. The caller must attach the
+ * invoke bridge before calling `loadRenderer`, otherwise the renderer's first
+ * `invoke()` calls race the handler registration and get rejected.
+ */
+export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -44,11 +48,14 @@ export function createMainWindow(options: WindowOptions = {}): BrowserWindow {
     return { action: "deny" };
   });
 
+  return window;
+}
+
+export function loadRenderer(window: BrowserWindow, options: WindowOptions = {}): void {
+  const entry = options.entry ?? "index";
   if (DEV_SERVER_URL) {
     void window.loadURL(`${DEV_SERVER_URL}/${entry}.html`);
   } else {
     void window.loadFile(join(HERE, `../renderer/${entry}.html`));
   }
-
-  return window;
 }

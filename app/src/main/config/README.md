@@ -1,0 +1,183 @@
+# MCP 配置投影层
+
+一份规范配置，投影成各家 CLI 的原生格式。这是"Skills / MCP 只配置一次，切换任何核心都生效"
+在代码里的落点——ACP 协议本身不管配置，所以这层必须由我们做。
+
+```
+<userData>/config/mcp.json          规范配置（store.ts 独占读写）
+        │
+        │  projectMcp(servers, format, targetPath)
+        ▼
+<userData>/cores/<coreId>/…         投影产物（每个核心一份，隔离目录）
+```
+
+## 文件
+
+| 文件 | 职责 |
+| --- | --- |
+| `store.ts` | 规范配置的读写。原子写、形状校验、损坏时备份而非崩溃。依赖 electron（`app.getPath`）。 |
+| `projection.ts` | 三种方言的转换器 + 自研 TOML 序列化 + 异步原子写。**无任何相对导入、不依赖 electron**。 |
+| `projection.test.ts` | `node:test` 测试。 |
+
+`projection.ts` 之所以刻意保持"零相对导入"，是因为 Node 的类型剥离（type stripping）不做
+无扩展名解析：一旦它 `import { x } from "./toml"`，`node --test` 就跑不起来了。代价是
+`store.ts` 里有一份同步版原子写，与 `projection.ts` 的异步版并存——这是有意的重复。
+
+## 跑测试
+
+Node ≥ 22.18 / 23.6 默认开启类型剥离，直接跑即可：
+
+```bash
+cd app
+node --test src/main/config/projection.test.ts
+```
+
+旧版 Node 需要显式开启：
+
+```bash
+node --test --experimental-strip-types src/main/config/projection.test.ts
+```
+
+测试文件用 `await import(new URL("./projection.ts", import.meta.url).href)` 加载被测模块：
+静态 `import "./projection"` Node 解析不了，静态 `import "./projection.ts"` 又需要
+`allowImportingTsExtensions`（tsconfig 里没开，且不允许改）。类型仍然是全的，靠
+`typeof import("./projection")` 拿。
+
+## 字段对照表
+
+规范类型是 `@shared/contracts` 的 `McpServerDefinition`。服务器在各家配置里的**键名用
+`server.id`**（`name` 只是展示名，可能有空格/中文）。
+
+### stdio 传输
+
+| 规范字段 | claude-json | codex-toml | gemini-json |
+| --- | --- | --- | --- |
+| （容器） | `mcpServers.<id>` | `[mcp_servers.<id>]` | `mcpServers.<id>` |
+| 判别字段 | `"type": "stdio"` | 无（有 `command` 即 stdio） | 无（有 `command` 即 stdio） |
+| `transport.command` | `command` | `command` | `command` |
+| `transport.args` | `args` | `args` | `args` |
+| `transport.env` | `env` | `[mcp_servers.<id>.env]` 子表 | `env` |
+
+### http 传输（streamable HTTP）
+
+| 规范字段 | claude-json | codex-toml | gemini-json |
+| --- | --- | --- | --- |
+| 判别字段 | `"type": "http"` | 无（有 `url` 即 HTTP） | 无（有 `httpUrl` 即 streamable HTTP） |
+| `transport.url` | `url` | `url` | **`httpUrl`** |
+| `transport.headers` | `headers` | `[mcp_servers.<id>.http_headers]` 子表 | `headers` |
+
+三处必须记住的坑：
+
+1. **Gemini 的 `url` 不是 HTTP，是 SSE。** Gemini CLI 按字段选传输：`command` →
+   stdio，`url` → `SSEClientTransport`，`httpUrl` → `StreamableHTTPClientTransport`。
+   我们的 `http` 语义是 streamable HTTP，所以只能写 `httpUrl`。写成 `url` 会静默走成
+   老的 SSE 通道。
+2. **Claude Code 的 `type` 不能省。** 只有 `url` 没有 `type` 的条目会被 Claude Code
+   当成 stdio 服务器，直接报错跳过（`has a "url" but no "type"`）。`streamable-http`
+   是 `http` 的别名。
+3. **Codex 一个表里不能混传输。** `command` 与 `url` / `bearer_token_env_var` /
+   `http_headers` 不能出现在同一个 `[mcp_servers.x]` 表里。
+
+### 默认路径与环境变量
+
+| 核心 | 用户真实路径（**我们不碰**） | 隔离用环境变量 |
+| --- | --- | --- |
+| Claude Code | `~/.claude.json` | `CLAUDE_CONFIG_DIR`（指向配置 home 目录） |
+| Codex | `~/.codex/config.toml` | `CODEX_HOME` |
+| Gemini CLI | `~/.gemini/settings.json` | 官方文档未记载覆盖 `.gemini` 目录的环境变量 |
+
+环境变量的实际注入由核心启动那一层（core manager）负责，本模块只负责把文件写到给定的
+`targetPath`。
+
+## 来源
+
+- Claude Code：<https://code.claude.com/docs/en/mcp>
+  （`type` 取值与 `streamable-http` 别名、无 `type` 的 `url` 是配置错误、保留服务器名、
+  用户级 MCP 存 `~/.claude.json`、`CLAUDE_CONFIG_DIR` 见 <https://code.claude.com/docs/en/env-vars>）
+- Gemini CLI：<https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md>
+  （`command` / `args` / `env` / `cwd` / `url` / `httpUrl` / `headers` / `timeout` /
+  `trust` / `includeTools` / `excludeTools`，以及 `url` vs `httpUrl` 的传输选择）
+- Codex：<https://developers.openai.com/codex/mcp> 与
+  <https://developers.openai.com/codex/config-reference>
+  （`[mcp_servers.NAME]`、stdio 的 `command` / `args` / `env`、HTTP 的 `url` /
+  `bearer_token_env_var` / `http_headers`、`startup_timeout_sec` / `tool_timeout_sec`、
+  `~/.codex/config.toml` 与 `$CODEX_HOME`）
+- TOML v1.0.0 基本字符串与键的转义规则：<https://toml.io/en/v1.0.0>
+
+### 已知版本差异（投影时未处理，需要留意）
+
+- **Codex 的 streamable HTTP**：较早的 Codex 版本要求额外开
+  `experimental_use_rmcp_client = true` 才认 `url` 型服务器，而这个开关在不同版本里
+  一会儿在顶层、一会儿在 `[features]` 表下。位置不稳定，写错反而可能让整个
+  `config.toml` 解析失败，所以我们**不写**这个开关：HTTP 型 MCP 需要较新的 Codex。
+- **Codex 的密钥**：Codex 更推荐 `bearer_token_env_var`（只写环境变量名）。我们的规范
+  模型里 header 是字面值，因此走 `http_headers`。如果以后规范类型支持"从环境变量取值"，
+  这里应改成 `bearer_token_env_var`。
+- **Gemini settings 分层**：Gemini CLI 新版把部分设置收拢进了分类命名空间（如 `ui.*`），
+  `mcpServers` 目前仍在顶层。若某天被迁移，只需改 `renderGeminiEntries` 的挂载点。
+
+## 为什么必须隔离配置目录
+
+**绝对不能写用户真实的 dotfile。** 理由不止一条：
+
+1. **不可逆的破坏。** `~/.claude.json` 里不只有 `mcpServers`，还有用户所有项目的历史、
+   授权状态、onboarding 标记。我们按自己的模型全量重写，等于替用户删数据。
+2. **所有权冲突。** 投影是单向的：规范配置是唯一事实来源，产物随时可被覆盖。用户在
+   `~/.codex/config.toml` 里手写的东西会在下一次投影时消失——只要那个文件是我们生成的
+   隔离副本，这个语义就是对的；一旦是用户的真文件，这就是 bug。
+3. **多核心互不干扰。** 每个核心一个目录，切换核心不需要清理上一个核心留下的状态。
+4. **可审计 / 可回滚。** 隔离目录可以整个删掉重建，用户的环境毫发无损。
+
+即便如此，投影仍然做了防御：**JSON 方言只替换 `mcpServers` 这一个键，其余键原样保留**
+（`mergeIntoExistingJson`）。因为核心自己也会往同一个文件里写状态（Claude Code 的项目
+列表、Gemini 的 UI 设置），全量覆盖会把核心自己的状态抹掉。TOML 方言做不到这点——保留
+未知键需要一个完整的 TOML 解析器，而我们不允许引入新依赖——所以 `config.toml` 是完全由
+本模块生成的文件，头部有 `# Generated by Tietiezhi` 注释说明。
+
+写入一律走原子写（临时文件 → `fsync` → `rename`），并且以 `0o600` 创建：投影产物里
+带着 API token。崩溃在任何一步，读者看到的要么是旧文件要么是新文件，不会是半截。
+
+## skipped：为什么不静默丢弃
+
+`ProjectionResult.skipped` 是产品语义的一部分：用户在一个核心上配好的服务器，在另一个
+核心上可能表达不出来。静默丢弃会变成"为什么这个工具在 Codex 里没有"的玄学问题。当前会
+进 `skipped` 的情形：
+
+| 原因 | 说明 |
+| --- | --- |
+| `format: "none"` | 该核心根本不读投影配置（如自家 Rust 核心）。所有 enabled 服务器都记进 skipped，且不写任何文件（`path` 为空串）。 |
+| 重复 id | 同一 id 出现多次，第一条生效，其余记 skipped。 |
+| stdio 空命令 | `command` 为空/全空白，任何方言都跑不起来。 |
+| 非 http(s) URL | 例如 `ws://`。三家的 HTTP 型传输都只接受 http/https。 |
+| Claude Code 保留名 | `workspace`、`claude-in-chrome`、`computer-use`、`Claude Preview`、`Claude Browser` 是内置服务器名，Claude Code 会拒绝加载同名用户服务器。 |
+
+**被 `enabled: false` 关掉的服务器不算 skipped**——那是用户的选择，不是失败，直接不出现
+在产物里。
+
+## Skills 为什么比 MCP 难
+
+MCP 之所以能投影，是因为它有一个跨厂商统一的运行时协议：三家的配置字段名不同，但语义
+是同一套（起一个进程 / 连一个 HTTP 端点）。字段对照表能写出来，就说明这是纯粹的
+**方言翻译**问题。
+
+Skills 不是。难点在于它根本不是同一种东西：
+
+1. **载体不同。** Claude 系的 Skills 是带 YAML frontmatter 的 `SKILL.md`（`name` /
+   `description` 决定何时触发），目录里可以挂脚本和资源；Codex / Gemini 那边更接近
+   `AGENTS.md` 这类"一整篇给模型看的项目说明"，没有独立的技能单元，也没有触发描述。
+   把 N 个 SKILL.md 拼成一个 AGENTS.md，等于把"按需加载"降级成"永远塞在上下文里"。
+2. **加载时机不同。** SKILL.md 的核心机制是渐进披露：先只喂 description，命中了才读正文
+   和附带文件。AGENTS.md 是无条件全量注入。这不是格式差异，是上下文预算模型的差异——
+   十个技能投影过去可能直接把上下文撑爆。
+3. **能力假设不同。** 技能正文里经常写"运行 `scripts/x.py`"、"读取 `references/y.md`"。
+   这依赖核心有文件系统和执行能力，而我们对外部核心**不声明** ACP 的 `fs/*` 和
+   `terminal/*`——它们跑在自己的内核里，路径基准和权限模型都不是我们的。同一份技能在
+   不同核心下的可执行性天然不同。
+4. **模型不同。** 技能的措辞是针对特定模型调过的。同一段 prompt 在 Claude 上稳定触发，
+   在别家模型上可能完全不触发，或者触发得过于频繁。MCP 是机器读的（工具 schema），
+   Skills 是模型读的（自然语言），后者没有"正确翻译"这回事。
+
+结论：Skills 层不应该照搬本模块的"一份规范 → 全量投影"模型。更现实的路子是**按核心能力
+分级**——原生支持 SKILL.md 的核心直接投影目录；只有 AGENTS.md 的核心，投影一份精简
+索引（每个技能一行 description + 路径），正文按需由核心自己去读。这个决定不在本模块范围内，
+在此记录以免后来者直接复用 `projectMcp` 的形状。
