@@ -26,3 +26,7 @@ desktop/store-output/
 
 # ---- Local visual QA artifacts (may contain private desktop content) ----
 artifacts/
+
+# Electron 宿主
+app/node_modules/
+app/out/

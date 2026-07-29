@@ -1,0 +1,26 @@
+{
+  "name": "tietiezhi-app",
+  "private": true,
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "铁铁汁 Electron 宿主：统一渲染多个 ACP 核心",
+  "main": "out/main/index.js",
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "electron": "^40.0.0",
+    "electron-vite": "^5.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4"
+  }
+}
