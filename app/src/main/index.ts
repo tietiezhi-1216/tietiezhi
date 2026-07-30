@@ -112,6 +112,15 @@ async function bootstrap(): Promise<void> {
   sessions = trackReadiness(createSessionManager());
   registerHostCommands(sessions);
 
+  // Headless mode registers everything and stops short of any window, so the
+  // command surface can be verified in CI (and locally) without a GUI.
+  if (process.env["TIETIEZHI_HEADLESS"]) {
+    const names = describeRegisteredCommands().map((entry) => entry.name);
+    console.log(`[host] headless: ${String(names.length)} command(s): ${names.join(" ")}`);
+    app.exit(0);
+    return;
+  }
+
   const window = createMainWindow();
   // The bridge must exist before the renderer's first `invoke()`.
   createBridge(window);

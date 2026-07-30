@@ -17,6 +17,38 @@ export const EVENTS = {
   coreInstallState: "core://install-state",
 } as const;
 
+/**
+ * Maps the renderer's semantic decision onto one of the options the core
+ * offered.
+ *
+ * ACP lets each core name its own options, but it tags them with a `kind`
+ * (`allow_once` / `allow_always` / `reject_once` / `reject_always`), so the
+ * mapping goes through the kind and only falls back to the option id. Returning
+ * null means "cancel", which is a valid ACP outcome — not an error.
+ */
+function matchPermissionOption(
+  options: Array<{ optionId: string; name: string; kind: string }>,
+  decision: string,
+): string | null {
+  const byKind = (...kinds: string[]): string | null =>
+    options.find((option) => kinds.includes(option.kind))?.optionId ?? null;
+
+  switch (decision) {
+    case "accept":
+      return byKind("allow_once", "allow_always");
+    case "acceptForSession":
+      // Prefer a persistent allow, but a one-shot allow is closer to the user's
+      // intent than refusing outright.
+      return byKind("allow_always", "allow_once");
+    case "decline":
+      return byKind("reject_once", "reject_always");
+    case "cancel":
+      return null;
+    default:
+      throw new Error("无效的授权决定");
+  }
+}
+
 function requireString(args: Record<string, unknown>, key: string): string {
   const value = args[key];
   if (typeof value !== "string" || value.length === 0) {
@@ -130,6 +162,25 @@ export function registerHostCommands(manager: AcpSessionManager): void {
         requestId,
         optionId ? { outcome: "selected", optionId } : { outcome: "cancelled" },
       );
+    },
+
+    /**
+     * The renderer's existing approval UI answers with a semantic decision
+     * rather than a core-specific option id, so map it onto whichever option
+     * the core actually offered. Without this the approval dialog has no
+     * handler and every permission request stalls.
+     */
+    permission_respond: (args) => {
+      const id = requireString(args, "id");
+      const decision = requireString(args, "decision");
+      const pending = manager.pendingPermission(id);
+      if (!pending) throw new Error("授权请求已失效");
+      const optionId = matchPermissionOption(pending.options, decision);
+      manager.resolvePermission(
+        id,
+        optionId === null ? { outcome: "cancelled" } : { outcome: "selected", optionId },
+      );
+      return null;
     },
 
     // --- MCP -------------------------------------------------------------

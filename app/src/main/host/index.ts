@@ -15,7 +15,9 @@ import {
   initDictationHotkey,
   registerDictationCommands,
 } from "./dictation.js";
+import { registerDeviceCommands } from "./devices.js";
 import { registerGatewayCommands } from "./gateway.js";
+import { registerPendingAcpCommands } from "./pending-acp.js";
 import { registerProjectCommands, setSuggestionSupport } from "./projects.js";
 import { disposeTerminals, registerTerminalCommands } from "./terminal.js";
 import { registerWorkspaceCommands } from "./workspace.js";
@@ -45,6 +47,8 @@ export function registerHostModules(): void {
   registerTerminalCommands();
   registerDictationCommands();
   registerCapsuleCommands();
+  registerDeviceCommands();
+  registerPendingAcpCommands();
   // Defaults enable the scheduler and crash recovery; both need the profile to
   // be imported first, which `registerHostModules`' contract already guarantees.
   registerAutomationCommands();

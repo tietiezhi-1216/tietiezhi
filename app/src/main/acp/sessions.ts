@@ -65,6 +65,8 @@ interface SessionEntry {
 interface PendingPermission {
   coreId: string;
   sessionId: string;
+  /** Retained so a semantic decision can be mapped onto the core's own options. */
+  options: CorePermissionRequest["options"];
   resolve(decision: PermissionDecision): void;
 }
 
@@ -348,6 +350,18 @@ export class AcpSessionManager extends EventEmitter<AcpSessionManagerEvents> {
     return [...this.pendingPermissions.keys()];
   }
 
+  /**
+   * The still-unanswered request, including the options the core offered — the
+   * renderer answers with a semantic decision and needs them to be mapped.
+   */
+  pendingPermission(
+    requestId: string,
+  ): { coreId: string; sessionId: string; options: CorePermissionRequest["options"] } | null {
+    const pending = this.pendingPermissions.get(requestId);
+    if (!pending) return null;
+    return { coreId: pending.coreId, sessionId: pending.sessionId, options: pending.options };
+  }
+
   async shutdownCore(coreId: string): Promise<void> {
     const connection = this.connections.get(coreId);
     this.connections.delete(coreId);
@@ -374,6 +388,7 @@ export class AcpSessionManager extends EventEmitter<AcpSessionManagerEvents> {
       this.pendingPermissions.set(request.requestId, {
         coreId: request.coreId,
         sessionId: request.sessionId,
+        options: request.options,
         resolve,
       });
       this.emit("permission", request);
