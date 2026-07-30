@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { ProductArea } from "@/lib/product-area";
+import {
+  DEFAULT_PRODUCT_AREA,
+  isProductAreaVisible,
+  type ProductArea,
+} from "@/lib/product-area";
 
 export type SettingsCategory =
   | "quota"
@@ -62,7 +66,7 @@ interface UiState {
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
-      productArea: "workspace",
+      productArea: DEFAULT_PRODUCT_AREA,
       setProductArea: (productArea) => set({ productArea }),
       settingsOpen: false,
       settingsCategory: "providers",
@@ -118,14 +122,19 @@ export const useUiStore = create<UiState>()(
             : previous.productMode === "code"
               ? "workspace"
               : previous.productMode;
-        const productArea: ProductArea =
+        // A stored choice pointing at a hidden area would strand the user on a
+        // screen the switcher can no longer navigate away from.
+        const restoredArea =
           legacyArea === "tietiezhi" ||
           legacyArea === "workspace" ||
           legacyArea === "cores" ||
           legacyArea === "automations" ||
           legacyArea === "create"
             ? legacyArea
-            : "workspace";
+            : DEFAULT_PRODUCT_AREA;
+        const productArea: ProductArea = isProductAreaVisible(restoredArea)
+          ? restoredArea
+          : DEFAULT_PRODUCT_AREA;
         const expandedProjects =
           typeof previous.expandedProjects === "object" &&
           previous.expandedProjects != null

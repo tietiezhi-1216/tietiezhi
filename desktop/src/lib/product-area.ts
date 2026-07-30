@@ -13,6 +13,12 @@ export interface ProductAreaDefinition {
   blinkMascotSrc?: string;
   gradientClassName: string;
   selectedSurfaceClassName: string;
+  /**
+   * Hidden from the switcher while its backend is being rebuilt. The code stays
+   * so its timeline / diff / approval UI can be reused, but the area is not
+   * reachable — its host commands answer with a "migrating to ACP" error.
+   */
+  hidden?: boolean;
 }
 
 export const PRODUCT_AREAS = [
@@ -24,6 +30,7 @@ export const PRODUCT_AREAS = [
     blinkMascotSrc: undefined,
     gradientClassName: "from-cyan-300 via-sky-400 to-blue-500",
     selectedSurfaceClassName: "bg-cyan-500/10 dark:bg-cyan-400/10",
+    hidden: true,
   },
   {
     id: "workspace",
@@ -33,6 +40,7 @@ export const PRODUCT_AREAS = [
     blinkMascotSrc: "/mode-mascots/paper-plane/code-blink.png",
     gradientClassName: "from-sky-300 via-indigo-400 to-violet-500",
     selectedSurfaceClassName: "bg-indigo-500/10 dark:bg-indigo-400/10",
+    hidden: true,
   },
   {
     id: "cores",
@@ -63,6 +71,22 @@ export const PRODUCT_AREAS = [
   },
 ] as const satisfies readonly ProductAreaDefinition[];
 
+/** The area shown on first run and whenever a stored choice is unavailable. */
+export const DEFAULT_PRODUCT_AREA: ProductArea = "cores";
+
+/** Areas the switcher offers. */
+export const VISIBLE_PRODUCT_AREAS: readonly ProductAreaDefinition[] = (
+  PRODUCT_AREAS as readonly ProductAreaDefinition[]
+).filter((area) => area.hidden !== true);
+
+export function isProductAreaVisible(id: ProductArea): boolean {
+  return VISIBLE_PRODUCT_AREAS.some((area) => area.id === id);
+}
+
 export function getProductArea(id: ProductArea): ProductAreaDefinition {
-  return PRODUCT_AREAS.find((area) => area.id === id) ?? PRODUCT_AREAS[1];
+  return (
+    PRODUCT_AREAS.find((area) => area.id === id) ??
+    PRODUCT_AREAS.find((area) => area.id === DEFAULT_PRODUCT_AREA) ??
+    PRODUCT_AREAS[0]
+  );
 }

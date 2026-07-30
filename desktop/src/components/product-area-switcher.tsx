@@ -6,7 +6,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { PRODUCT_AREAS, getProductArea } from "@/lib/product-area";
+import { VISIBLE_PRODUCT_AREAS, getProductArea } from "@/lib/product-area";
 import type { ProductAreaDefinition } from "@/lib/product-area";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/ui";
@@ -62,7 +62,7 @@ export function ProductAreaSwitcher({
         sideOffset={6}
         className="w-64 p-1"
       >
-        {PRODUCT_AREAS.map((area) => {
+        {VISIBLE_PRODUCT_AREAS.map((area) => {
           const selected = area.id === productArea;
           return (
             <DropdownMenuItem
