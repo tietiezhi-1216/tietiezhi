@@ -8,7 +8,7 @@
  * rejected gate is a denial, never an allow.
  */
 
-import { app } from "electron";
+import { app, BrowserWindow } from "electron";
 import { join } from "node:path";
 
 import { broadcastEvent, registerCommands } from "../bridge/index.js";
@@ -227,13 +227,55 @@ function readDecision(value: unknown): ApprovalDecision {
   return { outcome: "deny", reason: "未识别的审批结果" };
 }
 
+/**
+ * A decision made without asking the user, or null to ask.
+ *
+ * Exists so the core can run without a renderer — a headless check or the
+ * integration probe — and is the seam a future "auto-approve reads" mode would
+ * use. Returning a decision here bypasses the prompt entirely.
+ */
+export type ApprovalPolicy = (request: ApprovalRequest) => ApprovalDecision | null;
+
+let approvalPolicy: ApprovalPolicy | null = null;
+
+export function setApprovalPolicy(policy: ApprovalPolicy | null): void {
+  approvalPolicy = policy;
+}
+
+/** How long a prompt may go unanswered before the tool is refused. */
+const APPROVAL_TIMEOUT_MS = 10 * 60_000;
+
 function waitForApproval(
   sessionId: string,
   turn: RunningTurn,
   request: ApprovalRequest,
 ): Promise<ApprovalDecision> {
+  const automatic = approvalPolicy?.(request) ?? null;
+  if (automatic !== null) return Promise.resolve(automatic);
+
+  // With no window there is nobody to answer, and the turn would otherwise wait
+  // forever with no output at all — the failure mode that hid this bug. Refusing
+  // loudly is the only honest outcome.
+  if (BrowserWindow.getAllWindows().length === 0) {
+    return Promise.resolve({
+      outcome: "deny",
+      reason: "没有界面可以确认这个操作（无窗口运行）",
+    });
+  }
+
   return new Promise<ApprovalDecision>((resolve) => {
-    turn.pending.set(request.id, resolve);
+    // A lost event or a crashed renderer must not wedge the turn indefinitely.
+    const timer = setTimeout(() => {
+      if (turn.pending.delete(request.id)) {
+        resolve({ outcome: "deny", reason: "等待确认超时，已拒绝该操作" });
+      }
+    }, APPROVAL_TIMEOUT_MS);
+    timer.unref();
+
+    turn.pending.set(request.id, (decision) => {
+      clearTimeout(timer);
+      resolve(decision);
+    });
     broadcastEvent(AGENT_EVENTS.approval, { sessionId, request });
   });
 }

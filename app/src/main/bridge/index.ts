@@ -24,6 +24,9 @@ export type {
 export {
   currentInvocation,
   describeRegisteredCommands,
+  // Exported for the integration probe, which drives real handlers without a
+  // renderer; the IPC path uses it internally.
+  dispatchCommand,
   hasCommand,
   registerCommand,
   registerCommands,

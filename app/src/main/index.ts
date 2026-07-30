@@ -1,5 +1,6 @@
 import { readFile, realpath } from "node:fs/promises";
 import { join, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { app, BrowserWindow, dialog, protocol } from "electron";
 
@@ -8,6 +9,7 @@ import {
   assetUrlToPath,
   createBridge,
   describeRegisteredCommands,
+  dispatchCommand,
 } from "./bridge/index.js";
 import { forwardHostEvents, registerHostCommands } from "./commands.js";
 import { disposeAgent, registerAgentCommands } from "./agent/commands.js";
@@ -125,6 +127,40 @@ async function bootstrap(): Promise<void> {
     const names = describeRegisteredCommands().map((entry) => entry.name);
     console.log(`[host] headless: ${String(names.length)} command(s): ${names.join(" ")}`);
     app.exit(0);
+    return;
+  }
+
+  // Debug seam for the integration probe: it needs to drive the real command
+  // handlers — settings, key vault, provider mapping and dispatch — without a
+  // window. Keeping the probe in an external script means none of its code ships
+  // in the bundle; only this dynamic import does, and only when asked.
+  const probeScript = process.env["TIETIEZHI_PROBE_SCRIPT"];
+  if (probeScript !== undefined && probeScript !== "") {
+    // The built-in gateway authenticates by login, so a probe holding an
+    // already-issued key has to seed the vault the way login would. Handing the
+    // setters in keeps that knowledge out of the probe's reach otherwise.
+    const [{ gatewayRoot }, secrets] = await Promise.all([
+      import("./host/settings.js"),
+      import("./host/settings-secrets.js"),
+    ]);
+    const { setApprovalPolicy } = await import("./agent/commands.js");
+    const probe = (await import(pathToFileURL(probeScript).href)) as {
+      default: (api: {
+        dispatchCommand: typeof dispatchCommand;
+        seedGatewayKey: (providerId: string, baseUrl: string, key: string) => Promise<void>;
+        setApprovalPolicy: typeof setApprovalPolicy;
+      }) => Promise<boolean>;
+    };
+    const passed = await probe.default({
+      dispatchCommand,
+      setApprovalPolicy,
+      seedGatewayKey: async (providerId, baseUrl, key) => {
+        await secrets.setGatewayIssuer(providerId, gatewayRoot(baseUrl));
+        await secrets.setGatewaySession(providerId, "probe-session");
+        await secrets.setGatewayApiKey(providerId, key);
+      },
+    });
+    app.exit(passed ? 0 : 1);
     return;
   }
 

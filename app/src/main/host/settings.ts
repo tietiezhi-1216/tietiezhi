@@ -631,7 +631,7 @@ function validateProviderId(id: string): void {
   if (!ok) throw new Error("非法的供应商 ID");
 }
 
-function gatewayRoot(baseUrl: string): string {
+export function gatewayRoot(baseUrl: string): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, "");
   if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
     throw new Error("baseURL 需以 http:// 或 https:// 开头");
