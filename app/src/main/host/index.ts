@@ -8,6 +8,7 @@
  */
 
 import { registerConversationCommands } from "./conversations.js";
+import { registerGatewayCommands } from "./gateway.js";
 import { registerProjectCommands, setSuggestionSupport } from "./projects.js";
 import { registerSettingsCommands } from "./settings.js";
 import { registerSkillsCommands } from "./skills.js";
@@ -27,6 +28,7 @@ export function registerHostModules(): void {
   registerProjectCommands();
   registerSkillsCommands();
   registerTietiezhiCommands();
+  registerGatewayCommands();
 
   // `projects` owns the suggestion deck but deliberately knows nothing about
   // task history or provider credentials; both are handed in from outside.
