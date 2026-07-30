@@ -10,18 +10,24 @@
 import { registerAutomationCommands } from "./automations.js";
 import { registerCapsuleCommands } from "./capsule.js";
 import { registerConversationCommands } from "./conversations.js";
+import {
+  disposeDictation,
+  initDictationHotkey,
+  registerDictationCommands,
+} from "./dictation.js";
 import { registerGatewayCommands } from "./gateway.js";
 import { registerProjectCommands, setSuggestionSupport } from "./projects.js";
 import { disposeTerminals, registerTerminalCommands } from "./terminal.js";
 import { registerWorkspaceCommands } from "./workspace.js";
 
-export { disposeTerminals };
 import { registerSettingsCommands } from "./settings.js";
 import { registerSkillsCommands } from "./skills.js";
 import { registerTietiezhiCommands } from "./tietiezhi.js";
 import { suggestionSupport } from "./suggestions.js";
 
 export { dataDir, importLegacyDataOnce } from "./paths.js";
+/** Teardown and startup hooks the integration layer drives. */
+export { disposeDictation, disposeTerminals, initDictationHotkey };
 
 /**
  * Registers every ported host command. Must run **after**
@@ -37,6 +43,7 @@ export function registerHostModules(): void {
   registerGatewayCommands();
   registerWorkspaceCommands();
   registerTerminalCommands();
+  registerDictationCommands();
   registerCapsuleCommands();
   // Defaults enable the scheduler and crash recovery; both need the profile to
   // be imported first, which `registerHostModules`' contract already guarantees.

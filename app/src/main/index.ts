@@ -14,8 +14,10 @@ import { createSessionManager, markCoreReady } from "./core-launcher.js";
 import { getCoreProcessManager } from "./cores/process.js";
 import {
   dataDir,
+  disposeDictation,
   disposeTerminals,
   importLegacyDataOnce,
+  initDictationHotkey,
   registerHostModules,
 } from "./host/index.js";
 import { createMainWindow, loadRenderer, rendererRoot } from "./window.js";
@@ -104,6 +106,8 @@ async function bootstrap(): Promise<void> {
   }
 
   registerHostModules();
+  // Arms the saved dictation shortcut; failures are logged, never fatal.
+  await initDictationHotkey();
 
   sessions = trackReadiness(createSessionManager());
   registerHostCommands(sessions);
@@ -167,8 +171,10 @@ app.on("before-quit", (event) => {
     try {
       await sessions?.dispose();
       await getCoreProcessManager().stopAll();
-      // A pty child outlives its parent unless killed explicitly.
+      // A pty child outlives its parent unless killed explicitly, and Electron
+      // holds a global shortcut until it is told to release it.
       disposeTerminals();
+      disposeDictation();
     } catch (error) {
       console.error("[host] shutdown failed:", error);
     } finally {
