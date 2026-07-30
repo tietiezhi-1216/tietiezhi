@@ -11,6 +11,8 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { CoreStreamEvent } from "@shared/contracts";
 
+import { normalizeConfigOption } from "./config-options.js";
+
 /** Reported for update variants the host has no dedicated event for. */
 export interface UnhandledSessionUpdate {
   sessionId: string;
@@ -104,9 +106,26 @@ export function normalizeSessionUpdate(
     case "plan_removed":
       return [{ kind: "plan", sessionId, raw: update }];
 
+    // A core can change a knob on its own — switching model after a fallback,
+    // for instance. Surfacing these is what keeps the picker honest instead of
+    // showing whatever the user last clicked.
+    case "config_option_update": {
+      const option = normalizeConfigOption(
+        (update as { configOption?: unknown }).configOption ?? update,
+      );
+      return option ? [{ kind: "config-changed", sessionId, option }] : [];
+    }
+
+    case "current_mode_update": {
+      const modeId = (update as { currentModeId?: unknown }).currentModeId;
+      return typeof modeId === "string"
+        ? [{ kind: "mode-changed", sessionId, currentModeId: modeId }]
+        : [];
+    }
+
     default: {
       // Covers both variants we deliberately do not surface
-      // (user_message_chunk, usage_update, mode/config/command updates) and
+      // (user_message_chunk, usage_update, available_commands_update) and
       // variants added by a newer ACP revision than we compiled against.
       const kind: unknown = update.sessionUpdate;
       onUnhandled?.({

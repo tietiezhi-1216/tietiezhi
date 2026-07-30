@@ -18,8 +18,9 @@ export default defineConfig({
       lib: { entry: resolve(__dirname, "src/main/index.ts") },
       rollupOptions: {
         // Keep the ACP SDK external so the agent subprocess protocol code is
-        // loaded from node_modules at runtime rather than inlined.
-        external: ["electron", "@agentclientprotocol/sdk"],
+        // loaded from node_modules at runtime rather than inlined. node-pty is
+        // a native module — bundling it would drop the .node binary.
+        external: ["electron", "@agentclientprotocol/sdk", "node-pty"],
       },
     },
     resolve: {

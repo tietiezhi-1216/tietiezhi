@@ -104,6 +104,25 @@ export function registerHostCommands(manager: AcpSessionManager): void {
 
     core_turn_active: (args) => manager.isTurnActive(requireString(args, "sessionId")),
 
+    // --- model / mode switching -----------------------------------------
+    core_session_config: (args) => manager.sessionConfig(requireString(args, "sessionId")),
+
+    /** Switching the core's `category: "model"` option is the model switch. */
+    core_session_set_config: async (args) => {
+      const value = args["value"];
+      if (typeof value !== "string" && typeof value !== "boolean") {
+        throw new Error("配置项的值必须是字符串或布尔值");
+      }
+      return manager.setConfigOption(
+        requireString(args, "sessionId"),
+        requireString(args, "optionId"),
+        value,
+      );
+    },
+
+    core_session_set_mode: async (args) =>
+      manager.setMode(requireString(args, "sessionId"), requireString(args, "modeId")),
+
     core_permission_resolve: (args) => {
       const requestId = requireString(args, "requestId");
       const optionId = typeof args["optionId"] === "string" ? args["optionId"] : null;

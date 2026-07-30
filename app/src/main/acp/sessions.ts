@@ -19,9 +19,11 @@ import type {
   CoreCapabilities,
   CorePermissionRequest,
   CoreRunState,
+  CoreSessionConfig,
   CoreStreamEvent,
 } from "@shared/contracts";
 
+import { normalizeConfigOptions, normalizeModeState } from "./config-options.js";
 import {
   connectAcpAgent,
   type AcpAgentProcess,
@@ -56,6 +58,8 @@ interface SessionEntry {
   handle: AcpSessionHandle;
   /** Non-null while a `session/prompt` is in flight; ACP allows one at a time. */
   turn: Promise<PromptResponse> | null;
+  /** Cached switchable state, kept current by `applyConfigEvent`. */
+  config: CoreSessionConfig;
 }
 
 interface PendingPermission {
@@ -103,7 +107,12 @@ export class AcpSessionManager extends EventEmitter<AcpSessionManagerEvents> {
       child,
       ...(this.options.clientInfo ? { clientInfo: this.options.clientInfo } : {}),
       onStreamEvents: (events) => {
-        for (const event of events) this.emit("stream", event);
+        for (const event of events) {
+          // Fold config/mode pushes into the cached state before forwarding, so
+          // a later `sessionConfig()` read never lags what the renderer saw.
+          this.applyConfigEvent(event);
+          this.emit("stream", event);
+        }
       },
       onPermissionRequest: (request) => this.queuePermission(request),
       onRunState: (state) => {
@@ -144,8 +153,96 @@ export class AcpSessionManager extends EventEmitter<AcpSessionManagerEvents> {
     }
 
     const handle: AcpSessionHandle = { sessionId, coreId, cwd, createdAt: Date.now() };
-    this.sessions.set(sessionId, { handle, turn: null });
+    const modeState = normalizeModeState(response.modes);
+    this.sessions.set(sessionId, {
+      handle,
+      turn: null,
+      config: {
+        sessionId,
+        coreId,
+        options: normalizeConfigOptions(response.configOptions),
+        currentModeId: modeState.currentModeId,
+        modes: modeState.modes,
+      },
+    });
     return handle;
+  }
+
+  /**
+   * Switchable knobs for a session, including the model selector when the core
+   * exposes one. Returns null for an unknown session.
+   */
+  sessionConfig(sessionId: string): CoreSessionConfig | null {
+    return this.sessions.get(sessionId)?.config ?? null;
+  }
+
+  /**
+   * Applies one config option — this is the model switch when `optionId` is the
+   * core's `category: "model"` selector.
+   *
+   * The core answers with the resulting option set, which replaces the cached
+   * copy: changing a model often changes what else is available (thinking
+   * levels, for instance), so a partial update would leave a stale UI.
+   */
+  async setConfigOption(
+    sessionId: string,
+    optionId: string,
+    value: string | boolean,
+  ): Promise<CoreSessionConfig> {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) throw new Error(`未知会话：${sessionId}`);
+    const connection = this.connections.get(entry.handle.coreId);
+    if (!connection || connection.isClosed()) {
+      throw new Error(`核心 ${entry.handle.coreId} 未在运行`);
+    }
+    // The wire discriminates on the value's own type: booleans carry
+    // `type: "boolean"`, selects send the bare value id.
+    const response = await connection.agent.setSessionConfigOption(
+      typeof value === "boolean"
+        ? { sessionId, configId: optionId, type: "boolean", value }
+        : { sessionId, configId: optionId, value },
+    );
+
+    const options = normalizeConfigOptions(response.configOptions);
+    if (options.length > 0) entry.config.options = options;
+    else {
+      // A core may acknowledge without echoing the set; reflect the change
+      // locally so the UI does not appear to ignore the click.
+      const target = entry.config.options.find((option) => option.id === optionId);
+      if (target) target.currentValue = value;
+    }
+    return entry.config;
+  }
+
+  /** Switches the core's operating mode (`session/set_mode`). */
+  async setMode(sessionId: string, modeId: string): Promise<CoreSessionConfig> {
+    const entry = this.sessions.get(sessionId);
+    if (!entry) throw new Error(`未知会话：${sessionId}`);
+    const connection = this.connections.get(entry.handle.coreId);
+    if (!connection || connection.isClosed()) {
+      throw new Error(`核心 ${entry.handle.coreId} 未在运行`);
+    }
+    await connection.agent.setSessionMode({ sessionId, modeId });
+    entry.config.currentModeId = modeId;
+    return entry.config;
+  }
+
+  /**
+   * Applies a `config_option_update` / `current_mode_update` the core pushed on
+   * its own, so the cached config stays authoritative for the renderer.
+   */
+  applyConfigEvent(event: CoreStreamEvent): void {
+    if (event.kind === "mode-changed") {
+      const entry = this.sessions.get(event.sessionId);
+      if (entry) entry.config.currentModeId = event.currentModeId;
+      return;
+    }
+    if (event.kind !== "config-changed") return;
+    const entry = this.sessions.get(event.sessionId);
+    if (!entry) return;
+    const index = entry.config.options.findIndex((option) => option.id === event.option.id);
+    if (index >= 0) entry.config.options[index] = event.option;
+    else entry.config.options.push(event.option);
   }
 
   listSessions(): AcpSessionHandle[] {

@@ -97,7 +97,61 @@ export type CoreStreamEvent =
   | { kind: "tool-call-update"; sessionId: string; callId: string; status: string; raw: unknown }
   | { kind: "plan"; sessionId: string; raw: unknown }
   | { kind: "turn-ended"; sessionId: string; stopReason: string }
+  // The core changed a knob on its own (or confirmed our change). Carries the
+  // full option so the renderer can re-render without a round trip.
+  | { kind: "config-changed"; sessionId: string; option: CoreConfigOption }
+  | { kind: "mode-changed"; sessionId: string; currentModeId: string }
   | { kind: "error"; sessionId: string; message: string };
+
+// ---------------------------------------------------------------------------
+// Session configuration (model switching, modes)
+// ---------------------------------------------------------------------------
+
+/** One selectable value of a session config option. */
+export interface CoreConfigChoice {
+  value: string;
+  name: string;
+  description: string | null;
+  /** Group label when the core grouped its options; null when ungrouped. */
+  group: string | null;
+}
+
+/**
+ * A knob the running core exposes for the session.
+ *
+ * `category` is ACP's own hint — `"model"` is the one that matters for the
+ * product: it is how a core advertises which models it can switch between.
+ * The list is always the core's own; a CLI only offers the providers it
+ * integrates with, so this switches models *within* a core rather than moving
+ * an arbitrary model into an arbitrary core.
+ */
+export interface CoreConfigOption {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  kind: "select" | "boolean";
+  /** Selected value id for `select`, the toggle state for `boolean`. */
+  currentValue: string | boolean;
+  /** Empty for `boolean`. Groups are flattened, preserving the group label. */
+  choices: CoreConfigChoice[];
+}
+
+/** One operating mode a core can be switched between. */
+export interface CoreMode {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+/** Everything switchable about a live session. */
+export interface CoreSessionConfig {
+  sessionId: string;
+  coreId: string;
+  options: CoreConfigOption[];
+  currentModeId: string | null;
+  modes: CoreMode[];
+}
 
 /**
  * Permission request surfaced from `session/request_permission`. The renderer
