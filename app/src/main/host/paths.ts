@@ -25,8 +25,18 @@ export function legacyDataDir(): string {
   }
 }
 
-/** The host's own data directory. Everything written lives here. */
+/**
+ * The host's own data directory. Everything written lives here.
+ *
+ * Honours the same `TIETIEZHI_DATA_DIR` override as `cores/paths.ts`. Without
+ * it, a scratch profile would split: cores and their config would go to the
+ * override while settings.json, tasks/ and — worst of all — secrets.enc.json
+ * still resolved to the real profile, so a throwaway run would read and mutate
+ * the user's actual data.
+ */
 export function dataDir(): string {
+  const override = process.env["TIETIEZHI_DATA_DIR"];
+  if (override !== undefined && override.length > 0) return override;
   return app.getPath("userData");
 }
 

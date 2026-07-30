@@ -18,6 +18,7 @@ import { safeStorage, shell } from "electron";
 import { registerCommands } from "../bridge/index.js";
 
 import { dataPath } from "./paths.js";
+import { getTietiezhiSecret as legacyTietiezhiSecret } from "./settings-secrets.js";
 
 const CONFIG_VERSION = 1;
 const MAX_CONFIG_PROMPT_BYTES = 64 * 1024;
@@ -637,12 +638,42 @@ function requireEncryption(): void {
   }
 }
 
+/**
+ * Serializes read-modify-write of the vault file. Two `upsert_tietiezhi_secret`
+ * calls arriving together would otherwise each load the same snapshot and the
+ * later save would drop the earlier secret.
+ */
+let vaultQueue: Promise<unknown> = Promise.resolve();
+
+function withVault<T>(task: () => Promise<T>): Promise<T> {
+  const next = vaultQueue.then(task, task);
+  vaultQueue = next.catch(() => undefined);
+  return next;
+}
+
 export async function getTietiezhiSecret(name: string): Promise<string | null> {
   const store = await loadSecretStore();
   const encoded = store.secrets[name];
+  if (encoded === undefined) {
+    // The one-time import from the Tauri profile deposits vault secrets in the
+    // provider keychain file under a `tietiezhi-secret-` account. Reading it
+    // here is what keeps migrated secrets from silently vanishing; adopt on
+    // first hit so the fallback is not needed again.
+    const migrated = await legacyTietiezhiSecret(name).catch(() => null);
+    if (migrated === null) return null;
+    await withVault(async () => {
+      const current = await loadSecretStore();
+      if (current.secrets[name] !== undefined) return;
+      requireEncryption();
+      current.secrets[name] = safeStorage.encryptString(migrated).toString("base64");
+      await saveSecretStore(current);
+    }).catch(() => {
+      // Adoption is opportunistic; the value is already in hand.
+    });
+    return migrated;
+  }
   // Only touch safeStorage when there is something to decrypt, so an empty
   // vault still lists on a machine without a working credential store.
-  if (encoded === undefined) return null;
   requireEncryption();
   try {
     return safeStorage.decryptString(Buffer.from(encoded, "base64"));
@@ -659,16 +690,20 @@ async function setTietiezhiSecret(name: string, value: string): Promise<void> {
   } catch (error) {
     throw new Error(`加密密钥失败：${describe(error)}`);
   }
-  const store = await loadSecretStore();
-  store.secrets[name] = encoded;
-  await saveSecretStore(store);
+  await withVault(async () => {
+    const store = await loadSecretStore();
+    store.secrets[name] = encoded;
+    await saveSecretStore(store);
+  });
 }
 
 async function deleteStoredSecret(name: string): Promise<void> {
-  const store = await loadSecretStore();
-  if (!(name in store.secrets)) return;
-  delete store.secrets[name];
-  await saveSecretStore(store);
+  await withVault(async () => {
+    const store = await loadSecretStore();
+    if (!(name in store.secrets)) return;
+    delete store.secrets[name];
+    await saveSecretStore(store);
+  });
 }
 
 function validateSecretName(name: string): void {

@@ -86,7 +86,10 @@ async function readTaskDigest(
   }
   if (!isRecord(parsed)) return null;
   if (readString(parsed, "projectId") !== projectId) return null;
-  const mode = readString(parsed, "taskMode") === "code" ? "code" : "work";
+  // Missing taskMode means Code, matching TaskMode::default() in Rust and
+  // conversations.ts. Defaulting to Work instead would file every pre-split
+  // task under the wrong mode's suggestion history.
+  const mode = readString(parsed, "taskMode") === "work" ? "work" : "code";
   if (mode !== taskMode) return null;
 
   const rawMessages = parsed["messages"];

@@ -11,6 +11,7 @@ import {
 } from "./bridge/index.js";
 import { forwardHostEvents, registerHostCommands } from "./commands.js";
 import { createSessionManager, markCoreReady } from "./core-launcher.js";
+import { getCoreProcessManager } from "./cores/process.js";
 import { dataDir, importLegacyDataOnce, registerHostModules } from "./host/index.js";
 import { createMainWindow, loadRenderer, rendererRoot } from "./window.js";
 import { handleRendererScheme, registerRendererScheme } from "./renderer-protocol.js";
@@ -145,7 +146,26 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
-  // Cores are child processes; leaving them behind would orphan them.
-  void sessions?.dispose();
+let shuttingDown = false;
+
+/**
+ * Cores are child processes, and at least one shipped agent ignores SIGTERM,
+ * so quitting has to actually wait for the escalation to SIGKILL. `before-quit`
+ * cannot await, so the quit is deferred once and re-issued when teardown is
+ * genuinely done.
+ */
+app.on("before-quit", (event) => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  event.preventDefault();
+  void (async () => {
+    try {
+      await sessions?.dispose();
+      await getCoreProcessManager().stopAll();
+    } catch (error) {
+      console.error("[host] shutdown failed:", error);
+    } finally {
+      app.quit();
+    }
+  })();
 });

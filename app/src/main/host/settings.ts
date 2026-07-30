@@ -15,6 +15,12 @@ import { systemPreferences } from "electron";
 import { registerCommands } from "../bridge/index.js";
 import { dataPath, writeJsonAtomic } from "./paths.js";
 import {
+  adoptLegacyMcpServers,
+  applyMcpServersFromSettings,
+  mcpServersForSettings,
+  onMcpServersChanged,
+} from "./mcp-sync.js";
+import {
   cloneModelInfo,
   cloneOverrides,
   effectiveKind,
@@ -1153,11 +1159,29 @@ function optionalString(args: Record<string, unknown>, key: string): string | nu
 
 export function registerSettingsCommands(): void {
   registerCommands({
-    load_settings: () => readSettings(),
+    load_settings: async () => {
+      const settings = await readSettings();
+      // The canonical store owns the MCP list; settings.json only mirrors it.
+      // Adopt a pre-existing mirror once, so users migrating from the Tauri
+      // build keep the servers they already configured.
+      await adoptLegacyMcpServers(settings.mcpServers);
+      settings.mcpServers = mcpServersForSettings();
+      return settings;
+    },
 
     save_settings: async (args) => {
       const { settings } = parseSettings(args["settings"]);
+      const { changed, skipped } = await applyMcpServersFromSettings(settings.mcpServers);
+      // Persist the mirror in the shape the canonical store reports, not the
+      // shape that arrived, so both sides stay byte-identical.
+      settings.mcpServers = mcpServersForSettings();
       await saveSettings(settings);
+      if (changed) await onMcpServersChanged();
+      if (skipped.length > 0) {
+        throw new Error(
+          `以下 MCP 服务器配置不完整，未保存：${skipped.join("、")}。请检查命令或地址是否填写。`,
+        );
+      }
       return null;
     },
 

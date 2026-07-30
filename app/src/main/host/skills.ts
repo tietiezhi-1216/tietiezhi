@@ -428,23 +428,43 @@ async function writeAgents(agents: Agent[]): Promise<void> {
   }
 }
 
+/**
+ * Serializes every read-modify-write of agents.json.
+ *
+ * Two concurrent saves would each read the same snapshot and the later write
+ * would drop the earlier edit — a freshly created agent silently disappearing
+ * after save. The other stores in this host already queue for this reason.
+ */
+let agentQueue: Promise<unknown> = Promise.resolve();
+
+function withAgents<T>(task: () => Promise<T>): Promise<T> {
+  const next = agentQueue.then(task, task);
+  // Keep the chain alive after a rejection so one failure cannot wedge it.
+  agentQueue = next.catch(() => undefined);
+  return next;
+}
+
 async function upsertAgent(value: unknown): Promise<null> {
   const agent = normalizeAgent(value);
   if (!agent || agent.id.trim() === "" || agent.name.trim() === "") {
     throw new Error("智能体需要 id 和名称");
   }
-  const agents = await readAgents();
-  const index = agents.findIndex((a) => a.id === agent.id);
-  if (index >= 0) agents[index] = agent;
-  else agents.push(agent);
-  await writeAgents(agents);
-  return null;
+  return withAgents(async () => {
+    const agents = await readAgents();
+    const index = agents.findIndex((a) => a.id === agent.id);
+    if (index >= 0) agents[index] = agent;
+    else agents.push(agent);
+    await writeAgents(agents);
+    return null;
+  });
 }
 
 async function deleteAgent(id: string): Promise<null> {
-  const agents = await readAgents();
-  await writeAgents(agents.filter((a) => a.id !== id));
-  return null;
+  return withAgents(async () => {
+    const agents = await readAgents();
+    await writeAgents(agents.filter((a) => a.id !== id));
+    return null;
+  });
 }
 
 // ---------------------------------------------------------------------------

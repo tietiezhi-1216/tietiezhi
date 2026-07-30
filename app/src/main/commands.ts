@@ -2,7 +2,7 @@ import type { BrowserWindow } from "electron";
 
 import type { AcpSessionManager } from "./acp/index.js";
 import { broadcastEvent, registerCommands } from "./bridge/index.js";
-import { projectCoreConfig } from "./core-launcher.js";
+import { onMcpServersChanged } from "./host/mcp-sync.js";
 import { getMcpStore, listServers, parseServerDefinition, removeServer, setEnabled, upsertServer } from "./config/store.js";
 import { coreInstaller } from "./cores/installer.js";
 import { getCoreProcessManager } from "./cores/process.js";
@@ -72,7 +72,12 @@ export function registerHostCommands(manager: AcpSessionManager): void {
     },
 
     core_stop: async (args) => {
-      await manager.shutdownCore(requireString(args, "coreId"));
+      const coreId = requireString(args, "coreId");
+      await manager.shutdownCore(coreId);
+      // The ACP handle's `kill` only asks the process manager to stop; awaiting
+      // it here is what guarantees the child is gone (including the SIGKILL
+      // escalation) before the renderer is told the core stopped.
+      await processes.stop(coreId);
       return null;
     },
 
@@ -135,26 +140,8 @@ export function registerHostCommands(manager: AcpSessionManager): void {
   });
 }
 
-/**
- * Re-projects the canonical config into every core's dialect. Cores read their
- * config at startup only, so a running core keeps the old set until restarted —
- * the renderer is told so it can offer a restart.
- */
-async function reprojectAll(): Promise<void> {
-  const results = await Promise.allSettled(
-    listCores().map(async (descriptor) => {
-      await projectCoreConfig(descriptor.id);
-      return descriptor.id;
-    }),
-  );
-  const running = getCoreProcessManager().runningCoreIds();
-  broadcastEvent("mcp://projected", {
-    failed: results.flatMap((result, index) =>
-      result.status === "rejected" ? [{ coreId: listCores()[index]?.id ?? "", reason: String(result.reason) }] : [],
-    ),
-    restartRequired: running,
-  });
-}
+/** Single implementation lives in host/mcp-sync so both entry points agree. */
+const reprojectAll = onMcpServersChanged;
 
 /** Bridges manager and installer events onto the renderer's `listen()`. */
 export function forwardHostEvents(manager: AcpSessionManager, _window: BrowserWindow): () => void {

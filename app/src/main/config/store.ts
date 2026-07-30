@@ -326,9 +326,17 @@ function describe(error: unknown): string {
 
 let defaultStore: McpConfigStore | null = null;
 
-/** `<userData>/config/mcp.json` — app-owned, never a user dotfile. */
+/**
+ * `<userData>/config/mcp.json` — app-owned, never a user dotfile.
+ *
+ * Honours `TIETIEZHI_DATA_DIR` like `host/paths.ts` and `cores/paths.ts` do.
+ * Without it a scratch-profile run writes its MCP config into the real profile:
+ * verified by doing exactly that, which mutated the developer's own store.
+ */
 export function defaultMcpConfigPath(): string {
-  return join(app.getPath("userData"), "config", "mcp.json");
+  const override = process.env["TIETIEZHI_DATA_DIR"];
+  const root = override !== undefined && override.length > 0 ? override : app.getPath("userData");
+  return join(root, "config", "mcp.json");
 }
 
 export function getMcpStore(): McpConfigStore {
