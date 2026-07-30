@@ -5,7 +5,10 @@
  * settings module: the tests inject their own resolver.
  */
 
+import { net } from "electron";
+
 import { readSettings, resolveProvider } from "../host/settings.js";
+import { setAgentFetch } from "./provider.js";
 import { setKeyResolver, type KeyResolver } from "./commands.js";
 import type { ProviderKind } from "./types.js";
 
@@ -64,22 +67,19 @@ const resolver: KeyResolver = async (provider) => {
     return {
       apiKey,
       model,
-      // The agent's provider layer takes a base url without the version
-      // segment; settings store it with one for the legacy transport.
-      ...(resolved.baseUrl === "" ? {} : { baseUrl: stripVersionSuffix(resolved.baseUrl) }),
+      // The provider layer normalises the version segment itself, so the raw
+      // configured url is passed straight through.
+      ...(resolved.baseUrl === "" ? {} : { baseUrl: resolved.baseUrl }),
     };
   }
   return null;
 };
 
-/**
- * Settings hold urls like `https://host/v1`, which the SDK providers append
- * their own paths to. Leaving the `/v1` on produces `/v1/v1/messages`.
- */
-function stripVersionSuffix(baseUrl: string): string {
-  return baseUrl.replace(/\/v1(beta)?\/?$/, "");
-}
 
 export function wireAgentProviders(): void {
   setKeyResolver(resolver);
+  // Node's fetch ignores every form of proxy configuration; Chromium's does not.
+  // Without this, any user behind a proxy sees `ECONNRESET` with no status code,
+  // which reads as "the model is broken" rather than "configure your proxy".
+  setAgentFetch(net.fetch as unknown as typeof globalThis.fetch);
 }

@@ -39,13 +39,32 @@ import type {
 const USER_AGENT = "Tietiezhi/0.1";
 
 /**
+ * The transport every provider call goes through.
+ *
+ * Injectable because Node's own `fetch` ignores proxy configuration entirely —
+ * no `HTTP_PROXY`, no system proxy — so on a network that needs one every
+ * request dies with `ECONNRESET` and no HTTP status to explain it. In the app
+ * this is replaced with Electron's `net.fetch`, which uses Chromium's stack and
+ * honours both the system proxy and a PAC script; that also covers the case
+ * where the app is launched from Finder and inherits no shell environment.
+ *
+ * Kept as a setter rather than a constructor argument so tests and the probe run
+ * against plain `fetch` without dragging Electron in.
+ */
+let transport: typeof globalThis.fetch = globalThis.fetch;
+
+export function setAgentFetch(implementation: typeof globalThis.fetch): void {
+  transport = implementation;
+}
+
+/**
  * The library appends its own version to `user-agent` and ignores a provider
  * `headers` override, so replacing it has to happen at the fetch layer.
  */
 const brandedFetch: typeof globalThis.fetch = (input, init) => {
   const headers = new Headers(init?.headers);
   headers.set("user-agent", USER_AGENT);
-  return globalThis.fetch(input, { ...init, headers });
+  return transport(input, { ...init, headers });
 };
 
 interface ProviderTarget {
@@ -55,11 +74,33 @@ interface ProviderTarget {
   baseUrl?: string;
 }
 
+/**
+ * Ensures a base url carries the version segment the provider appends paths to.
+ *
+ * Verified against the installed SDKs, whose defaults are
+ * `https://api.openai.com/v1`, `https://api.anthropic.com/v1` and
+ * `https://generativelanguage.googleapis.com/v1beta`. Passing a bare host makes
+ * the SDK request `/messages` instead of `/v1/messages` — a live probe against
+ * this project's own gateway caught exactly that as a 404.
+ *
+ * Users write gateway urls both ways, so a missing segment is added and a
+ * present one is left alone.
+ */
+export function versionedBaseUrl(baseUrl: string, provider: ProviderKind): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  // A url already carrying either version segment is taken as intentional:
+  // rewriting it silently would hide a misconfiguration rather than surface it.
+  if (/\/v1(beta)?$/.test(trimmed)) return trimmed;
+  return `${trimmed}/${provider === "google" ? "v1beta" : "v1"}`;
+}
+
 function languageModel(target: ProviderTarget) {
   const shared = {
     apiKey: target.apiKey,
     fetch: brandedFetch,
-    ...(target.baseUrl === undefined ? {} : { baseURL: target.baseUrl }),
+    ...(target.baseUrl === undefined
+      ? {}
+      : { baseURL: versionedBaseUrl(target.baseUrl, target.provider) }),
   };
   switch (target.provider) {
     case "anthropic":
@@ -378,7 +419,19 @@ export async function streamStep(
   return { message, toolCalls, reason, usage };
 }
 
+/**
+ * Extracts the message a user can act on.
+ *
+ * The library wraps a failed call in a retry error whose message is only
+ * "Failed after 3 attempts", and hangs the real cause on nested `errors` with the
+ * provider's answer in `responseBody`. A gateway that says
+ * `上游请求受限（upstream status 429）` is telling the user exactly what is wrong;
+ * reporting the wrapper instead throws that away and makes a quota problem look
+ * like a broken client.
+ */
 export function describeError(error: unknown): string {
+  const detail = providerMessage(error);
+  if (detail !== null) return detail;
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   try {
@@ -386,4 +439,45 @@ export function describeError(error: unknown): string {
   } catch {
     return String(error);
   }
+}
+
+/** Digs the provider's own message out of an SDK error, if there is one. */
+function providerMessage(error: unknown): string | null {
+  if (typeof error !== "object" || error === null) return null;
+  const record = error as Record<string, unknown>;
+
+  const body = record["responseBody"];
+  if (typeof body === "string" && body !== "") {
+    const status = typeof record["statusCode"] === "number" ? `HTTP ${record["statusCode"]}: ` : "";
+    try {
+      const parsed: unknown = JSON.parse(body);
+      const message = readNestedMessage(parsed);
+      if (message !== null) return status + message;
+    } catch {
+      // Not JSON: the raw body is still more useful than the wrapper's message.
+    }
+    return status + body.slice(0, 500);
+  }
+
+  // Retry wrappers keep the attempts in `errors`; the last one is the real cause.
+  const nested = record["errors"];
+  if (Array.isArray(nested) && nested.length > 0) {
+    return providerMessage(nested[nested.length - 1]);
+  }
+  const cause = record["cause"];
+  return cause === undefined ? null : providerMessage(cause);
+}
+
+/** Reads `{error:{message}}`, `{message}` or `{error:"…"}` shapes. */
+function readNestedMessage(value: unknown): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const error = record["error"];
+  if (typeof error === "string" && error !== "") return error;
+  if (typeof error === "object" && error !== null) {
+    const message = (error as Record<string, unknown>)["message"];
+    if (typeof message === "string" && message !== "") return message;
+  }
+  const message = record["message"];
+  return typeof message === "string" && message !== "" ? message : null;
 }
