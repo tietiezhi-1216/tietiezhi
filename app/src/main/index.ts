@@ -10,6 +10,8 @@ import {
   describeRegisteredCommands,
 } from "./bridge/index.js";
 import { forwardHostEvents, registerHostCommands } from "./commands.js";
+import { disposeAgent, registerAgentCommands } from "./agent/commands.js";
+import { wireAgentProviders } from "./agent/wiring.js";
 import { createSessionManager, markCoreReady } from "./core-launcher.js";
 import { getCoreProcessManager } from "./cores/process.js";
 import {
@@ -106,6 +108,11 @@ async function bootstrap(): Promise<void> {
   }
 
   registerHostModules();
+
+  // The first-party agent core. Registered after the host modules because its
+  // key resolver reads settings, which those modules own.
+  registerAgentCommands();
+  wireAgentProviders();
   // Arms the saved dictation shortcut; failures are logged, never fatal.
   await initDictationHotkey();
 
@@ -178,6 +185,7 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   void (async () => {
     try {
+      disposeAgent();
       await sessions?.dispose();
       await getCoreProcessManager().stopAll();
       // A pty child outlives its parent unless killed explicitly, and Electron
