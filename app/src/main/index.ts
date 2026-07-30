@@ -12,7 +12,12 @@ import {
 import { forwardHostEvents, registerHostCommands } from "./commands.js";
 import { createSessionManager, markCoreReady } from "./core-launcher.js";
 import { getCoreProcessManager } from "./cores/process.js";
-import { dataDir, importLegacyDataOnce, registerHostModules } from "./host/index.js";
+import {
+  dataDir,
+  disposeTerminals,
+  importLegacyDataOnce,
+  registerHostModules,
+} from "./host/index.js";
 import { createMainWindow, loadRenderer, rendererRoot } from "./window.js";
 import { handleRendererScheme, registerRendererScheme } from "./renderer-protocol.js";
 import type { AcpSessionManager } from "./acp/index.js";
@@ -162,6 +167,8 @@ app.on("before-quit", (event) => {
     try {
       await sessions?.dispose();
       await getCoreProcessManager().stopAll();
+      // A pty child outlives its parent unless killed explicitly.
+      disposeTerminals();
     } catch (error) {
       console.error("[host] shutdown failed:", error);
     } finally {
