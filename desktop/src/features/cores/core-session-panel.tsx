@@ -42,6 +42,7 @@ import {
   type SessionTranscript,
   type TranscriptEntry,
 } from "./store";
+import { SessionConfigBar } from "./session-config-bar";
 
 const TOOL_STATUS_TEXT: Record<string, string> = {
   pending: "排队中",
@@ -426,6 +427,13 @@ export function CoreSessionPanel({ className }: { className?: string }) {
         </div>
       ) : (
         <>
+          {/* Model and mode live above the transcript: they apply to the next
+              turn, so they belong with the composer rather than the history. */}
+          <SessionConfigBar
+            sessionId={active.handle.sessionId}
+            className="rounded-xl border px-3 py-2"
+          />
+
           <ScrollArea className="min-h-40 flex-1 rounded-xl border p-3">
             <Transcript session={active} />
           </ScrollArea>

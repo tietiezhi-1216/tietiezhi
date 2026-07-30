@@ -4,6 +4,7 @@ import type {
   CoreInstallState,
   CoreListRow,
   CorePromptResult,
+  CoreSessionConfig,
   CoreStartResult,
   McpServerDefinition,
 } from "./types";
@@ -81,3 +82,38 @@ export function pickDirectory(): Promise<string | null> {
 
 export const CORES_QUERY_KEY = ["cores", "list"] as const;
 export const MCP_QUERY_KEY = ["cores", "mcp"] as const;
+
+// --- session configuration (model / mode switching) -----------------------
+
+/**
+ * Switchable knobs the running core exposes for this session. Returns null when
+ * the core advertised none — not every agent implements config options.
+ */
+export function coreSessionConfig(sessionId: string): Promise<CoreSessionConfig | null> {
+  return invoke<CoreSessionConfig | null>("core_session_config", { sessionId });
+}
+
+/**
+ * Applies one option. Switching the option whose `category` is `"model"` is how
+ * the model is changed — the list is the core's own, so this moves between the
+ * models that core supports rather than across cores.
+ */
+export function coreSessionSetConfig(
+  sessionId: string,
+  optionId: string,
+  value: string | boolean,
+): Promise<CoreSessionConfig> {
+  return invoke<CoreSessionConfig>("core_session_set_config", { sessionId, optionId, value });
+}
+
+export function coreSessionSetMode(sessionId: string, modeId: string): Promise<CoreSessionConfig> {
+  return invoke<CoreSessionConfig>("core_session_set_mode", { sessionId, modeId });
+}
+
+export function coreSessionClose(sessionId: string): Promise<null> {
+  return invoke<null>("core_session_close", { sessionId });
+}
+
+export function coreSessionList(): Promise<AcpSessionHandle[]> {
+  return invoke<AcpSessionHandle[]>("core_session_list");
+}

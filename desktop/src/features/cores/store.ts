@@ -10,6 +10,7 @@ import {
   type CorePermissionRequest,
   type CoreRunState,
   type CoreRunStateEvent,
+  type CoreSessionConfig,
   type CoreStreamEvent,
   type McpProjectionReport,
 } from "./types";
@@ -38,6 +39,11 @@ export interface SessionTranscript {
   entries: TranscriptEntry[];
   /** True while a `session/prompt` turn is in flight from this renderer. */
   busy: boolean;
+  /**
+   * Switchable knobs the core reported, including its model picker. Null until
+   * loaded; an empty `options` means the core exposes none.
+   */
+  config: CoreSessionConfig | null;
 }
 
 let entrySeq = 0;
@@ -137,7 +143,37 @@ export function appendStreamEvent(
 
     case "error":
       return [...entries, { id: nextEntryId(), kind: "error", message: event.message }];
+
+    // Config and mode changes are session state, not transcript content; the
+    // store folds them into `config` instead of appending a bubble.
+    case "config-changed":
+    case "mode-changed":
+      return entries;
   }
+}
+
+/**
+ * Folds a core-initiated config or mode change into the cached config.
+ *
+ * A core may switch model on its own — after a rate limit, say. Without this the
+ * picker would keep showing whatever the user last chose, which is worse than
+ * showing nothing.
+ */
+function applyConfigEvent(
+  config: CoreSessionConfig | null,
+  event: CoreStreamEvent,
+): CoreSessionConfig | null {
+  if (config === null) return config;
+  if (event.kind === "mode-changed") {
+    return { ...config, currentModeId: event.currentModeId };
+  }
+  if (event.kind !== "config-changed") return config;
+  const index = config.options.findIndex((option) => option.id === event.option.id);
+  const options =
+    index >= 0
+      ? config.options.map((option, at) => (at === index ? event.option : option))
+      : [...config.options, event.option];
+  return { ...config, options };
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +199,7 @@ interface CoresState {
   setSessionBusy: (sessionId: string, busy: boolean) => void;
   pushSessionError: (sessionId: string, message: string) => void;
   applyStream: (event: CoreStreamEvent) => void;
+  setSessionConfig: (sessionId: string, config: CoreSessionConfig | null) => void;
   applyRunState: (coreId: string, state: CoreRunState) => void;
   applyInstallState: (coreId: string, state: CoreInstallState) => void;
   pushPermission: (request: CorePermissionRequest) => void;
@@ -187,7 +224,7 @@ export const useCoresStore = create<CoresState>()((set) => ({
     set((state) => ({
       sessions: {
         ...state.sessions,
-        [handle.sessionId]: { handle, entries: [], busy: false },
+        [handle.sessionId]: { handle, entries: [], busy: false, config: null },
       },
       activeSessionId: handle.sessionId,
     })),
@@ -253,10 +290,18 @@ export const useCoresStore = create<CoresState>()((set) => ({
           [event.sessionId]: {
             ...session,
             busy,
+            config: applyConfigEvent(session.config, event),
             entries: appendStreamEvent(session.entries, event),
           },
         },
       };
+    }),
+
+  setSessionConfig: (sessionId, config) =>
+    set((state) => {
+      const session = state.sessions[sessionId];
+      if (!session) return {};
+      return { sessions: { ...state.sessions, [sessionId]: { ...session, config } } };
     }),
 
   applyRunState: (coreId, state) =>

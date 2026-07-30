@@ -82,7 +82,48 @@ export type CoreStreamEvent =
   | { kind: "tool-call-update"; sessionId: string; callId: string; status: string; raw: unknown }
   | { kind: "plan"; sessionId: string; raw: unknown }
   | { kind: "turn-ended"; sessionId: string; stopReason: string }
+  // The core changed a knob itself (or confirmed ours), e.g. fell back to a
+  // different model. Carries the whole option so the picker stays truthful.
+  | { kind: "config-changed"; sessionId: string; option: CoreConfigOption }
+  | { kind: "mode-changed"; sessionId: string; currentModeId: string }
   | { kind: "error"; sessionId: string; message: string };
+
+/** One selectable value of a session config option. */
+export interface CoreConfigChoice {
+  value: string;
+  name: string;
+  description: string | null;
+  /** Group label when the core grouped its values; null when ungrouped. */
+  group: string | null;
+}
+
+/**
+ * A knob the running core exposes. `category === "model"` is the model picker;
+ * the values are whatever that core supports.
+ */
+export interface CoreConfigOption {
+  id: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  kind: "select" | "boolean";
+  currentValue: string | boolean;
+  choices: CoreConfigChoice[];
+}
+
+export interface CoreMode {
+  id: string;
+  name: string;
+  description: string | null;
+}
+
+export interface CoreSessionConfig {
+  sessionId: string;
+  coreId: string;
+  options: CoreConfigOption[];
+  currentModeId: string | null;
+  modes: CoreMode[];
+}
 
 export interface CorePermissionOption {
   optionId: string;
