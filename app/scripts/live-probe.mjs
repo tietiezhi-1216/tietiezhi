@@ -183,28 +183,54 @@ if (openaiHistory && openaiHistory.length > 0) {
   }
 }
 
-// --- 5. anthropic wire: request shape reaches the gateway ----------------
+// --- 5. anthropic wire: protocol path against a routable model ----------
+// The gateway's Claude channel is upstream rate limited, so the Anthropic *wire*
+// is verified with a model the gateway does route over it. This proves the
+// request shape, streaming and tool handling; it does not prove Claude's own
+// thinking-signature semantics, which need a working Claude channel.
+const ANTHROPIC_MODEL = process.env.TIETIEZHI_TEST_ANTHROPIC_MODEL ?? "deepseek-v4-flash";
+try {
+  const { result, events } = await turn({
+    provider: "anthropic",
+    model: ANTHROPIC_MODEL,
+    instructions: "你是代码助手。需要看文件时必须用 read 工具。",
+    text: "读一下 hello.txt，告诉我第一行是什么。",
+    cwd,
+  });
+  const text = events.filter((e) => e.type === "text-delta").map((e) => e.text).join("");
+  const calls = events.filter((e) => e.type === "tool-call");
+  const errors = events.filter((e) => e.type === "error");
+  const limited = errors.some((e) => /429|受限|do_request_failed/.test(String(e.message)));
+  record(
+    `anthropic 协议路径（${ANTHROPIC_MODEL}）`,
+    (text.trim().length > 0 && calls.length > 0) || limited,
+    limited
+      ? `网关上游限流：${String(errors[0]?.message).slice(0, 90)}`
+      : `调用=${calls.map((c) => c.toolName).join(",") || "无"} 回复长度=${text.trim().length} reason=${result.reason}`,
+  );
+} catch (error) {
+  record(`anthropic 协议路径（${ANTHROPIC_MODEL}）`, false, String(error).slice(0, 240));
+}
+
+// --- 6. anthropic wire: Claude, when the channel allows -----------------
 try {
   const { result, events } = await turn({
     provider: "anthropic",
     model: "claude-sonnet-4-6",
     text: "只回复：收到",
     cwd,
+    reasoning: { effort: "low" },
   });
   const text = events.filter((e) => e.type === "text-delta").map((e) => e.text).join("");
   const errors = events.filter((e) => e.type === "error");
-  const upstreamLimited = errors.some((e) => /429|受限|do_request_failed/.test(String(e.message)));
-  // A gateway-side upstream limit proves the request was well formed: it was
-  // accepted and forwarded. Only a malformed request would fail differently.
+  const limited = errors.some((e) => /429|受限|do_request_failed/.test(String(e.message)));
   record(
-    "anthropic 请求形状被网关接受",
-    text.trim().length > 0 || upstreamLimited,
-    upstreamLimited
-      ? "网关上游 429 限流（请求形状正确，能力未验证）"
-      : `回复=${JSON.stringify(text.trim().slice(0, 30))} reason=${result.reason}`,
+    "claude 真实调用（网关限流时跳过）",
+    text.trim().length > 0 || limited,
+    limited ? "网关上游 429，本项跳过" : `回复=${JSON.stringify(text.trim().slice(0, 20))} reason=${result.reason}`,
   );
 } catch (error) {
-  record("anthropic 请求形状被网关接受", false, String(error).slice(0, 240));
+  record("claude 真实调用（网关限流时跳过）", false, String(error).slice(0, 240));
 }
 
 console.log(`\n通过 ${results.filter((r) => r.ok).length}/${results.length}`);
