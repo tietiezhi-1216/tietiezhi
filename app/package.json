@@ -13,10 +13,15 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",
     "rebuild": "electron-rebuild -f -w node-pty",
-    "postinstall": "electron-rebuild -f -w node-pty"
+    "postinstall": "electron-rebuild -f -w node-pty",
+    "test:agent": "tsc -p tsconfig.test.json && node --test .test-out/main/agent/"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",
+    "@ai-sdk/anthropic": "4.0.24",
+    "@ai-sdk/google": "4.0.28",
+    "@ai-sdk/openai": "4.0.24",
+    "ai": "7.0.42",
     "node-pty": "1.1.0"
   },
   "devDependencies": {
@@ -31,6 +36,10 @@
     "vite": "^8.1.4"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild", "node-pty"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "node-pty"
+    ]
   }
 }

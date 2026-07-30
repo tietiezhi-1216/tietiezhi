@@ -31,3 +31,4 @@ artifacts/
 app/node_modules/
 app/out/
 app/.verify/
+app/.test-out/
