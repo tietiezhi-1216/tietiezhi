@@ -34,8 +34,13 @@ import {
   agentSessionLoad,
   agentSessionNew,
 } from "./api";
+import { parseFileChange } from "./diff";
+import { DiffView } from "./diff-view";
 import { useAgentEventBridge, useAgentStore } from "./store";
 import type { SessionMeta, TranscriptEntry, TranscriptState } from "./types";
+
+/** Tools whose `detail` is a file change worth diffing. */
+const DIFF_TOOLS = new Set(["write", "edit"]);
 
 function errorText(error: unknown): string {
   if (typeof error === "string") return error;
@@ -407,6 +412,9 @@ function Entry({ entry }: { entry: TranscriptEntry }) {
 }
 
 function ToolEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "tool" }> }) {
+  // Open state is ours rather than the browser's so the diff is neither computed
+  // nor mounted while the entry is collapsed.
+  const [open, setOpen] = useState(false);
   const status =
     entry.status === "awaiting-approval"
       ? "等待确认"
@@ -415,12 +423,20 @@ function ToolEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "tool" }
         : entry.status === "error"
           ? "失败"
           : "完成";
+  const change = DIFF_TOOLS.has(entry.toolName) ? parseFileChange(entry.detail) : null;
 
   return (
-    <details className="rounded-lg border px-3 py-2 text-xs">
+    <details
+      className="rounded-lg border px-3 py-2 text-xs"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary className="flex cursor-pointer items-center gap-1.5 select-none">
         <Terminal className="size-3.5 shrink-0" />
         <span className="font-mono">{entry.toolName}</span>
+        {change !== null && (
+          <span className="text-muted-foreground min-w-0 truncate font-mono">{change.path}</span>
+        )}
         <span
           className={cn(
             "ml-auto shrink-0",
@@ -434,16 +450,28 @@ function ToolEntry({ entry }: { entry: Extract<TranscriptEntry, { kind: "tool" }
           )}
         </span>
       </summary>
-      <div className="mt-2 flex flex-col gap-2">
-        <pre className="bg-muted overflow-x-auto rounded p-2 text-[11px]">
-          {JSON.stringify(entry.input, null, 2)}
-        </pre>
-        {entry.output !== null && (
-          <pre className="bg-muted max-h-64 overflow-auto rounded p-2 text-[11px] whitespace-pre-wrap">
-            {typeof entry.output === "string" ? entry.output : JSON.stringify(entry.output, null, 2)}
-          </pre>
-        )}
-      </div>
+      {open && (
+        <div className="mt-2 flex flex-col gap-2">
+          {change === null ? (
+            <>
+              <pre className="bg-muted overflow-x-auto rounded p-2 text-[11px]">
+                {JSON.stringify(entry.input, null, 2)}
+              </pre>
+              {entry.output !== null && (
+                <pre className="bg-muted max-h-64 overflow-auto rounded p-2 text-[11px] whitespace-pre-wrap">
+                  {typeof entry.output === "string"
+                    ? entry.output
+                    : JSON.stringify(entry.output, null, 2)}
+                </pre>
+              )}
+            </>
+          ) : (
+            // The diff says everything the arguments would: the path is in its
+            // header and the content is the diff itself.
+            <DiffView change={change} />
+          )}
+        </div>
+      )}
     </details>
   );
 }

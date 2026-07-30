@@ -14,6 +14,7 @@
     "check:codex-parity": "node scripts/check-codex-parity.mjs",
     "check:codex-schema": "node scripts/check-codex-schema.mjs",
     "check:codex-models": "node scripts/check-codex-models.mjs",
+    "test:diff": "node scripts/check-diff.mjs",
     "test:permission-ui": "node scripts/check-permission-prompt.mjs",
     "test:codex-approval-ui": "node scripts/check-codex-approval-prompt.mjs",
     "test:chat-event-migration": "node scripts/check-chat-event-migration.mjs",

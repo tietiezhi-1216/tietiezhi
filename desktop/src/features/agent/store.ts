@@ -47,6 +47,7 @@ function applyEvent(entries: TranscriptEntry[], event: AgentEvent): TranscriptEn
           input: null,
           status: "pending",
           output: null,
+          detail: null,
         },
       ];
 
@@ -67,6 +68,7 @@ function applyEvent(entries: TranscriptEntry[], event: AgentEvent): TranscriptEn
             input: event.input,
             status: "pending",
             output: null,
+            detail: null,
           },
         ];
       }
@@ -85,7 +87,14 @@ function applyEvent(entries: TranscriptEntry[], event: AgentEvent): TranscriptEn
     case "tool-result":
       return entries.map((entry) =>
         entry.kind === "tool" && entry.callId === event.callId
-          ? { ...entry, status: event.isError ? "error" : "done", output: event.output }
+          ? {
+              ...entry,
+              status: event.isError ? "error" : "done",
+              output: event.output,
+              // Only the live event carries this; it is not persisted, so a
+              // reopened session shows the call without a diff.
+              detail: event.detail ?? null,
+            }
           : entry,
       );
 
@@ -143,6 +152,7 @@ export function entriesFromMessages(messages: Message[]): TranscriptEntry[] {
           input: part.input,
           status: "pending",
           output: null,
+          detail: null,
         });
       } else {
         const index = entries.findIndex(

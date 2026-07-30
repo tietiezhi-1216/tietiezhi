@@ -43,6 +43,9 @@ export {
   emitChannel,
   emitEvent,
   parseChannelId,
+  // Exported for the integration probe: the event stream is otherwise only
+  // observable from inside a renderer.
+  setEventObserver,
 } from "./events";
 
 // Re-exported so the main process can register the protocol that serves the

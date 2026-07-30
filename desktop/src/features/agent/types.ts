@@ -28,6 +28,18 @@ export interface Message {
   content: ContentPart[];
 }
 
+/**
+ * Mirror of the core's `FileChange`: what a write/edit actually changed.
+ *
+ * Arrives on the `tool-result` event's `detail` and is never persisted, so a
+ * reopened session shows the tool call without a diff. That is the intended
+ * trade: `before`/`after` are whole files, and keeping them in the session log
+ * would grow it by the size of every edit.
+ */
+export type FileChange =
+  | { kind: "file-change"; path: string; before: string | null; after: string }
+  | { kind: "file-change-skipped"; path: string; reason: "too-large"; bytes: number };
+
 export interface Usage {
   inputTokens: number | null;
   outputTokens: number | null;
@@ -77,6 +89,8 @@ export type AgentEvent =
       toolName: string;
       output: unknown;
       isError: boolean;
+      /** UI-only payload; for write/edit it is a `FileChange`. */
+      detail?: unknown;
     }
   | { type: "approval-required"; request: ApprovalRequest }
   | { type: "message-done"; message: Message }
@@ -109,6 +123,8 @@ export type TranscriptEntry =
       input: unknown;
       status: "pending" | "awaiting-approval" | "done" | "error";
       output: unknown;
+      /** Live-only structured result; null when replayed from history. */
+      detail: unknown;
     }
   | { id: string; kind: "notice"; text: string; tone: "info" | "error" };
 

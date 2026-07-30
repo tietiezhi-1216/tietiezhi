@@ -99,7 +99,24 @@ export function emitEvent(target: RendererTarget, event: string, payload: unknow
 }
 
 /** Emit a Tauri event to every window that listens for it. */
+/**
+ * Observes every broadcast, in addition to the renderers.
+ *
+ * The event stream is how all live UI data arrives, and nothing else can see it
+ * from outside a renderer — which left it untested end to end. The integration
+ * probe installs an observer so it can assert on what the UI would actually
+ * receive, not just on what a command returned.
+ */
+type EventObserver = (event: string, payload: unknown) => void;
+
+let observer: EventObserver | null = null;
+
+export function setEventObserver(next: EventObserver | null): void {
+  observer = next;
+}
+
 export function broadcastEvent(event: string, payload: unknown): void {
+  observer?.(event, payload);
   for (const subscription of subscriptions.values()) {
     if (subscription.event !== event) continue;
     const contents = allWebContents.fromId(subscription.webContentsId);

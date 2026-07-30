@@ -76,6 +76,15 @@ export type AgentEvent =
       toolName: string;
       output: unknown;
       isError: boolean;
+      /**
+       * The tool's `detail`, for the UI only.
+       *
+       * Travels on the event stream and nowhere else: it is not part of the
+       * `tool-result` content part, so it never reaches the model and never
+       * lands in `messages.jsonl`. `FileChange` carries whole files, and
+       * persisting it would grow a session file by the size of every edit.
+       */
+      detail?: unknown;
     }
   /** An approval gate blocked a tool; the turn pauses until answered. */
   | { type: "approval-required"; request: ApprovalRequest }
@@ -133,6 +142,26 @@ export interface ToolResult {
   /** Structured detail for the UI (a diff, a file list) — not sent to the model. */
   detail?: unknown;
 }
+
+/**
+ * What a file-mutating tool changed, so the UI can render a diff.
+ *
+ * `before` is null when the file did not exist. Both sides are full file text,
+ * which is why this is a `detail` and not part of the tool's `output`.
+ *
+ * The oversized variant exists because the alternative is worse: shipping a
+ * multi-megabyte pair across the IPC boundary to compute a diff nobody can
+ * read stalls the renderer for seconds.
+ */
+export type FileChange =
+  | { kind: "file-change"; path: string; before: string | null; after: string }
+  | {
+      kind: "file-change-skipped";
+      path: string;
+      reason: "too-large";
+      /** Size of the larger side, so the UI can say how big "too large" was. */
+      bytes: number;
+    };
 
 export type ToolHandler = (
   input: unknown,

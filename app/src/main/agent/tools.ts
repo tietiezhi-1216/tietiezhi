@@ -14,12 +14,20 @@ import { exec } from "node:child_process";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-import type { Tool, ToolContext, ToolResult } from "./types.js";
+import type { FileChange, Tool, ToolContext, ToolResult } from "./types.js";
 
 /** Output beyond this is truncated: a huge tool result evicts the conversation. */
 const MAX_OUTPUT_CHARS = 30_000;
 /** Files larger than this are refused rather than silently truncated. */
 const MAX_READ_BYTES = 2 * 1024 * 1024;
+/**
+ * Above this, either side of a change is reported without a diff.
+ *
+ * The cap lives here rather than in the renderer so an oversized pair is never
+ * serialized across IPC at all — the cost we are avoiding is the transfer as
+ * much as the diffing.
+ */
+const MAX_DIFF_BYTES = 200 * 1024;
 const BASH_TIMEOUT_MS = 120_000;
 
 function truncate(value: string): { text: string; truncated: boolean } {
@@ -61,6 +69,15 @@ function insideRoot(context: ToolContext, path: string): string {
 
 function ok(output: string, detail?: unknown): ToolResult {
   return detail === undefined ? { output } : { output, detail };
+}
+
+/** Builds the UI's diff payload, or a marker when the file is too big to diff. */
+function fileChange(path: string, before: string | null, after: string): FileChange {
+  const bytes = Math.max(Buffer.byteLength(before ?? "", "utf8"), Buffer.byteLength(after, "utf8"));
+  if (bytes > MAX_DIFF_BYTES) {
+    return { kind: "file-change-skipped", path, reason: "too-large", bytes };
+  }
+  return { kind: "file-change", path, before, after };
 }
 
 // ---------------------------------------------------------------------------
@@ -131,11 +148,10 @@ const writeTool: Tool = {
     const before = await readFile(target, "utf8").catch(() => null);
     await mkdir(resolve(target, ".."), { recursive: true });
     await writeFile(target, content, "utf8");
-    return ok(`已写入 ${relPath}（${content.length} 字符）`, {
-      path: relative(context.cwd, target),
-      before,
-      after: content,
-    });
+    return ok(
+      `已写入 ${relPath}（${content.length} 字符）`,
+      fileChange(relative(context.cwd, target), before, content),
+    );
   },
 };
 
@@ -187,11 +203,10 @@ const editTool: Tool = {
       ? before.split(oldText).join(newTextRaw)
       : before.replace(oldText, newTextRaw);
     await writeFile(target, after, "utf8");
-    return ok(`已修改 ${relPath}（替换 ${replaceAll ? occurrences : 1} 处）`, {
-      path: relative(context.cwd, target),
-      before,
-      after,
-    });
+    return ok(
+      `已修改 ${relPath}（替换 ${replaceAll ? occurrences : 1} 处）`,
+      fileChange(relative(context.cwd, target), before, after),
+    );
   },
 };
 

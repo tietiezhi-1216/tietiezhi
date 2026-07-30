@@ -32,10 +32,15 @@ function collectEvents() {
   return { events, push: (event) => events.push(event) };
 }
 
-export default async function run({ dispatchCommand, seedGatewayKey, setApprovalPolicy }) {
+export default async function run({ dispatchCommand, seedGatewayKey, setApprovalPolicy, setEventObserver }) {
   // No renderer exists here, so nobody can answer an approval prompt. Without a
   // policy the mutating tools would be refused and the probe would prove nothing.
   setApprovalPolicy(() => ({ outcome: "allow-always" }));
+
+  // The event stream is how every live UI value arrives; asserting on a command's
+  // return value alone would not catch a break in it.
+  const seen = [];
+  setEventObserver((event, payload) => seen.push({ event, payload }));
   const KEY = process.env.TIETIEZHI_TEST_KEY;
   const BASE = process.env.TIETIEZHI_TEST_BASE_URL ?? "https://tietiezhi.vip";
   const MODEL = process.env.TIETIEZHI_TEST_MODEL ?? "gpt-5.4-mini";
@@ -115,7 +120,36 @@ export default async function run({ dispatchCommand, seedGatewayKey, setApproval
     record("整条链路跑通并真实改文件", false, String(error).slice(0, 260));
   }
 
-  // --- 4. history survives a reload ---------------------------------------
+  // --- 4. the UI would receive a usable diff ------------------------------
+  try {
+    const toolResults = seen
+      .filter((e) => e.event === "agent://stream" && e.payload.event?.type === "tool-result")
+      .map((e) => e.payload.event);
+    const editResult = toolResults.find((r) => r.toolName === "edit");
+    const change = editResult?.detail;
+    const readResult = toolResults.find((r) => r.toolName === "read");
+    record(
+      "编辑事件带上可用的 diff 数据",
+      change?.kind === "file-change" &&
+        typeof change.after === "string" &&
+        change.after.includes("BRAVO") &&
+        typeof change.before === "string" &&
+        change.before.includes("bravo"),
+      `kind=${change?.kind} path=${change?.path} before有bravo=${typeof change?.before === "string" && change.before.includes("bravo")}`,
+    );
+    // Regression guard: the event's `output` used to be overwritten by `detail`,
+    // so read/bash showed a metadata object instead of their real output — and
+    // disagreed with what a reloaded session showed.
+    record(
+      "read 的事件输出是真实内容而非元数据",
+      typeof readResult?.output === "string" && readResult.output.includes("bravo"),
+      `output 类型=${typeof readResult?.output} 含内容=${typeof readResult?.output === "string" && readResult.output.includes("bravo")}`,
+    );
+  } catch (error) {
+    record("编辑事件带上可用的 diff 数据", false, String(error).slice(0, 220));
+  }
+
+  // --- 5. history survives a reload ---------------------------------------
   try {
     const loaded = await dispatchCommand("agent_session_load", { sessionId }, null);
     const hasToolCall = loaded.messages.some((m) => m.content.some((p) => p.type === "tool-call"));
@@ -129,7 +163,7 @@ export default async function run({ dispatchCommand, seedGatewayKey, setApproval
     record("历史落盘且工具调用与结果都在", false, String(error).slice(0, 220));
   }
 
-  // --- 5. a second turn replays the persisted history ---------------------
+  // --- 6. a second turn replays the persisted history ---------------------
   try {
     const outcome = await dispatchCommand(
       "agent_prompt",

@@ -10,6 +10,7 @@ import {
   createBridge,
   describeRegisteredCommands,
   dispatchCommand,
+  setEventObserver,
 } from "./bridge/index.js";
 import { forwardHostEvents, registerHostCommands } from "./commands.js";
 import { disposeAgent, registerAgentCommands } from "./agent/commands.js";
@@ -149,11 +150,13 @@ async function bootstrap(): Promise<void> {
         dispatchCommand: typeof dispatchCommand;
         seedGatewayKey: (providerId: string, baseUrl: string, key: string) => Promise<void>;
         setApprovalPolicy: typeof setApprovalPolicy;
+        setEventObserver: typeof setEventObserver;
       }) => Promise<boolean>;
     };
     const passed = await probe.default({
       dispatchCommand,
       setApprovalPolicy,
+      setEventObserver,
       seedGatewayKey: async (providerId, baseUrl, key) => {
         await secrets.setGatewayIssuer(providerId, gatewayRoot(baseUrl));
         await secrets.setGatewaySession(providerId, "probe-session");

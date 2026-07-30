@@ -21,6 +21,7 @@ import type {
   ContentPart,
   Message,
   Tool,
+  ToolResult,
   TurnEndReason,
   TurnRequest,
   Usage,
@@ -199,10 +200,13 @@ async function runToolCalls(
       if (decision.outcome === "allow-always") alwaysAllowed.add(tool.name);
     }
 
-    const result = await tool
+    const result: ToolResult = await tool
       .run(call.input, { cwd: request.cwd, signal })
-      .catch((error: unknown) => ({ output: describeError(error), isError: true }));
+      .catch((error: unknown): ToolResult => ({ output: describeError(error), isError: true }));
 
+    // The part carries `output` only. `detail` holds whole-file text for the
+    // diff view; putting it here would spend context on it every step and
+    // append it to the session file forever.
     parts.push({
       type: "tool-result",
       callId: call.callId,
@@ -214,8 +218,9 @@ async function runToolCalls(
       type: "tool-result",
       callId: call.callId,
       toolName: call.toolName,
-      output: "detail" in result ? (result as { detail?: unknown }).detail ?? result.output : result.output,
+      output: result.output,
       isError: result.isError === true,
+      ...(result.detail === undefined ? {} : { detail: result.detail }),
     });
   }
 
