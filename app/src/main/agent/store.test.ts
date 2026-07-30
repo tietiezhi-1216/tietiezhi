@@ -20,7 +20,6 @@ import {
   listSessions,
   loadSession,
   setSessionRoot,
-  updateMeta,
 } from "./store.js";
 import type { Message } from "./types.js";
 
@@ -120,10 +119,13 @@ test("元数据损坏时返回 null 而不是抛错", async () => {
 test("列表按更新时间倒序", async () => {
   await freshRoot();
   const first = await createSession({ cwd: "/a", title: "旧" });
+  // `updatedAt` has millisecond resolution, and both writes can land inside the
+  // same millisecond — which made this test flake, since the subject under test
+  // *is* the ordering. Waiting past the tick is what makes the two timestamps
+  // genuinely different rather than relying on how slow the machine is.
+  await new Promise((resolve) => setTimeout(resolve, 2));
   const second = await createSession({ cwd: "/b", title: "新" });
-  // updatedAt has millisecond resolution; touch the second one explicitly so the
-  // ordering assertion cannot depend on how fast the two calls ran.
-  await updateMeta(second.id, { title: "新" });
+  assert.ok(second.updatedAt > first.updatedAt, "两条会话的时间戳必须不同，否则断言无意义");
 
   const list = await listSessions();
   assert.equal(list.length, 2);

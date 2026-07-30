@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "rebuild": "electron-rebuild -f -w node-pty",
     "postinstall": "electron-rebuild -f -w node-pty",
-    "test:agent": "tsc -p tsconfig.test.json && node --test \".test-out/main/agent/*.test.js\""
+    "test:agent": "tsc -p tsconfig.test.json && node --test \".test-out/main/agent/*.test.js\"",
+    "probe:live": "tsc -p tsconfig.test.json && NODE_USE_ENV_PROXY=1 node scripts/live-probe.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",

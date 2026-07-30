@@ -218,27 +218,42 @@ function toToolSet(tools: Tool[]): ToolSet {
  */
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 
-/** Maps neutral reasoning settings onto each provider's own knob. */
-function reasoningOptions(
+/**
+ * Per-provider request options: the neutral reasoning setting mapped onto each
+ * provider's own knob, plus anything a provider always needs.
+ */
+function providerRequestOptions(
   provider: ProviderKind,
   reasoning: ReasoningOptions | undefined,
 ): Record<string, { [key: string]: JsonValue }> | undefined {
-  if (reasoning === undefined || reasoning.effort === undefined) return undefined;
-  const effort = reasoning.effort;
+  const effort = reasoning?.effort;
+  const budgetFor = (level: "low" | "medium" | "high"): number =>
+    reasoning?.budgetTokens ?? { low: 2048, medium: 4096, high: 8192 }[level];
+
+  if (provider === "openai") {
+    // `store: false` is sent unconditionally, and does double duty. It keeps the
+    // conversation off the provider's servers, and it is what makes the SDK ask
+    // for `reasoning.encrypted_content` and replay reasoning inline rather than
+    // as an `item_reference` to a server-side id. With the reference, reopening a
+    // stored session fails with "Item with id 'rs_…' not found. Items are not
+    // persisted when `store` is set to false" — the same class of bug that broke
+    // the old core on Anthropic. A desktop client must not depend on a gateway
+    // holding state on its behalf.
+    const openai: { [key: string]: JsonValue } = { store: false };
+    if (effort !== undefined && effort !== "off") openai["reasoningEffort"] = effort;
+    return { openai };
+  }
+
+  if (effort === undefined) return undefined;
 
   if (provider === "anthropic") {
     if (effort === "off") return { anthropic: { thinking: { type: "disabled" } } };
-    const budget = reasoning.budgetTokens ?? { low: 2048, medium: 4096, high: 8192 }[effort];
-    return { anthropic: { thinking: { type: "enabled", budgetTokens: budget } } };
+    return { anthropic: { thinking: { type: "enabled", budgetTokens: budgetFor(effort) } } };
   }
-  if (provider === "openai") {
-    if (effort === "off") return undefined;
-    return { openai: { reasoningEffort: effort } };
-  }
-  // Google takes a token budget; -1 lets the model decide.
   if (effort === "off") return { google: { thinkingConfig: { thinkingBudget: 0 } } };
-  const budget = reasoning.budgetTokens ?? { low: 2048, medium: 4096, high: 8192 }[effort];
-  return { google: { thinkingConfig: { thinkingBudget: budget, includeThoughts: true } } };
+  return {
+    google: { thinkingConfig: { thinkingBudget: budgetFor(effort), includeThoughts: true } },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -313,7 +328,7 @@ export async function streamStep(
     abortSignal: request.signal,
   };
   if (request.instructions.trim() !== "") options.instructions = request.instructions;
-  const providerOptions = reasoningOptions(request.target.provider, request.reasoning);
+  const providerOptions = providerRequestOptions(request.target.provider, request.reasoning);
   if (providerOptions !== undefined) options.providerOptions = providerOptions;
 
   const result = streamText(options);

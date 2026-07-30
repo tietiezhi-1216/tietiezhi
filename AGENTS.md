@@ -46,6 +46,50 @@ cargo test
 pnpm tauri icon ../assets/brand/tietiezhi-mark.png
 ```
 
+## app/ 常用命令（Electron 宿主 + 自研 agent 核心）
+
+在 `app/` 下执行：
+
+```bash
+pnpm install
+pnpm dev
+pnpm build
+pnpm typecheck
+pnpm test:agent
+pnpm probe:live
+```
+
+`TIETIEZHI_HEADLESS=1` 启动会注册全部命令后立即退出并打印命令清单，
+用于在无 GUI 的情况下核对命令面（`npx electron .`）。
+`TIETIEZHI_DATA_DIR` 可把数据目录指到临时路径，避免污染真实用户档案。
+
+## 测试用的中转站
+
+项目所有者提供了一个可随意用于测试的中转站，凭据放在 `app/.env.local`：
+
+```
+TIETIEZHI_TEST_BASE_URL=https://tietiezhi.vip
+TIETIEZHI_TEST_KEY=<向所有者索取>
+```
+
+**这个文件被 `.gitignore` 忽略，凭据一律不得写进仓库。** 本仓库是公开的
+（`tietiezhi-1216/tietiezhi`），提交上去的密钥会在几分钟内被自动扫描抓走。
+需要在新机器上测试时，向所有者索取后自己创建这个文件。
+
+该网关支持四种协议（`chat_completions` / `responses` / `anthropic_messages` /
+`gemini_generate_content`），`GET /v1/models` 会返回每个模型的协议与推理能力，
+是验证多协议路径的现成靶子。已知限制：它的 gemini 模型全是图像生成模型，
+没有文本模型，所以 google 文本路径无法用它验证。
+
+`pnpm probe:live` 会拿真实模型跑通「流式文本 → 工具调用 → 多步循环改文件 →
+持久化后重放带 providerData 的历史」。改动 `src/main/agent/provider.ts` 后
+务必跑一次：单元测试用桩服务器，覆盖不到真实供应商的拒绝行为。
+
+**Node 的 fetch 无视一切代理配置**（不读 `HTTP_PROXY`，也不读系统代理）。
+探针脚本自己带了 `NODE_USE_ENV_PROXY=1`；应用里注入的是 Electron 的
+`net.fetch`，走 Chromium 网络栈，认系统代理与 PAC。在需要代理的网络上，
+如果绕过这一层，每个请求都会以 `ECONNRESET` 结束且没有任何 HTTP 状态码。
+
 ## desktop/ 架构
 
 ### 开发调试
