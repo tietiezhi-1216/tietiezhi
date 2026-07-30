@@ -1,208 +1,265 @@
-import { readFile, realpath } from "node:fs/promises";
-import { join, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 
-import { app, BrowserWindow, dialog, protocol } from "electron";
+import { app, BrowserWindow, ipcMain, net, protocol } from "electron";
 
 import {
-  ASSET_PROTOCOL,
-  assetUrlToPath,
-  createBridge,
-  describeRegisteredCommands,
-  dispatchCommand,
-  setEventObserver,
-} from "./bridge/index.js";
-import { forwardHostEvents, registerHostCommands } from "./commands.js";
-import { disposeAgent, registerAgentCommands } from "./agent/commands.js";
-import { wireAgentProviders } from "./agent/wiring.js";
-import { createSessionManager, markCoreReady } from "./core-launcher.js";
-import { getCoreProcessManager } from "./cores/process.js";
-import {
-  dataDir,
-  disposeDictation,
-  disposeTerminals,
-  importLegacyDataOnce,
-  initDictationHotkey,
-  registerHostModules,
-} from "./host/index.js";
-import { createMainWindow, loadRenderer, rendererRoot } from "./window.js";
-import { handleRendererScheme, registerRendererScheme } from "./renderer-protocol.js";
-import type { AcpSessionManager } from "./acp/index.js";
+  IPC,
+  type ImageGenerationRequest,
+  type ProviderAccountInput,
+  type SendMessageInput,
+} from "@shared/contracts";
 
-// Must run before `whenReady`, or the renderer cannot fetch asset URLs.
+import { ConversationService } from "./application/conversation-service.js";
+import { ApprovalManager } from "./application/approval-manager.js";
+import { EngineManager } from "./application/engine-manager.js";
+import { MediaService } from "./application/media-service.js";
+import { ProviderService } from "./application/provider-service.js";
+import { GatewayService } from "./application/gateway-service.js";
+import { WorkspaceService } from "./application/workspace-service.js";
+import { AISDKEngine } from "./engines/ai-sdk-engine.js";
+import { setProviderFetch } from "./engines/provider-factory.js";
+import { CredentialStore } from "./infrastructure/credential-store.js";
+import { AppDatabase } from "./infrastructure/database.js";
+import { createMainWindow, loadRenderer } from "./window.js";
+
 protocol.registerSchemesAsPrivileged([
   {
-    scheme: ASSET_PROTOCOL,
+    scheme: "tietiezhi-media",
     privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
   },
 ]);
-registerRendererScheme();
 
-let sessions: AcpSessionManager | null = null;
+const customDataDirectory = process.env["TIETIEZHI_DATA_DIR"]?.trim();
+if (customDataDirectory) app.setPath("userData", customDataDirectory);
 
-/**
- * Directories the renderer may read through `tietiezhi-asset://`.
- *
- * The Tauri build restricted its asset protocol to `$APPDATA/create-assets`.
- * Without an equivalent allowlist any string that reaches an `<img src>` —
- * a model reply, an MCP tool result, a filename in a repo — could read back
- * arbitrary files, `secrets.enc.json` included.
- */
-function assetRoots(): string[] {
-  return [join(dataDir(), "create-assets"), join(dataDir(), "tietiezhi")];
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isInsideAllowedRoot(target: string): boolean {
-  return assetRoots().some((root) => target === root || target.startsWith(root + sep));
+function record(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("请求参数格式不正确");
+  return value;
 }
 
-function registerAssetProtocol(): void {
-  protocol.handle(ASSET_PROTOCOL, async (request) => {
-    const path = assetUrlToPath(request.url);
-    if (!path) return new Response("bad asset url", { status: 400 });
-    // Resolve symlinks before checking: a link inside create-assets must not
-    // become a window onto the rest of the disk.
-    let resolved: string;
-    try {
-      resolved = await realpath(path);
-    } catch {
-      return new Response("not found", { status: 404 });
+function string(value: unknown, key: string): string {
+  const result = record(value)[key];
+  if (typeof result !== "string" || result === "") throw new Error(`参数 ${key} 无效`);
+  return result;
+}
+
+function optionalString(value: Record<string, unknown>, key: string): string | undefined {
+  const result = value[key];
+  return typeof result === "string" && result !== "" ? result : undefined;
+}
+
+function providerInput(value: unknown): ProviderAccountInput {
+  const input = record(value);
+  const providerType = input["providerType"];
+  if (
+    providerType !== "openai" &&
+    providerType !== "anthropic" &&
+    providerType !== "google" &&
+    providerType !== "openai-compatible"
+  ) {
+    throw new Error("供应商类型无效");
+  }
+  const models = input["models"];
+  if (!Array.isArray(models) || models.some((model) => typeof model !== "string")) {
+    throw new Error("模型列表格式无效");
+  }
+  return {
+    id: optionalString(input, "id"),
+    providerType,
+    displayName: string(input, "displayName"),
+    baseURL: optionalString(input, "baseURL"),
+    apiKey: optionalString(input, "apiKey"),
+    enabled: typeof input["enabled"] === "boolean" ? input["enabled"] : undefined,
+    models,
+  };
+}
+
+function sendInput(value: unknown): SendMessageInput {
+  const input = record(value);
+  return {
+    conversationId: optionalString(input, "conversationId"),
+    text: string(input, "text"),
+    providerAccountId: string(input, "providerAccountId"),
+    model: string(input, "model"),
+    engineId: optionalString(input, "engineId"),
+    systemPrompt: optionalString(input, "systemPrompt"),
+    workspace: optionalString(input, "workspace"),
+  };
+}
+
+function imageInput(value: unknown): ImageGenerationRequest {
+  const input = record(value);
+  const aspectRatio = optionalString(input, "aspectRatio");
+  if (aspectRatio !== undefined && !/^\d+:\d+$/.test(aspectRatio)) {
+    throw new Error("图片比例格式无效");
+  }
+  const count = input["count"];
+  return {
+    providerAccountId: string(input, "providerAccountId"),
+    model: string(input, "model"),
+    prompt: string(input, "prompt"),
+    aspectRatio: aspectRatio as `${number}:${number}` | undefined,
+    count: typeof count === "number" && Number.isFinite(count) ? count : undefined,
+  };
+}
+
+function readRequest(value: unknown): { method: string; input: unknown } {
+  const request = record(value);
+  if (typeof request["method"] !== "string") throw new Error("IPC 方法无效");
+  return { method: request["method"], input: request["input"] };
+}
+
+let engines: EngineManager | null = null;
+let approvals: ApprovalManager | null = null;
+
+async function bootstrap(): Promise<void> {
+  setProviderFetch(net.fetch as unknown as typeof globalThis.fetch);
+  const database = new AppDatabase();
+  const credentials = new CredentialStore();
+  const providers = new ProviderService(
+    database,
+    credentials,
+    net.fetch as unknown as typeof globalThis.fetch,
+  );
+  const gateway = new GatewayService(
+    providers,
+    credentials,
+    net.fetch as unknown as typeof globalThis.fetch,
+  );
+  const workspaces = new WorkspaceService();
+  approvals = new ApprovalManager();
+  engines = new EngineManager();
+  await engines.registerReady(new AISDKEngine(approvals));
+  const conversations = new ConversationService(database, providers, engines, workspaces);
+  const media = new MediaService(database, providers);
+
+  conversations.setEventSink((event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC.engineEvent, event);
     }
-    if (!isInsideAllowedRoot(resolved)) {
+  });
+
+  protocol.handle("tietiezhi-media", async (request) => {
+    const filePath = new URL(request.url).searchParams.get("path") ?? "";
+    if (!MediaService.isManagedArtifact(filePath)) {
       return new Response("forbidden", { status: 403 });
     }
     try {
-      return new Response(await readFile(resolved));
+      const bytes = await readFile(filePath);
+      const extension = basename(filePath).split(".").at(-1)?.toLowerCase();
+      const type =
+        extension === "jpg" || extension === "jpeg"
+          ? "image/jpeg"
+          : extension === "webp"
+            ? "image/webp"
+            : "image/png";
+      return new Response(bytes, { headers: { "content-type": type } });
     } catch {
       return new Response("not found", { status: 404 });
     }
   });
-}
 
-/**
- * `markReady` needs the protocol version, which only the ACP handshake knows.
- * Wrapping `ensureCore` keeps that coupling in one place instead of leaking
- * process-manager state into the ACP layer.
- */
-function trackReadiness(manager: AcpSessionManager): AcpSessionManager {
-  const original = manager.ensureCore.bind(manager);
-  manager.ensureCore = async (coreId: string) => {
-    const connection = await original(coreId);
-    markCoreReady(coreId, connection.protocolVersion);
-    return connection;
-  };
-  return manager;
-}
+  ipcMain.handle(IPC.invoke, async (_event, payload: unknown) => {
+    const request = readRequest(payload);
+    switch (request.method) {
+      case "engines.list":
+        return engines?.list() ?? [];
+      case "providers.list":
+        return providers.list();
+      case "providers.save":
+        return providers.save(providerInput(request.input));
+      case "providers.remove":
+        return providers.remove(string(request.input, "id"));
+      case "providers.refreshModels":
+        return providers.refreshModels(string(request.input, "id"));
+      case "gateway.account":
+        return gateway.account();
+      case "gateway.login":
+        return gateway.login();
+      case "gateway.logout":
+        return gateway.logout();
+      case "conversations.list":
+        return conversations.list();
+      case "conversations.load":
+        return conversations.load(string(request.input, "id"));
+      case "conversations.send":
+        return conversations.send(sendInput(request.input));
+      case "conversations.cancel":
+        return conversations.cancel(string(request.input, "runId"));
+      case "conversations.remove":
+        return conversations.remove(string(request.input, "id"));
+      case "conversations.rename":
+        return conversations.rename(
+          string(request.input, "id"),
+          string(request.input, "title"),
+        );
+      case "workspace.createTemporary":
+        return workspaces.createTemporary();
+      case "workspace.choose":
+        return workspaces.choose();
+      case "workspace.listFiles": {
+        const conversation = database.conversation(string(request.input, "conversationId"));
+        if (!conversation?.workspace) throw new Error("会话尚未绑定 Workspace");
+        return workspaces.listFiles(conversation.workspace);
+      }
+      case "workspace.readFile": {
+        const conversation = database.conversation(string(request.input, "conversationId"));
+        if (!conversation?.workspace) throw new Error("会话尚未绑定 Workspace");
+        return workspaces.readTextFile(
+          conversation.workspace,
+          string(request.input, "path"),
+        );
+      }
+      case "approvals.resolve":
+        return approvals?.resolve(
+          string(request.input, "approvalId"),
+          record(request.input)["approved"] === true,
+        );
+      case "media.list":
+        return media.list();
+      case "media.generateImage":
+        return media.generateImage(imageInput(request.input));
+      case "media.cancel":
+        return media.cancel(string(request.input, "id"));
+      case "media.retry":
+        return media.retry(string(request.input, "id"));
+      case "media.remove":
+        return media.remove(string(request.input, "id"));
+      case "media.saveArtifact":
+        return media.saveArtifact(string(request.input, "path"));
+      default:
+        throw new Error(`未知 IPC 方法：${request.method}`);
+    }
+  });
 
-async function bootstrap(): Promise<void> {
-  registerAssetProtocol();
-  if (!process.env["ELECTRON_RENDERER_URL"]) handleRendererScheme(rendererRoot());
-
-  // Must finish before any command can read a store, or a first read would
-  // cache an empty profile and the import would then be skipped forever.
-  try {
-    const result = await importLegacyDataOnce();
+  if (process.env["TIETIEZHI_HEADLESS"] === "1") {
     console.log(
-      `[host] legacy import: imported=[${result.imported.join(", ")}] skipped=[${result.skipped.join(" | ")}]`,
+      "[host] ready: engines providers gateway conversations workspace approvals media",
     );
-  } catch (error) {
-    // A failed import must not stop the app: the host simply starts empty.
-    console.error("[host] legacy import failed:", error);
-  }
-
-  registerHostModules();
-
-  // The first-party agent core. Registered after the host modules because its
-  // key resolver reads settings, which those modules own.
-  registerAgentCommands();
-  wireAgentProviders();
-  // Arms the saved dictation shortcut; failures are logged, never fatal.
-  await initDictationHotkey();
-
-  sessions = trackReadiness(createSessionManager());
-  registerHostCommands(sessions);
-
-  // Headless mode registers everything and stops short of any window, so the
-  // command surface can be verified in CI (and locally) without a GUI.
-  if (process.env["TIETIEZHI_HEADLESS"]) {
-    const names = describeRegisteredCommands().map((entry) => entry.name);
-    console.log(`[host] headless: ${String(names.length)} command(s): ${names.join(" ")}`);
-    app.exit(0);
-    return;
-  }
-
-  // Debug seam for the integration probe: it needs to drive the real command
-  // handlers — settings, key vault, provider mapping and dispatch — without a
-  // window. Keeping the probe in an external script means none of its code ships
-  // in the bundle; only this dynamic import does, and only when asked.
-  const probeScript = process.env["TIETIEZHI_PROBE_SCRIPT"];
-  if (probeScript !== undefined && probeScript !== "") {
-    // The built-in gateway authenticates by login, so a probe holding an
-    // already-issued key has to seed the vault the way login would. Handing the
-    // setters in keeps that knowledge out of the probe's reach otherwise.
-    const [{ gatewayRoot }, secrets] = await Promise.all([
-      import("./host/settings.js"),
-      import("./host/settings-secrets.js"),
-    ]);
-    const { setApprovalPolicy } = await import("./agent/commands.js");
-    const probe = (await import(pathToFileURL(probeScript).href)) as {
-      default: (api: {
-        dispatchCommand: typeof dispatchCommand;
-        seedGatewayKey: (providerId: string, baseUrl: string, key: string) => Promise<void>;
-        setApprovalPolicy: typeof setApprovalPolicy;
-        setEventObserver: typeof setEventObserver;
-      }) => Promise<boolean>;
-    };
-    const passed = await probe.default({
-      dispatchCommand,
-      setApprovalPolicy,
-      setEventObserver,
-      seedGatewayKey: async (providerId, baseUrl, key) => {
-        await secrets.setGatewayIssuer(providerId, gatewayRoot(baseUrl));
-        await secrets.setGatewaySession(providerId, "probe-session");
-        await secrets.setGatewayApiKey(providerId, key);
-      },
-    });
-    app.exit(passed ? 0 : 1);
+    app.quit();
     return;
   }
 
   const window = createMainWindow();
-  // The bridge must exist before the renderer's first `invoke()`.
-  createBridge(window);
-  // Subscribed once for the process, not per window: `broadcastEvent` already
-  // reaches every window, so re-subscribing on `activate` would deliver each
-  // stream delta twice and duplicate the assistant's reply.
-  forwardHostEvents(sessions, window);
-
-  // The port is incremental: knowing exactly which commands exist is the only
-  // way to tell a missing module from a broken one while it is in progress.
-  if (process.env["TIETIEZHI_DEBUG_COMMANDS"]) {
-    const names = describeRegisteredCommands().map((entry) => entry.name);
-    console.log(`[host] registered ${names.length} command(s): ${names.join(" ")}`);
-  }
-
   loadRenderer(window);
 }
 
-void app.whenReady().then(async () => {
-  try {
-    await bootstrap();
-  } catch (error) {
-    // Without this the rejection is unhandled: on macOS the process stays
-    // alive with no window and no message, and the user can only force-quit.
-    console.error("[host] bootstrap failed:", error);
-    dialog.showErrorBox("铁铁汁启动失败", String(error));
+void app
+  .whenReady()
+  .then(bootstrap)
+  .catch((error: unknown) => {
+    console.error("[host] startup failed:", error);
     app.exit(1);
-  }
-});
+  });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length > 0 || !sessions) return;
+  if (BrowserWindow.getAllWindows().length > 0) return;
   const window = createMainWindow();
-  createBridge(window);
-  // No `forwardHostEvents` here — the subscription made during bootstrap is
-  // process-wide and already broadcasts to this new window.
   loadRenderer(window);
 });
 
@@ -210,31 +267,7 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-let shuttingDown = false;
-
-/**
- * Cores are child processes, and at least one shipped agent ignores SIGTERM,
- * so quitting has to actually wait for the escalation to SIGKILL. `before-quit`
- * cannot await, so the quit is deferred once and re-issued when teardown is
- * genuinely done.
- */
-app.on("before-quit", (event) => {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  event.preventDefault();
-  void (async () => {
-    try {
-      disposeAgent();
-      await sessions?.dispose();
-      await getCoreProcessManager().stopAll();
-      // A pty child outlives its parent unless killed explicitly, and Electron
-      // holds a global shortcut until it is told to release it.
-      disposeTerminals();
-      disposeDictation();
-    } catch (error) {
-      console.error("[host] shutdown failed:", error);
-    } finally {
-      app.quit();
-    }
-  })();
+app.on("before-quit", () => {
+  approvals?.dispose();
+  void engines?.dispose();
 });

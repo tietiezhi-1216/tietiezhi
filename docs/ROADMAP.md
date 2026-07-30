@@ -1,101 +1,46 @@
 # Tietiezhi 路线图
 
-[简体中文](./ROADMAP.md) · [English](./ROADMAP.en.md)
+## 当前阶段
 
-> 最后整理：2026-07。路线图用于说明方向，不是发布日期承诺；优先级会根据稳定性、用户反馈和维护资源调整。
+桌面端已经统一为 Electron + TypeScript，并删除 Tauri、Rust Agent Runtime、ACP、MCP、Cores、Automations 和设备助手。
 
-## 产品愿景
+当前产品只包含：
 
-Tietiezhi 的核心是 **设备 × 模型互联**。长期目标是把 macOS、Windows、Linux、iOS、Android、独立二进制服务与边缘节点连接成一个由用户掌控的 Agent 网络：设备提供场景、上下文和执行环境，不同模型提供各自擅长的推理、代码、语音或多模态能力，Agent 在清晰权限下完成选择、路由与协作。
+- Workspace：AI SDK `ToolLoopAgent`，始终绑定项目或 UUID 临时 Workspace，包含审批、Diff、工具时间线和文件预览。
+- Create：AI SDK 原生图片生成，包含任务与本地资产管理。
+- 账号：通过系统浏览器登录 Tietiezhi Gateway，自动管理内置中转站凭据和模型。
 
-我们遵循三个长期原则：
+## 第一阶段
 
-1. **设备皆可成为节点**：桌面、移动、服务端与边缘设备都能贡献上下文或执行能力。
-2. **模型各展所长**：不要求一个模型包办所有任务，根据能力、成本、延迟和隐私选择合适模型。
-3. **本地优先**：任务、工作区和凭据尽可能留在用户设备上。
-4. **开放且可控**：不锁定供应商，以开放协议连接模型和工具，高风险操作始终有明确权限与记录。
+- [x] 统一 `AIEngine` 接口与版本化 `EngineEvent`
+- [x] AI SDK 默认 Engine
+- [x] OpenAI、Anthropic、Google 与 OpenAI-compatible Provider
+- [x] SQLite 会话、消息、Run、Provider、MediaJob 和 Artifact
+- [x] Electron `safeStorage` 安全凭据
+- [x] Tietiezhi Gateway PKCE 登录、Session 校验、退出与模型同步
+- [x] 流式文字、停止生成和用量
+- [x] 受限文件读取、搜索、写入、替换和 Shell 工具
+- [x] 写入与命令审批、工具时间线和 Diff 面板
+- [x] Workspace 任务搜索、重命名、项目分组与文件预览
+- [x] AI SDK 图片生成与本地资产
+- [x] 图片异步任务、状态轮询、停止、重试和删除
+- [x] macOS / Windows Electron CI 和 Release 骨架
+- [ ] 会话重新生成、编辑后分支和搜索
+- [x] Provider 模型在线发现与文字/图片模型筛选
+- [ ] Provider 标准化能力元数据
+- [ ] Adapter contract test 与 Renderer 端到端测试
 
-## 当前交付边界
+## 后续阶段
 
-| 组成部分 | 状态 |
-| --- | --- |
-| macOS / Windows 桌面 Agent | 已发布，持续迭代 |
-| Go 单二进制 Hub | 已有 Agent、渠道、记忆、调度与设备互联模块，仍在产品化 |
-| Linux / iOS / Android 客户端 | 规划中，尚未发布 |
-| 桌面与 Hub 的跨设备协作 | 已支持远程 Core、设备发现、桌面节点注册与基础能力调用；权限和移动端仍在完善 |
-| 多模态能力路由 | 当前覆盖文本、语音识别，以及 Create 中的图片 / 视频生成；音乐、向量等能力仍在规划 |
+- [ ] 可折叠 Workspace 文件树和独立终端输出面板
+- [ ] Git 状态、增量 Diff 算法和变更回滚
+- [ ] 工具策略、命令规则和审批记忆
+- [ ] 图片编辑和参考图
+- [ ] 独立封装的实验性视频 Adapter
 
-## 已完成：桌面 Agent 基础
+## 非当前范围
 
-- [x] 统一为 Tauri 2 + Rust + React 19 的 macOS / Windows 桌面技术栈
-- [x] Tietiezhi Gateway 与多 OpenAI 兼容供应商、模型同步和切换
-- [x] OpenAI 兼容流式对话与多轮工具调用
-- [x] 内置文件读写、编辑、目录、Glob、搜索、Shell、Fetch 与 Skill 工具
-- [x] 询问 / 自动 / 完全授权三种工具权限模式
-- [x] 可复用 Agent 配置、自定义系统提示词、工具与模型覆盖
-- [x] Markdown Skills 的创建、导入、启停与按需加载
-- [x] stdio 与 Streamable HTTP MCP 服务接入
-- [x] 本地任务持久化、置顶、归档和恢复
-- [x] 共享任务上下文、差异化工具与结果面板的 Work / Code 模式，以及隔离空间间的显式成果交接
-- [x] Tietiezhi 设备中心、远程 Core 管理、桌面节点注册、设备发现与基础能力调用
-- [x] Tietiezhi 控制中心、独立 Home、可编辑 Markdown 长期记忆、文件式安全密钥引用，以及专属 Skills / MCP / 工具分配
-- [x] 全局语音听写、语音识别、模型润色与文本插入
-- [x] Create 图片 / 视频生成、参考图输入、任务进度与本地作品管理
-- [x] 深浅色主题、Windows / macOS CI、版本发布与应用内更新
-- [x] 多语言官网与中 / 英 / 日 / 韩 README
-
-## 近期：产品化与国际化
-
-- [ ] 建立桌面端 i18n 基础，先完成简体中文与英文，再补齐日语、韩语
-- [ ] 完善首次启动、供应商配置、模型能力识别和异常恢复流程
-- [ ] 打磨工具调用记录、权限审批、长任务取消和失败重试体验
-- [ ] 完善 Skills / MCP 的校验、状态诊断、导入导出与示例生态
-- [ ] 增强任务、项目、工作区的搜索、整理、备份与迁移能力
-- [ ] 提供清晰的模型用量、延迟与费用统计
-- [ ] 完成 macOS 签名 / 公证与 Windows 可信签名的稳定发布链路
-- [ ] 建立关键路径端到端测试、无障碍检查与性能基线
-
-## 中期：连接模型、工具与设备
-
-- [x] 确立“软件内嵌 Rust Core + 可选远程 Core”的本地优先部署边界
-- [x] 让桌面端接入 `server/internal/interconnect/`，支持设备注册、发现与消息路由
-- [ ] 向 Codex、Claude Code、opencode 等开发工具暴露用户可控的本地兼容端点
-- [ ] 继续扩展 `shared/interconnect/` 跨端协议，并支持可迁移的 Agent / Skill / MCP 配置
-- [ ] 在桌面端呈现渠道、定时任务、长期记忆和远程 Agent 的统一状态
-
-## 长期：可组合的 Agent 生态
-
-### 多 Agent 与多入口
-
-- [ ] 多 Agent 分工、委派、进度跟踪和结果汇总
-- [ ] 飞书、Telegram 等团队渠道与桌面任务互通
-- [ ] 轻量“聊天胶囊”与跨应用上下文入口
-
-### 多模态
-
-- [ ] 统一文本、语音、图片、视频、音乐与向量模型的能力描述和选择体验
-- [ ] 本地文件与媒体的安全预处理、预览和可控上传
-- [ ] 面向不同模态的用量、费用与隐私提示
-
-### 工作流与自动化
-
-- [ ] 可视化节点工作流，让不同模型、工具和 Agent 自由编排
-- [ ] 支持脚本化或由 AI 生成的自动化流程
-- [ ] 面向截图、内容生产、短剧、电商等场景的可复用模板
-- [ ] 定时任务、事件触发、审批和执行历史
-
-## 关键架构议题
-
-以下决策会影响桌面端与服务端边界，进入实现前需要先完成设计：
-
-1. 如何将现有 Go Hub 能力逐步迁移为可内嵌和可独立部署的 Rust Core，同时保持协议兼容？
-2. 本地 Agent 与服务端 Agent 如何共享任务、记忆、工具权限与审计记录？
-3. 多模态文件在本地、模型供应商和远程 Hub 之间如何保持明确的数据边界？
-4. `shared/` 应承载哪些稳定协议，避免桌面与服务端实现相互绑死？
-
-## 不在当前范围
-
-- Linux、iOS、Android 与 Web 客户端尚无交付计划；架构上不排斥，但当前资源集中在 macOS 和 Windows。
-- 长期章节中的方向不代表已经随桌面应用发布。`server/internal/` 中存在模块骨架，也不等于已经完成桌面集成或产品化。
-
-欢迎通过 [GitHub Issues](https://github.com/tietiezhi-1216/tietiezhi/issues) 讨论优先级、使用场景与设计方案。
+- MCP、插件和多 Agent
+- 自动化和设备互联
+- 外部 CLI Agent
+- Tauri 与 Rust 桌面 Runtime

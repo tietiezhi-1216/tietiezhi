@@ -2,7 +2,7 @@
 
 铁铁汁（Tietiezhi）的官方网站与**下载页**，纯静态站点（无框架）：Tailwind CSS v3 经 PostCSS 构建，一个 `app.js` 负责国际化、交互与下载区。由 GitHub Pages 发布。
 
-> 与 `desktop/`（Tauri + React 应用）相互独立：这里是对外官网，不参与桌面端构建，也不受其 shadcn / Tailwind v4 规范约束。
+> 与 `app/`（Electron + React 应用）相互独立：这里是对外官网，不参与桌面端构建。
 
 ## 目录
 

@@ -1,47 +1,91 @@
 {
   "name": "tietiezhi-app",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "license": "Apache-2.0",
+  "author": "Tietiezhi",
   "type": "module",
-  "description": "铁铁汁 Electron 宿主：统一渲染多个 ACP 核心",
+  "description": "Tietiezhi Electron 桌面 AI 应用",
   "main": "out/main/index.js",
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "tsc --noEmit && electron-vite build",
+    "dist": "pnpm build && electron-builder",
+    "dist:mac": "pnpm build && electron-builder --mac --universal",
+    "dist:win": "pnpm build && electron-builder --win",
+    "smoke:package": "node scripts/package-smoke.mjs",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "rebuild": "electron-rebuild -f -w node-pty",
-    "postinstall": "electron-rebuild -f -w node-pty",
-    "test:agent": "tsc -p tsconfig.test.json && node --test \".test-out/main/agent/*.test.js\"",
-    "probe:live": "tsc -p tsconfig.test.json && NODE_USE_ENV_PROXY=1 node scripts/live-probe.mjs",
-    "probe:integration": "electron-vite build && node scripts/run-integration-probe.mjs"
+    "test": "tsx --test src/main/**/*.test.ts"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "1.3.0",
     "@ai-sdk/anthropic": "4.0.24",
     "@ai-sdk/google": "4.0.28",
     "@ai-sdk/openai": "4.0.24",
     "ai": "7.0.42",
-    "node-pty": "1.1.0"
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "cmdk": "^1.1.1",
+    "lucide-react": "1.24.0",
+    "radix-ui": "1.6.2",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "tailwind-merge": "3.6.0",
+    "tw-animate-css": "1.4.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.1",
     "@tailwindcss/vite": "^4.3.2",
     "@types/node": "^26.1.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "electron": "^40.0.0",
+    "electron-builder": "26.15.3",
     "electron-vite": "6.0.0-beta.1",
     "tailwindcss": "^4.3.2",
+    "tsx": "^4.23.1",
     "typescript": "^7.0.2",
     "vite": "^8.1.4"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "electron",
-      "esbuild",
-      "node-pty"
+      "esbuild"
     ]
+  },
+  "build": {
+    "appId": "com.tietiezhi.desktop",
+    "productName": "Tietiezhi",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "../assets/brand"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "icon": "tietiezhi-mark-macos.png",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "icon": "tietiezhi-mark.png",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

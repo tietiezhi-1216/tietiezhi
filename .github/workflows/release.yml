@@ -1,308 +1,121 @@
-name: Release (Desktop)
+name: Release (Electron Desktop)
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: Existing v* tag to publish
-        required: true
-        type: string
+    tags: ["v*"]
 
 permissions:
   contents: write
 
 jobs:
-  prepare:
-    name: Validate version
-    runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.release.outputs.tag }}
-      version: ${{ steps.release.outputs.version }}
-      prerelease: ${{ steps.release.outputs.prerelease }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-
-      - name: Validate tag and project versions
-        id: release
-        env:
-          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          VERSION=$(jq -r .version desktop/src-tauri/tauri.conf.json)
-          PACKAGE_VERSION=$(jq -r .version desktop/package.json)
-          CARGO_VERSION=$(sed -n '/^\[package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p;}' desktop/src-tauri/Cargo.toml | head -1)
-          [ "$VERSION" = "$PACKAGE_VERSION" ] || {
-            echo "tauri.conf.json ($VERSION) 与 package.json ($PACKAGE_VERSION) 版本不一致"
-            exit 1
-          }
-          [ "$VERSION" = "$CARGO_VERSION" ] || {
-            echo "tauri.conf.json ($VERSION) 与 Cargo.toml ($CARGO_VERSION) 版本不一致"
-            exit 1
-          }
-          [ "$RELEASE_TAG" = "v$VERSION" ] || {
-            echo "Tag $RELEASE_TAG 必须与应用版本 v$VERSION 一致"
-            exit 1
-          }
-          if [[ "$VERSION" =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]{1,2}-t[0-9]{6}$ ]]; then
-            PRERELEASE=false
-          elif [[ "$VERSION" == *-* ]]; then
-            PRERELEASE=true
-          else
-            PRERELEASE=false
-          fi
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
-
-  quality:
-    name: Codex GA release gate
-    needs: prepare
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: desktop
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-
-      - uses: pnpm/action-setup@v4
-        with:
-          package_json_file: desktop/package.json
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: desktop/pnpm-lock.yaml
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            desktop/src-tauri
-            crates/agent-state
-            crates/agent-core
-            crates/agent-stability
-          key: codex-ga
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Validate Codex release invariants
-        env:
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-        run: |
-          pnpm test:codex-release
-          pnpm check:codex-parity
-          pnpm check:codex-schema
-          pnpm test:codex-runtime-switch
-
-      - name: Audit JavaScript dependencies
-        run: pnpm audit --audit-level low
-
-      - name: Audit Rust dependencies
-        run: |
-          cargo install cargo-audit --locked --version 0.22.2
-          cargo audit --file src-tauri/Cargo.lock
-
-      - name: Verify migration rollback and fault recovery
-        run: |
-          cargo test --manifest-path ../crates/agent-state/Cargo.toml
-          cargo test --manifest-path ../crates/agent-core/Cargo.toml legacy_import_preserves_the_rollback_snapshot_byte_for_byte
-          cargo test --manifest-path ../crates/agent-stability/Cargo.toml -- --test-threads=1
-
   build:
-    name: Build (${{ matrix.platform }})
-    needs: [prepare, quality]
+    name: Package (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: macos
             os: macos-latest
-            bundles: app,dmg
-            target: universal-apple-darwin
+            command: dist:mac
           - platform: windows
             os: windows-latest
-            bundles: nsis
-            target: x86_64-pc-windows-msvc
+            command: dist:win
     runs-on: ${{ matrix.os }}
-    # Bound the build so a hang surfaces instead of idling to the 6h ceiling.
     timeout-minutes: 120
     defaults:
       run:
-        working-directory: desktop
+        working-directory: app
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-
       - uses: pnpm/action-setup@v4
         with:
-          package_json_file: desktop/package.json
-
+          package_json_file: app/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
-          cache-dependency-path: desktop/pnpm-lock.yaml
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || 'x86_64-pc-windows-msvc' }}
-
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: desktop/src-tauri
-          key: ${{ matrix.target }}
-
-      - name: Install frontend deps
+          cache-dependency-path: app/pnpm-lock.yaml
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-
-      - name: Validate release signing configuration
+      - name: Validate tag
         shell: bash
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
-          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "缺少 Tauri updater 签名私钥"; exit 1; }
-          [ -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" ] || { echo "缺少 Tauri updater 签名密码"; exit 1; }
-          if [ "${{ matrix.platform }}" = "macos" ]; then
-            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-              [ -n "${!name}" ] || { echo "缺少 macOS 签名/公证配置：$name"; exit 1; }
-            done
-          fi
-
-      - name: Build signed bundles
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-
-      - name: Notarize and staple DMG
+          VERSION=$(node -p "require('./package.json').version")
+          test "$RELEASE_TAG" = "v$VERSION"
+      - name: Test
+        run: pnpm test
+      - name: Validate macOS signing configuration
         if: matrix.platform == 'macos'
+        shell: bash
         env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          [ -n "$APPLE_ID" ] || { echo "未配置公证凭据，跳过 DMG 公证"; exit 0; }
-          DMG=$(find src-tauri/target -path "*/release/bundle/dmg/*.dmg" | head -1)
-          [ -n "$DMG" ] || { echo "未找到 DMG"; exit 1; }
-          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
-          xcrun stapler staple "$DMG"
-          xcrun stapler validate "$DMG"
-
-      - name: Collect release assets
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            [ -n "${!name}" ] || {
+              echo "缺少 macOS 签名或公证配置：$name"
+              exit 1
+            }
+          done
+      - name: Build packages
+        run: pnpm ${{ matrix.command }}
+        env:
+          CSC_LINK: ${{ matrix.platform == 'macos' && secrets.APPLE_CERTIFICATE || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'macos' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.platform == 'macos' && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'macos' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'macos' && secrets.APPLE_TEAM_ID || '' }}
+      - name: Validate macOS package
+        if: matrix.platform == 'macos'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p release-assets
-          find src-tauri/target -type f \( \
-            -path "*/release/bundle/dmg/*.dmg" -o \
-            -path "*/release/bundle/macos/*.app.tar.gz" -o \
-            -path "*/release/bundle/macos/*.app.tar.gz.sig" -o \
-            -path "*/release/bundle/nsis/*.exe" -o \
-            -path "*/release/bundle/nsis/*.exe.sig" \
-          \) -exec cp {} release-assets/ \;
-          find release-assets -maxdepth 1 -type f -print
-
+          APP=$(find release/mac-universal -maxdepth 1 -name '*.app' -type d | head -1)
+          DMG=$(find release -maxdepth 1 -name '*.dmg' -type f | head -1)
+          [ -n "$APP" ] && [ -n "$DMG" ]
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          ARCHS=$(lipo -archs "$APP/Contents/MacOS/$EXECUTABLE")
+          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]]
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          xcrun stapler validate "$APP"
+          hdiutil verify "$DMG"
+          pnpm smoke:package "$APP/Contents/MacOS/$EXECUTABLE"
+      - name: Validate Windows package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $executable = Get-ChildItem release/win-unpacked -Filter *.exe |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $executable) {
+            throw "未找到 Windows 应用可执行文件"
+          }
+          pnpm smoke:package $executable
       - uses: actions/upload-artifact@v4
         with:
-          name: release-assets-${{ matrix.platform }}
-          path: desktop/release-assets/*
+          name: desktop-${{ matrix.platform }}
+          path: |
+            app/release/*.dmg
+            app/release/*.zip
+            app/release/*.exe
           if-no-files-found: error
 
   publish:
-    name: Publish GitHub Release
-    needs: [prepare, build]
+    name: Publish
+    needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
-          fetch-depth: 0
-
       - uses: actions/download-artifact@v4
         with:
-          pattern: release-assets-*
-          path: release-assets
+          pattern: desktop-*
+          path: release
           merge-multiple: true
-
-      - name: Generate updater manifest
-        env:
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          set -euo pipefail
-          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          MAC_TAR=$(find release-assets -name "*.app.tar.gz" | head -1)
-          WIN_EXE=$(find release-assets -name "*.exe" | head -1)
-          [ -n "$MAC_TAR" ] && [ -f "$MAC_TAR.sig" ] || { echo "缺少 macOS updater 产物或签名"; exit 1; }
-          [ -n "$WIN_EXE" ] && [ -f "$WIN_EXE.sig" ] || { echo "缺少 Windows updater 产物或签名"; exit 1; }
-          MAC_NAME=$(basename "$MAC_TAR")
-          WIN_NAME=$(basename "$WIN_EXE")
-          MAC_URL=$(jq -rn --arg base "$BASE" --arg name "$MAC_NAME" '$base + "/" + ($name | @uri)')
-          WIN_URL=$(jq -rn --arg base "$BASE" --arg name "$WIN_NAME" '$base + "/" + ($name | @uri)')
-          NOTES=$(git log -1 --pretty=%s)
-          jq -n \
-            --arg version "$VERSION" \
-            --arg notes "$NOTES" \
-            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg mac_url "$MAC_URL" \
-            --arg mac_sig "$(cat "$MAC_TAR.sig")" \
-            --arg win_url "$WIN_URL" \
-            --arg win_sig "$(cat "$WIN_EXE.sig")" \
-            '{
-              version: $version,
-              notes: $notes,
-              pub_date: $pub_date,
-              platforms: {
-                "darwin-aarch64": { url: $mac_url, signature: $mac_sig },
-                "darwin-x86_64": { url: $mac_url, signature: $mac_sig },
-                "windows-x86_64": { url: $win_url, signature: $win_sig }
-              }
-            }' > release-assets/updater-latest.json
-
-      - name: Create or update release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          FLAGS=(--title "Tietiezhi $VERSION" --generate-notes)
-          [ "$PRERELEASE" = "true" ] && FLAGS+=(--prerelease)
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" release-assets/* --clobber
-            gh release edit "$RELEASE_TAG" --title "Tietiezhi $VERSION" $([ "$PRERELEASE" = "true" ] && echo --prerelease || echo --latest)
-          else
-            gh release create "$RELEASE_TAG" release-assets/* "${FLAGS[@]}"
-          fi
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

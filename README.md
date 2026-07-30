@@ -1,148 +1,80 @@
 <div align="center">
 
-<img src="./assets/brand/tietiezhi-mark-transparent.png" alt="Tietiezhi 章鱼 Logo" width="120">
+<img src="./assets/brand/tietiezhi-mark-transparent.png" alt="Tietiezhi" width="120">
 
-# Tietiezhi · 铁铁汁
+# Tietiezhi
 
-**连接每一个设备与每一个 AI 模型。**
-
-让 macOS、Windows、Linux、iOS、Android、服务端与边缘节点，在同一个开放 Agent 网络中协作。
-
-[简体中文](./README.md) · [English](./README.en.md) · [日本語](./README.ja.md) · [한국어](./README.ko.md)
-
-[⬇️ 下载 macOS / Windows](https://tietiezhi-1216.github.io/tietiezhi/) · [📦 最新版本](https://github.com/tietiezhi-1216/tietiezhi/releases/latest) · [🗺️ 路线图](./docs/ROADMAP.md) · [🔒 隐私政策](./docs/PRIVACY.md) · [💬 问题反馈](https://github.com/tietiezhi-1216/tietiezhi/issues) · [⚖️ Apache-2.0](./LICENSE)
+**基于 AI SDK 的 Electron 桌面 AI 应用。**
 
 </div>
 
-<div align="center">
+## 当前能力
 
-<img src="./docs/images/tietiezhi-choose-model.jpg" alt="Tietiezhi 桌面应用尚未选择模型的初始状态" width="860">
+Tietiezhi 当前聚焦两个模块：
 
-<sub>渠道连接完成后，由用户为新任务选择合适的模型</sub>
-
-</div>
-
-## Tietiezhi 是什么？
-
-Tietiezhi（铁铁汁）是一个以 **设备 × 模型互联**为核心的开源 AI 项目。它不假设所有工作都应该挤在一台电脑、一个聊天窗口或一个模型里，而是希望把桌面端、移动端、独立二进制服务和边缘设备连接成一个可协作的 Agent 网络。
-
-不同模型有不同长处：有的擅长推理和代码，有的擅长语音、图像、视频或低延迟任务。Tietiezhi 希望根据设备、场景与任务，把合适的模型、工具和上下文连接起来，让它们各展所长，而不是要求一个模型包办一切。
-
-当前已经发布的是支持 **macOS 13.3+** 与 **Windows 10/11（x64）** 的桌面 Agent；桌面端可以添加远程 Core、发现在线设备，并通过统一能力协议调用基础设备能力。Linux、iOS、Android 客户端及完整的敏感能力授权仍在路线图中。
-
-## 一个网络，让设备和模型各展所长
-
-| 层次 | 当前基础 | 发展方向 |
-| --- | --- | --- |
-| 设备 | macOS / Windows 桌面端 | Linux、iOS、Android、独立二进制与边缘节点 |
-| Hub | Go 单二进制服务，以及桌面端的远程 Core 管理、设备注册、发现与基础调用 | Rust Core、移动节点、状态同步与任务流转 |
-| 模型 | 多个 OpenAI 兼容服务、文本对话与语音识别 | 推理、代码、语音、图像、视频、音乐与向量模型的能力路由 |
-| Agent | 本地工具、权限、Skills、MCP 与隔离工作区 | 跨设备 Agent 协作、委派、自动化和统一执行记录 |
-
-无论是桌面应用、移动设备、服务器进程还是未来的轻量节点，它们都应该能成为网络中的一个端；无论模型来自本地、私有服务还是云端，也都应该通过清晰的能力和权限边界参与任务。
-
-## 桌面端当前能力
-
-| 能力 | 当前实现 |
+| 模块 | 能力 |
 | --- | --- |
-| 多模型接入 | 内置 Tietiezhi Gateway 入口，也可添加多个 OpenAI 兼容服务，自由同步与切换模型 |
-| 本地 Agent | 支持流式对话、连续工具调用、自定义系统提示词和独立 Agent 配置 |
-| 工具与权限 | 内置文件读写、编辑、搜索、命令执行与网络获取工具；提供询问、自动和完全授权三种权限模式 |
-| Skills 与 MCP | 支持导入 Markdown Skills，并连接 stdio 或 Streamable HTTP MCP 服务 |
-| 铁铁汁控制中心 | 在独立面板中管理身份指令、可读 Markdown 长期记忆、Skills / MCP 分配、文件式密钥库、Home 文件和专属工具权限 |
-| 项目与工作区 | 一个任务共享消息与上下文；Work 面向研究与成果、Code 面向终端与测试，两种模式使用隔离空间并支持显式成果交接 |
-| 上下文管理 | 统一采用 256K 窗口，在约 80% 时自动生成并持久化锚定摘要；也可使用 `/compact` 提前压缩、`/context` 查看占用 |
-| 设备互联 | Tietiezhi 页面管理本机和远程 Core，发现在线设备，并通过 `device_call` 调用经过授权的设备能力 |
-| 语音听写 | 支持全局快捷键、语音识别、模型润色和向当前应用自动插入文本 |
-| 视觉创作 | Create 聚焦图片与视频生成，支持参考图、生成进度、失败重试和本地作品管理 |
-| 本地优先 | API Key 存入 macOS Keychain / Windows 凭据管理器；无广告、无追踪、无遥测 |
-| 桌面体验 | 深浅色主题、应用内更新，以及 macOS / Windows 原生安装包 |
+| Workspace | AI SDK `ToolLoopAgent`、项目或 UUID 临时目录、文件工具、Shell、统一审批、Diff、文件预览、流式响应和会话持久化 |
+| Create | AI SDK 原生图片生成、比例与数量设置、异步任务、停止、重试、删除和本地图片资产 |
 
-## 为什么要做 Tietiezhi？
+Workspace 始终以 Agent 方式运行：用户未选择项目时，应用创建 UUID 临时 Workspace，工具仍只在该目录内工作。应用不依赖任何外部 CLI；当前不提供 MCP、视频、多 Agent、自动化或设备互联。
 
-- **没有一个模型擅长所有事情**：让推理、代码、语音与多模态模型分别承担最适合的任务。
-- **没有一台设备拥有全部上下文**：让电脑、手机、服务器和边缘节点在授权后共享能力，而不是彼此孤立。
-- **不绑定供应商**：baseURL、API Key、模型与部署位置由用户管理，协议优先保持开放兼容。
-- **权限与数据边界清晰**：高风险工具受明确策略约束，数据只会发送给用户配置并实际调用的服务。
+应用保留 Tietiezhi Gateway 账号入口。用户可以通过系统浏览器完成 PKCE 授权，登录后自动获得内置中转站凭据并同步模型，无需手工填写 API Key；也可以继续配置 OpenAI、Anthropic、Google 或 OpenAI-compatible 供应商。
 
-## 快速开始
+## 架构
 
-1. 从[官网](https://tietiezhi-1216.github.io/tietiezhi/)或 [GitHub Releases](https://github.com/tietiezhi-1216/tietiezhi/releases/latest) 下载适合系统的安装包。
-2. 打开「设置 → 供应商」，使用 Tietiezhi Gateway，或添加你自己的 OpenAI 兼容 `baseURL` 与 API Key。
-3. 在「Tietiezhi」中选择目标设备，并从右上角控制中心配置身份、记忆、Skills、MCP 与 Home 文件。
-4. 同步并选择模型，在「工作区」新建任务；需要处理本地项目时选择项目目录，再按目标切换 Work / Code。
-5. 在全局设置中维护可复用的 Agent、Skills 与 MCP 资源库。
-
-> Tietiezhi 不内置你的私人 API Key。使用第三方模型产生的费用和数据处理规则由对应服务商决定。
-
-## 多语言
-
-| 范围 | 状态 |
-| --- | --- |
-| README | 简体中文、English、日本語、한국어 |
-| 官方网站 | 简体中文、English、日本語、한국어 |
-| 桌面应用 | 当前界面以简体中文为主；应用内完整国际化是近期目标 |
-
-如果你愿意帮助完善翻译，欢迎提交 Pull Request。请以[英文 README](./README.en.md)作为非中文翻译的语义基准。
-
-## 路线图
-
-我们希望 Tietiezhi 从已经可用的桌面 Agent 出发，逐步建立一个**由用户掌控的设备与模型互联网络**：设备负责提供场景和上下文，模型发挥各自能力，Agent 负责在清晰权限下连接、编排并完成任务。
-
-近期重点包括：
-
-- 完成桌面应用国际化，并持续提升 macOS / Windows 安装、签名、更新与稳定性；
-- 打磨多供应商、Agent 工具调用、权限审批、Skills 与 MCP 的完整使用体验；
-- 接入用量与费用统计，完善任务、项目和工作区管理；
-- 将已经接通的桌面远程 Core 和设备能力协议扩展到 Linux、移动端与边缘节点，并逐步演进 Rust Core。
-
-更长期的方向包括多 Agent 协作、Codex / Claude Code / opencode 等开发工具集成、多模态模型，以及可视化工作流和自动化。具体状态与边界见[完整路线图](./docs/ROADMAP.md)。
-
-## 仓库结构
-
-| 目录 | 说明 |
-| --- | --- |
-| [`desktop/`](./desktop) | 桌面客户端主线：Tauri 2 + Rust + React 19 + TypeScript + shadcn/ui |
-| [`server/`](./server) | Go Agent Hub：OpenAI 兼容 API、渠道、记忆、定时任务与设备互联骨架 |
-| [`website/`](./website) | 多语言官网与下载页，由 GitHub Pages 发布 |
-| [`shared/`](./shared) | 跨端协议与配置规格的单一事实源，包含设备能力调用协议 |
-| [`assets/brand/`](./assets/brand) | Logo、吉祥物与应用图标源文件 |
-| [`docs/`](./docs) | 路线图、隐私政策与代码签名文档 |
-
-## 本地开发
-
-### 桌面端
-
-环境要求：Node.js 22+、pnpm 9+、Rust stable，以及对应平台的 Tauri 系统依赖。
-
-```bash
-cd desktop
-pnpm install
-pnpm tauri dev
+```text
+React Renderer
+  -> Typed Preload IPC
+  -> Application Core
+  -> EngineManager
+  -> AISDKEngine / ToolLoopAgent
+  -> Restricted Workspace Tools / Approval
+  -> EngineEvent
+  -> SQLite / Renderer
 ```
 
-常用检查：
+- Renderer 不接触 AI SDK、API Key、SQLite 和本地文件。
+- 中转站 Session 与 API Key 通过 Electron `safeStorage` 加密。
+- SQLite 只保存 Provider 的 `credentialRef`。
+- 对话和图片生成共用 Provider 配置。
+- 文件路径经过 Workspace 边界检查；写入、替换和 Shell 命令必须由用户审批。
+- 图片文件通过受限的 `tietiezhi-media://` 协议展示。
+
+## 开发
+
+要求 Node.js 24+ 和 pnpm 10。
+
+```bash
+cd app
+pnpm install
+pnpm dev
+```
+
+验证：
 
 ```bash
 pnpm typecheck
+pnpm test
 pnpm build
-cargo test --manifest-path src-tauri/Cargo.toml
+TIETIEZHI_HEADLESS=1 ./node_modules/.bin/electron .
+pnpm smoke:package <已打包应用可执行文件>
 ```
 
-### 服务端
-
-服务端需要 Go 1.26+ 与 [Task](https://taskfile.dev/)。
+打包：
 
 ```bash
-cd server
-task build
-task test
+pnpm dist:mac
+pnpm dist:win
 ```
 
-开始贡献前请阅读 [`AGENTS.md`](./AGENTS.md)；它是本仓库所有编码代理和贡献者的工程约定。Bug、建议和路线图讨论都欢迎通过 [Issues](https://github.com/tietiezhi-1216/tietiezhi/issues) 提交，请不要公开粘贴 API Key 或其他敏感信息。
+## 仓库
 
-## 开源许可与签名
+| 目录 | 说明 |
+| --- | --- |
+| `app/` | Electron 桌面应用 |
+| `server/` | Go 服务 |
+| `website/` | 官网 |
+| `assets/` | 品牌资源 |
 
-Copyright © 2026 Tietiezhi。项目基于 [Apache License 2.0](./LICENSE) 发布。
-
-Windows 正式构建正在申请 SignPath Foundation 的开源代码签名支持；构建与审批规则见[代码签名政策](./docs/CODE_SIGNING.md)。数据处理说明见[隐私政策](./docs/PRIVACY.md)。
+项目采用 [Apache License 2.0](./LICENSE)。

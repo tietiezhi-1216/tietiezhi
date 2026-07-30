@@ -2,24 +2,14 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "desktop-web",
+      "name": "desktop-electron",
       "runtimeExecutable": "pnpm",
       "runtimeArgs": [
         "--dir",
-        "desktop",
+        "app",
         "dev"
       ],
-      "port": 1420
-    },
-    {
-      "name": "desktop-mock",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": [
-        "--dir",
-        "desktop",
-        "dev:mock"
-      ],
-      "port": 1421
+      "port": 5173
     },
     {
       "name": "website",
@@ -32,19 +22,6 @@
         "website/public"
       ],
       "port": 8000
-    },
-    {
-      "name": "desktop-mock-2",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": [
-        "--dir",
-        "desktop",
-        "exec",
-        "vite",
-        "--port",
-        "1423"
-      ],
-      "port": 1423
     }
   ]
 }

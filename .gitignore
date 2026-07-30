@@ -3,14 +3,9 @@
 
 # ---- Node / 前端 ----
 node_modules/
-desktop/dist/
+app/release/
 pnpm-debug.log*
 *.local
-
-# ---- Tauri / Rust ----
-desktop/src-tauri/target/
-desktop/src-tauri/gen/schemas/
-crates/*/target/
 
 # ---- Editors ----
 .idea/
@@ -20,15 +15,9 @@ crates/*/target/
 # ---- Env & secrets ----
 .env
 .env.*
-# Microsoft Store MSIX build output
-desktop/store-layout/
-desktop/store-output/
-
 # ---- Local visual QA artifacts (may contain private desktop content) ----
 artifacts/
 
 # Electron 宿主
 app/node_modules/
 app/out/
-app/.verify/
-app/.test-out/
