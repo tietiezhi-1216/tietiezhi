@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow, nativeTheme, shell } from "electron";
 
 const HERE = import.meta.dirname;
 // electron-vite emits the preload as ESM (.mjs); an ESM preload also requires
@@ -12,19 +12,24 @@ const DEV_SERVER_URL = process.env["ELECTRON_RENDERER_URL"];
 
 export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1280,
-    height: 840,
-    minWidth: 960,
+    width: 1320,
+    height: 860,
+    minWidth: 900,
     minHeight: 600,
     show: false,
+    title: "铁铁汁",
+    autoHideMenuBar: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#101114" : "#ffffff",
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      spellcheck: false,
     },
   });
+  window.setMenuBarVisibility(false);
 
   // Avoid the white flash while the renderer boots.
   window.once("ready-to-show", () => window.show());

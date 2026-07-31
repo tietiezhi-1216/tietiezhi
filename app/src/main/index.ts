@@ -143,6 +143,11 @@ async function bootstrap(): Promise<void> {
       window.webContents.send(IPC.engineEvent, event);
     }
   });
+  media.setEventSink((event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC.mediaEvent, event);
+    }
+  });
 
   protocol.handle("tietiezhi-media", async (request) => {
     const filePath = new URL(request.url).searchParams.get("path") ?? "";
@@ -150,8 +155,13 @@ async function bootstrap(): Promise<void> {
       return new Response("forbidden", { status: 403 });
     }
     try {
-      const bytes = await readFile(filePath);
-      const extension = basename(filePath).split(".").at(-1)?.toLowerCase();
+      const url = new URL(request.url);
+      const requestedPath =
+        url.searchParams.get("variant") === "thumbnail"
+          ? await MediaService.thumbnail(filePath)
+          : filePath;
+      const bytes = await readFile(requestedPath);
+      const extension = basename(requestedPath).split(".").at(-1)?.toLowerCase();
       const type =
         extension === "jpg" || extension === "jpeg"
           ? "image/jpeg"

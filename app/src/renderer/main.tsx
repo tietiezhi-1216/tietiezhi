@@ -2,12 +2,16 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { App } from "./App";
+import { ThemeProvider } from "@/components/theme-provider";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import "./index.css";
-
-document.documentElement.classList.add("dark");
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <ThemeProvider>
+      <TooltipProvider>
+        <App />
+      </TooltipProvider>
+    </ThemeProvider>
   </React.StrictMode>,
 );

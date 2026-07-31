@@ -1,28 +1,28 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowUp,
   Check,
   ChevronRight,
+  Code2,
   FileCode2,
   Folder,
   FolderOpen,
   Loader2,
   MessageSquarePlus,
   MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRight,
   PanelRightClose,
   Pencil,
   Plus,
-  Search,
   ShieldAlert,
-  Send,
   Settings,
   Square,
   TerminalSquare,
   Trash2,
   X,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -68,11 +68,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { chatModels } from "@/lib/model-capabilities";
+import { Markdown } from "./markdown";
 import type { ProductArea } from "@/App";
 import type {
   AppMessage,
   Conversation,
-  EngineDescriptor,
   EngineEvent,
   ProviderAccount,
   WorkspaceInfo,
@@ -80,6 +80,7 @@ import type {
 } from "@shared/contracts";
 
 type ApprovalEvent = Extract<EngineEvent, { type: "tool.approval_required" }>;
+const IS_MACOS = navigator.userAgent.includes("Mac");
 
 export function WorkspacePage({
   providerVersion,
@@ -93,12 +94,11 @@ export function WorkspacePage({
   onSwitchArea: (area: ProductArea) => void;
 }) {
   const [providers, setProviders] = useState<ProviderAccount[]>([]);
-  const [engines, setEngines] = useState<EngineDescriptor[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [messages, setMessages] = useState<AppMessage[]>([]);
   const [providerId, setProviderId] = useState("");
-  const [engineId, setEngineId] = useState("ai-sdk");
+  const engineId = "ai-sdk";
   const [model, setModel] = useState("");
   const [draft, setDraft] = useState("");
   const [runId, setRunId] = useState<string>();
@@ -106,21 +106,17 @@ export function WorkspacePage({
   const [workspace, setWorkspace] = useState<WorkspaceInfo>();
   const [approvals, setApprovals] = useState<ApprovalEvent[]>([]);
   const [panelOpen, setPanelOpen] = useState(true);
-  const [search, setSearch] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [renaming, setRenaming] = useState<Conversation>();
   const [renameTitle, setRenameTitle] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const queuedEvents = useRef<EngineEvent[]>([]);
+  const eventFrame = useRef<number | undefined>(undefined);
   const selectedProvider = providers.find((provider) => provider.id === providerId);
   const selectedChatModels = chatModels(selectedProvider?.models ?? []);
-  const filteredConversations = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return query
-      ? conversations.filter((conversation) => conversation.title.toLowerCase().includes(query))
-      : conversations;
-  }, [conversations, search]);
   const projectGroups = useMemo(() => {
     const groups = new Map<string, Conversation[]>();
-    for (const conversation of filteredConversations) {
+    for (const conversation of conversations) {
       if (!conversation.workspace || /[/\\]workspaces[/\\][\w-]+$/.test(conversation.workspace)) {
         continue;
       }
@@ -129,8 +125,8 @@ export function WorkspacePage({
       groups.set(conversation.workspace, current);
     }
     return [...groups.entries()];
-  }, [filteredConversations]);
-  const temporaryTasks = filteredConversations.filter(
+  }, [conversations]);
+  const temporaryTasks = conversations.filter(
     (conversation) =>
       !conversation.workspace || /[/\\]workspaces[/\\][\w-]+$/.test(conversation.workspace),
   );
@@ -150,7 +146,6 @@ export function WorkspacePage({
             "",
         );
       }),
-      window.tietiezhi.engines.list().then(setEngines),
       refreshConversations(),
     ]);
   }, [providerVersion]);
@@ -164,26 +159,49 @@ export function WorkspacePage({
     if (!models.includes(model)) setModel(models[0] ?? "");
   }, [selectedProvider, model]);
 
-  useEffect(
-    () =>
-      window.tietiezhi.onEngineEvent((event) => {
+  useEffect(() => {
+    const unsubscribe = window.tietiezhi.onEngineEvent((event) => {
         if (event.conversationId !== activeId && activeId !== undefined) return;
-        applyEvent(event, setMessages, setRunId, setError);
-        if (event.type === "tool.approval_required") {
-          setApprovals((current) => [
-            ...current.filter((item) => item.approvalId !== event.approvalId),
-            event,
-          ]);
-        }
-        if (event.type === "run.completed" || event.type === "run.failed") {
-          void refreshConversations();
-        }
-      }),
-    [activeId],
-  );
+        queuedEvents.current.push(event);
+        if (eventFrame.current !== undefined) return;
+        eventFrame.current = window.setTimeout(() => {
+          eventFrame.current = undefined;
+          const events = queuedEvents.current.splice(0);
+          if (events.length === 0) return;
+          setMessages((current) => applyEvents(current, events));
+          const approvalsInBatch = events.filter(
+            (candidate): candidate is ApprovalEvent =>
+              candidate.type === "tool.approval_required",
+          );
+          if (approvalsInBatch.length > 0) {
+            setApprovals((current) => {
+              const ids = new Set(approvalsInBatch.map((item) => item.approvalId));
+              return [...current.filter((item) => !ids.has(item.approvalId)), ...approvalsInBatch];
+            });
+          }
+          const terminal = events.findLast(
+            (candidate) =>
+              candidate.type === "run.completed" || candidate.type === "run.failed",
+          );
+          if (terminal) {
+            setRunId(undefined);
+            if (terminal.type === "run.failed") setError(terminal.error.message);
+            void refreshConversations();
+          }
+        }, 50);
+      });
+    return () => {
+      unsubscribe();
+      if (eventFrame.current !== undefined) {
+        window.clearTimeout(eventFrame.current);
+        eventFrame.current = undefined;
+      }
+      queuedEvents.current = [];
+    };
+  }, [activeId]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ block: "end" });
   }, [messages]);
 
   const open = async (id: string) => {
@@ -286,248 +304,286 @@ export function WorkspacePage({
   };
 
   const empty = !providerId || !model;
+  const activeConversation = conversations.find((conversation) => conversation.id === activeId);
 
   return (
     <div
       className={cn(
-        "grid h-full min-h-0 bg-[#101114]",
-        panelOpen
-          ? "grid-cols-[17rem_minmax(0,1fr)_22rem]"
-          : "grid-cols-[17rem_minmax(0,1fr)]",
+        "grid h-full min-h-0 bg-background",
+        sidebarOpen && panelOpen && "grid-cols-[17rem_minmax(0,1fr)_22rem]",
+        sidebarOpen && !panelOpen && "grid-cols-[17rem_minmax(0,1fr)]",
+        !sidebarOpen && panelOpen && "grid-cols-[minmax(0,1fr)_22rem]",
+        !sidebarOpen && !panelOpen && "grid-cols-[minmax(0,1fr)]",
       )}
     >
-      <aside className="flex min-h-0 flex-col border-r border-white/7 bg-[#0d0e11]">
-        <div className="flex h-12 shrink-0 items-center border-b border-white/7 px-2 pl-20 [-webkit-app-region:drag]">
-          <ProductSwitcher area="workspace" onSwitch={onSwitchArea} />
-        </div>
-        <div className="p-2">
-          <Button
-            type="button"
-            variant="ghost"
-            className="w-full justify-start text-xs"
-            onClick={() => {
-              setActiveId(undefined);
-              setMessages([]);
-              setError("");
-              setWorkspace(undefined);
-              setApprovals([]);
-            }}
+      {sidebarOpen && (
+        <aside className="bg-sidebar text-sidebar-foreground flex min-h-0 flex-col border-r">
+          <div
+            className={cn(
+              "flex h-12 shrink-0 items-center border-b px-2 [-webkit-app-region:drag]",
+              IS_MACOS && "pl-24",
+            )}
           >
-            <MessageSquarePlus /> 新建任务
-          </Button>
-          <div className="relative mt-1">
-            <Search className="text-muted-foreground absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
-            <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="搜索任务"
-              className="h-8 border-0 bg-white/4 pl-8 text-xs"
+            <ProductSwitcher
+              area="workspace"
+              onSwitch={onSwitchArea}
+              variant="sidebar"
             />
           </div>
-        </div>
-        <ScrollArea className="min-h-0 flex-1 px-2">
-          <div className="space-y-5 pb-3">
-            <div>
-              <div className="mb-1 flex h-7 items-center px-2">
-                <span className="text-[11px] font-medium text-white/35">项目</span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  className="ml-auto text-white/30"
-                  onClick={async () => {
-                    const selected = await window.tietiezhi.workspace.choose();
-                    if (selected) {
-                      setWorkspace(selected);
-                      setActiveId(undefined);
-                      setMessages([]);
-                    }
-                  }}
-                  aria-label="添加项目"
-                >
-                  <Plus />
-                </Button>
-              </div>
-              {projectGroups.length === 0 ? (
-                <button
-                  type="button"
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs text-white/35 hover:bg-white/5 hover:text-white/65"
-                  onClick={async () => {
-                    const selected = await window.tietiezhi.workspace.choose();
-                    if (selected) setWorkspace(selected);
-                  }}
-                >
-                  <Folder className="size-4" /> 添加一个项目文件夹
-                </button>
-              ) : (
-                <div className="space-y-2">
-                  {projectGroups.map(([path, tasks]) => (
-                    <div key={path}>
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-white/60 hover:bg-white/5"
-                        onClick={() =>
-                          setWorkspace({
-                            path,
-                            name: path.split(/[\\/]/).filter(Boolean).at(-1) ?? "项目",
-                            temporary: false,
-                          })
-                        }
-                      >
-                        <FolderOpen className="size-4 text-white/40" />
-                        <span className="truncate">
-                          {path.split(/[\\/]/).filter(Boolean).at(-1)}
-                        </span>
-                      </button>
-                      <div className="ml-3 border-l border-white/7 pl-2">
-                        {tasks.map((conversation) => (
-                          <TaskRow
-                            key={conversation.id}
-                            conversation={conversation}
-                            active={activeId === conversation.id}
-                            onOpen={open}
-                            onRemove={remove}
-                            onRename={(conversation) => {
-                              setRenaming(conversation);
-                              setRenameTitle(conversation.title);
-                            }}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            {temporaryTasks.length > 0 && (
-              <div>
-                <p className="mb-1 px-2 text-[11px] font-medium text-white/35">任务</p>
-                {temporaryTasks.map((conversation) => (
-                  <TaskRow
-                    key={conversation.id}
-                    conversation={conversation}
-                    active={activeId === conversation.id}
-                    onOpen={open}
-                    onRemove={remove}
-                    onRename={(conversation) => {
-                      setRenaming(conversation);
-                      setRenameTitle(conversation.title);
-                    }}
-                  />
-                ))}
-              </div>
-            )}
+          <div className="p-2">
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full justify-start text-xs"
+              onClick={() => {
+                setActiveId(undefined);
+                setMessages([]);
+                setError("");
+                setWorkspace(undefined);
+                setApprovals([]);
+              }}
+            >
+              <MessageSquarePlus /> 新建任务
+            </Button>
           </div>
-        </ScrollArea>
-        <div className="border-t border-white/7 p-2">
-          <GatewayAccountButton
-            onOpenSettings={onOpenSettings}
-            onChanged={onProviderChanged}
-          />
-        </div>
-      </aside>
+          <ScrollArea className="min-h-0 flex-1 px-2">
+            <div className="space-y-5 pb-3">
+              <div>
+                <div className="mb-1 flex h-7 items-center px-2">
+                  <span className="text-muted-foreground text-[11px] font-medium">项目</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="text-muted-foreground ml-auto"
+                    onClick={async () => {
+                      const selected = await window.tietiezhi.workspace.choose();
+                      if (selected) {
+                        setWorkspace(selected);
+                        setActiveId(undefined);
+                        setMessages([]);
+                      }
+                    }}
+                    aria-label="添加项目"
+                  >
+                    <Plus />
+                  </Button>
+                </div>
+                {projectGroups.length === 0 ? (
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs"
+                    onClick={async () => {
+                      const selected = await window.tietiezhi.workspace.choose();
+                      if (selected) setWorkspace(selected);
+                    }}
+                  >
+                    <Folder className="size-4" /> 添加一个项目文件夹
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    {projectGroups.map(([path, tasks]) => (
+                      <div key={path}>
+                        <button
+                          type="button"
+                          className="hover:bg-sidebar-accent flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs"
+                          onClick={() =>
+                            setWorkspace({
+                              path,
+                              name: path.split(/[\\/]/).filter(Boolean).at(-1) ?? "项目",
+                              temporary: false,
+                            })
+                          }
+                        >
+                          <FolderOpen className="text-muted-foreground size-4" />
+                          <span className="truncate">
+                            {path.split(/[\\/]/).filter(Boolean).at(-1)}
+                          </span>
+                        </button>
+                        <div className="border-sidebar-border ml-3 border-l pl-2">
+                          {tasks.map((conversation) => (
+                            <TaskRow
+                              key={conversation.id}
+                              conversation={conversation}
+                              active={activeId === conversation.id}
+                              onOpen={open}
+                              onRemove={remove}
+                              onRename={(item) => {
+                                setRenaming(item);
+                                setRenameTitle(item.title);
+                              }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-1 px-2 text-[11px] font-medium">任务</p>
+                {temporaryTasks.length === 0 ? (
+                  <p className="text-muted-foreground px-2 py-1 text-xs">暂无任务</p>
+                ) : (
+                  temporaryTasks.map((conversation) => (
+                    <TaskRow
+                      key={conversation.id}
+                      conversation={conversation}
+                      active={activeId === conversation.id}
+                      onOpen={open}
+                      onRemove={remove}
+                      onRename={(item) => {
+                        setRenaming(item);
+                        setRenameTitle(item.title);
+                      }}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
+          </ScrollArea>
+          <div className="border-t p-2">
+            <GatewayAccountButton
+              onOpenSettings={onOpenSettings}
+              onChanged={onProviderChanged}
+            />
+          </div>
+        </aside>
+      )}
       <section className="flex min-h-0 min-w-0 flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-white/7 px-4 [-webkit-app-region:drag]">
-          <Button
-            type="button"
-            variant="ghost"
-            className="mr-auto max-w-64 justify-start [-webkit-app-region:no-drag]"
-            onClick={async () => {
-              const selected = await window.tietiezhi.workspace.choose();
-              if (selected) setWorkspace(selected);
-            }}
-          >
-            <FolderOpen />
-            <span className="truncate">{workspace?.name ?? "临时 Workspace"}</span>
-            <ChevronRight className="text-muted-foreground size-3" />
-          </Button>
-          <Button
-            type="button"
-            variant={panelOpen ? "secondary" : "ghost"}
-            size="icon-sm"
-            className="[-webkit-app-region:no-drag]"
-            onClick={() => setPanelOpen((current) => !current)}
-            aria-label={panelOpen ? "收起工作区面板" : "展开工作区面板"}
-          >
-            {panelOpen ? <PanelRightClose /> : <PanelRight />}
-          </Button>
-          <Select value={engineId} onValueChange={setEngineId}>
-            <SelectTrigger size="sm" className="w-32 [-webkit-app-region:no-drag]">
-              <SelectValue placeholder="选择引擎" />
-            </SelectTrigger>
-            <SelectContent>
-              {engines.map((engine) => (
-                <SelectItem key={engine.id} value={engine.id}>
-                  {engine.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={providerId} onValueChange={setProviderId}>
-            <SelectTrigger size="sm" className="w-44 [-webkit-app-region:no-drag]">
-              <SelectValue placeholder="选择供应商" />
-            </SelectTrigger>
-            <SelectContent>
-              {providers.map((provider) => (
-                <SelectItem key={provider.id} value={provider.id}>
-                  {provider.displayName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={model} onValueChange={setModel}>
-            <SelectTrigger size="sm" className="w-48 [-webkit-app-region:no-drag]">
-              <SelectValue placeholder="选择模型" />
-            </SelectTrigger>
-            <SelectContent>
-              {selectedChatModels.map((item) => (
-                <SelectItem key={item} value={item}>
-                  {item}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3 [-webkit-app-region:drag]">
+          {!sidebarOpen && IS_MACOS && <div aria-hidden="true" className="w-16 shrink-0" />}
+          {!sidebarOpen && (
+            <ProductSwitcher area="workspace" onSwitch={onSwitchArea} />
+          )}
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
             className="[-webkit-app-region:no-drag]"
-            onClick={onOpenSettings}
+            onClick={() => setSidebarOpen((current) => !current)}
+            aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"}
           >
-            <Settings />
+            {sidebarOpen ? <PanelLeftClose /> : <PanelLeftOpen />}
           </Button>
+          <span className="min-w-0 truncate text-sm font-medium">
+            {activeConversation?.title ?? "新建任务"}
+          </span>
+          <div className="ml-auto flex min-w-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="max-w-48"
+              onClick={async () => {
+                const selected = await window.tietiezhi.workspace.choose();
+                if (selected) setWorkspace(selected);
+              }}
+            >
+              <Code2 />
+              <span className="truncate">{workspace?.name ?? "临时 Workspace"}</span>
+              <ChevronRight className="text-muted-foreground size-3" />
+            </Button>
+            <Select value={providerId} onValueChange={setProviderId}>
+              <SelectTrigger size="sm" className="w-36">
+                <SelectValue placeholder="选择供应商" />
+              </SelectTrigger>
+              <SelectContent>
+                {providers.map((provider) => (
+                  <SelectItem key={provider.id} value={provider.id}>
+                    {provider.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={model} onValueChange={setModel}>
+              <SelectTrigger size="sm" className="w-44">
+                <SelectValue placeholder="选择模型" />
+              </SelectTrigger>
+              <SelectContent>
+                {selectedChatModels.map((item) => (
+                  <SelectItem key={item} value={item}>
+                    {item}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant={panelOpen ? "secondary" : "ghost"}
+              size="icon-sm"
+              onClick={() => setPanelOpen((current) => !current)}
+              aria-label={panelOpen ? "收起工作区面板" : "展开工作区面板"}
+            >
+              {panelOpen ? <PanelRightClose /> : <PanelRight />}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={onOpenSettings}
+              aria-label="设置"
+            >
+              <Settings />
+            </Button>
+          </div>
         </header>
         <ScrollArea className="min-h-0 flex-1">
-          <div className="mx-auto w-full max-w-3xl px-6 py-10">
+          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 pt-6 pb-4">
             {messages.length === 0 ? (
-              <div className="grid min-h-[55vh] place-items-center text-center">
-                <div>
+              <div className="flex min-h-[58vh] flex-1 flex-col items-center justify-center text-center">
+                <div className="relative grid h-56 w-80 place-items-center">
+                  <span className="absolute size-40 rounded-full bg-cyan-400/8 blur-3xl" />
+                  <span className="absolute h-24 w-64 rotate-[-7deg] rounded-[50%] border border-cyan-500/10" />
+                  <span className="absolute h-36 w-72 rotate-[9deg] rounded-[50%] border border-sky-500/8" />
                   <img
                     src="./mode-mascots/paper-plane/code.png"
                     alt=""
-                    className="mx-auto mb-4 size-28 object-contain drop-shadow-2xl"
+                    decoding="async"
+                    draggable={false}
+                    className="animate-channel-breathe relative size-32 object-contain drop-shadow-lg"
                   />
-                  <p className="text-2xl font-semibold tracking-tight">今天想完成什么？</p>
-                  <p className="text-muted-foreground mt-2 text-sm">
-                    AI SDK Agent 会在当前 Workspace 中读取、修改文件并运行任务。
-                  </p>
-                  <p className="mt-1 text-xs text-white/25">
-                    未选择项目时，首次发送会自动创建隔离的临时目录。
-                  </p>
                 </div>
+                <p className="h-7 max-w-full truncate px-4 text-lg font-semibold">
+                  {workspace?.temporary === false ? workspace.name : "在独立 Code 空间开始任务"}
+                </p>
+                <p className="text-muted-foreground mt-1 text-sm">
+                  AI SDK Agent 会在当前 Workspace 中读取、修改文件并运行任务。
+                </p>
+                <p className="text-muted-foreground mt-1 text-xs">
+                  未选择项目时，首次发送会自动创建隔离的临时目录。
+                </p>
               </div>
             ) : (
-              <div className="space-y-8">
-                {messages.map((message) => (
-                  <Message key={message.id} message={message} />
-                ))}
-              </div>
+              <>
+                <div className="flex flex-col gap-5">
+                  {messages.map((message) => (
+                    <Message key={message.id} message={message} />
+                  ))}
+                </div>
+                <div className="mt-auto flex h-12 items-center gap-2">
+                  <img
+                    src="./mode-mascots/paper-plane/code.png"
+                    alt=""
+                    decoding="async"
+                    className="size-12 object-contain"
+                  />
+                  <span
+                    className={cn(
+                      "text-muted-foreground text-xs",
+                      runId && "text-shimmer",
+                    )}
+                  >
+                    {runId ? `正在生成 · ${model}` : "铁铁汁就绪"}
+                  </span>
+                </div>
+              </>
             )}
             <div ref={bottomRef} />
           </div>
         </ScrollArea>
-        <div className="shrink-0 px-5 pb-6">
-          <div className="mx-auto max-w-3xl rounded-2xl border border-white/10 bg-white/5 p-2 shadow-2xl shadow-black/20">
+        <div className="relative mx-auto w-full max-w-3xl px-4 pt-2 pb-4">
+          <div className="bg-muted/70 relative z-20 flex flex-col rounded-2xl px-2 pt-1.5 pb-1.5 dark:bg-muted/65">
             <Textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
@@ -537,18 +593,23 @@ export function WorkspacePage({
                   void send();
                 }
               }}
-              placeholder={empty ? "登录中转站或配置可用模型" : "输入消息，Enter 发送"}
+              placeholder={empty ? "登录中转站或配置可用模型" : "描述需要分析、修改或验证的代码任务…"}
               disabled={empty}
-              rows={3}
-              className="min-h-20 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+              rows={2}
+              className="max-h-40 min-h-12 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:bg-transparent focus-visible:ring-0 dark:bg-transparent"
             />
-            <div className="flex items-center justify-between px-1">
-              <span className="text-destructive min-w-0 truncate text-xs">{error}</span>
+            <div className="flex min-h-9 items-center gap-2">
+              <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 px-2 text-[11px]">
+                <FolderOpen className="size-3" />
+                <span className="truncate">{workspace?.name ?? "发送后创建临时 Workspace"}</span>
+              </span>
+              <span className="text-destructive min-w-0 flex-1 truncate text-xs">{error}</span>
               {runId ? (
                 <Button
                   type="button"
-                  size="icon"
+                  size="icon-sm"
                   variant="secondary"
+                  className="rounded-full"
                   onClick={() => void window.tietiezhi.conversations.cancel(runId)}
                   aria-label="停止生成"
                 >
@@ -557,12 +618,13 @@ export function WorkspacePage({
               ) : (
                 <Button
                   type="button"
-                  size="icon"
+                  size="icon-sm"
+                  className="rounded-full"
                   onClick={() => void send()}
                   disabled={!draft.trim() || !providerId || !model}
                   aria-label="发送"
                 >
-                  <Send />
+                  <ArrowUp />
                 </Button>
               )}
             </div>
@@ -625,11 +687,11 @@ function TaskRow({
 }) {
   return (
     <AlertDialog>
-      <div className={cn("group flex items-center rounded-md", active && "bg-white/7")}>
+      <div className={cn("group flex items-center rounded-md", active && "bg-sidebar-accent")}>
         <button
           type="button"
           onClick={() => void onOpen(conversation.id)}
-          className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs text-white/55 hover:text-white/85"
+          className="text-muted-foreground hover:text-sidebar-foreground min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs"
         >
           {conversation.title}
         </button>
@@ -674,7 +736,7 @@ function TaskRow({
   );
 }
 
-function Message({ message }: { message: AppMessage }) {
+const Message = memo(function Message({ message }: { message: AppMessage }) {
   const text = useMemo(
     () =>
       message.parts
@@ -686,119 +748,154 @@ function Message({ message }: { message: AppMessage }) {
   const errors = message.parts.filter(
     (part): part is Extract<typeof part, { type: "error" }> => part.type === "error",
   );
+  const reasoning = message.parts
+    .filter((part): part is Extract<typeof part, { type: "reasoning" }> => part.type === "reasoning")
+    .map((part) => part.text)
+    .join("\n");
+  const toolCalls = message.parts.filter(
+    (part): part is Extract<typeof part, { type: "tool-call" }> => part.type === "tool-call",
+  );
   return (
     <article
       className={cn(
-        "text-sm leading-7",
-        message.role === "user" && "ml-auto max-w-[85%] rounded-2xl bg-white/7 px-4 py-2.5",
+        "animate-in fade-in slide-in-from-bottom-1 flex min-w-0 flex-col gap-2 text-sm leading-7 duration-300",
+        message.role === "user" && "bg-muted ml-auto max-w-[70%] rounded-xl px-3 py-2.5",
       )}
     >
-      {message.role === "assistant" && (
-        <p className="mb-2 text-xs font-medium text-cyan-300">AI SDK</p>
+      {message.role === "assistant" && reasoning && (
+        <Collapsible defaultOpen={message.status === "streaming" || message.status === "pending"}>
+          <div className="border-border/60 bg-muted/30 rounded-lg border text-xs">
+            <CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 font-medium">
+              <ChevronRight className="size-3.5" />
+              思考过程
+            </CollapsibleTrigger>
+            <CollapsibleContent className="text-muted-foreground border-border/60 border-t px-2.5 py-2 leading-relaxed whitespace-pre-wrap select-text">
+              {reasoning}
+            </CollapsibleContent>
+          </div>
+        </Collapsible>
       )}
       {text ? (
         message.role === "assistant" ? (
-          <div className="prose prose-invert max-w-none select-text text-sm">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
-          </div>
+          <Markdown content={text} />
         ) : (
-          <p className="whitespace-pre-wrap select-text">{text}</p>
+          <p className="px-1 whitespace-pre-wrap select-text">{text}</p>
         )
       ) : message.status === "streaming" || message.status === "pending" ? (
         <p className="text-muted-foreground flex items-center gap-2">
           <Loader2 className="size-3.5 animate-spin" /> 正在生成
         </p>
       ) : null}
+      {toolCalls.map((call) => (
+        <div key={call.toolCallId} className="bg-muted/30 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs">
+          {call.toolName === "runCommand" ? (
+            <TerminalSquare className="text-muted-foreground size-3.5" />
+          ) : (
+            <FileCode2 className="text-muted-foreground size-3.5" />
+          )}
+          <span className="min-w-0 flex-1 truncate font-mono">{call.toolName}</span>
+          <Badge variant={call.status === "failed" ? "destructive" : "outline"}>
+            {toolStatus(call.status)}
+          </Badge>
+        </div>
+      ))}
       {errors.map((error) => (
         <p key={error.code} className="text-destructive mt-2 text-sm">
           {error.message}
         </p>
       ))}
       {message.usage?.totalTokens != null && (
-        <p className="text-muted-foreground mt-2 text-[11px]">
+        <p className="text-muted-foreground text-[11px]">
           {message.usage.totalTokens.toLocaleString()} tokens
         </p>
       )}
     </article>
   );
-}
+});
 
-function applyEvent(
-  event: EngineEvent,
-  setMessages: React.Dispatch<React.SetStateAction<AppMessage[]>>,
-  setRunId: React.Dispatch<React.SetStateAction<string | undefined>>,
-  setError: React.Dispatch<React.SetStateAction<string>>,
-) {
-  setMessages((current) => {
-    const existing = current.find((message) => message.id === ("messageId" in event ? event.messageId : ""));
-    if (existing === undefined) return current;
-    return current.map((message) => {
-      if (message !== existing) return message;
-      const next: AppMessage = { ...message, parts: [...message.parts] };
-      if (event.type === "text.delta") {
-        const index = next.parts.findIndex((part) => part.type === "text");
-        const text = index >= 0 && next.parts[index]?.type === "text" ? next.parts[index].text : "";
-        const part = { type: "text" as const, text: text + event.delta };
-        if (index >= 0) next.parts[index] = part;
-        else next.parts.push(part);
-        next.status = "streaming";
-      } else if (event.type === "reasoning.delta") {
-        const index = next.parts.findIndex((part) => part.type === "reasoning");
-        const text =
-          index >= 0 && next.parts[index]?.type === "reasoning" ? next.parts[index].text : "";
-        const part = { type: "reasoning" as const, text: text + event.delta };
-        if (index >= 0) next.parts[index] = part;
-        else next.parts.push(part);
-        next.status = "streaming";
-      } else if (event.type === "tool.call") {
-        next.parts.push({
-          type: "tool-call",
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          input: event.input,
-          status: "running",
-        });
-        next.status = "streaming";
-      } else if (event.type === "tool.approval_required") {
-        next.parts = next.parts.map((part) =>
-          part.type === "tool-call" && part.toolCallId === event.toolCallId
-            ? { ...part, status: "approval" }
-            : part,
-        );
-      } else if (event.type === "tool.result") {
-        next.parts = next.parts.map((part) =>
-          part.type === "tool-call" && part.toolCallId === event.toolCallId
-            ? { ...part, status: event.isError ? "failed" : "completed" }
-            : part,
-        );
-        next.parts.push({
-          type: "tool-result",
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          output: event.output,
-          isError: event.isError,
-        });
-      } else if (event.type === "artifact.diff") {
-        next.parts.push({
-          type: "diff",
-          toolCallId: event.toolCallId,
-          path: event.path,
-          before: event.before,
-          after: event.after,
-        });
-      } else if (event.type === "usage") {
-        next.usage = event.usage;
-      } else if (event.type === "run.completed") {
-        next.status = event.finishReason === "cancelled" ? "cancelled" : "completed";
-      } else if (event.type === "run.failed") {
-        next.status = "failed";
-        next.parts.push({ type: "error", code: event.error.code, message: event.error.message });
-      }
-      return next;
-    });
-  });
-  if (event.type === "run.completed" || event.type === "run.failed") setRunId(undefined);
-  if (event.type === "run.failed") setError(event.error.message);
+function applyEvents(current: AppMessage[], events: EngineEvent[]): AppMessage[] {
+  const next = [...current];
+  const cloned = new Set<number>();
+  for (const event of events) {
+    const messageId = "messageId" in event ? event.messageId : "";
+    const messageIndex = next.findIndex((message) => message.id === messageId);
+    if (messageIndex < 0) continue;
+    if (!cloned.has(messageIndex)) {
+      const source = next[messageIndex];
+      if (!source) continue;
+      next[messageIndex] = { ...source, parts: [...source.parts] };
+      cloned.add(messageIndex);
+    }
+    const message = next[messageIndex];
+    if (!message) continue;
+    if (event.type === "text.delta") {
+      const index = message.parts.findIndex((part) => part.type === "text");
+      const existing = index >= 0 && message.parts[index]?.type === "text"
+        ? message.parts[index].text
+        : "";
+      const part = { type: "text" as const, text: existing + event.delta };
+      if (index >= 0) message.parts[index] = part;
+      else message.parts.push(part);
+      message.status = "streaming";
+    } else if (event.type === "reasoning.delta") {
+      const index = message.parts.findIndex((part) => part.type === "reasoning");
+      const existing = index >= 0 && message.parts[index]?.type === "reasoning"
+        ? message.parts[index].text
+        : "";
+      const part = { type: "reasoning" as const, text: existing + event.delta };
+      if (index >= 0) message.parts[index] = part;
+      else message.parts.push(part);
+      message.status = "streaming";
+    } else if (event.type === "tool.call") {
+      message.parts.push({
+        type: "tool-call",
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        input: event.input,
+        status: "running",
+      });
+      message.status = "streaming";
+    } else if (event.type === "tool.approval_required") {
+      message.parts = message.parts.map((part) =>
+        part.type === "tool-call" && part.toolCallId === event.toolCallId
+          ? { ...part, status: "approval" }
+          : part,
+      );
+    } else if (event.type === "tool.result") {
+      message.parts = message.parts.map((part) =>
+        part.type === "tool-call" && part.toolCallId === event.toolCallId
+          ? { ...part, status: event.isError ? "failed" : "completed" }
+          : part,
+      );
+      message.parts.push({
+        type: "tool-result",
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        output: event.output,
+        isError: event.isError,
+      });
+    } else if (event.type === "artifact.diff") {
+      message.parts.push({
+        type: "diff",
+        toolCallId: event.toolCallId,
+        path: event.path,
+        before: event.before,
+        after: event.after,
+      });
+    } else if (event.type === "usage") {
+      message.usage = event.usage;
+    } else if (event.type === "run.completed") {
+      message.status = event.finishReason === "cancelled" ? "cancelled" : "completed";
+    } else if (event.type === "run.failed") {
+      message.status = "failed";
+      message.parts.push({
+        type: "error",
+        code: event.error.code,
+        message: event.error.message,
+      });
+    }
+  }
+  return cloned.size > 0 ? next : current;
 }
 
 function AgentPanel({

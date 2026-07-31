@@ -1,7 +1,7 @@
 {
   "name": "tietiezhi-app",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "Apache-2.0",
   "author": "Tietiezhi",
   "type": "module",
@@ -13,7 +13,7 @@
     "build": "tsc --noEmit && electron-vite build",
     "dist": "pnpm build && electron-builder",
     "dist:mac": "pnpm build && electron-builder --mac --universal",
-    "dist:win": "pnpm build && electron-builder --win",
+    "dist:win": "pnpm build && electron-builder --win --x64",
     "smoke:package": "node scripts/package-smoke.mjs",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",

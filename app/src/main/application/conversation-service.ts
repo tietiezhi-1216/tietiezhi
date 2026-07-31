@@ -210,6 +210,24 @@ export class ConversationService {
     const provider = this.providers.require(input.providerId);
     const engine = this.engines.require(input.engineId);
     let usage: UsageInfo | undefined;
+    let persistTimer: NodeJS.Timeout | undefined;
+    let dirty = false;
+    const persist = (immediate = false): void => {
+      dirty = true;
+      if (!immediate) {
+        persistTimer ??= setTimeout(() => {
+          persistTimer = undefined;
+          if (!dirty) return;
+          dirty = false;
+          this.database.saveMessage(input.assistantMessage);
+        }, 80);
+        return;
+      }
+      if (persistTimer !== undefined) clearTimeout(persistTimer);
+      persistTimer = undefined;
+      dirty = false;
+      this.database.saveMessage(input.assistantMessage);
+    };
     try {
       const apiKey = await this.providers.key(provider);
       for await (const event of engine.run({
@@ -286,7 +304,14 @@ export class ConversationService {
           });
           this.database.finishRun(input.runId, "failed", "error", usage, event.error);
         }
-        this.database.saveMessage(input.assistantMessage);
+        persist(
+          event.type === "tool.approval_required" ||
+            event.type === "tool.result" ||
+            event.type === "artifact.diff" ||
+            event.type === "text.end" ||
+            event.type === "run.completed" ||
+            event.type === "run.failed",
+        );
         this.#sink(event);
       }
     } catch (error) {
@@ -313,6 +338,8 @@ export class ConversationService {
         error: failure,
       });
     } finally {
+      if (persistTimer !== undefined) clearTimeout(persistTimer);
+      if (dirty) this.database.saveMessage(input.assistantMessage);
       this.#controllers.delete(input.runId);
     }
   }

@@ -13,7 +13,7 @@ export function setProviderFetch(value: typeof globalThis.fetch): void {
 
 const brandedFetch: typeof globalThis.fetch = (input, init) => {
   const headers = new Headers(init?.headers);
-  headers.set("user-agent", "Tietiezhi/0.3.0");
+  headers.set("user-agent", "Tietiezhi/0.4.0");
   return transport(input, { ...init, headers });
 };
 

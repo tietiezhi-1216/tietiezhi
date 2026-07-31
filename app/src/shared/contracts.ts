@@ -1,6 +1,7 @@
 export const IPC = {
   invoke: "tietiezhi:invoke",
   engineEvent: "tietiezhi:engine-event",
+  mediaEvent: "tietiezhi:media-event",
 } as const;
 
 export type ProviderType = "openai" | "anthropic" | "google" | "openai-compatible";
@@ -276,6 +277,18 @@ export interface MediaJob {
   error?: AppError;
 }
 
+export type MediaEvent =
+  | {
+      schemaVersion: 1;
+      type: "media.job.updated";
+      job: MediaJob;
+    }
+  | {
+      schemaVersion: 1;
+      type: "media.job.removed";
+      jobId: string;
+    };
+
 export interface DesktopAPI {
   engines: {
     list(): Promise<EngineDescriptor[]>;
@@ -316,6 +329,8 @@ export interface DesktopAPI {
     remove(id: string): Promise<void>;
     saveArtifact(path: string): Promise<boolean>;
     assetURL(path: string): string;
+    thumbnailURL(path: string): string;
   };
   onEngineEvent(listener: (event: EngineEvent) => void): () => void;
+  onMediaEvent(listener: (event: MediaEvent) => void): () => void;
 }

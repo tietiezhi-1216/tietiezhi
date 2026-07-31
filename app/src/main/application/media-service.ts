@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, rm, writeFile } from "node:fs/promises";
-import { basename, extname, join, relative, resolve } from "node:path";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 
-import { app, dialog } from "electron";
+import { app, dialog, nativeImage } from "electron";
 import { generateImage } from "ai";
 
 import type {
   AppError,
   ImageGenerationRequest,
   MediaArtifact,
+  MediaEvent,
   MediaJob,
 } from "@shared/contracts";
 
@@ -39,11 +40,16 @@ function openAIImageSize(
 export class MediaService {
   readonly #controllers = new Map<string, AbortController>();
   readonly #tasks = new Map<string, Promise<void>>();
+  #sink: (event: MediaEvent) => void = () => {};
 
   constructor(
     private readonly database: AppDatabase,
     private readonly providers: ProviderService,
   ) {}
+
+  setEventSink(sink: (event: MediaEvent) => void): void {
+    this.#sink = sink;
+  }
 
   list(): MediaJob[] {
     return this.database.listMediaJobs();
@@ -69,6 +75,7 @@ export class MediaService {
       artifacts: [],
     };
     this.database.saveMediaJob(job);
+    this.#publish(job);
     const task = this.#execute(job);
     this.#tasks.set(job.id, task);
     void task.finally(() => this.#tasks.delete(job.id));
@@ -103,6 +110,7 @@ export class MediaService {
         const id = randomUUID();
         const filePath = join(directory, `${id}${extension(image.mediaType)}`);
         await writeFile(filePath, image.uint8Array);
+        await MediaService.#writeThumbnail(image.uint8Array, filePath);
         artifacts.push({
           id,
           jobId: job.id,
@@ -116,6 +124,7 @@ export class MediaService {
       job.updatedAt = Date.now();
       job.artifacts = artifacts;
       this.database.saveMediaJob(job);
+      this.#publish(job);
     } catch (error) {
       const failure: AppError = {
         code: controller.signal.aborted ? "CANCELLED" : "IMAGE_GENERATION_FAILED",
@@ -130,6 +139,7 @@ export class MediaService {
       job.updatedAt = Date.now();
       job.error = failure;
       this.database.saveMediaJob(job);
+      this.#publish(job);
     } finally {
       this.#controllers.delete(job.id);
     }
@@ -157,6 +167,7 @@ export class MediaService {
     const job = this.database.listMediaJobs().find((candidate) => candidate.id === id);
     this.database.removeMediaJob(id);
     if (job) await rm(join(app.getPath("userData"), "media", job.id), { recursive: true, force: true });
+    this.#sink({ schemaVersion: 1, type: "media.job.removed", jobId: id });
   }
 
   async saveArtifact(path: string): Promise<boolean> {
@@ -183,5 +194,42 @@ export class MediaService {
       !relation.startsWith("\\") &&
       extname(candidate) !== ""
     );
+  }
+
+  static async thumbnail(path: string): Promise<string> {
+    if (!MediaService.isManagedArtifact(path)) throw new Error("只能读取应用生成的图片");
+    const thumbnailPath = join(dirname(path), `.thumbnail-${basename(path)}.png`);
+    try {
+      await readFile(thumbnailPath);
+      return thumbnailPath;
+    } catch {
+      const source = await readFile(path);
+      return (await MediaService.#writeThumbnail(source, path)) ? thumbnailPath : path;
+    }
+  }
+
+  static async #writeThumbnail(source: Uint8Array, path: string): Promise<boolean> {
+    const image = nativeImage.createFromBuffer(Buffer.from(source));
+    if (image.isEmpty()) return false;
+    const size = image.getSize();
+    const resized =
+      Math.max(size.width, size.height) <= 640
+        ? image
+        : size.width >= size.height
+          ? image.resize({ width: 640, quality: "good" })
+          : image.resize({ height: 640, quality: "good" });
+    await writeFile(
+      join(dirname(path), `.thumbnail-${basename(path)}.png`),
+      resized.toPNG(),
+    );
+    return true;
+  }
+
+  #publish(job: MediaJob): void {
+    this.#sink({
+      schemaVersion: 1,
+      type: "media.job.updated",
+      job: structuredClone(job),
+    });
   }
 }

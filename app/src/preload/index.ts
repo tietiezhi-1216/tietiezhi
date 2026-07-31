@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import { IPC, type DesktopAPI, type EngineEvent } from "@shared/contracts";
+import {
+  IPC,
+  type DesktopAPI,
+  type EngineEvent,
+  type MediaEvent,
+} from "@shared/contracts";
 
 function invoke<T>(method: string, input?: unknown): Promise<T> {
   return ipcRenderer.invoke(IPC.invoke, { method, input }) as Promise<T>;
@@ -48,11 +53,18 @@ const api: DesktopAPI = {
     remove: (id) => invoke("media.remove", { id }),
     saveArtifact: (path) => invoke("media.saveArtifact", { path }),
     assetURL: (path) => `tietiezhi-media://asset/?path=${encodeURIComponent(path)}`,
+    thumbnailURL: (path) =>
+      `tietiezhi-media://asset/?path=${encodeURIComponent(path)}&variant=thumbnail`,
   },
   onEngineEvent(listener) {
     const handler = (_event: Electron.IpcRendererEvent, payload: EngineEvent) => listener(payload);
     ipcRenderer.on(IPC.engineEvent, handler);
     return () => ipcRenderer.removeListener(IPC.engineEvent, handler);
+  },
+  onMediaEvent(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: MediaEvent) => listener(payload);
+    ipcRenderer.on(IPC.mediaEvent, handler);
+    return () => ipcRenderer.removeListener(IPC.mediaEvent, handler);
   },
 };
 
