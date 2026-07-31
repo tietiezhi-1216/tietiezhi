@@ -20,6 +20,41 @@ import { CreateAssetPreview } from "./create-asset-preview";
 import { CreateComposer } from "./create-composer";
 import type { CreateController, ImageProvider } from "./create-types";
 
+const CREATE_STARS = [
+  "top-[7%] left-[8%] size-1 motion-safe:[animation-delay:-0.4s]",
+  "top-[13%] left-[19%] size-0.5 motion-safe:[animation-delay:-2.8s]",
+  "top-[9%] left-[34%] size-1 motion-safe:[animation-delay:-1.6s]",
+  "top-[17%] left-[47%] size-0.5 motion-safe:[animation-delay:-3.7s]",
+  "top-[8%] left-[63%] size-1 motion-safe:[animation-delay:-4.2s]",
+  "top-[15%] left-[78%] size-0.5 motion-safe:[animation-delay:-1.1s]",
+  "top-[6%] left-[91%] size-1 motion-safe:[animation-delay:-3.2s]",
+  "top-[27%] left-[4%] size-0.5 motion-safe:[animation-delay:-4.7s]",
+  "top-[32%] left-[14%] size-1 motion-safe:[animation-delay:-1.9s]",
+  "top-[25%] left-[28%] size-0.5 motion-safe:[animation-delay:-0.8s]",
+  "top-[35%] left-[41%] size-1 motion-safe:[animation-delay:-3.4s]",
+  "top-[29%] left-[57%] size-0.5 motion-safe:[animation-delay:-2.3s]",
+  "top-[37%] left-[72%] size-1 motion-safe:[animation-delay:-4.4s]",
+  "top-[26%] left-[86%] size-0.5 motion-safe:[animation-delay:-1.4s]",
+  "top-[44%] left-[95%] size-1 motion-safe:[animation-delay:-3.9s]",
+  "top-[49%] left-[7%] size-1 motion-safe:[animation-delay:-2.1s]",
+  "top-[55%] left-[22%] size-0.5 motion-safe:[animation-delay:-4.9s]",
+  "top-[46%] left-[36%] size-1 motion-safe:[animation-delay:-1.2s]",
+  "top-[57%] left-[52%] size-0.5 motion-safe:[animation-delay:-3.1s]",
+  "top-[48%] left-[68%] size-1 motion-safe:[animation-delay:-0.3s]",
+  "top-[59%] left-[82%] size-0.5 motion-safe:[animation-delay:-4.1s]",
+  "top-[68%] left-[3%] size-0.5 motion-safe:[animation-delay:-3.6s]",
+  "top-[73%] left-[17%] size-1 motion-safe:[animation-delay:-0.9s]",
+  "top-[65%] left-[31%] size-0.5 motion-safe:[animation-delay:-4.6s]",
+  "top-[78%] left-[44%] size-1 motion-safe:[animation-delay:-2.5s]",
+  "top-[69%] left-[61%] size-0.5 motion-safe:[animation-delay:-1.7s]",
+  "top-[76%] left-[75%] size-1 motion-safe:[animation-delay:-3.3s]",
+  "top-[67%] left-[93%] size-0.5 motion-safe:[animation-delay:-0.6s]",
+  "top-[88%] left-[10%] size-1 motion-safe:[animation-delay:-4.3s]",
+  "top-[91%] left-[26%] size-0.5 motion-safe:[animation-delay:-2.7s]",
+  "top-[86%] left-[55%] size-1 motion-safe:[animation-delay:-1.3s]",
+  "top-[92%] left-[88%] size-0.5 motion-safe:[animation-delay:-3.8s]",
+] as const;
+
 export function CreatePage({ providerVersion }: { providerVersion: number }) {
   const [providers, setProviders] = useState<ProviderAccount[]>([]);
   const [jobs, setJobs] = useState<MediaJob[]>([]);
@@ -190,19 +225,42 @@ export function CreatePage({ providerVersion }: { providerVersion: number }) {
   const resultArtifact = activeJob?.artifacts[0];
 
   return (
-    <main className="bg-background h-full min-h-0 overflow-hidden">
-      <div className="mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center px-4 pb-12">
+    <main className="dark relative isolate h-full min-h-0 overflow-hidden bg-[#060912] text-white">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -inset-8 overflow-hidden motion-safe:animate-create-star-drift"
+      >
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_20%,rgba(21,105,153,0.2),transparent_52%)]" />
+        <div className="absolute top-[18%] left-[20%] size-80 rounded-full bg-cyan-500/5 blur-3xl motion-safe:animate-pulse" />
+        <div className="absolute right-[12%] bottom-[5%] size-96 rounded-full bg-blue-600/6 blur-3xl motion-safe:animate-pulse motion-safe:[animation-delay:-1.8s]" />
+        {CREATE_STARS.map((className) => (
+          <span
+            key={className}
+            className={`absolute rounded-full bg-white/80 shadow-[0_0_7px_rgba(125,211,252,0.9)] motion-safe:animate-create-star-twinkle ${className}`}
+          />
+        ))}
+      </div>
+
+      <div className="relative z-10 mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center px-4 pb-12">
         <div
           aria-hidden="true"
           className="relative -mb-4 h-52 w-80 max-w-full motion-safe:animate-area-create-float"
         >
-          <div className="absolute inset-x-16 bottom-7 h-5 rounded-full bg-black/20 blur-xl dark:bg-black/45" />
+          <div className="absolute inset-x-12 bottom-4 h-8 rounded-full bg-cyan-300/10 blur-2xl motion-safe:animate-pulse" />
+          <div className="absolute inset-x-16 bottom-7 h-5 rounded-full bg-black/50 blur-xl" />
           <img
-            src="./tietiezhi.png"
+            src="./mode-mascots/paper-plane/create.png"
             alt=""
             decoding="async"
             draggable={false}
-            className="relative mx-auto size-48 object-contain drop-shadow-[0_16px_28px_rgba(0,0,0,0.16)]"
+            className="absolute inset-x-0 top-0 mx-auto size-48 object-contain drop-shadow-[0_18px_30px_rgba(0,0,0,0.3)]"
+          />
+          <img
+            src="./mode-mascots/paper-plane/create-blink.png"
+            alt=""
+            decoding="async"
+            draggable={false}
+            className="absolute inset-x-0 top-0 mx-auto size-48 object-contain opacity-0 drop-shadow-[0_18px_30px_rgba(0,0,0,0.3)] motion-safe:animate-create-mascot-blink"
           />
         </div>
         <CreateComposer controller={controller} />

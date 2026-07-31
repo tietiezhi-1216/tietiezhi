@@ -150,6 +150,9 @@
     --animate-area-home-float: area-home-float 5.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
     --animate-area-automation-float: area-automation-float 4.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
     --animate-area-create-float: area-create-float 4.9s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    --animate-create-mascot-blink: create-mascot-blink 6.8s step-end infinite;
+    --animate-create-star-drift: create-star-drift 22s ease-in-out infinite alternate;
+    --animate-create-star-twinkle: create-star-twinkle 4.8s ease-in-out infinite;
 
     @keyframes capsule-sweep {
         from { transform: translateX(-100%); }
@@ -193,6 +196,19 @@
         30% { transform: translate3d(-3px, -6px, 0) rotate(-1deg) scale(1.012); }
         58% { transform: translate3d(2px, -9px, 0) rotate(0.8deg) scale(1.016); }
         82% { transform: translate3d(3px, -3px, 0) rotate(0.35deg) scale(1.006); }
+    }
+    @keyframes create-mascot-blink {
+        0%, 42%, 45%, 70%, 73%, 100% { opacity: 0; }
+        43%, 44%, 71%, 72% { opacity: 1; }
+    }
+    @keyframes create-star-drift {
+        from { transform: translate3d(-0.6%, -0.4%, 0) scale(1); }
+        to { transform: translate3d(0.7%, 0.5%, 0) scale(1.025); }
+    }
+    @keyframes create-star-twinkle {
+        0%, 100% { opacity: 0.24; transform: scale(0.72); }
+        48% { opacity: 0.95; transform: scale(1.18); }
+        64% { opacity: 0.5; transform: scale(0.9); }
     }
 }
 
