@@ -19,10 +19,12 @@ export function ProductSwitcher({
   area,
   onSwitch,
   variant = "header",
+  compact = false,
 }: {
   area: ProductArea;
   onSwitch: (area: ProductArea) => void;
   variant?: "header" | "sidebar";
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const activeArea = getProductArea(area);
@@ -34,7 +36,8 @@ export function ProductSwitcher({
           type="button"
           aria-label={`当前功能分区：${activeArea.name}，点击切换`}
           className={cn(
-            "flex min-w-0 items-center gap-2 rounded-md text-left outline-none transition-[color,background-color,box-shadow,transform] focus-visible:shadow-[0_5px_16px_rgba(52,129,140,0.17)] active:translate-y-px [-webkit-app-region:no-drag]",
+            "flex min-w-0 items-center gap-2 rounded-md text-left outline-none transition-[color,background-color,transform] active:translate-y-px [-webkit-app-region:no-drag]",
+            compact && "gap-1.5",
             variant === "sidebar"
               ? "h-10 w-full px-2 hover:bg-sidebar-accent/70 data-[state=open]:bg-sidebar-accent/70"
               : "h-8 max-w-full px-1.5 hover:bg-accent data-[state=open]:bg-accent/70",
@@ -45,7 +48,11 @@ export function ProductSwitcher({
             alt=""
             decoding="async"
             draggable={false}
-            className="size-7 shrink-0 object-contain"
+            className={cn(
+              "size-7 shrink-0 object-contain",
+              compact && "hidden",
+              variant === "sidebar" && "@max-[255px]/sidebar:hidden",
+            )}
           />
           <ProductAreaTitle
             area={activeArea}
@@ -56,12 +63,23 @@ export function ProductSwitcher({
             aria-hidden="true"
             className={cn(
               "text-muted-foreground size-3.5 shrink-0 transition-[rotate,color] duration-200",
+              variant === "sidebar" && "@max-[215px]/sidebar:hidden",
               open && "text-foreground rotate-180",
             )}
           />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" sideOffset={6} className="w-64 p-1">
+      <DropdownMenuContent
+        align={variant === "sidebar" ? "end" : "start"}
+        sideOffset={6}
+        collisionPadding={8}
+        className={cn(
+          "max-w-[calc(100vw-1rem)] p-1 shadow-none",
+          variant === "sidebar"
+            ? "w-[min(16rem,calc(var(--radix-dropdown-menu-trigger-width)+5.5rem))]"
+            : "w-64",
+        )}
+      >
         {PRODUCT_AREAS.map((item) => {
           const selected = item.id === area;
           return (
@@ -79,13 +97,13 @@ export function ProductSwitcher({
                 alt=""
                 decoding="async"
                 draggable={false}
-                className="size-8 shrink-0 object-contain"
+                className="size-7 shrink-0 object-contain"
               />
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <ProductAreaTitle
                   area={item}
                   sweep={selected}
-                  className="text-sm font-semibold"
+                  className="min-w-0 truncate text-sm font-semibold"
                 />
                 <span className="text-muted-foreground truncate text-xs">
                   {item.description}

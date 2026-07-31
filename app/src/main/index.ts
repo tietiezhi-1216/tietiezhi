@@ -1,25 +1,31 @@
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { extname } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { app, BrowserWindow, ipcMain, net, protocol } from "electron";
 
 import {
   IPC,
+  type AgentPreferences,
   type ImageGenerationRequest,
   type ProviderAccountInput,
   type SendMessageInput,
+  type SkillInput,
+  type VideoGenerationRequest,
 } from "@shared/contracts";
 
 import { ConversationService } from "./application/conversation-service.js";
 import { ApprovalManager } from "./application/approval-manager.js";
 import { EngineManager } from "./application/engine-manager.js";
 import { MediaService } from "./application/media-service.js";
+import { PreferencesService } from "./application/preferences-service.js";
 import { ProviderService } from "./application/provider-service.js";
+import { SkillService } from "./application/skill-service.js";
 import { GatewayService } from "./application/gateway-service.js";
 import { UpdateService } from "./application/update-service.js";
 import { WorkspaceService } from "./application/workspace-service.js";
 import { AISDKEngine } from "./engines/ai-sdk-engine.js";
 import { setProviderFetch } from "./engines/provider-factory.js";
+import { WORKSPACE_TOOL_DESCRIPTORS } from "./engines/workspace-tools.js";
 import { CredentialStore } from "./infrastructure/credential-store.js";
 import { AppDatabase } from "./infrastructure/database.js";
 import { createMainWindow, loadRenderer } from "./window.js";
@@ -82,6 +88,7 @@ function providerInput(value: unknown): ProviderAccountInput {
 
 function sendInput(value: unknown): SendMessageInput {
   const input = record(value);
+  const taskMode = optionalString(input, "taskMode");
   return {
     conversationId: optionalString(input, "conversationId"),
     text: string(input, "text"),
@@ -90,6 +97,7 @@ function sendInput(value: unknown): SendMessageInput {
     engineId: optionalString(input, "engineId"),
     systemPrompt: optionalString(input, "systemPrompt"),
     workspace: optionalString(input, "workspace"),
+    taskMode: taskMode === "work" ? "work" : "code",
   };
 }
 
@@ -99,13 +107,91 @@ function imageInput(value: unknown): ImageGenerationRequest {
   if (aspectRatio !== undefined && !/^\d+:\d+$/.test(aspectRatio)) {
     throw new Error("图片比例格式无效");
   }
+  const resolution = optionalString(input, "resolution");
+  if (
+    resolution !== undefined &&
+    !/^(?:\d+x\d+|512|[124]K)$/.test(resolution)
+  ) {
+    throw new Error("图片分辨率格式无效");
+  }
+  const quality = optionalString(input, "quality");
+  if (
+    quality !== undefined &&
+    !["auto", "low", "medium", "high"].includes(quality)
+  ) {
+    throw new Error("图片质量参数无效");
+  }
   const count = input["count"];
   return {
     providerAccountId: string(input, "providerAccountId"),
     model: string(input, "model"),
     prompt: string(input, "prompt"),
     aspectRatio: aspectRatio as `${number}:${number}` | undefined,
+    resolution: resolution as ImageGenerationRequest["resolution"],
+    quality: quality as ImageGenerationRequest["quality"],
     count: typeof count === "number" && Number.isFinite(count) ? count : undefined,
+    references: mediaReferences(input["references"]),
+  };
+}
+
+function videoInput(value: unknown): VideoGenerationRequest {
+  const input = record(value);
+  const aspectRatio = optionalString(input, "aspectRatio");
+  if (aspectRatio !== undefined && !/^\d+:\d+$/.test(aspectRatio)) {
+    throw new Error("视频比例格式无效");
+  }
+  const resolution = optionalString(input, "resolution");
+  if (resolution !== undefined && !/^\d+x\d+$/.test(resolution)) {
+    throw new Error("视频分辨率格式无效");
+  }
+  const duration = input["duration"];
+  const count = input["count"];
+  return {
+    providerAccountId: string(input, "providerAccountId"),
+    model: string(input, "model"),
+    prompt: string(input, "prompt"),
+    aspectRatio: aspectRatio as `${number}:${number}` | undefined,
+    resolution: resolution as `${number}x${number}` | undefined,
+    duration:
+      typeof duration === "number" && Number.isFinite(duration)
+        ? duration
+        : undefined,
+    count: typeof count === "number" && Number.isFinite(count) ? count : undefined,
+    references: mediaReferences(input["references"]),
+  };
+}
+
+function mediaReferences(
+  value: unknown,
+): NonNullable<ImageGenerationRequest["references"]> {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error("参考素材格式无效");
+  return value.map((candidate) => {
+    const reference = record(candidate);
+    const role = string(reference, "role");
+    if (!["reference", "first-frame", "last-frame"].includes(role)) {
+      throw new Error("参考素材角色无效");
+    }
+    return {
+      assetId: string(reference, "assetId"),
+      role: role as "reference" | "first-frame" | "last-frame",
+    };
+  });
+}
+
+function skillInput(value: unknown): SkillInput {
+  const input = record(value);
+  return {
+    name: string(input, "name"),
+    description: typeof input["description"] === "string" ? input["description"] : "",
+    body: typeof input["body"] === "string" ? input["body"] : "",
+  };
+}
+
+function preferencesInput(value: unknown): AgentPreferences {
+  const input = record(value);
+  return {
+    systemPrompt: typeof input["systemPrompt"] === "string" ? input["systemPrompt"] : "",
   };
 }
 
@@ -134,10 +220,19 @@ async function bootstrap(): Promise<void> {
     net.fetch as unknown as typeof globalThis.fetch,
   );
   const workspaces = new WorkspaceService();
+  const preferences = new PreferencesService();
+  const skills = new SkillService();
   approvals = new ApprovalManager();
   engines = new EngineManager();
   await engines.registerReady(new AISDKEngine(approvals));
-  const conversations = new ConversationService(database, providers, engines, workspaces);
+  const conversations = new ConversationService(
+    database,
+    providers,
+    engines,
+    workspaces,
+    preferences,
+    skills,
+  );
   const media = new MediaService(database, providers);
   const updateService = new UpdateService();
   updates = updateService;
@@ -169,15 +264,29 @@ async function bootstrap(): Promise<void> {
         url.searchParams.get("variant") === "thumbnail"
           ? await MediaService.thumbnail(filePath)
           : filePath;
-      const bytes = await readFile(requestedPath);
-      const extension = basename(requestedPath).split(".").at(-1)?.toLowerCase();
+      const response = await net.fetch(pathToFileURL(requestedPath).toString(), {
+        headers: request.headers,
+      });
+      const extension = extname(requestedPath).slice(1).toLowerCase();
       const type =
         extension === "jpg" || extension === "jpeg"
           ? "image/jpeg"
           : extension === "webp"
             ? "image/webp"
-            : "image/png";
-      return new Response(bytes, { headers: { "content-type": type } });
+            : extension === "mp4"
+              ? "video/mp4"
+              : extension === "webm"
+                ? "video/webm"
+                : extension === "mov"
+                  ? "video/quicktime"
+                  : "image/png";
+      const headers = new Headers(response.headers);
+      headers.set("content-type", type);
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
     } catch {
       return new Response("not found", { status: 404 });
     }
@@ -221,6 +330,8 @@ async function bootstrap(): Promise<void> {
         return workspaces.createTemporary();
       case "workspace.choose":
         return workspaces.choose();
+      case "workspace.reveal":
+        return workspaces.reveal(string(request.input, "path"));
       case "workspace.listFiles": {
         const conversation = database.conversation(string(request.input, "conversationId"));
         if (!conversation?.workspace) throw new Error("会话尚未绑定 Workspace");
@@ -234,6 +345,27 @@ async function bootstrap(): Promise<void> {
           string(request.input, "path"),
         );
       }
+      case "tools.list":
+        return WORKSPACE_TOOL_DESCRIPTORS;
+      case "skills.list":
+        return skills.list();
+      case "skills.read":
+        return skills.read(string(request.input, "name"));
+      case "skills.save":
+        return skills.save(skillInput(request.input));
+      case "skills.remove":
+        return skills.remove(string(request.input, "name"));
+      case "skills.setEnabled":
+        return skills.setEnabled(
+          string(request.input, "name"),
+          record(request.input)["enabled"] === true,
+        );
+      case "skills.import":
+        return skills.import();
+      case "preferences.get":
+        return preferences.get();
+      case "preferences.save":
+        return preferences.save(preferencesInput(request.input));
       case "approvals.resolve":
         return approvals?.resolve(
           string(request.input, "approvalId"),
@@ -241,8 +373,16 @@ async function bootstrap(): Promise<void> {
         );
       case "media.list":
         return media.list();
+      case "media.listAssets":
+        return media.listAssets();
+      case "media.importAssets":
+        return media.importAssets();
+      case "media.removeAsset":
+        return media.removeAsset(string(request.input, "id"));
       case "media.generateImage":
         return media.generateImage(imageInput(request.input));
+      case "media.generateVideo":
+        return media.generateVideo(videoInput(request.input));
       case "media.cancel":
         return media.cancel(string(request.input, "id"));
       case "media.retry":
@@ -266,7 +406,7 @@ async function bootstrap(): Promise<void> {
 
   if (process.env["TIETIEZHI_HEADLESS"] === "1") {
     console.log(
-      "[host] ready: engines providers gateway conversations workspace approvals media updates",
+      "[host] ready: engines providers gateway conversations workspace tools skills approvals media updates",
     );
     app.quit();
     return;

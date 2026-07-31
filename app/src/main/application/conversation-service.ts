@@ -12,38 +12,50 @@ import type {
 
 import { AppDatabase } from "../infrastructure/database.js";
 import { EngineManager } from "./engine-manager.js";
+import { PreferencesService } from "./preferences-service.js";
 import { ProviderService } from "./provider-service.js";
+import { SkillService } from "./skill-service.js";
 import { WorkspaceService } from "./workspace-service.js";
 
 type EventSink = (event: EngineEvent) => void;
 
-function titleFrom(text: string): string {
-  const line = text.trim().replace(/\s+/g, " ");
-  return line.length > 36 ? `${line.slice(0, 36)}…` : line || "新对话";
-}
-
-function textPart(message: AppMessage): Extract<AppMessage["parts"][number], { type: "text" }> {
-  const part = message.parts.find(
-    (candidate): candidate is Extract<typeof candidate, { type: "text" }> =>
-      candidate.type === "text",
-  );
-  if (part !== undefined) return part;
+function appendText(message: AppMessage, delta: string): void {
+  const part = message.parts.at(-1);
+  if (part?.type === "text") {
+    part.text += delta;
+    return;
+  }
   const created = { type: "text" as const, text: "" };
   message.parts.push(created);
-  return created;
+  created.text = delta;
 }
 
-function reasoningPart(
-  message: AppMessage,
-): Extract<AppMessage["parts"][number], { type: "reasoning" }> {
-  const part = message.parts.find(
-    (candidate): candidate is Extract<typeof candidate, { type: "reasoning" }> =>
-      candidate.type === "reasoning",
-  );
-  if (part !== undefined) return part;
+function appendReasoning(message: AppMessage, delta: string): void {
+  const part = message.parts.at(-1);
+  if (part?.type === "reasoning") {
+    part.text += delta;
+    return;
+  }
   const created = { type: "reasoning" as const, text: "" };
   message.parts.push(created);
-  return created;
+  created.text = delta;
+}
+
+function completeText(message: AppMessage, text: string): void {
+  const streamedText = message.parts
+    .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+  if (streamedText === "" && text !== "") appendText(message, text);
+}
+
+function resetStreamAttempt(message: AppMessage): void {
+  message.parts = message.parts.filter(
+    (part) => part.type !== "text" && part.type !== "reasoning",
+  );
+  message.firstTokenAt = undefined;
+  message.completedAt = undefined;
+  message.usage = undefined;
 }
 
 export class ConversationService {
@@ -59,6 +71,8 @@ export class ConversationService {
     private readonly providers: ProviderService,
     private readonly engines: EngineManager,
     private readonly workspaces: WorkspaceService,
+    private readonly preferences: PreferencesService,
+    private readonly skills: SkillService,
   ) {}
 
   setEventSink(sink: EventSink): void {
@@ -124,19 +138,21 @@ export class ConversationService {
           : await this.workspaces.createTemporary();
     const conversation: Conversation = existing ?? {
       id: conversationId,
-      title: titleFrom(prompt),
+      title: input.model,
       createdAt: now,
       updatedAt: now,
       activeEngineId: engineId,
       activeModelId: input.model,
       providerAccountId: provider.id,
       workspace: workspace.path,
+      taskMode: input.taskMode ?? "code",
     };
     conversation.updatedAt = now;
     conversation.activeEngineId = engineId;
     conversation.activeModelId = input.model;
     conversation.providerAccountId = provider.id;
     conversation.workspace = workspace.path;
+    conversation.taskMode = input.taskMode ?? conversation.taskMode;
     this.database.saveConversation(conversation);
 
     const prior = this.database.messages(conversationId);
@@ -150,6 +166,7 @@ export class ConversationService {
       parts: [{ type: "text", text: prompt }],
       engineId,
       modelId: input.model,
+      providerAccountId: provider.id,
     };
     const runId = randomUUID();
     const assistantMessage: AppMessage = {
@@ -162,6 +179,7 @@ export class ConversationService {
       parts: [{ type: "text", text: "" }],
       engineId,
       modelId: input.model,
+      providerAccountId: provider.id,
       runId,
     };
     this.database.saveMessage(userMessage);
@@ -176,17 +194,29 @@ export class ConversationService {
     });
 
     const controller = new AbortController();
+    const preferences = await this.preferences.get();
+    const enabledSkills = await this.skills.enabled();
+    const modePrompt =
+      conversation.taskMode === "work"
+        ? "当前为 Work 工作方式。优先研究、整理资料并在 Workspace 中产出清晰的文档、表格、报告或其他可交付成果。"
+        : "当前为 Code 工作方式。优先分析仓库、修改代码，并使用测试或构建验证变更。";
+    const systemPrompt = [preferences.systemPrompt, modePrompt, input.systemPrompt]
+      .map((value) => value?.trim() ?? "")
+      .filter(Boolean)
+      .join("\n\n");
     this.#controllers.set(runId, { controller, conversationId });
     const task = this.#execute({
       engineId,
       runId,
       providerId: provider.id,
       model: input.model,
-      systemPrompt: input.systemPrompt,
+      systemPrompt,
+      skills: enabledSkills,
       assistantMessage,
       messages: [...prior, userMessage],
       controller,
       workspace: workspace.path,
+      titlePrompt: existing === null ? prompt : undefined,
     });
     this.#tasks.set(runId, task);
     void task.then(
@@ -202,10 +232,12 @@ export class ConversationService {
     providerId: string;
     model: string;
     systemPrompt?: string;
+    skills: Awaited<ReturnType<SkillService["enabled"]>>;
     assistantMessage: AppMessage;
     messages: AppMessage[];
     controller: AbortController;
     workspace: string;
+    titlePrompt?: string;
   }): Promise<void> {
     const provider = this.providers.require(input.providerId);
     const engine = this.engines.require(input.engineId);
@@ -230,6 +262,29 @@ export class ConversationService {
     };
     try {
       const apiKey = await this.providers.key(provider);
+      if (input.titlePrompt !== undefined) {
+        try {
+          const generatedTitle = await engine.generateTitle({
+            provider,
+            apiKey,
+            model: input.model,
+            prompt: input.titlePrompt,
+            abortSignal: input.controller.signal,
+          });
+          if (generatedTitle) {
+            const conversation = this.database.conversation(
+              input.assistantMessage.conversationId,
+            );
+            if (conversation?.title === input.model) {
+              conversation.title = generatedTitle;
+              conversation.updatedAt = Date.now();
+              this.database.saveConversation(conversation);
+            }
+          }
+        } catch {
+          // Keep the active model name when title generation is unavailable.
+        }
+      }
       for await (const event of engine.run({
         runId: input.runId,
         conversationId: input.assistantMessage.conversationId,
@@ -238,18 +293,27 @@ export class ConversationService {
         apiKey,
         model: input.model,
         systemPrompt: input.systemPrompt,
+        skills: input.skills,
         workspace: input.workspace,
         messages: input.messages,
         abortSignal: input.controller.signal,
       })) {
-        if (event.type === "run.started" || event.type === "text.start") {
+        if (
+          event.type === "run.started" ||
+          event.type === "run.retrying" ||
+          event.type === "text.start"
+        ) {
           input.assistantMessage.status = "streaming";
+        } else if (event.type === "run.retry.started") {
+          resetStreamAttempt(input.assistantMessage);
+          usage = undefined;
         } else if (event.type === "text.delta") {
-          textPart(input.assistantMessage).text += event.delta;
+          input.assistantMessage.firstTokenAt ??= event.createdAt;
+          appendText(input.assistantMessage, event.delta);
         } else if (event.type === "text.end") {
-          textPart(input.assistantMessage).text = event.text;
+          completeText(input.assistantMessage, event.text);
         } else if (event.type === "reasoning.delta") {
-          reasoningPart(input.assistantMessage).text += event.delta;
+          appendReasoning(input.assistantMessage, event.delta);
         } else if (event.type === "tool.call") {
           input.assistantMessage.parts.push({
             type: "tool-call",
@@ -289,6 +353,7 @@ export class ConversationService {
         } else if (event.type === "run.completed") {
           input.assistantMessage.status =
             event.finishReason === "cancelled" ? "cancelled" : "completed";
+          input.assistantMessage.completedAt = event.createdAt;
           this.database.finishRun(
             input.runId,
             event.finishReason === "cancelled" ? "cancelled" : "completed",
@@ -297,6 +362,7 @@ export class ConversationService {
           );
         } else if (event.type === "run.failed") {
           input.assistantMessage.status = "failed";
+          input.assistantMessage.completedAt = event.createdAt;
           input.assistantMessage.parts.push({
             type: "error",
             code: event.error.code,
@@ -308,6 +374,7 @@ export class ConversationService {
           event.type === "tool.approval_required" ||
             event.type === "tool.result" ||
             event.type === "artifact.diff" ||
+            event.type === "run.retry.started" ||
             event.type === "text.end" ||
             event.type === "run.completed" ||
             event.type === "run.failed",
@@ -321,6 +388,7 @@ export class ConversationService {
         retryable: false,
       };
       input.assistantMessage.status = "failed";
+      input.assistantMessage.completedAt = Date.now();
       input.assistantMessage.parts.push({
         type: "error",
         code: failure.code,

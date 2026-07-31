@@ -4,6 +4,8 @@ import { dirname, relative, resolve } from "node:path";
 
 import { jsonSchema, tool } from "ai";
 
+import type { SkillDetail, WorkspaceToolDescriptor } from "@shared/contracts";
+
 import { ApprovalManager } from "../application/approval-manager.js";
 
 const MAX_FILE_BYTES = 1_000_000;
@@ -28,6 +30,65 @@ interface ToolContext {
   approvals: ApprovalManager;
   emit(event: WorkspaceToolEvent): void;
 }
+
+export const WORKSPACE_TOOL_DESCRIPTORS: WorkspaceToolDescriptor[] = [
+  {
+    id: "listFiles",
+    name: "列出文件",
+    description: "列出 Workspace 内的文件和目录。",
+    category: "read",
+    approvalRequired: false,
+  },
+  {
+    id: "readFile",
+    name: "读取文件",
+    description: "读取 Workspace 内的 UTF-8 文本文件。",
+    category: "read",
+    approvalRequired: false,
+  },
+  {
+    id: "searchFiles",
+    name: "搜索文件",
+    description: "在 Workspace 文本文件中搜索指定内容。",
+    category: "read",
+    approvalRequired: false,
+  },
+  {
+    id: "writeFile",
+    name: "写入文件",
+    description: "创建或完整覆盖 Workspace 内的文本文件。",
+    category: "write",
+    approvalRequired: true,
+  },
+  {
+    id: "replaceText",
+    name: "替换文本",
+    description: "精确替换 Workspace 文件中的一段文本。",
+    category: "write",
+    approvalRequired: true,
+  },
+  {
+    id: "runCommand",
+    name: "运行 Shell",
+    description: "在当前 Workspace 中执行 Shell 命令。",
+    category: "shell",
+    approvalRequired: true,
+  },
+  {
+    id: "listSkills",
+    name: "列出技能",
+    description: "列出设置中已启用的技能及其描述。",
+    category: "skill",
+    approvalRequired: false,
+  },
+  {
+    id: "readSkill",
+    name: "读取技能",
+    description: "按需加载一个已启用技能的完整说明。",
+    category: "skill",
+    approvalRequired: false,
+  },
+];
 
 function object(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -158,7 +219,7 @@ function commandResult(
   });
 }
 
-export function createWorkspaceTools(context: ToolContext) {
+export function createWorkspaceTools(context: ToolContext, skills: SkillDetail[] = []) {
   return {
     listFiles: tool({
       description: "列出 Workspace 内的文件和目录。忽略 .git 和 node_modules。",
@@ -317,6 +378,38 @@ export function createWorkspaceTools(context: ToolContext) {
           "high",
         );
         return commandResult(input.command, context.workspace, context.signal);
+      },
+    }),
+    listSkills: tool({
+      description: "列出当前已启用的技能。根据描述判断是否需要使用，再通过 readSkill 加载全文。",
+      inputSchema: jsonSchema<Record<string, never>>({
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      }),
+      execute: async () => ({
+        skills: skills.map((skill) => ({
+          name: skill.name,
+          description: skill.description,
+        })),
+      }),
+    }),
+    readSkill: tool({
+      description: "读取一个已启用技能的完整 Markdown 说明。",
+      inputSchema: jsonSchema<{ name: string }>({
+        type: "object",
+        properties: { name: { type: "string" } },
+        required: ["name"],
+        additionalProperties: false,
+      }),
+      execute: async (input) => {
+        const skill = skills.find((candidate) => candidate.name === input.name);
+        if (skill === undefined) throw new Error(`技能 ${input.name} 未启用或不存在`);
+        return {
+          name: skill.name,
+          description: skill.description,
+          instructions: skill.body,
+        };
       },
     }),
   };

@@ -13,12 +13,16 @@ export function imageModels(models: string[]): string[] {
 }
 
 export function providerImageModels(provider: ProviderAccount): string[] {
-  return imageModels(provider.models).filter((model) => {
-    const wireAPIs = provider.modelMetadata[model]?.wireAPIs ?? [];
-    // The gateway Gemini wire API returns multimodal language output, not the
-    // AI SDK ImageModel response consumed by Create.
-    return !(provider.builtIn && wireAPIs.includes("gemini_generate_content"));
-  });
+  return imageModels(provider.models);
+}
+
+export function providerVideoModels(provider: ProviderAccount): string[] {
+  const models = provider.models.filter((model) => VIDEO_MODEL_PATTERN.test(model));
+  if (provider.providerType === "google") return models;
+  if (!provider.builtIn) return [];
+  return models.filter((model) =>
+    provider.modelMetadata[model]?.wireAPIs.includes("gemini_generate_content"),
+  );
 }
 
 export function chatModels(models: string[]): string[] {

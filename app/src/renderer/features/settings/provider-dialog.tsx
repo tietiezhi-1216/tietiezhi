@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   Download,
+  Info,
   KeyRound,
   Loader2,
   LogIn,
@@ -11,11 +12,15 @@ import {
   Palette,
   Plus,
   RefreshCw,
+  ScrollText,
   Server,
+  ShieldCheck,
+  Sparkles,
   Sun,
   Trash2,
   UserRound,
   WalletCards,
+  Wrench,
 } from "lucide-react";
 
 import { useTheme, type Theme } from "@/components/theme-provider";
@@ -34,6 +39,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { SkillsSection } from "@/features/settings/skills-section";
+import { SystemPromptSection } from "@/features/settings/system-prompt-section";
+import { ToolsSection } from "@/features/settings/tools-section";
+import { SettingsSection } from "@/features/settings/settings-section";
 import { cn } from "@/lib/utils";
 import type {
   GatewayAccountView,
@@ -42,49 +51,79 @@ import type {
   UpdateState,
 } from "@shared/contracts";
 
-type SettingsCategory = "account" | "providers" | "appearance" | "updates";
+export type SettingsCategory =
+  | "account"
+  | "providers"
+  | "systemPrompt"
+  | "tools"
+  | "skills"
+  | "permissions"
+  | "appearance"
+  | "updates"
+  | "about";
 
 const GROUPS = [
   {
     label: "账号",
-    items: [{ id: "account", label: "中转站账号", icon: WalletCards }],
+    items: [{ id: "account", label: "额度中心", icon: WalletCards }],
   },
   {
     label: "模型",
     items: [{ id: "providers", label: "供应商", icon: Server }],
   },
   {
+    label: "智能体",
+    items: [
+      { id: "systemPrompt", label: "系统提示词", icon: ScrollText },
+      { id: "tools", label: "工具", icon: Wrench },
+      { id: "skills", label: "技能", icon: Sparkles },
+      { id: "permissions", label: "权限", icon: ShieldCheck },
+    ],
+  },
+  {
     label: "通用",
     items: [
       { id: "appearance", label: "外观", icon: Palette },
       { id: "updates", label: "软件更新", icon: RefreshCw },
+      { id: "about", label: "关于", icon: Info },
     ],
   },
 ] as const;
 
 const CATEGORY_LABELS: Record<SettingsCategory, string> = {
-  account: "中转站账号",
+  account: "额度中心",
   providers: "供应商",
+  systemPrompt: "系统提示词",
+  tools: "工具",
+  skills: "技能",
+  permissions: "权限",
   appearance: "外观",
   updates: "软件更新",
+  about: "关于",
 };
 
 export function ProviderDialog({
   open,
   onOpenChange,
   onChanged,
+  initialCategory = "providers",
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onChanged: () => void;
+  initialCategory?: SettingsCategory;
 }) {
   const [category, setCategory] = useState<SettingsCategory>("providers");
+
+  useEffect(() => {
+    if (open) setCategory(initialCategory);
+  }, [initialCategory, open]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton
-        className="flex h-[720px] max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-5xl"
+        className="flex h-[760px] max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-5xl"
       >
         <ScrollArea className="bg-muted/30 w-56 shrink-0 border-r">
           <nav className="flex min-h-full flex-col gap-4 p-3">
@@ -126,8 +165,13 @@ export function ProviderDialog({
               {category === "providers" && (
                 <ProviderSection open={open} onChanged={onChanged} />
               )}
+              {category === "systemPrompt" && <SystemPromptSection />}
+              {category === "tools" && <ToolsSection />}
+              {category === "skills" && <SkillsSection />}
+              {category === "permissions" && <PermissionsSection />}
               {category === "appearance" && <AppearanceSection />}
               {category === "updates" && <UpdateSection open={open} />}
+              {category === "about" && <AboutSection />}
             </div>
           </ScrollArea>
         </div>
@@ -191,14 +235,31 @@ function AccountSection({
   const loggedIn = view?.loggedIn === true && account !== undefined;
   const initials = (account?.nickname || account?.email || "").slice(0, 2).toUpperCase();
 
+  if (!loggedIn) {
+    return (
+      <SettingsSection
+        title="登录中转站"
+        description="登录后可以使用官方中转站模型，并查看当前账号和可用模型。"
+      >
+        {error && <p className="text-destructive text-xs">{error}</p>}
+        <Button className="w-fit" disabled={busy} onClick={() => void login()}>
+          {busy ? <Loader2 className="animate-spin" /> : <LogIn />}
+          {busy ? "等待浏览器授权" : "登录当前中转站"}
+        </Button>
+      </SettingsSection>
+    );
+  }
+
   return (
-    <section className="flex flex-col gap-5">
-      <div>
-        <h3 className="font-semibold">Tietiezhi Gateway</h3>
-        <p className="text-muted-foreground mt-1 text-sm">
-          登录中转站后自动同步内置供应商凭据和可用模型。
-        </p>
-      </div>
+    <SettingsSection
+      title={account.nickname || account.email || "额度中心"}
+      description={account.email}
+      action={
+        <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void refresh()}>
+          <RefreshCw className={busy ? "animate-spin" : undefined} /> 刷新
+        </Button>
+      }
+    >
       <div className="flex items-center gap-4 rounded-xl border p-4">
         <Avatar className="size-12">
           <AvatarFallback>
@@ -223,25 +284,18 @@ function AccountSection({
                 : "使用浏览器完成安全授权"}
           </p>
         </div>
-        {loggedIn ? (
-          <Button type="button" variant="outline" disabled={busy} onClick={() => void logout()}>
-            {busy ? <Loader2 className="animate-spin" /> : <LogOut />}
-            退出登录
-          </Button>
-        ) : (
-          <Button type="button" disabled={busy} onClick={() => void login()}>
-            {busy ? <Loader2 className="animate-spin" /> : <LogIn />}
-            {busy ? "等待浏览器授权" : "登录中转站"}
-          </Button>
-        )}
+        <Button type="button" variant="outline" disabled={busy} onClick={() => void logout()}>
+          {busy ? <Loader2 className="animate-spin" /> : <LogOut />}
+          退出登录
+        </Button>
       </div>
       {error && <p className="text-destructive text-sm">{error}</p>}
       <Separator />
-      <div className="rounded-lg bg-muted/40 p-3 text-xs leading-5">
+      <p className="text-muted-foreground text-xs leading-relaxed">
         中转站登录凭据与手工配置的 Provider API Key 独立保存，并通过 Electron
         safeStorage 加密。
-      </div>
-    </section>
+      </p>
+    </SettingsSection>
   );
 }
 
@@ -253,7 +307,7 @@ function ProviderSection({
   onChanged: () => void;
 }) {
   const [providers, setProviders] = useState<ProviderAccount[]>([]);
-  const [selectedId, setSelectedId] = useState<string>("new");
+  const [selectedId, setSelectedId] = useState<string>();
   const selected = providers.find((provider) => provider.id === selectedId);
   const [providerType, setProviderType] = useState<ProviderType>("openai-compatible");
   const [displayName, setDisplayName] = useState("");
@@ -289,20 +343,17 @@ function ProviderSection({
     setBusy(true);
     setError("");
     try {
-      const saved = await window.tietiezhi.providers.save({
+      await window.tietiezhi.providers.save({
         id: selected?.id,
         providerType,
         displayName,
         baseURL,
         apiKey: apiKey || undefined,
         enabled: true,
-        models: models
-          .split(/[,，\n]/)
-          .map((item) => item.trim())
-          .filter(Boolean),
+        models: models.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean),
       });
       await refresh();
-      setSelectedId(saved.id);
+      setSelectedId(undefined);
       onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -312,25 +363,23 @@ function ProviderSection({
   };
 
   const remove = async () => {
-    if (!selected) return;
+    if (!selected || selected.builtIn) return;
     setBusy(true);
     try {
       await window.tietiezhi.providers.remove(selected.id);
-      setSelectedId("new");
       await refresh();
+      setSelectedId(undefined);
       onChanged();
     } finally {
       setBusy(false);
     }
   };
 
-  const refreshModels = async () => {
-    if (!selected) return;
+  const refreshModels = async (provider: ProviderAccount) => {
     setBusy(true);
     setError("");
     try {
-      const refreshed = await window.tietiezhi.providers.refreshModels(selected.id);
-      setModels(refreshed.models.join(", "));
+      await window.tietiezhi.providers.refreshModels(provider.id);
       await refresh();
       onChanged();
     } catch (cause) {
@@ -340,109 +389,112 @@ function ProviderSection({
     }
   };
 
+  const builtInProvider = providers.find((provider) => provider.builtIn);
+  const customProviders = providers.filter((provider) => !provider.builtIn);
+
   return (
-    <section className="grid gap-6 lg:grid-cols-[13rem_minmax(0,1fr)]">
-      <div className="space-y-1 border-r pr-4">
-        <Button
-          type="button"
-          variant={selectedId === "new" ? "secondary" : "ghost"}
-          className="w-full justify-start"
-          onClick={() => setSelectedId("new")}
-        >
-          <Plus /> 新供应商
-        </Button>
-        {providers.map((provider) => (
-          <Button
-            key={provider.id}
-            type="button"
-            variant={selectedId === provider.id ? "secondary" : "ghost"}
-            className="w-full justify-start"
-            onClick={() => setSelectedId(provider.id)}
-          >
-            <KeyRound />
-            <span className="min-w-0 flex-1 truncate text-left">{provider.displayName}</span>
-            {provider.builtIn && <Badge variant="secondary">内置</Badge>}
-          </Button>
-        ))}
-      </div>
-      <div className="space-y-4">
-        <Field label="类型">
-          <Select
-            value={providerType}
-            onValueChange={(value) => setProviderType(value as ProviderType)}
-            disabled={selected?.builtIn}
-          >
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="openai">OpenAI</SelectItem>
-              <SelectItem value="anthropic">Anthropic</SelectItem>
-              <SelectItem value="google">Google</SelectItem>
-              <SelectItem value="openai-compatible">OpenAI-compatible</SelectItem>
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field label="名称">
-          <Input
-            value={displayName}
-            disabled={selected?.builtIn}
-            onChange={(event) => setDisplayName(event.target.value)}
-          />
-        </Field>
-        <Field label="Base URL">
-          <Input
-            value={baseURL}
-            onChange={(event) => setBaseURL(event.target.value)}
-            placeholder="https://example.com/v1"
-            disabled={selected?.builtIn}
-          />
-        </Field>
-        {selected?.builtIn ? (
-          <div className="bg-muted/40 rounded-lg border p-3 text-xs">
-            内置中转站凭据由账号登录自动管理，不需要手工填写 API Key。
-          </div>
-        ) : (
-          <Field label={selected ? "API Key（留空则保持原值）" : "API Key"}>
-            <Input
-              type="password"
-              value={apiKey}
-              onChange={(event) => setApiKey(event.target.value)}
-              autoComplete="off"
+    <SettingsSection>
+      <div className="flex flex-col gap-5">
+        {builtInProvider && (
+          <div className="flex flex-wrap items-center gap-4 rounded-xl border px-4 py-3.5">
+            <img
+              src="/tietiezhi.png"
+              alt="Tietiezhi Gateway"
+              draggable={false}
+              className="size-12 shrink-0 select-none rounded-full object-contain"
             />
-          </Field>
-        )}
-        <Field label="模型">
-          <div className="flex gap-2">
-            <Input
-              value={models}
-              onChange={(event) => setModels(event.target.value)}
-              placeholder="gpt-5, gpt-image-1"
-              disabled={selected?.builtIn}
-            />
-            {selected && (
-              <Button type="button" variant="outline" onClick={() => void refreshModels()} disabled={busy}>
-                <RefreshCw className={busy ? "animate-spin" : ""} /> 获取
-              </Button>
-            )}
-          </div>
-        </Field>
-        {error && <p className="text-destructive text-sm">{error}</p>}
-        <div className="flex items-center justify-between pt-2">
-          <div>
-            {selected && !selected.builtIn && (
-              <Button type="button" variant="destructive" onClick={() => void remove()} disabled={busy}>
-                <Trash2 /> 删除
-              </Button>
-            )}
-          </div>
-          {!selected?.builtIn && (
-            <Button type="button" onClick={() => void save()} disabled={busy}>
-              {busy && <Loader2 className="animate-spin" />}
-              保存
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <span className="truncate text-sm font-semibold">Tietiezhi Gateway</span>
+              <span className="text-muted-foreground text-xs">
+                {builtInProvider.models.length} 个可用模型 · 凭据由中转站账号管理
+              </span>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => void refreshModels(builtInProvider)}
+            >
+              <RefreshCw className={busy ? "animate-spin" : undefined} />
+              刷新模型列表
             </Button>
-          )}
+          </div>
+        )}
+
+        <div className="flex flex-col gap-2.5">
+          <div className="flex items-center justify-between gap-3 px-0.5">
+            <h3 className="text-sm font-medium">自定义供应商</h3>
+            <Button variant="outline" size="sm" onClick={() => setSelectedId("new")}>
+              <Plus /> 添加供应商
+            </Button>
+          </div>
+          {customProviders.length === 0 ? (
+            <div className="text-muted-foreground rounded-lg border border-dashed px-4 py-5 text-center text-xs">
+              暂无自定义供应商，需要时可在右上角添加
+            </div>
+          ) : customProviders.map((provider) => (
+            <div
+              key={provider.id}
+              className="hover:bg-accent/40 flex items-center gap-3 rounded-lg border px-3.5 py-3 transition-colors"
+            >
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium">{provider.displayName}</span>
+                  <Badge variant="secondary">{provider.providerType}</Badge>
+                  {provider.credentialRef && (
+                    <Badge variant="outline" className="text-emerald-600 dark:text-emerald-400">已存 Key</Badge>
+                  )}
+                </div>
+                <span className="text-muted-foreground truncate text-xs">
+                  {provider.baseURL || "默认地址"} · {provider.models.length} 个模型
+                </span>
+              </div>
+              <Button variant="ghost" size="icon" aria-label="编辑" onClick={() => setSelectedId(provider.id)}>
+                <KeyRound />
+              </Button>
+            </div>
+          ))}
         </div>
+        {error && <p className="text-destructive text-xs">{error}</p>}
       </div>
-    </section>
+
+      <Dialog open={selectedId !== undefined} onOpenChange={(next) => !next && setSelectedId(undefined)}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogTitle>{selected ? `编辑 ${selected.displayName}` : "添加供应商"}</DialogTitle>
+          <div className="grid gap-4 py-2">
+            <Field label="类型">
+              <Select value={providerType} onValueChange={(value) => setProviderType(value as ProviderType)}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="openai">OpenAI</SelectItem>
+                  <SelectItem value="anthropic">Anthropic</SelectItem>
+                  <SelectItem value="google">Google</SelectItem>
+                  <SelectItem value="openai-compatible">OpenAI-compatible</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="名称"><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></Field>
+            <Field label="Base URL"><Input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://example.com/v1" /></Field>
+            <Field label={selected ? "API Key（留空则保持原值）" : "API Key"}>
+              <Input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" />
+            </Field>
+            <Field label="模型">
+              <Input value={models} onChange={(event) => setModels(event.target.value)} placeholder="gpt-5, gpt-image-1" />
+            </Field>
+            {error && <p className="text-destructive text-xs">{error}</p>}
+            <div className="flex items-center justify-between">
+              <div>{selected && <Button variant="destructive" onClick={() => void remove()} disabled={busy}><Trash2 /> 删除</Button>}</div>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => setSelectedId(undefined)}>取消</Button>
+                <Button onClick={() => void save()} disabled={busy || !displayName.trim()}>
+                  {busy && <Loader2 className="animate-spin" />} 保存
+                </Button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </SettingsSection>
   );
 }
 
@@ -455,14 +507,10 @@ const THEMES: Array<{ value: Theme; label: string; icon: typeof Sun }> = [
 function AppearanceSection() {
   const { theme, setTheme } = useTheme();
   return (
-    <section className="flex flex-col gap-4">
-      <div>
-        <h3 className="font-semibold">主题</h3>
-        <p className="text-muted-foreground mt-1 text-sm">
-          Workspace 与设置跟随主题；Create Studio 保持专注创作的深色界面。
-        </p>
-      </div>
-      <div className="flex gap-2">
+    <SettingsSection>
+      <div className="flex flex-col gap-2">
+        <Label>主题</Label>
+        <div className="flex gap-2">
         {THEMES.map((option) => (
           <Button
             key={option.value}
@@ -474,8 +522,9 @@ function AppearanceSection() {
             {option.label}
           </Button>
         ))}
+        </div>
       </div>
-    </section>
+    </SettingsSection>
   );
 }
 
@@ -504,159 +553,143 @@ function UpdateSection({ open }: { open: boolean }) {
   useEffect(() => {
     if (!open) return;
     let active = true;
-    void window.tietiezhi.updates.state().then((next) => {
-      if (active) setState(next);
-    });
-    const dispose = window.tietiezhi.onUpdateEvent((event) => {
-      if (active) setState(event.state);
-    });
-    return () => {
-      active = false;
-      dispose();
-    };
+    void window.tietiezhi.updates.state().then((next) => active && setState(next));
+    const dispose = window.tietiezhi.onUpdateEvent((event) => active && setState(event.state));
+    return () => { active = false; dispose(); };
   }, [open]);
 
   const run = async (action: () => Promise<UpdateState>) => {
     setActionBusy(true);
-    try {
-      setState(await action());
-    } finally {
-      setActionBusy(false);
-    }
+    try { setState(await action()); } finally { setActionBusy(false); }
   };
 
-  if (state === undefined) {
-    return (
-      <div className="grid min-h-48 place-items-center">
-        <Loader2 className="text-muted-foreground size-5 animate-spin" />
-      </div>
-    );
+  if (!state) {
+    return <div className="grid min-h-48 place-items-center"><Loader2 className="text-muted-foreground size-5 animate-spin" /></div>;
   }
 
   const active = actionBusy || state.status === "checking" || state.status === "downloading";
-  const architecture =
-    state.architecture === "arm64"
-      ? "Apple Silicon"
-      : state.architecture === "x64"
-        ? "Intel x64"
-        : state.architecture;
+  const description = [
+    `当前版本 v${state.currentVersion}`,
+    state.status === "checking" ? "正在检查更新。" : "",
+    state.status === "not-available" ? "已是最新版本。" : "",
+    state.status === "available" ? `发现 v${state.availableVersion}。` : "",
+    state.status === "downloading" ? `正在后台下载 v${state.availableVersion}。` : "",
+    state.status === "downloaded" ? `v${state.availableVersion} 已下载完成。` : "",
+  ].filter(Boolean).join("，");
 
   return (
-    <section className="flex flex-col gap-5">
-      <div>
-        <h3 className="font-semibold">Tietiezhi Desktop</h3>
-        <p className="text-muted-foreground mt-1 text-sm">
-          自动匹配当前系统和 CPU 架构，下载完成后可直接重启安装。
+    <SettingsSection description={description}>
+      {state.releaseNotes && ["available", "downloading", "downloaded"].includes(state.status) && (
+        <p className="text-muted-foreground whitespace-pre-wrap text-sm">{state.releaseNotes}</p>
+      )}
+      {state.error && <p className="text-destructive text-sm">{state.error}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        {state.status === "available" ? (
+          <Button onClick={() => void run(() => window.tietiezhi.updates.download())} disabled={active}>
+            <Download /> 下载 v{state.availableVersion}
+          </Button>
+        ) : state.status === "downloading" ? (
+          <Button disabled><Loader2 className="animate-spin" /> 后台下载中{state.percent != null ? ` ${state.percent.toFixed(0)}%` : "…"}</Button>
+        ) : state.status === "downloaded" ? (
+          <Button onClick={() => void window.tietiezhi.updates.install()}><CheckCircle2 /> 重启以完成更新</Button>
+        ) : (
+          <Button variant="outline" onClick={() => void run(() => window.tietiezhi.updates.check())} disabled={!state.supported || active}>
+            {active ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {state.status === "error" ? "重试更新" : "检查更新"}
+          </Button>
+        )}
+        {state.status === "not-available" && (
+          <Badge variant="secondary" className="text-emerald-600 dark:text-emerald-400"><CheckCircle2 /> 已是最新</Badge>
+        )}
+        {!state.supported && <Badge variant="secondary">当前构建不支持自动更新</Badge>}
+      </div>
+    </SettingsSection>
+  );
+}
+
+function PermissionsSection() {
+  const rules = [
+    {
+      title: "读取 Workspace",
+      description: "Agent 可以读取当前 Workspace 内的文本文件和目录结构。",
+      badge: "自动允许",
+    },
+    {
+      title: "写入与替换文件",
+      description: "每次写入前都会展示目标路径和操作说明，只有允许后才会执行。",
+      badge: "每次询问",
+    },
+    {
+      title: "运行 Shell 命令",
+      description: "命令固定在当前 Workspace 中运行，并使用高风险审批。",
+      badge: "每次询问",
+    },
+  ];
+  return (
+    <SettingsSection>
+      <div className="flex max-w-md flex-col gap-2">
+        <Label>默认权限模式</Label>
+        <Select value="ask" disabled>
+          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="ask">请求批准</SelectItem></SelectContent>
+        </Select>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          所有写文件、执行命令等操作都先在对话里询问你。
         </p>
       </div>
-
-      <div className="rounded-xl border">
-        <div className="flex items-center gap-4 p-5">
-          <div className="bg-primary/10 text-primary grid size-11 shrink-0 place-items-center rounded-xl">
-            <Monitor className="size-5" />
+      <Separator />
+      <div className="divide-y rounded-lg border">
+        {rules.map((rule) => (
+          <div key={rule.title} className="flex items-start gap-4 px-4 py-4">
+            <span className="bg-muted grid size-9 shrink-0 place-items-center rounded-lg">
+              <ShieldCheck className="size-4" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <strong className="text-sm">{rule.title}</strong>
+              <span className="text-muted-foreground mt-1 block text-xs leading-5">
+                {rule.description}
+              </span>
+            </span>
+            <Badge variant="outline">{rule.badge}</Badge>
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="font-semibold">当前版本 v{state.currentVersion}</p>
-              <Badge variant={state.status === "error" ? "destructive" : "secondary"}>
-                {UPDATE_STATUS_LABEL[state.status]}
-              </Badge>
-            </div>
-            <p className="text-muted-foreground mt-1 text-xs">
-              {state.platform === "darwin" ? "macOS" : state.platform === "win32" ? "Windows" : state.platform}
-              {" · "}
-              {architecture}
-            </p>
-          </div>
-          {state.status !== "downloaded" && state.status !== "available" && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!state.supported || active}
-              onClick={() => void run(() => window.tietiezhi.updates.check())}
-            >
-              {active ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-              检查更新
-            </Button>
-          )}
-        </div>
-
-        {(state.status === "available" ||
-          state.status === "downloading" ||
-          state.status === "downloaded") && (
-          <div className="border-t p-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-sm font-semibold">
-                  新版本 v{state.availableVersion ?? "未知"}
-                </p>
-                {state.releaseDate && (
-                  <p className="text-muted-foreground mt-1 text-xs">
-                    发布时间 {new Date(state.releaseDate).toLocaleString("zh-CN")}
-                  </p>
-                )}
-              </div>
-              {state.status === "available" && (
-                <Button
-                  type="button"
-                  disabled={active}
-                  onClick={() => void run(() => window.tietiezhi.updates.download())}
-                >
-                  <Download />
-                  下载更新
-                </Button>
-              )}
-              {state.status === "downloaded" && (
-                <Button type="button" onClick={() => void window.tietiezhi.updates.install()}>
-                  <CheckCircle2 />
-                  重启并安装
-                </Button>
-              )}
-            </div>
-
-            {state.status === "downloading" && (
-              <div className="mt-4 space-y-2">
-                <progress
-                  className="accent-primary h-2 w-full overflow-hidden rounded-full"
-                  value={state.percent ?? 0}
-                  max={100}
-                />
-                <div className="text-muted-foreground flex justify-between text-xs">
-                  <span>
-                    {formatBytes(state.transferred)} / {formatBytes(state.total)}
-                  </span>
-                  <span>
-                    {(state.percent ?? 0).toFixed(1)}% · {formatBytes(state.bytesPerSecond)}/s
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {state.releaseNotes && (
-              <p className="text-muted-foreground mt-4 whitespace-pre-wrap text-sm leading-6">
-                {state.releaseNotes}
-              </p>
-            )}
-          </div>
-        )}
+        ))}
       </div>
+    </SettingsSection>
+  );
+}
 
-      {state.status === "not-available" && (
-        <div className="flex items-center gap-2 rounded-lg bg-emerald-500/10 px-3 py-2.5 text-sm text-emerald-600 dark:text-emerald-400">
-          <CheckCircle2 className="size-4" />
-          当前已经是最新版本。
+function AboutSection() {
+  const [state, setState] = useState<UpdateState>();
+
+  useEffect(() => {
+    void window.tietiezhi.updates.state().then(setState);
+  }, []);
+
+  return (
+    <SettingsSection>
+      <div className="flex items-center gap-4">
+        <img
+          src="./mode-mascots/paper-plane/code.png"
+          alt=""
+          draggable={false}
+          className="size-16 object-contain"
+        />
+        <div>
+          <h3 className="text-lg font-semibold">Tietiezhi Desktop</h3>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Electron + TypeScript Workspace AI 应用
+          </p>
+          <p className="text-muted-foreground mt-2 font-mono text-xs">
+            {state ? `v${state.currentVersion} · ${state.platform} · ${state.architecture}` : "正在读取版本…"}
+          </p>
         </div>
-      )}
-      {state.error && (
-        <div className="text-destructive bg-destructive/10 rounded-lg px-3 py-2.5 text-sm">
-          {state.error}
-        </div>
-      )}
-      <div className="bg-muted/40 rounded-lg p-3 text-xs leading-5">
-        Windows 使用 NSIS 差分下载；macOS 从第二次应用内更新开始复用本地更新缓存进行差分下载。
-        如果差分条件不满足，会自动回退为完整安装包。
       </div>
-    </section>
+      <Separator />
+      <p className="text-muted-foreground text-xs leading-relaxed">
+        Workspace 使用统一 AIEngine 和 EngineEvent，支持受限文件工具、Shell、审批、
+        Diff、系统提示词和按需技能加载。
+      </p>
+    </SettingsSection>
   );
 }
 

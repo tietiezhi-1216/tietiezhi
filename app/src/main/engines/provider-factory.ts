@@ -114,3 +114,20 @@ export function imageModel(
       throw new Error("Anthropic 当前不提供 AI SDK 图片生成模型");
   }
 }
+
+export function videoModel(
+  provider: ProviderAccount,
+  apiKey: string,
+  model: string,
+) {
+  const wireAPI = builtInWireAPI(provider, model);
+  if (provider.providerType !== "google" && wireAPI !== "gemini_generate_content") {
+    throw new Error("当前供应商不支持 AI SDK 视频生成");
+  }
+  const baseURL = googleBaseURL(provider);
+  return createGoogleGenerativeAI({
+    apiKey,
+    fetch: brandedFetch,
+    ...(baseURL === undefined ? {} : { baseURL }),
+  }).video(model);
+}

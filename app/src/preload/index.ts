@@ -38,9 +38,25 @@ const api: DesktopAPI = {
   workspace: {
     createTemporary: () => invoke("workspace.createTemporary"),
     choose: () => invoke("workspace.choose"),
+    reveal: (path) => invoke("workspace.reveal", { path }),
     listFiles: (conversationId) => invoke("workspace.listFiles", { conversationId }),
     readFile: (conversationId, path) =>
       invoke("workspace.readFile", { conversationId, path }),
+  },
+  tools: {
+    list: () => invoke("tools.list"),
+  },
+  skills: {
+    list: () => invoke("skills.list"),
+    read: (name) => invoke("skills.read", { name }),
+    save: (input) => invoke("skills.save", input),
+    remove: (name) => invoke("skills.remove", { name }),
+    setEnabled: (name, enabled) => invoke("skills.setEnabled", { name, enabled }),
+    import: () => invoke("skills.import"),
+  },
+  preferences: {
+    get: () => invoke("preferences.get"),
+    save: (input) => invoke("preferences.save", input),
   },
   approvals: {
     resolve: (approvalId, approved) =>
@@ -48,7 +64,11 @@ const api: DesktopAPI = {
   },
   media: {
     list: () => invoke("media.list"),
+    listAssets: () => invoke("media.listAssets"),
+    importAssets: () => invoke("media.importAssets"),
+    removeAsset: (id) => invoke("media.removeAsset", { id }),
     generateImage: (input) => invoke("media.generateImage", input),
+    generateVideo: (input) => invoke("media.generateVideo", input),
     cancel: (id) => invoke("media.cancel", { id }),
     retry: (id) => invoke("media.retry", { id }),
     remove: (id) => invoke("media.remove", { id }),

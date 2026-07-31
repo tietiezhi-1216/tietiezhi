@@ -21,3 +21,4 @@ artifacts/
 # Electron 宿主
 app/node_modules/
 app/out/
+app/.tietiezhi-dev.pid

@@ -1,88 +1,172 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download } from "lucide-react";
+import { Clock3, Search } from "lucide-react";
 
+import { OctopusPeekButton } from "@/components/octopus-peek-button";
+import { ProductOrbitStage } from "@/components/product-orbit-stage";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { providerImageModels } from "@/lib/model-capabilities";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
+import {
+  providerImageModels,
+  providerVideoModels,
+} from "@/lib/model-capabilities";
+import {
+  aspectRatioForResolution,
+  mediaModelCapabilities,
+} from "@shared/media-model-capabilities";
 import type {
   ImageGenerationRequest,
+  LocalMediaAsset,
   MediaJob,
+  MediaReferenceInput,
+  MediaResolution,
+  MediaType,
   ProviderAccount,
+  VideoGenerationRequest,
 } from "@shared/contracts";
 
-import { CreateAssetPreview } from "./create-asset-preview";
 import { CreateComposer } from "./create-composer";
-import type { CreateController, ImageProvider } from "./create-types";
+import {
+  CreateConversation,
+  type CreateConversationHandle,
+} from "./create-conversation";
+import type { CreateController, CreateProvider } from "./create-types";
 
-const CREATE_STARS = [
-  "top-[7%] left-[8%] size-1 motion-safe:[animation-delay:-0.4s]",
-  "top-[13%] left-[19%] size-0.5 motion-safe:[animation-delay:-2.8s]",
-  "top-[9%] left-[34%] size-1 motion-safe:[animation-delay:-1.6s]",
-  "top-[17%] left-[47%] size-0.5 motion-safe:[animation-delay:-3.7s]",
-  "top-[8%] left-[63%] size-1 motion-safe:[animation-delay:-4.2s]",
-  "top-[15%] left-[78%] size-0.5 motion-safe:[animation-delay:-1.1s]",
-  "top-[6%] left-[91%] size-1 motion-safe:[animation-delay:-3.2s]",
-  "top-[27%] left-[4%] size-0.5 motion-safe:[animation-delay:-4.7s]",
-  "top-[32%] left-[14%] size-1 motion-safe:[animation-delay:-1.9s]",
-  "top-[25%] left-[28%] size-0.5 motion-safe:[animation-delay:-0.8s]",
-  "top-[35%] left-[41%] size-1 motion-safe:[animation-delay:-3.4s]",
-  "top-[29%] left-[57%] size-0.5 motion-safe:[animation-delay:-2.3s]",
-  "top-[37%] left-[72%] size-1 motion-safe:[animation-delay:-4.4s]",
-  "top-[26%] left-[86%] size-0.5 motion-safe:[animation-delay:-1.4s]",
-  "top-[44%] left-[95%] size-1 motion-safe:[animation-delay:-3.9s]",
-  "top-[49%] left-[7%] size-1 motion-safe:[animation-delay:-2.1s]",
-  "top-[55%] left-[22%] size-0.5 motion-safe:[animation-delay:-4.9s]",
-  "top-[46%] left-[36%] size-1 motion-safe:[animation-delay:-1.2s]",
-  "top-[57%] left-[52%] size-0.5 motion-safe:[animation-delay:-3.1s]",
-  "top-[48%] left-[68%] size-1 motion-safe:[animation-delay:-0.3s]",
-  "top-[59%] left-[82%] size-0.5 motion-safe:[animation-delay:-4.1s]",
-  "top-[68%] left-[3%] size-0.5 motion-safe:[animation-delay:-3.6s]",
-  "top-[73%] left-[17%] size-1 motion-safe:[animation-delay:-0.9s]",
-  "top-[65%] left-[31%] size-0.5 motion-safe:[animation-delay:-4.6s]",
-  "top-[78%] left-[44%] size-1 motion-safe:[animation-delay:-2.5s]",
-  "top-[69%] left-[61%] size-0.5 motion-safe:[animation-delay:-1.7s]",
-  "top-[76%] left-[75%] size-1 motion-safe:[animation-delay:-3.3s]",
-  "top-[67%] left-[93%] size-0.5 motion-safe:[animation-delay:-0.6s]",
-  "top-[88%] left-[10%] size-1 motion-safe:[animation-delay:-4.3s]",
-  "top-[91%] left-[26%] size-0.5 motion-safe:[animation-delay:-2.7s]",
-  "top-[86%] left-[55%] size-1 motion-safe:[animation-delay:-1.3s]",
-  "top-[92%] left-[88%] size-0.5 motion-safe:[animation-delay:-3.8s]",
-] as const;
+type HistoryTimeFilter = "all" | "today" | "7d" | "30d";
+type HistoryStatusFilter = "all" | "pending" | "completed" | "failed";
 
-export function CreatePage({ providerVersion }: { providerVersion: number }) {
+const HISTORY_TIME_LABELS: Record<HistoryTimeFilter, string> = {
+  all: "全部时间",
+  today: "今天",
+  "7d": "近 7 天",
+  "30d": "近 30 天",
+};
+
+/** 输入框浮层距底距离（bottom-5）+ 最后一条记录和输入框之间的呼吸位。 */
+const COMPOSER_INSET_GAP = 44;
+/** 首帧测量完成前的兜底留白，取输入框收起时的高度。 */
+const COMPOSER_INSET_FALLBACK = 116;
+
+export function CreatePage({
+  active,
+  providerVersion,
+}: {
+  /** 本页在后台待命时仍然挂载，全局监听要靠它避让。 */
+  active: boolean;
+  providerVersion: number;
+}) {
   const [providers, setProviders] = useState<ProviderAccount[]>([]);
   const [jobs, setJobs] = useState<MediaJob[]>([]);
+  const [assets, setAssets] = useState<LocalMediaAsset[]>([]);
+  const [references, setReferences] = useState<MediaReferenceInput[]>([]);
+  const [mode, setMode] = useState<MediaType>("image");
   const [providerId, setProviderId] = useState("");
   const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [aspectRatio, setAspectRatio] = useState<`${number}:${number}`>();
+  const [resolution, setResolution] = useState<MediaResolution>();
+  const [quality, setQuality] = useState<
+    "auto" | "low" | "medium" | "high"
+  >();
+  const [duration, setDuration] = useState<number>();
+  const [count, setCount] = useState(1);
   const [activeJobId, setActiveJobId] = useState<string>();
-  const [resultOpen, setResultOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const presentedJobId = useRef<string | undefined>(undefined);
+  const [atHistoryBottom, setAtHistoryBottom] = useState(true);
+  const [composerExpandedByInput, setComposerExpandedByInput] = useState(false);
+  const [historyType, setHistoryType] = useState<"all" | MediaType>("all");
+  const [historyTime, setHistoryTime] = useState<HistoryTimeFilter>("all");
+  const [historyStatus, setHistoryStatus] =
+    useState<HistoryStatusFilter>("all");
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historySearchOpen, setHistorySearchOpen] = useState(false);
+  const conversationRef = useRef<CreateConversationHandle>(null);
+  const historyFilterRef = useRef<HTMLDivElement>(null);
+  const composerWrapRef = useRef<HTMLDivElement>(null);
+  const [composerInset, setComposerInset] = useState(COMPOSER_INSET_FALLBACK);
 
-  const imageProviders = useMemo(
+  const createProviders = useMemo(
     () =>
       providers
-        .map((provider): ImageProvider => ({
+        .map((provider): CreateProvider => ({
           ...provider,
           imageModels: providerImageModels(provider),
+          videoModels: providerVideoModels(provider),
         }))
-        .filter((provider) => provider.imageModels.length > 0),
+        .filter(
+          (provider) =>
+            provider.imageModels.length > 0 || provider.videoModels.length > 0,
+        ),
     [providers],
   );
-  const selectedProvider = imageProviders.find(
+  const availableProviders = useMemo(
+    () =>
+      createProviders.filter((provider) =>
+        mode === "image"
+          ? provider.imageModels.length > 0
+          : provider.videoModels.length > 0,
+      ),
+    [createProviders, mode],
+  );
+  const selectedProvider = availableProviders.find(
     (provider) => provider.id === providerId,
   );
   const activeJob = jobs.find((job) => job.id === activeJobId);
   const running =
     activeJob?.status === "queued" || activeJob?.status === "running";
+  const capabilities = useMemo(
+    () => mediaModelCapabilities(model, mode),
+    [mode, model],
+  );
+  const visibleJobs = useMemo(() => {
+    const query = historyQuery.trim().toLowerCase();
+    const now = Date.now();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return jobs.filter(
+      (job) => {
+        const matchesType = historyType === "all" || job.type === historyType;
+        const matchesQuery =
+          query.length === 0 ||
+          job.prompt.toLowerCase().includes(query) ||
+          job.modelId.toLowerCase().includes(query);
+        const matchesTime =
+          historyTime === "all" ||
+          (historyTime === "today"
+            ? job.createdAt >= today.getTime()
+            : job.createdAt >=
+              now - (historyTime === "7d" ? 7 : 30) * 24 * 60 * 60 * 1_000);
+        const matchesStatus =
+          historyStatus === "all" ||
+          (historyStatus === "pending"
+            ? job.status === "queued" || job.status === "running"
+            : historyStatus === "completed"
+              ? job.status === "completed"
+              : job.status === "failed" || job.status === "cancelled");
+        return matchesType && matchesQuery && matchesTime && matchesStatus;
+      },
+    );
+  }, [historyQuery, historyStatus, historyTime, historyType, jobs]);
+
+  useEffect(() => {
+    if (!active) return;
+    const closeSearch = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (historyFilterRef.current?.contains(target)) return;
+      setHistorySearchOpen(false);
+    };
+    document.addEventListener("pointerdown", closeSearch);
+    return () => document.removeEventListener("pointerdown", closeSearch);
+  }, [active]);
 
   const upsertJob = useCallback((job: MediaJob) => {
     setJobs((current) => [
@@ -96,26 +180,18 @@ export function CreatePage({ providerVersion }: { providerVersion: number }) {
     void Promise.all([
       window.tietiezhi.providers.list(),
       window.tietiezhi.media.list(),
+      window.tietiezhi.media.listAssets(),
     ])
-      .then(([nextProviders, nextJobs]) => {
+      .then(([nextProviders, nextJobs, nextAssets]) => {
         if (!active) return;
         setProviders(nextProviders);
         setJobs(nextJobs);
-        setActiveJobId(
-          nextJobs.find(
-            (job) => job.status === "queued" || job.status === "running",
-          )?.id,
+        setAssets(nextAssets);
+        const runningJob = nextJobs.find(
+          (job) => job.status === "queued" || job.status === "running",
         );
-        setProviderId((current) => {
-          if (nextProviders.some((provider) => provider.id === current)) {
-            return current;
-          }
-          return (
-            nextProviders.find(
-              (provider) => providerImageModels(provider).length > 0,
-            )?.id ?? ""
-          );
-        });
+        setActiveJobId(runningJob?.id);
+        if (runningJob) setMode(runningJob.type);
       })
       .catch((cause: unknown) => {
         if (active) {
@@ -132,6 +208,9 @@ export function CreatePage({ providerVersion }: { providerVersion: number }) {
       window.tietiezhi.onMediaEvent((event) => {
         if (event.type === "media.job.updated") {
           upsertJob(event.job);
+          if (event.job.status === "completed") {
+            void window.tietiezhi.media.listAssets().then(setAssets);
+          }
           return;
         }
         setJobs((current) =>
@@ -142,52 +221,120 @@ export function CreatePage({ providerVersion }: { providerVersion: number }) {
   );
 
   useEffect(() => {
-    if (!selectedProvider) {
-      setModel("");
-      return;
-    }
-    if (!selectedProvider.imageModels.includes(model)) {
-      setModel(selectedProvider.imageModels[0] ?? "");
-    }
-  }, [model, selectedProvider]);
+    const selectedModels =
+      mode === "image"
+        ? selectedProvider?.imageModels
+        : selectedProvider?.videoModels;
+    if (selectedProvider && selectedModels?.includes(model)) return;
+    const nextProvider = availableProviders[0];
+    const nextModels =
+      mode === "image" ? nextProvider?.imageModels : nextProvider?.videoModels;
+    setProviderId(nextProvider?.id ?? "");
+    setModel(nextModels?.[0] ?? "");
+  }, [availableProviders, mode, model, selectedProvider]);
 
   useEffect(() => {
-    if (!activeJob) return;
-    if (activeJob.status === "failed") {
-      setError(activeJob.error?.message ?? "图片生成失败");
-      return;
+    setResolution((current) =>
+      capabilities.resolutions.some((option) => option.value === current)
+        ? current
+        : capabilities.defaultResolution,
+    );
+    setAspectRatio((current) =>
+      capabilities.aspectRatios.some((option) => option.value === current)
+        ? current
+        : capabilities.defaultAspectRatio,
+    );
+    setQuality((current) =>
+      capabilities.qualities.some((option) => option.value === current)
+        ? current
+        : capabilities.defaultQuality,
+    );
+    setDuration((current) =>
+      capabilities.durations.some((option) => option.value === current)
+        ? current
+        : capabilities.defaultDuration,
+    );
+    setCount((current) =>
+      capabilities.counts.some((option) => option.value === current)
+        ? current
+        : capabilities.defaultCount,
+    );
+  }, [capabilities]);
+
+  useEffect(() => {
+    const derivedAspectRatio = aspectRatioForResolution(resolution);
+    if (mode === "image" && derivedAspectRatio !== undefined) {
+      setAspectRatio(derivedAspectRatio);
     }
     if (
-      activeJob.status === "completed" &&
-      activeJob.artifacts.length > 0 &&
-      presentedJobId.current !== activeJob.id
+      mode === "video" &&
+      (resolution === "1920x1080" || resolution === "3840x2160")
     ) {
-      presentedJobId.current = activeJob.id;
-      setResultOpen(true);
+      setDuration(8);
     }
-  }, [activeJob]);
+    if (
+      mode === "video" &&
+      model.toLowerCase().includes("veo-3.0") &&
+      resolution === "1920x1080"
+    ) {
+      setAspectRatio("16:9");
+    }
+  }, [mode, model, resolution]);
 
   const generate = useCallback(async () => {
     if (!prompt.trim() || !providerId || !model || busy || running) return;
     setBusy(true);
     setError("");
     try {
-      const request: ImageGenerationRequest = {
-        providerAccountId: providerId,
-        model,
-        prompt: prompt.trim(),
-        aspectRatio: "1:1",
-        count: 1,
-      };
-      const job = await window.tietiezhi.media.generateImage(request);
+      const job =
+        mode === "video"
+          ? await window.tietiezhi.media.generateVideo({
+              providerAccountId: providerId,
+              model,
+              prompt: prompt.trim(),
+              aspectRatio,
+              resolution:
+                resolution !== undefined && /^\d+x\d+$/.test(resolution)
+                  ? (resolution as `${number}x${number}`)
+                  : undefined,
+              duration,
+              count,
+              references,
+            } satisfies VideoGenerationRequest)
+          : await window.tietiezhi.media.generateImage({
+              providerAccountId: providerId,
+              model,
+              prompt: prompt.trim(),
+              aspectRatio,
+              resolution,
+              quality,
+              count,
+              references,
+            } satisfies ImageGenerationRequest);
       upsertJob(job);
       setActiveJobId(job.id);
+      setPrompt("");
+      setReferences([]);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setBusy(false);
     }
-  }, [busy, model, prompt, providerId, running, upsertJob]);
+  }, [
+    aspectRatio,
+    busy,
+    count,
+    duration,
+    mode,
+    model,
+    prompt,
+    providerId,
+    quality,
+    resolution,
+    references,
+    running,
+    upsertJob,
+  ]);
 
   const cancel = useCallback(async () => {
     if (!activeJobId) return;
@@ -208,100 +355,295 @@ export function CreatePage({ providerVersion }: { providerVersion: number }) {
     }
   }, []);
 
+  const changeMode = useCallback((nextMode: MediaType) => {
+    setMode(nextMode);
+    setReferences([]);
+    setError("");
+  }, []);
+
+  const importAssets = useCallback(async () => {
+    setError("");
+    try {
+      const imported = await window.tietiezhi.media.importAssets();
+      if (imported.length > 0) {
+        setAssets(await window.tietiezhi.media.listAssets());
+        setReferences((current) => {
+          const selected = new Set(current.map((reference) => reference.assetId));
+          const available = imported.filter(
+            (asset) =>
+              capabilities.acceptedReferenceTypes.includes(asset.type) &&
+              !selected.has(asset.id),
+          );
+          const remaining = Math.max(
+            0,
+            capabilities.maxReferences - current.length,
+          );
+          return [
+            ...current,
+            ...available.slice(0, remaining).map((asset) => ({
+              assetId: asset.id,
+              role: "reference" as const,
+            })),
+          ];
+        });
+      }
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, [capabilities]);
+
+  const removeAsset = useCallback(async (id: string) => {
+    setError("");
+    try {
+      await window.tietiezhi.media.removeAsset(id);
+      setAssets((current) => current.filter((asset) => asset.id !== id));
+      setReferences((current) =>
+        current.filter((reference) => reference.assetId !== id),
+      );
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+
+  const retryJob = useCallback(
+    async (job: MediaJob) => {
+      if (busy || running) return;
+      setBusy(true);
+      setError("");
+      try {
+        const next = await window.tietiezhi.media.retry(job.id);
+        upsertJob(next);
+        setActiveJobId(next.id);
+      } catch (cause: unknown) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, running, upsertJob],
+  );
+
+  const removeJob = useCallback(async (job: MediaJob) => {
+    setError("");
+    try {
+      await window.tietiezhi.media.remove(job.id);
+      setJobs((current) => current.filter((candidate) => candidate.id !== job.id));
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  }, []);
+
+  const reuseJob = useCallback((job: MediaJob) => {
+    setMode(job.type);
+    setProviderId(job.providerId);
+    setModel(job.modelId);
+    setPrompt(job.prompt);
+    setAspectRatio(job.aspectRatio);
+    setResolution(job.resolution);
+    setQuality(job.quality);
+    setDuration(job.duration);
+    setCount(job.count);
+    setReferences(
+      job.references.map(({ assetId, role }) => ({ assetId, role })),
+    );
+  }, []);
+
+  const hasHistory = jobs.length > 0;
+  const composerCollapsed =
+    hasHistory && !atHistoryBottom && !composerExpandedByInput;
+
+  useEffect(() => {
+    if (atHistoryBottom) setComposerExpandedByInput(false);
+  }, [atHistoryBottom]);
+
+  useEffect(() => {
+    const node = composerWrapRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(() => {
+      setComposerInset(node.getBoundingClientRect().height + COMPOSER_INSET_GAP);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasHistory]);
+
+  const handleHistoryBottomChange = useCallback((atBottom: boolean) => {
+    setAtHistoryBottom(atBottom);
+    if (!atBottom) setComposerExpandedByInput(false);
+  }, []);
+
   const controller: CreateController = {
-    providers: imageProviders,
+    mode,
+    providers: availableProviders,
     providerId,
     model,
     prompt,
+    assets,
+    references,
+    capabilities,
+    aspectRatio,
+    resolution,
+    quality,
+    duration,
+    count,
     busy,
     running,
+    collapsed: composerCollapsed,
     error,
+    setMode: changeMode,
     setProvider: setProviderId,
     setModel,
     setPrompt,
+    setReferences,
+    importAssets,
+    removeAsset,
+    setAspectRatio,
+    setResolution,
+    setQuality,
+    setDuration,
+    setCount,
     generate,
     cancel,
+    expand: () => setComposerExpandedByInput(true),
   };
-  const resultArtifact = activeJob?.artifacts[0];
 
   return (
-    <main className="dark relative isolate h-full min-h-0 overflow-hidden bg-[#060912] text-white">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -inset-8 overflow-hidden motion-safe:animate-create-star-drift"
-      >
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_20%,rgba(21,105,153,0.2),transparent_52%)]" />
-        <div className="absolute top-[18%] left-[20%] size-80 rounded-full bg-cyan-500/5 blur-3xl motion-safe:animate-pulse" />
-        <div className="absolute right-[12%] bottom-[5%] size-96 rounded-full bg-blue-600/6 blur-3xl motion-safe:animate-pulse motion-safe:[animation-delay:-1.8s]" />
-        {CREATE_STARS.map((className) => (
-          <span
-            key={className}
-            className={`absolute rounded-full bg-white/80 shadow-[0_0_7px_rgba(125,211,252,0.9)] motion-safe:animate-create-star-twinkle ${className}`}
-          />
-        ))}
-      </div>
-
-      <div className="relative z-10 mx-auto flex h-full w-full max-w-3xl flex-col items-center justify-center px-4 pb-12">
-        <div
-          aria-hidden="true"
-          className="relative -mb-4 h-52 w-80 max-w-full motion-safe:animate-area-create-float"
-        >
-          <div className="absolute inset-x-12 bottom-4 h-8 rounded-full bg-cyan-300/10 blur-2xl motion-safe:animate-pulse" />
-          <div className="absolute inset-x-16 bottom-7 h-5 rounded-full bg-black/50 blur-xl" />
-          <img
-            src="./mode-mascots/paper-plane/create.png"
-            alt=""
-            decoding="async"
-            draggable={false}
-            className="absolute inset-x-0 top-0 mx-auto size-48 object-contain drop-shadow-[0_18px_30px_rgba(0,0,0,0.3)]"
-          />
-          <img
-            src="./mode-mascots/paper-plane/create-blink.png"
-            alt=""
-            decoding="async"
-            draggable={false}
-            className="absolute inset-x-0 top-0 mx-auto size-48 object-contain opacity-0 drop-shadow-[0_18px_30px_rgba(0,0,0,0.3)] motion-safe:animate-create-mascot-blink"
-          />
-        </div>
-        <CreateComposer controller={controller} />
-      </div>
-
-      <Dialog open={resultOpen} onOpenChange={setResultOpen}>
-        {activeJob && resultArtifact && (
-          <DialogContent className="max-w-2xl overflow-hidden p-0 sm:max-w-2xl">
-            <CreateAssetPreview
-              artifact={resultArtifact}
-              alt={activeJob.prompt}
-              thumbnail={false}
-              className="max-h-[68vh] min-h-80 bg-black object-contain"
-            />
-            <div className="p-5 pt-0">
-              <DialogHeader className="text-left">
-                <DialogTitle>图片已生成</DialogTitle>
-                <DialogDescription className="line-clamp-2">
-                  {activeJob.prompt}
-                </DialogDescription>
-              </DialogHeader>
-              <div className="mt-4 flex justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setResultOpen(false)}
+    <main className="dark relative isolate h-full min-h-0 overflow-hidden bg-[#080a10] text-white">
+      {hasHistory ? (
+        <div className="relative z-10 flex h-full min-h-0 flex-col">
+          <div
+            ref={historyFilterRef}
+            className="pointer-events-none absolute top-4 right-4 z-30 flex items-center justify-end gap-2"
+          >
+            <div className="pointer-events-auto flex h-11 items-center gap-1 rounded-[10px] bg-background/72 px-1 shadow-sm ring-1 ring-border/70 backdrop-blur-md transition-shadow hover:shadow-lg">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-9 rounded-[8px] text-muted-foreground hover:bg-muted/55 hover:text-foreground"
+                onClick={() => setHistorySearchOpen(true)}
+                aria-label="展开搜索"
+              >
+                <Search className="size-4" />
+              </Button>
+              <Input
+                value={historyQuery}
+                onChange={(event) => setHistoryQuery(event.target.value)}
+                onFocus={() => setHistorySearchOpen(true)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  if (historyQuery) {
+                    setHistoryQuery("");
+                    return;
+                  }
+                  setHistorySearchOpen(false);
+                }}
+                placeholder="搜索"
+                className={cn(
+                  "h-9 border-0 bg-transparent px-0 text-sm shadow-none transition-[width,opacity,padding] duration-200 ease-out focus-visible:ring-0",
+                  historySearchOpen
+                    ? "w-52 px-1 opacity-100"
+                    : "w-0 opacity-0",
+                )}
+              />
+              <Select
+                value={historyTime}
+                onValueChange={(value) =>
+                  setHistoryTime(value as HistoryTimeFilter)
+                }
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="h-9 min-w-24 border-0 bg-transparent shadow-none hover:bg-muted/55 focus-visible:ring-0"
+                  aria-label="筛选生成时间"
                 >
-                  继续创作
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => void saveArtifact(resultArtifact.filePath)}
+                  <Clock3 className="size-3.5" />
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="dark">
+                  {(Object.keys(HISTORY_TIME_LABELS) as HistoryTimeFilter[]).map(
+                    (value) => (
+                      <SelectItem key={value} value={value}>
+                        {HISTORY_TIME_LABELS[value]}
+                      </SelectItem>
+                    ),
+                  )}
+                </SelectContent>
+              </Select>
+              <span className="h-5 w-px bg-border/70" />
+              <Select
+                value={historyStatus}
+                onValueChange={(value) =>
+                  setHistoryStatus(value as HistoryStatusFilter)
+                }
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="h-9 min-w-24 border-0 bg-transparent shadow-none hover:bg-muted/55 focus-visible:ring-0"
+                  aria-label="筛选生成状态"
                 >
-                  <Download />
-                  导出图片
-                </Button>
-              </div>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="dark">
+                  <SelectItem value="all">全部状态</SelectItem>
+                  <SelectItem value="pending">生成中</SelectItem>
+                  <SelectItem value="completed">已完成</SelectItem>
+                  <SelectItem value="failed">异常</SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="h-5 w-px bg-border/70" />
+              <Select
+                value={historyType}
+                onValueChange={(value) =>
+                  setHistoryType(value as "all" | MediaType)
+                }
+              >
+                <SelectTrigger
+                  size="sm"
+                  className="h-9 min-w-24 border-0 bg-transparent shadow-none hover:bg-muted/55 focus-visible:ring-0"
+                  aria-label="筛选生成类型"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="dark">
+                  <SelectItem value="all">全部类型</SelectItem>
+                  <SelectItem value="image">图片</SelectItem>
+                  <SelectItem value="video">视频</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-          </DialogContent>
-        )}
-      </Dialog>
+          </div>
+          <CreateConversation
+            ref={conversationRef}
+            jobs={visibleJobs}
+            onRetry={retryJob}
+            onRemove={removeJob}
+            onReuse={reuseJob}
+            onSave={saveArtifact}
+            onBottomChange={handleHistoryBottomChange}
+            bottomInset={composerInset}
+          />
+          <div className="pointer-events-none absolute inset-x-0 bottom-5 z-20 flex justify-center px-4">
+            <div
+              ref={composerWrapRef}
+              className={cn(
+                "pointer-events-auto relative mx-auto w-full transition-[max-width] duration-[360ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                composerCollapsed ? "max-w-3xl" : "max-w-5xl",
+              )}
+            >
+              <OctopusPeekButton
+                visible={composerCollapsed}
+                onClick={() => conversationRef.current?.scrollToBottom("smooth")}
+              />
+              <CreateComposer controller={controller} />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="relative z-10 mx-auto flex h-full w-full max-w-5xl flex-col items-center justify-center px-4 pb-12">
+          <ProductOrbitStage variant="create" className="-mb-5" />
+          <CreateComposer controller={controller} />
+        </div>
+      )}
     </main>
   );
 }

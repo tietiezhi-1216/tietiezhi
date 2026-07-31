@@ -80,6 +80,8 @@
     --sidebar-accent-foreground: oklch(0.205 0 0);
     --sidebar-border: oklch(0.922 0 0);
     --sidebar-ring: oklch(0.708 0 0);
+    --app-scrollbar-thumb: color-mix(in oklab, var(--muted-foreground) 38%, transparent);
+    --app-scrollbar-thumb-hover: color-mix(in oklab, var(--muted-foreground) 54%, transparent);
 }
 
 .dark {
@@ -121,8 +123,8 @@
     @apply border-border outline-ring/50;
     }
   body {
-    @apply bg-background text-foreground select-none;
-    }
+    @apply bg-transparent text-foreground select-none;
+  }
   input,
   textarea,
   [contenteditable="true"] {
@@ -150,9 +152,7 @@
     --animate-area-home-float: area-home-float 5.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
     --animate-area-automation-float: area-automation-float 4.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
     --animate-area-create-float: area-create-float 4.9s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-    --animate-create-mascot-blink: create-mascot-blink 6.8s step-end infinite;
-    --animate-create-star-drift: create-star-drift 22s ease-in-out infinite alternate;
-    --animate-create-star-twinkle: create-star-twinkle 4.8s ease-in-out infinite;
+    --animate-orbit-star-twinkle: orbit-star-twinkle 4.8s ease-in-out infinite;
 
     @keyframes capsule-sweep {
         from { transform: translateX(-100%); }
@@ -197,15 +197,7 @@
         58% { transform: translate3d(2px, -9px, 0) rotate(0.8deg) scale(1.016); }
         82% { transform: translate3d(3px, -3px, 0) rotate(0.35deg) scale(1.006); }
     }
-    @keyframes create-mascot-blink {
-        0%, 42%, 45%, 70%, 73%, 100% { opacity: 0; }
-        43%, 44%, 71%, 72% { opacity: 1; }
-    }
-    @keyframes create-star-drift {
-        from { transform: translate3d(-0.6%, -0.4%, 0) scale(1); }
-        to { transform: translate3d(0.7%, 0.5%, 0) scale(1.025); }
-    }
-    @keyframes create-star-twinkle {
+    @keyframes orbit-star-twinkle {
         0%, 100% { opacity: 0.24; transform: scale(0.72); }
         48% { opacity: 0.95; transform: scale(1.18); }
         64% { opacity: 0.5; transform: scale(0.9); }
@@ -376,6 +368,58 @@
   }
 }
 
+* {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+}
+
+html[data-scrolling="true"],
+html[data-scrolling="true"] * {
+    scrollbar-color: var(--app-scrollbar-thumb) transparent !important;
+}
+
+*::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+    background: transparent !important;
+}
+
+*::-webkit-scrollbar-thumb {
+    min-height: 40px;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-color: transparent !important;
+    background-clip: content-box;
+}
+
+html[data-scrolling="true"]::-webkit-scrollbar-thumb,
+html[data-scrolling="true"] *::-webkit-scrollbar-thumb {
+    background-color: var(--app-scrollbar-thumb) !important;
+}
+
+html[data-scrolling="true"]::-webkit-scrollbar-thumb:hover,
+html[data-scrolling="true"] *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--app-scrollbar-thumb-hover) !important;
+}
+
+[data-slot="scroll-area-scrollbar"] {
+    background: transparent !important;
+}
+
+[data-slot="scroll-area-thumb"] {
+    opacity: 0;
+    background: var(--app-scrollbar-thumb);
+    transition: opacity 160ms ease, background-color 160ms ease;
+}
+
+html[data-scrolling="true"] [data-slot="scroll-area-thumb"] {
+    opacity: 1;
+}
+
 /* Custom variants */
 @custom-variant data-open {
   &:where([data-state="open"]),
@@ -443,6 +487,34 @@
 
   &::-webkit-scrollbar {
     display: none;
+  }
+}
+
+@utility app-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+
+  &::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  &::-webkit-scrollbar-track,
+  &::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    min-height: 40px;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-color: transparent !important;
+    background-clip: content-box;
+  }
+
+  &::-webkit-scrollbar-thumb:hover {
+    background-color: var(--app-scrollbar-thumb-hover) !important;
+    background-clip: content-box;
   }
 }
 

@@ -1,4 +1,4 @@
-import { ToolLoopAgent, type ModelMessage } from "ai";
+import { generateText, ToolLoopAgent, type ModelMessage } from "ai";
 
 import type {
   AppError,
@@ -10,7 +10,7 @@ import type {
 } from "@shared/contracts";
 
 import { ApprovalManager } from "../application/approval-manager.js";
-import type { AIEngine, EngineRunOptions } from "./engine.js";
+import type { AIEngine, EngineRunOptions, EngineTitleOptions } from "./engine.js";
 import { languageModel } from "./provider-factory.js";
 import { createWorkspaceTools, type WorkspaceToolEvent } from "./workspace-tools.js";
 
@@ -41,6 +41,31 @@ class EventQueue {
   }
 }
 
+const STREAM_MAX_RETRIES = 5;
+
+function retryDelay(attempt: number): number {
+  const exponential = Math.min(8_000, 500 * 2 ** (attempt - 1));
+  return Math.round(exponential * (0.9 + Math.random() * 0.2));
+}
+
+function waitForRetry(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, milliseconds);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true },
+    );
+  });
+}
+
 function textOf(message: EngineRunOptions["messages"][number]): string {
   return message.parts
     .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
@@ -59,14 +84,28 @@ function toMessages(messages: EngineRunOptions["messages"]): ModelMessage[] {
 }
 
 function usageOf(value: unknown): UsageInfo {
-  const record =
+  const source =
     typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const number = (key: string): number | null =>
-    typeof record[key] === "number" ? record[key] : null;
+    typeof source[key] === "number" ? source[key] : null;
+  const inputDetails = record(source["inputTokenDetails"]);
+  const outputDetails = record(source["outputTokenDetails"]);
   return {
     inputTokens: number("inputTokens"),
     outputTokens: number("outputTokens"),
     totalTokens: number("totalTokens"),
+    cachedInputTokens:
+      typeof inputDetails?.["cacheReadTokens"] === "number"
+        ? inputDetails["cacheReadTokens"]
+        : null,
+    cacheWriteTokens:
+      typeof inputDetails?.["cacheWriteTokens"] === "number"
+        ? inputDetails["cacheWriteTokens"]
+        : null,
+    reasoningTokens:
+      typeof outputDetails?.["reasoningTokens"] === "number"
+        ? outputDetails["reasoningTokens"]
+        : null,
   };
 }
 
@@ -114,15 +153,30 @@ function specificErrorMessage(value: unknown, depth = 0): string | undefined {
   return typeof message === "string" && message !== "" ? message : undefined;
 }
 
-export function normalizeEngineError(error: unknown): AppError {
-  const message =
+function normalizedErrorMessage(error: unknown): string {
+  return (
     specificErrorMessage(error) ??
-    (error instanceof Error ? error.message : String(error));
+    (error instanceof Error ? error.message : String(error))
+  );
+}
+
+function isRetryableStreamMessage(message: string): boolean {
+  return /ERR_CONNECTION|ECONN|connection.{0,20}(closed|reset|aborted)|socket|network|fetch|stream.{0,20}(closed|reset|aborted|terminated)|SSE|terminated|timed?\s*out|UND_ERR/i.test(
+    message,
+  );
+}
+
+export function normalizeEngineError(error: unknown): AppError {
+  const message = normalizedErrorMessage(error);
   return {
     code: "AGENT_ERROR",
     message,
-    retryable: /429|5\d\d|timeout|network|fetch/i.test(message),
+    retryable: /429|5\d\d/i.test(message) || isRetryableStreamMessage(message),
   };
+}
+
+export function isRetryableStreamError(error: unknown): boolean {
+  return isRetryableStreamMessage(normalizedErrorMessage(error));
 }
 
 function base(
@@ -196,140 +250,202 @@ export class AISDKEngine implements AIEngine {
     return { installed: true, authenticated: true, compatible: true };
   }
 
+  async generateTitle(options: EngineTitleOptions): Promise<string | undefined> {
+    const result = await generateText({
+      model: languageModel(options.provider, options.apiKey, options.model),
+      system:
+        "根据用户的第一条消息生成一个简短、明确的中文对话标题。只输出标题，不要引号、句号、Markdown 或解释；最多 18 个汉字。",
+      prompt: options.prompt,
+      maxOutputTokens: 32,
+      abortSignal: options.abortSignal,
+      providerOptions:
+        options.provider.providerType === "openai"
+          ? { openai: { store: false } }
+          : undefined,
+    });
+    const title = result.text
+      .trim()
+      .split(/\r?\n/, 1)[0]
+      ?.replace(/^["'“”‘’#*\s]+|["'“”‘’#*\s。]+$/g, "")
+      .trim();
+    return title ? title.slice(0, 36) : undefined;
+  }
+
   async *run(options: EngineRunOptions): AsyncIterable<EngineEvent> {
     const controller = new AbortController();
     const abort = () => controller.abort(options.abortSignal.reason);
     options.abortSignal.addEventListener("abort", abort, { once: true });
     this.#runs.set(options.runId, controller);
     const queue = new EventQueue();
-    let fullText = "";
     let usage: UsageInfo | undefined;
-    let reason: FinishReason = "stop";
 
     yield { ...base(options), type: "run.started", messageId: options.messageId };
 
     try {
-      const tools = createWorkspaceTools({
-        workspace: options.workspace,
-        signal: controller.signal,
-        approvals: this.approvals,
-        emit: (event) => {
-          const mapped = toolEvent(options, event);
-          if (mapped) queue.push(mapped);
+      const tools = createWorkspaceTools(
+        {
+          workspace: options.workspace,
+          signal: controller.signal,
+          approvals: this.approvals,
+          emit: (event) => {
+            const mapped = toolEvent(options, event);
+            if (mapped) queue.push(mapped);
+          },
         },
-      });
+        options.skills,
+      );
       const instructions = [
         "你是 Tietiezhi Workspace Agent。",
         `所有操作仅允许在 Workspace 目录中进行：${options.workspace}`,
         "先检查现有文件，再进行修改。修改文件或执行命令前必须等待用户审批。",
+        options.skills.length > 0
+          ? "当前存在已启用技能。先用 listSkills 查看描述，任务匹配时再用 readSkill 加载完整说明。"
+          : "",
         "完成后简洁说明修改内容、验证结果和未解决问题。",
         options.systemPrompt?.trim() ?? "",
       ]
         .filter(Boolean)
         .join("\n");
-      const agent = new ToolLoopAgent({
-        model: languageModel(options.provider, options.apiKey, options.model),
-        instructions,
-        tools,
-        providerOptions:
-          options.provider.providerType === "openai"
-            ? { openai: { store: false } }
-            : undefined,
-      });
-      const result = await agent.stream({
-        messages: toMessages(options.messages),
-        abortSignal: controller.signal,
-      });
-
       void (async () => {
         try {
-          for await (const part of result.fullStream) {
-            if (part.type === "text-delta") {
-              fullText += part.text;
+          for (let retryAttempt = 0; ; retryAttempt += 1) {
+            let fullText = "";
+            let reason: FinishReason = "stop";
+            let toolActivity = false;
+            if (retryAttempt > 0) {
               queue.push({
                 ...base(options),
-                type: "text.delta",
+                type: "run.retry.started",
                 messageId: options.messageId,
-                delta: part.text,
+                attempt: retryAttempt,
               });
-            } else if (part.type === "reasoning-delta") {
-              queue.push({
-                ...base(options),
-                type: "reasoning.delta",
-                messageId: options.messageId,
-                delta: part.text,
-              });
-            } else if (part.type === "tool-call") {
-              queue.push({
-                ...base(options),
-                type: "tool.call",
-                messageId: options.messageId,
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                input: part.input,
-              });
-            } else if (part.type === "tool-result") {
-              queue.push({
-                ...base(options),
-                type: "tool.result",
-                messageId: options.messageId,
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                output: part.output,
-                isError: false,
-              });
-            } else if (part.type === "tool-error") {
-              queue.push({
-                ...base(options),
-                type: "tool.result",
-                messageId: options.messageId,
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                output: normalizeEngineError(part.error),
-                isError: true,
-              });
-            } else if (part.type === "finish") {
-              usage = usageOf(part.totalUsage);
-              reason = finishReason(part.finishReason);
-              queue.push({
-                ...base(options),
-                type: "usage",
-                messageId: options.messageId,
-                usage,
-              });
-            } else if (part.type === "error") {
-              throw part.error;
             }
-          }
-          if (fullText) {
-            queue.push({
-              ...base(options),
-              type: "text.end",
-              messageId: options.messageId,
-              text: fullText,
-            });
-          }
-          queue.push({
-            ...base(options),
-            type: "run.completed",
-            messageId: options.messageId,
-            finishReason: controller.signal.aborted ? "cancelled" : reason,
-          });
-        } catch (error) {
-          if (controller.signal.aborted) {
-            queue.push({
-              ...base(options),
-              type: "run.completed",
-              messageId: options.messageId,
-              finishReason: "cancelled",
-            });
-          } else {
-            queue.push({
-              ...base(options),
-              type: "run.failed",
-              messageId: options.messageId,
-              error: normalizeEngineError(error),
-            });
+            try {
+              const agent = new ToolLoopAgent({
+                model: languageModel(options.provider, options.apiKey, options.model),
+                instructions,
+                tools,
+                maxRetries: 4,
+                providerOptions:
+                  options.provider.providerType === "openai"
+                    ? { openai: { store: false } }
+                    : undefined,
+              });
+              const result = await agent.stream({
+                messages: toMessages(options.messages),
+                abortSignal: controller.signal,
+              });
+              for await (const part of result.fullStream) {
+                if (part.type === "text-delta") {
+                  fullText += part.text;
+                  queue.push({
+                    ...base(options),
+                    type: "text.delta",
+                    messageId: options.messageId,
+                    delta: part.text,
+                  });
+                } else if (part.type === "reasoning-delta") {
+                  queue.push({
+                    ...base(options),
+                    type: "reasoning.delta",
+                    messageId: options.messageId,
+                    delta: part.text,
+                  });
+                } else if (part.type === "tool-call") {
+                  toolActivity = true;
+                  queue.push({
+                    ...base(options),
+                    type: "tool.call",
+                    messageId: options.messageId,
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    input: part.input,
+                  });
+                } else if (part.type === "tool-result") {
+                  queue.push({
+                    ...base(options),
+                    type: "tool.result",
+                    messageId: options.messageId,
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    output: part.output,
+                    isError: false,
+                  });
+                } else if (part.type === "tool-error") {
+                  queue.push({
+                    ...base(options),
+                    type: "tool.result",
+                    messageId: options.messageId,
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    output: normalizeEngineError(part.error),
+                    isError: true,
+                  });
+                } else if (part.type === "finish") {
+                  usage = usageOf(part.totalUsage);
+                  reason = finishReason(part.finishReason);
+                  queue.push({
+                    ...base(options),
+                    type: "usage",
+                    messageId: options.messageId,
+                    usage,
+                  });
+                } else if (part.type === "error") {
+                  throw part.error;
+                }
+              }
+              if (fullText) {
+                queue.push({
+                  ...base(options),
+                  type: "text.end",
+                  messageId: options.messageId,
+                  text: fullText,
+                });
+              }
+              queue.push({
+                ...base(options),
+                type: "run.completed",
+                messageId: options.messageId,
+                finishReason: controller.signal.aborted ? "cancelled" : reason,
+              });
+              break;
+            } catch (error) {
+              if (controller.signal.aborted) {
+                queue.push({
+                  ...base(options),
+                  type: "run.completed",
+                  messageId: options.messageId,
+                  finishReason: "cancelled",
+                });
+                break;
+              }
+              if (
+                !toolActivity &&
+                retryAttempt < STREAM_MAX_RETRIES &&
+                isRetryableStreamError(error)
+              ) {
+                const attempt = retryAttempt + 1;
+                const delayMs = retryDelay(attempt);
+                queue.push({
+                  ...base(options),
+                  type: "run.retrying",
+                  messageId: options.messageId,
+                  attempt,
+                  maxRetries: STREAM_MAX_RETRIES,
+                  delayMs,
+                  reason: normalizeEngineError(error).message,
+                });
+                await waitForRetry(delayMs, controller.signal);
+                continue;
+              }
+              queue.push({
+                ...base(options),
+                type: "run.failed",
+                messageId: options.messageId,
+                error: normalizeEngineError(error),
+              });
+              break;
+            }
           }
         } finally {
           queue.close();
@@ -353,7 +469,6 @@ export class AISDKEngine implements AIEngine {
     } finally {
       options.abortSignal.removeEventListener("abort", abort);
       this.#runs.delete(options.runId);
-      void usage;
     }
   }
 

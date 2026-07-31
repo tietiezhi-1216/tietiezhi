@@ -19,8 +19,15 @@ export function createMainWindow(): BrowserWindow {
     show: false,
     title: "铁铁汁",
     autoHideMenuBar: true,
-    backgroundColor: nativeTheme.shouldUseDarkColors ? "#101114" : "#ffffff",
+    backgroundColor: process.platform === "darwin"
+      ? "#00000000"
+      : nativeTheme.shouldUseDarkColors
+        ? "#101114"
+        : "#ffffff",
+    vibrancy: process.platform === "darwin" ? "sidebar" : undefined,
+    visualEffectState: process.platform === "darwin" ? "active" : undefined,
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
+    trafficLightPosition: process.platform === "darwin" ? { x: 16, y: 17 } : undefined,
     webPreferences: {
       preload: PRELOAD,
       contextIsolation: true,

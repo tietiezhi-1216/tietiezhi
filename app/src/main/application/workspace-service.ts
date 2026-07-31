@@ -3,7 +3,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { basename, join, relative, resolve } from "node:path";
 
-import { app, dialog } from "electron";
+import { app, dialog, shell } from "electron";
 
 import type { WorkspaceFile, WorkspaceInfo } from "@shared/contracts";
 
@@ -68,6 +68,12 @@ export class WorkspaceService {
     const workspace = await this.#prepare(path);
     this.#selected.add(workspace.path);
     return workspace;
+  }
+
+  async reveal(path: string): Promise<void> {
+    const workspace = await this.restore(path);
+    const error = await shell.openPath(workspace.path);
+    if (error) throw new Error(error);
   }
 
   async removeTemporary(path: string): Promise<void> {

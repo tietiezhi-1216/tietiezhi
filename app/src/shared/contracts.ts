@@ -42,6 +42,7 @@ export interface ProviderAccountInput {
 }
 
 export type EngineKind = "native" | "cli";
+export type TaskMode = "work" | "code";
 
 export interface EngineDescriptor {
   id: string;
@@ -81,6 +82,9 @@ export interface UsageInfo {
   inputTokens: number | null;
   outputTokens: number | null;
   totalTokens: number | null;
+  cachedInputTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
 }
 
 export type MessagePart =
@@ -121,7 +125,10 @@ export interface AppMessage {
   parts: MessagePart[];
   engineId?: string;
   modelId?: string;
+  providerAccountId?: string;
   runId?: string;
+  firstTokenAt?: number;
+  completedAt?: number;
   usage?: UsageInfo;
 }
 
@@ -134,6 +141,7 @@ export interface Conversation {
   activeModelId?: string;
   providerAccountId?: string;
   workspace?: string;
+  taskMode: TaskMode;
 }
 
 export interface ConversationDetail {
@@ -149,6 +157,7 @@ export interface SendMessageInput {
   engineId?: string;
   systemPrompt?: string;
   workspace?: string;
+  taskMode?: TaskMode;
 }
 
 export type FinishReason = "stop" | "length" | "tool" | "cancelled" | "error";
@@ -163,6 +172,19 @@ interface EngineEventBase {
 
 export type EngineEvent =
   | (EngineEventBase & { type: "run.started"; messageId: string })
+  | (EngineEventBase & {
+      type: "run.retrying";
+      messageId: string;
+      attempt: number;
+      maxRetries: number;
+      delayMs: number;
+      reason: string;
+    })
+  | (EngineEventBase & {
+      type: "run.retry.started";
+      messageId: string;
+      attempt: number;
+    })
   | (EngineEventBase & { type: "text.start"; messageId: string })
   | (EngineEventBase & { type: "text.delta"; messageId: string; delta: string })
   | (EngineEventBase & { type: "text.end"; messageId: string; text: string })
@@ -231,6 +253,48 @@ export interface WorkspaceFile {
   size?: number;
 }
 
+export interface WorkspaceToolDescriptor {
+  id: string;
+  name: string;
+  description: string;
+  category: "read" | "write" | "shell" | "skill";
+  approvalRequired: boolean;
+}
+
+export interface SkillSummary {
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+export interface SkillDetail extends SkillSummary {
+  body: string;
+}
+
+export interface SkillInput {
+  name: string;
+  description: string;
+  body: string;
+}
+
+export interface AgentPreferences {
+  systemPrompt: string;
+}
+
+export const DEFAULT_SYSTEM_PROMPT = `你是铁铁汁（Tietiezhi），一个运行在用户桌面上的智能体助手。
+
+# 工作方式
+- 回答默认使用简体中文，除非用户使用其它语言。
+- 你可以调用本轮实际提供的工具来读写文件、搜索或执行操作；需要动手时直接调用可用工具。
+- 工具的文件路径一律使用相对工作区的路径。
+- 修改文件前先读取并确认原文，编辑时做精确替换。
+- 执行有风险的命令前先向用户说明意图。
+- 完成任务后简要总结做了什么；出错时如实报告错误内容。
+
+# 输出
+- 使用 Markdown。代码引用用代码块并标注语言。
+- 保持简洁：直接给结论，再给必要的细节。`;
+
 export interface GatewayAccount {
   userId: number;
   email: string;
@@ -251,13 +315,61 @@ export interface ImageGenerationRequest {
   model: string;
   prompt: string;
   aspectRatio?: `${number}:${number}`;
+  resolution?: MediaResolution;
+  quality?: "auto" | "low" | "medium" | "high";
   count?: number;
+  references?: MediaReferenceInput[];
+}
+
+export type MediaResolution =
+  | `${number}x${number}`
+  | "512"
+  | "1K"
+  | "2K"
+  | "4K";
+
+export interface VideoGenerationRequest {
+  providerAccountId: string;
+  model: string;
+  prompt: string;
+  aspectRatio?: `${number}:${number}`;
+  resolution?: MediaResolution;
+  duration?: number;
+  count?: number;
+  references?: MediaReferenceInput[];
+}
+
+export type MediaType = "image" | "video";
+export type MediaReferenceRole = "reference" | "first-frame" | "last-frame";
+
+export interface MediaReferenceInput {
+  assetId: string;
+  role: MediaReferenceRole;
+}
+
+export interface LocalMediaAsset {
+  id: string;
+  name: string;
+  type: MediaType;
+  source: "imported" | "generated";
+  filePath: string;
+  mimeType: string;
+  width?: number;
+  height?: number;
+  duration?: number;
+  createdAt: number;
+  originJobId?: string;
+}
+
+export interface MediaJobReference extends MediaReferenceInput {
+  order: number;
+  asset: LocalMediaAsset;
 }
 
 export interface MediaArtifact {
   id: string;
   jobId: string;
-  type: "image";
+  type: MediaType;
   filePath: string;
   mimeType: string;
   createdAt: number;
@@ -265,16 +377,20 @@ export interface MediaArtifact {
 
 export interface MediaJob {
   id: string;
-  type: "image";
+  type: MediaType;
   providerId: string;
   modelId: string;
   prompt: string;
   aspectRatio?: `${number}:${number}`;
+  resolution?: MediaResolution;
+  quality?: "auto" | "low" | "medium" | "high";
+  duration?: number;
   count: number;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
   createdAt: number;
   updatedAt: number;
   artifacts: MediaArtifact[];
+  references: MediaJobReference[];
   error?: AppError;
 }
 
@@ -350,15 +466,35 @@ export interface DesktopAPI {
   workspace: {
     createTemporary(): Promise<WorkspaceInfo>;
     choose(): Promise<WorkspaceInfo | null>;
+    reveal(path: string): Promise<void>;
     listFiles(conversationId: string): Promise<WorkspaceFile[]>;
     readFile(conversationId: string, path: string): Promise<string>;
+  };
+  tools: {
+    list(): Promise<WorkspaceToolDescriptor[]>;
+  };
+  skills: {
+    list(): Promise<SkillSummary[]>;
+    read(name: string): Promise<SkillDetail>;
+    save(input: SkillInput): Promise<SkillDetail>;
+    remove(name: string): Promise<void>;
+    setEnabled(name: string, enabled: boolean): Promise<void>;
+    import(): Promise<SkillDetail | null>;
+  };
+  preferences: {
+    get(): Promise<AgentPreferences>;
+    save(input: AgentPreferences): Promise<AgentPreferences>;
   };
   approvals: {
     resolve(approvalId: string, approved: boolean): Promise<void>;
   };
   media: {
     list(): Promise<MediaJob[]>;
+    listAssets(): Promise<LocalMediaAsset[]>;
+    importAssets(): Promise<LocalMediaAsset[]>;
+    removeAsset(id: string): Promise<void>;
     generateImage(input: ImageGenerationRequest): Promise<MediaJob>;
+    generateVideo(input: VideoGenerationRequest): Promise<MediaJob>;
     cancel(id: string): Promise<void>;
     retry(id: string): Promise<MediaJob>;
     remove(id: string): Promise<void>;
