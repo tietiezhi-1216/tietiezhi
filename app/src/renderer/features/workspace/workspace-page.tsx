@@ -91,6 +91,7 @@ import type {
   AppMessage,
   Conversation,
   EngineEvent,
+  GatewayAccountView,
   ProviderAccount,
   WorkspaceToolDescriptor,
   WorkspaceInfo,
@@ -121,6 +122,10 @@ export function WorkspacePage({
   onSwitchArea: (area: ProductArea) => void;
 }) {
   const [providers, setProviders] = useState<ProviderAccount[]>([]);
+  const [gatewayView, setGatewayView] = useState<GatewayAccountView>();
+  const [bootstrapped, setBootstrapped] = useState(false);
+  const [gateBusy, setGateBusy] = useState(false);
+  const [gateError, setGateError] = useState("");
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [messages, setMessages] = useState<AppMessage[]>([]);
@@ -220,8 +225,18 @@ export function WorkspacePage({
           },
         );
       }),
+      window.tietiezhi.gateway
+        .account()
+        .then(setGatewayView)
+        .catch(() =>
+          setGatewayView({
+            providerId: "builtin-official",
+            supported: false,
+            loggedIn: false,
+          }),
+        ),
       refreshConversations(),
-    ]);
+    ]).finally(() => setBootstrapped(true));
   }, [providerVersion]);
 
   useEffect(() => {
@@ -686,6 +701,68 @@ export function WorkspacePage({
 
   const empty = !providerId || !model;
   const activeConversation = conversations.find((conversation) => conversation.id === activeId);
+  // Onboarding gate: without a signed-in gateway account or a user-added
+  // provider, the workspace UI stays hidden until one entry is completed.
+  // The built-in gateway row always exists, so it never counts as setup.
+  const setupRequired =
+    !providers.some((provider) => !provider.builtIn) &&
+    gatewayView?.loggedIn !== true;
+
+  const gateLogin = async () => {
+    setGateBusy(true);
+    setGateError("");
+    try {
+      setGatewayView(await window.tietiezhi.gateway.login());
+      onProviderChanged();
+    } catch (cause) {
+      setGateError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setGateBusy(false);
+    }
+  };
+
+  if (!bootstrapped || setupRequired) {
+    return (
+      <div className="bg-background flex h-full min-h-0 flex-col">
+        <header className="h-12 shrink-0 [-webkit-app-region:drag]" />
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 px-4 pb-16">
+          <img
+            src="./tietiezhi.png"
+            alt="Tietiezhi"
+            draggable={false}
+            className="size-24 object-contain select-none"
+          />
+          {bootstrapped && (
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  disabled={gateBusy}
+                  onClick={() => void gateLogin()}
+                >
+                  {gateBusy && <Loader2 className="animate-spin" />}
+                  登录中转站
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={gateBusy}
+                  onClick={() => onOpenSettings("providers")}
+                >
+                  添加供应商
+                </Button>
+              </div>
+              {gateError && (
+                <p className="text-destructive max-w-sm text-center text-xs">
+                  {gateError}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 bg-transparent">
@@ -1092,8 +1169,8 @@ export function WorkspacePage({
                 >
                   <div className="relative size-12 shrink-0 overflow-hidden">
                     <ProductMascotMotion
-                      src="/mode-mascots/paper-plane/code.png"
-                      blinkSrc="/mode-mascots/paper-plane/code-blink.png"
+                      src="./mode-mascots/paper-plane/code.png"
+                      blinkSrc="./mode-mascots/paper-plane/code-blink.png"
                       variant="workspace"
                       className="size-12"
                     />
@@ -1111,26 +1188,6 @@ export function WorkspacePage({
           </div>
         )}
         <div className="relative mx-auto w-full max-w-3xl px-4 pt-2 pb-4">
-          {!activeId && messages.length === 0 && (
-            <div className="bg-muted/70 relative z-10 mx-3 -mb-2 flex h-10 items-start rounded-t-xl border px-1.5 pt-1 shadow-sm">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 max-w-full gap-1.5 px-2 text-xs"
-                onClick={async () => {
-                  const selected = await window.tietiezhi.workspace.choose();
-                  if (selected) setWorkspace(selected);
-                }}
-              >
-                <FolderOpen className="size-3.5" />
-                <span className="truncate">
-                  {workspace?.name ?? "选择项目，或发送后创建临时 Workspace"}
-                </span>
-                <ChevronRight className="text-muted-foreground size-3" />
-              </Button>
-            </div>
-          )}
           {/* 章鱼的定位基准必须正好是输入框这一层（而不是带 px-4 pt-2 的外框），
               才能和创作页的探头高度、右边距完全一致；且必须排在输入框之前，才会沉到它后面。 */}
           <div className="relative">
@@ -1138,7 +1195,8 @@ export function WorkspacePage({
               visible={messages.length > 0 && !isAtHistoryBottom}
               onClick={() => scrollToBottom("smooth", true)}
             />
-            <div className="bg-muted/70 relative z-20 flex flex-col rounded-2xl border-0 px-2 pt-1.5 pb-1.5 shadow-none transition-colors dark:bg-muted/65">
+            {/* Solid background: the panel must not let content behind it bleed through. */}
+            <div className="bg-muted relative z-20 flex flex-col rounded-2xl border-0 px-2 pt-1.5 pb-1.5 shadow-none transition-colors">
               <Textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
@@ -1157,9 +1215,24 @@ export function WorkspacePage({
                 }
                 disabled={empty}
                 rows={1}
-                className="max-h-40 min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:bg-transparent focus-visible:ring-0 focus-visible:shadow-none dark:bg-transparent dark:focus-visible:bg-transparent dark:focus-visible:shadow-none"
+                className="max-h-40 min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:bg-transparent focus-visible:ring-0 focus-visible:shadow-none disabled:bg-transparent dark:bg-transparent dark:focus-visible:bg-transparent dark:focus-visible:shadow-none dark:disabled:bg-transparent"
               />
               <div className="flex min-h-9 items-center gap-1 pt-0.5 pl-1">
+                {!activeId && messages.length === 0 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground hover:text-foreground h-7 max-w-48 shrink-0 gap-1.5 rounded-full px-2 text-xs"
+                    onClick={async () => {
+                      const selected = await window.tietiezhi.workspace.choose();
+                      if (selected) setWorkspace(selected);
+                    }}
+                  >
+                    <FolderOpen className="size-3.5" />
+                    <span className="truncate">{workspace?.name ?? "选择项目"}</span>
+                  </Button>
+                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -1209,17 +1282,6 @@ export function WorkspacePage({
                   }}
                   onOpenSettings={onOpenSettings}
                 />
-                <Button
-                  type="button"
-                  variant={panelOpen ? "secondary" : "ghost"}
-                  size="icon-sm"
-                  className="text-muted-foreground hover:text-foreground size-7 shrink-0 rounded-full"
-                  onClick={() => setPanelOpen((current) => !current)}
-                  aria-label="Workspace 工具"
-                  title="Workspace 工具"
-                >
-                  <Wrench className="size-3.5" />
-                </Button>
                 {runId ? (
                   <Button
                     type="button"

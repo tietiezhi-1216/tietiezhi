@@ -123,7 +123,7 @@ export function ProviderDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton
-        className="flex h-[760px] max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-5xl"
+        className="flex h-[760px] max-h-[calc(100vh-7rem)] w-[calc(100vw-7rem)] gap-0 overflow-hidden p-0 sm:max-w-5xl"
       >
         <ScrollArea className="bg-muted/30 w-56 shrink-0 border-r">
           <nav className="flex min-h-full flex-col gap-4 p-3">
@@ -398,7 +398,7 @@ function ProviderSection({
         {builtInProvider && (
           <div className="flex flex-wrap items-center gap-4 rounded-xl border px-4 py-3.5">
             <img
-              src="/tietiezhi.png"
+              src="./tietiezhi.png"
               alt="Tietiezhi Gateway"
               draggable={false}
               className="size-12 shrink-0 select-none rounded-full object-contain"

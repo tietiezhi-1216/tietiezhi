@@ -65,10 +65,10 @@ export function OctopusPeekButton({
 
   const image =
     expression === "closed"
-      ? "/octopus-loader/base-closed.png"
+      ? "./octopus-loader/base-closed.png"
       : expression === "look"
-        ? "/octopus-loader/base-look-right.png"
-        : "/octopus-loader/base-open.png";
+        ? "./octopus-loader/base-look-right.png"
+        : "./octopus-loader/base-open.png";
 
   return (
     <Button
@@ -117,7 +117,7 @@ export function OctopusPeekButton({
             className="absolute inset-0 size-16 max-w-none object-contain drop-shadow-sm transition-[scale] duration-500 ease-out group-hover:scale-105 group-focus-visible:scale-105"
           />
           <img
-            src="/octopus-loader/decor-05.png"
+            src="./octopus-loader/decor-05.png"
             alt=""
             draggable={false}
             className="absolute top-1 right-0 size-4 translate-x-1 translate-y-2 rotate-12 opacity-0 transition-[opacity,translate,rotate] delay-100 duration-300 group-hover:translate-x-2 group-hover:-translate-y-1 group-hover:rotate-45 group-hover:opacity-100 group-focus-visible:translate-x-2 group-focus-visible:-translate-y-1 group-focus-visible:rotate-45 group-focus-visible:opacity-100"
