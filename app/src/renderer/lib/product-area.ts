@@ -19,7 +19,7 @@ export const PRODUCT_AREAS = [
   {
     id: "create",
     name: "Create",
-    description: "AI 图片创作与本地资产",
+    description: "AI 图片创作",
     mascotSrc: "./mode-mascots/paper-plane/create.png",
     gradientClassName: "from-fuchsia-300 via-pink-400 to-amber-300",
   },
