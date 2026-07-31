@@ -16,6 +16,7 @@ import { EngineManager } from "./application/engine-manager.js";
 import { MediaService } from "./application/media-service.js";
 import { ProviderService } from "./application/provider-service.js";
 import { GatewayService } from "./application/gateway-service.js";
+import { UpdateService } from "./application/update-service.js";
 import { WorkspaceService } from "./application/workspace-service.js";
 import { AISDKEngine } from "./engines/ai-sdk-engine.js";
 import { setProviderFetch } from "./engines/provider-factory.js";
@@ -116,6 +117,7 @@ function readRequest(value: unknown): { method: string; input: unknown } {
 
 let engines: EngineManager | null = null;
 let approvals: ApprovalManager | null = null;
+let updates: UpdateService | null = null;
 
 async function bootstrap(): Promise<void> {
   setProviderFetch(net.fetch as unknown as typeof globalThis.fetch);
@@ -137,6 +139,8 @@ async function bootstrap(): Promise<void> {
   await engines.registerReady(new AISDKEngine(approvals));
   const conversations = new ConversationService(database, providers, engines, workspaces);
   const media = new MediaService(database, providers);
+  const updateService = new UpdateService();
+  updates = updateService;
 
   conversations.setEventSink((event) => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -146,6 +150,11 @@ async function bootstrap(): Promise<void> {
   media.setEventSink((event) => {
     for (const window of BrowserWindow.getAllWindows()) {
       window.webContents.send(IPC.mediaEvent, event);
+    }
+  });
+  updateService.setEventSink((event) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send(IPC.updateEvent, event);
     }
   });
 
@@ -242,6 +251,14 @@ async function bootstrap(): Promise<void> {
         return media.remove(string(request.input, "id"));
       case "media.saveArtifact":
         return media.saveArtifact(string(request.input, "path"));
+      case "updates.state":
+        return updateService.state();
+      case "updates.check":
+        return updateService.check();
+      case "updates.download":
+        return updateService.download();
+      case "updates.install":
+        return updateService.install();
       default:
         throw new Error(`未知 IPC 方法：${request.method}`);
     }
@@ -249,7 +266,7 @@ async function bootstrap(): Promise<void> {
 
   if (process.env["TIETIEZHI_HEADLESS"] === "1") {
     console.log(
-      "[host] ready: engines providers gateway conversations workspace approvals media",
+      "[host] ready: engines providers gateway conversations workspace approvals media updates",
     );
     app.quit();
     return;
@@ -257,6 +274,7 @@ async function bootstrap(): Promise<void> {
 
   const window = createMainWindow();
   loadRenderer(window);
+  updateService.startAutomaticChecks();
 }
 
 void app
@@ -279,5 +297,6 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   approvals?.dispose();
+  updates?.dispose();
   void engines?.dispose();
 });

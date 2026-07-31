@@ -2,6 +2,7 @@ export const IPC = {
   invoke: "tietiezhi:invoke",
   engineEvent: "tietiezhi:engine-event",
   mediaEvent: "tietiezhi:media-event",
+  updateEvent: "tietiezhi:update-event",
 } as const;
 
 export type ProviderType = "openai" | "anthropic" | "google" | "openai-compatible";
@@ -289,6 +290,40 @@ export type MediaEvent =
       jobId: string;
     };
 
+export type UpdateStatus =
+  | "disabled"
+  | "idle"
+  | "checking"
+  | "available"
+  | "downloading"
+  | "downloaded"
+  | "not-available"
+  | "error";
+
+export interface UpdateState {
+  currentVersion: string;
+  platform: string;
+  architecture: string;
+  supported: boolean;
+  status: UpdateStatus;
+  availableVersion?: string;
+  releaseName?: string;
+  releaseDate?: string;
+  releaseNotes?: string;
+  percent?: number;
+  transferred?: number;
+  total?: number;
+  bytesPerSecond?: number;
+  checkedAt?: number;
+  error?: string;
+}
+
+export interface UpdateEvent {
+  schemaVersion: 1;
+  type: "app.update.state";
+  state: UpdateState;
+}
+
 export interface DesktopAPI {
   engines: {
     list(): Promise<EngineDescriptor[]>;
@@ -331,6 +366,13 @@ export interface DesktopAPI {
     assetURL(path: string): string;
     thumbnailURL(path: string): string;
   };
+  updates: {
+    state(): Promise<UpdateState>;
+    check(): Promise<UpdateState>;
+    download(): Promise<UpdateState>;
+    install(): Promise<void>;
+  };
   onEngineEvent(listener: (event: EngineEvent) => void): () => void;
   onMediaEvent(listener: (event: MediaEvent) => void): () => void;
+  onUpdateEvent(listener: (event: UpdateEvent) => void): () => void;
 }

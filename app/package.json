@@ -1,7 +1,7 @@
 {
   "name": "tietiezhi-app",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "Apache-2.0",
   "author": "Tietiezhi",
   "type": "module",
@@ -12,7 +12,9 @@
     "dev": "electron-vite dev",
     "build": "tsc --noEmit && electron-vite build",
     "dist": "pnpm build && electron-builder",
-    "dist:mac": "pnpm build && electron-builder --mac --universal",
+    "dist:mac": "pnpm build && electron-builder --mac --arm64 --x64",
+    "dist:mac:arm64": "pnpm build && electron-builder --mac --arm64",
+    "dist:mac:x64": "pnpm build && electron-builder --mac --x64",
     "dist:win": "pnpm build && electron-builder --win --x64",
     "smoke:package": "node scripts/package-smoke.mjs",
     "start": "electron-vite preview",
@@ -27,6 +29,7 @@
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "^1.1.1",
+    "electron-updater": "6.8.9",
     "lucide-react": "1.24.0",
     "radix-ui": "1.6.2",
     "react": "19.2.7",
@@ -65,6 +68,14 @@
       "output": "release",
       "buildResources": "../assets/brand"
     },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "electronLanguages": [
+      "en-US",
+      "zh-CN",
+      "zh_CN",
+      "zh-TW",
+      "zh_TW"
+    ],
     "files": [
       "out/**/*",
       "package.json"
@@ -75,17 +86,27 @@
         "dmg",
         "zip"
       ],
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "electronUpdaterCompatibility": ">=2.16"
     },
     "win": {
       "icon": "tietiezhi-mark.png",
       "target": [
         "nsis"
-      ]
+      ],
+      "electronUpdaterCompatibility": ">=2.16"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "tietiezhi-1216",
+        "repo": "tietiezhi",
+        "releaseType": "release"
+      }
+    ]
   }
 }

@@ -5,6 +5,7 @@ import {
   type DesktopAPI,
   type EngineEvent,
   type MediaEvent,
+  type UpdateEvent,
 } from "@shared/contracts";
 
 function invoke<T>(method: string, input?: unknown): Promise<T> {
@@ -56,6 +57,12 @@ const api: DesktopAPI = {
     thumbnailURL: (path) =>
       `tietiezhi-media://asset/?path=${encodeURIComponent(path)}&variant=thumbnail`,
   },
+  updates: {
+    state: () => invoke("updates.state"),
+    check: () => invoke("updates.check"),
+    download: () => invoke("updates.download"),
+    install: () => invoke("updates.install"),
+  },
   onEngineEvent(listener) {
     const handler = (_event: Electron.IpcRendererEvent, payload: EngineEvent) => listener(payload);
     ipcRenderer.on(IPC.engineEvent, handler);
@@ -65,6 +72,11 @@ const api: DesktopAPI = {
     const handler = (_event: Electron.IpcRendererEvent, payload: MediaEvent) => listener(payload);
     ipcRenderer.on(IPC.mediaEvent, handler);
     return () => ipcRenderer.removeListener(IPC.mediaEvent, handler);
+  },
+  onUpdateEvent(listener) {
+    const handler = (_event: Electron.IpcRendererEvent, payload: UpdateEvent) => listener(payload);
+    ipcRenderer.on(IPC.updateEvent, handler);
+    return () => ipcRenderer.removeListener(IPC.updateEvent, handler);
   },
 };
 

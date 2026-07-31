@@ -76,16 +76,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP=$(find release/mac-universal -maxdepth 1 -name '*.app' -type d | head -1)
-          DMG=$(find release -maxdepth 1 -name '*.dmg' -type f | head -1)
-          [ -n "$APP" ] && [ -n "$DMG" ]
-          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
-          ARCHS=$(lipo -archs "$APP/Contents/MacOS/$EXECUTABLE")
-          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]]
-          codesign --verify --deep --strict --verbose=2 "$APP"
-          xcrun stapler validate "$APP"
-          hdiutil verify "$DMG"
-          pnpm smoke:package "$APP/Contents/MacOS/$EXECUTABLE"
+          APPS=$(find release -maxdepth 2 -name '*.app' -type d)
+          [ "$(printf '%s\n' "$APPS" | sed '/^$/d' | wc -l | tr -d ' ')" = "2" ]
+          FOUND_ARM64=0
+          FOUND_X64=0
+          while IFS= read -r APP; do
+            [ -n "$APP" ] || continue
+            EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+            ARCHS=$(lipo -archs "$APP/Contents/MacOS/$EXECUTABLE")
+            [ "$ARCHS" = "arm64" ] && FOUND_ARM64=1
+            [ "$ARCHS" = "x86_64" ] && FOUND_X64=1
+            codesign --verify --deep --strict --verbose=2 "$APP"
+            xcrun stapler validate "$APP"
+            if { [ "$ARCHS" = "arm64" ] && [ "$(uname -m)" = "arm64" ]; } ||
+               { [ "$ARCHS" = "x86_64" ] && [ "$(uname -m)" = "x86_64" ]; }; then
+              pnpm smoke:package "$APP/Contents/MacOS/$EXECUTABLE"
+            fi
+          done <<< "$APPS"
+          [ "$FOUND_ARM64" = "1" ] && [ "$FOUND_X64" = "1" ]
+          for DMG in release/*.dmg; do
+            hdiutil verify "$DMG"
+          done
+          test -f release/latest-mac.yml
+          grep -q 'arm64.zip' release/latest-mac.yml
+          grep -q 'x64.zip' release/latest-mac.yml
       - name: Validate Windows package
         if: matrix.platform == 'windows'
         shell: pwsh
@@ -96,6 +110,12 @@ jobs:
             throw "未找到 Windows 应用可执行文件"
           }
           pnpm smoke:package $executable
+          if (-not (Test-Path release/latest.yml)) {
+            throw "未生成 Windows 更新元数据"
+          }
+          if (-not (Get-ChildItem release -Filter *.blockmap)) {
+            throw "未生成 Windows 差分更新数据"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.platform }}
@@ -103,6 +123,8 @@ jobs:
             app/release/*.dmg
             app/release/*.zip
             app/release/*.exe
+            app/release/*.blockmap
+            app/release/latest*.yml
           if-no-files-found: error
 
   publish:

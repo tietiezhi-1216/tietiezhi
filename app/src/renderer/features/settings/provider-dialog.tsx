@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import {
+  CheckCircle2,
+  Download,
   KeyRound,
   Loader2,
   LogIn,
@@ -37,9 +39,10 @@ import type {
   GatewayAccountView,
   ProviderAccount,
   ProviderType,
+  UpdateState,
 } from "@shared/contracts";
 
-type SettingsCategory = "account" | "providers" | "appearance";
+type SettingsCategory = "account" | "providers" | "appearance" | "updates";
 
 const GROUPS = [
   {
@@ -52,7 +55,10 @@ const GROUPS = [
   },
   {
     label: "通用",
-    items: [{ id: "appearance", label: "外观", icon: Palette }],
+    items: [
+      { id: "appearance", label: "外观", icon: Palette },
+      { id: "updates", label: "软件更新", icon: RefreshCw },
+    ],
   },
 ] as const;
 
@@ -60,6 +66,7 @@ const CATEGORY_LABELS: Record<SettingsCategory, string> = {
   account: "中转站账号",
   providers: "供应商",
   appearance: "外观",
+  updates: "软件更新",
 };
 
 export function ProviderDialog({
@@ -120,6 +127,7 @@ export function ProviderDialog({
                 <ProviderSection open={open} onChanged={onChanged} />
               )}
               {category === "appearance" && <AppearanceSection />}
+              {category === "updates" && <UpdateSection open={open} />}
             </div>
           </ScrollArea>
         </div>
@@ -466,6 +474,187 @@ function AppearanceSection() {
             {option.label}
           </Button>
         ))}
+      </div>
+    </section>
+  );
+}
+
+const UPDATE_STATUS_LABEL: Record<UpdateState["status"], string> = {
+  disabled: "不可用",
+  idle: "等待检查",
+  checking: "正在检查",
+  available: "发现新版本",
+  downloading: "正在下载",
+  downloaded: "等待安装",
+  "not-available": "已是最新版本",
+  error: "更新失败",
+};
+
+function formatBytes(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return "0 B";
+  if (value < 1024) return `${Math.round(value)} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function UpdateSection({ open }: { open: boolean }) {
+  const [state, setState] = useState<UpdateState>();
+  const [actionBusy, setActionBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let active = true;
+    void window.tietiezhi.updates.state().then((next) => {
+      if (active) setState(next);
+    });
+    const dispose = window.tietiezhi.onUpdateEvent((event) => {
+      if (active) setState(event.state);
+    });
+    return () => {
+      active = false;
+      dispose();
+    };
+  }, [open]);
+
+  const run = async (action: () => Promise<UpdateState>) => {
+    setActionBusy(true);
+    try {
+      setState(await action());
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  if (state === undefined) {
+    return (
+      <div className="grid min-h-48 place-items-center">
+        <Loader2 className="text-muted-foreground size-5 animate-spin" />
+      </div>
+    );
+  }
+
+  const active = actionBusy || state.status === "checking" || state.status === "downloading";
+  const architecture =
+    state.architecture === "arm64"
+      ? "Apple Silicon"
+      : state.architecture === "x64"
+        ? "Intel x64"
+        : state.architecture;
+
+  return (
+    <section className="flex flex-col gap-5">
+      <div>
+        <h3 className="font-semibold">Tietiezhi Desktop</h3>
+        <p className="text-muted-foreground mt-1 text-sm">
+          自动匹配当前系统和 CPU 架构，下载完成后可直接重启安装。
+        </p>
+      </div>
+
+      <div className="rounded-xl border">
+        <div className="flex items-center gap-4 p-5">
+          <div className="bg-primary/10 text-primary grid size-11 shrink-0 place-items-center rounded-xl">
+            <Monitor className="size-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="font-semibold">当前版本 v{state.currentVersion}</p>
+              <Badge variant={state.status === "error" ? "destructive" : "secondary"}>
+                {UPDATE_STATUS_LABEL[state.status]}
+              </Badge>
+            </div>
+            <p className="text-muted-foreground mt-1 text-xs">
+              {state.platform === "darwin" ? "macOS" : state.platform === "win32" ? "Windows" : state.platform}
+              {" · "}
+              {architecture}
+            </p>
+          </div>
+          {state.status !== "downloaded" && state.status !== "available" && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!state.supported || active}
+              onClick={() => void run(() => window.tietiezhi.updates.check())}
+            >
+              {active ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              检查更新
+            </Button>
+          )}
+        </div>
+
+        {(state.status === "available" ||
+          state.status === "downloading" ||
+          state.status === "downloaded") && (
+          <div className="border-t p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold">
+                  新版本 v{state.availableVersion ?? "未知"}
+                </p>
+                {state.releaseDate && (
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    发布时间 {new Date(state.releaseDate).toLocaleString("zh-CN")}
+                  </p>
+                )}
+              </div>
+              {state.status === "available" && (
+                <Button
+                  type="button"
+                  disabled={active}
+                  onClick={() => void run(() => window.tietiezhi.updates.download())}
+                >
+                  <Download />
+                  下载更新
+                </Button>
+              )}
+              {state.status === "downloaded" && (
+                <Button type="button" onClick={() => void window.tietiezhi.updates.install()}>
+                  <CheckCircle2 />
+                  重启并安装
+                </Button>
+              )}
+            </div>
+
+            {state.status === "downloading" && (
+              <div className="mt-4 space-y-2">
+                <progress
+                  className="accent-primary h-2 w-full overflow-hidden rounded-full"
+                  value={state.percent ?? 0}
+                  max={100}
+                />
+                <div className="text-muted-foreground flex justify-between text-xs">
+                  <span>
+                    {formatBytes(state.transferred)} / {formatBytes(state.total)}
+                  </span>
+                  <span>
+                    {(state.percent ?? 0).toFixed(1)}% · {formatBytes(state.bytesPerSecond)}/s
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {state.releaseNotes && (
+              <p className="text-muted-foreground mt-4 whitespace-pre-wrap text-sm leading-6">
+                {state.releaseNotes}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {state.status === "not-available" && (
+        <div className="flex items-center gap-2 rounded-lg bg-emerald-500/10 px-3 py-2.5 text-sm text-emerald-600 dark:text-emerald-400">
+          <CheckCircle2 className="size-4" />
+          当前已经是最新版本。
+        </div>
+      )}
+      {state.error && (
+        <div className="text-destructive bg-destructive/10 rounded-lg px-3 py-2.5 text-sm">
+          {state.error}
+        </div>
+      )}
+      <div className="bg-muted/40 rounded-lg p-3 text-xs leading-5">
+        Windows 使用 NSIS 差分下载；macOS 从第二次应用内更新开始复用本地更新缓存进行差分下载。
+        如果差分条件不满足，会自动回退为完整安装包。
       </div>
     </section>
   );
