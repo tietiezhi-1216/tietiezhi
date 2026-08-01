@@ -751,20 +751,19 @@ export function WorkspacePage({
             <div className="flex items-center gap-3">
               <Button
                 type="button"
-                variant="outline"
                 disabled={gateBusy}
                 onClick={() => void gateLogin()}
-                className="border-foreground/10 bg-foreground/[0.05] text-foreground hover:border-foreground/20 hover:bg-foreground/10 h-10 rounded-full px-5 shadow-none backdrop-blur"
+                className="h-10 rounded-full px-5 dark:bg-white dark:text-neutral-950 dark:hover:bg-white/90"
               >
                 {gateBusy ? <Loader2 className="animate-spin" /> : <LogIn />}
                 铁铁汁登录
               </Button>
               <Button
                 type="button"
-                variant="ghost"
+                variant="outline"
                 disabled={gateBusy}
                 onClick={() => setGateProviderOpen(true)}
-                className="text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] h-10 rounded-full px-5"
+                className="h-10 rounded-full px-5"
               >
                 <Plus />
                 添加供应商

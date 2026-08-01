@@ -27,18 +27,20 @@ interface MotionDefinition {
 const liftProgress = (phase: number): number => (1 - Math.cos(phase)) / 2;
 
 const MOTIONS: Record<ProductMotionVariant, MotionDefinition> = {
+  // The onboarding mascot renders at ~160px from a 512px canvas, so the
+  // amplitudes need to be large enough to survive the downscale.
   tietiezhi: {
-    duration: 8_000,
+    duration: 6_800,
     frame: (phase) => ({
-      translateX: Math.sin(phase) * 2.2 + Math.sin(phase * 2) * 0.8,
-      translateY: -liftProgress(phase) * 5.2 + Math.sin(phase * 2) * 0.7,
-      rotation: Math.sin(phase) * 0.011 - Math.sin(phase * 2) * 0.004,
-      scaleX: 1 + Math.sin(phase * 2) * 0.005,
-      scaleY: 1 + liftProgress(phase) * 0.009 - Math.sin(phase * 2) * 0.003,
-      waveAmplitude: 2.4,
-      waveSpread: 1.5,
-      waveStart: 0.53,
-      waveTurns: 2,
+      translateX: Math.sin(phase) * 7 + Math.sin(phase * 2) * 2.4,
+      translateY: -liftProgress(phase) * 14 + Math.sin(phase * 2) * 2.2,
+      rotation: Math.sin(phase) * 0.034 - Math.sin(phase * 2) * 0.012,
+      scaleX: 1 + Math.sin(phase * 2) * 0.012 - liftProgress(phase) * 0.008,
+      scaleY: 1 + liftProgress(phase) * 0.024 - Math.sin(phase * 2) * 0.008,
+      waveAmplitude: 7.5,
+      waveSpread: 4.2,
+      waveStart: 0.48,
+      waveTurns: 3,
     }),
   },
   workspace: {

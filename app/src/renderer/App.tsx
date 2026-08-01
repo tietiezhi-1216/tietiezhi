@@ -64,7 +64,7 @@ export function App() {
   }, []);
 
   return (
-    <div className="text-foreground h-svh min-w-[900px] overflow-hidden bg-transparent">
+    <div className="text-foreground h-svh overflow-hidden bg-transparent">
       <div className="relative h-full">
         <AreaLayer active={area === "workspace"}>
           <WorkspacePage
