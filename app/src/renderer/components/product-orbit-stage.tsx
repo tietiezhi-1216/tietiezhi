@@ -14,16 +14,20 @@ export function ProductOrbitStage({
   variant,
   className,
 }: {
-  variant: "workspace" | "create";
+  variant: "workspace" | "create" | "tietiezhi";
   className?: string;
 }) {
   const create = variant === "create";
   const src = create
     ? "./mode-mascots/paper-plane/create.png"
-    : "./mode-mascots/paper-plane/code.png";
+    : variant === "tietiezhi"
+      ? "./tietiezhi.png"
+      : "./mode-mascots/paper-plane/code.png";
   const blinkSrc = create
     ? "./mode-mascots/paper-plane/create-blink.png"
-    : "./mode-mascots/paper-plane/code-blink.png";
+    : variant === "tietiezhi"
+      ? undefined
+      : "./mode-mascots/paper-plane/code-blink.png";
 
   return (
     <div

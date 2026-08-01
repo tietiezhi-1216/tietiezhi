@@ -125,6 +125,16 @@ export class GatewayService {
   }
 
   async account(): Promise<GatewayAccountView> {
+    // Without a stored session the app must not talk to the gateway at all —
+    // logged-out users stay fully local until they explicitly sign in.
+    const sessionToken = await this.credentials.get(SESSION_REF);
+    if (!sessionToken) {
+      return {
+        providerId: BUILTIN_PROVIDER_ID,
+        supported: true,
+        loggedIn: false,
+      };
+    }
     let discovery: Discovery;
     try {
       discovery = await this.#discovery();
@@ -135,9 +145,8 @@ export class GatewayService {
         loggedIn: false,
       };
     }
-    const sessionToken = await this.credentials.get(SESSION_REF);
     const issuer = await this.credentials.get(ISSUER_REF);
-    if (!sessionToken || issuer !== discovery.issuer) {
+    if (issuer !== discovery.issuer) {
       return {
         providerId: BUILTIN_PROVIDER_ID,
         supported: true,

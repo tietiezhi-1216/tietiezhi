@@ -8,6 +8,7 @@ import {
   type AgentPreferences,
   type ImageGenerationRequest,
   type ProviderAccountInput,
+  type ProviderModelProbeInput,
   type SendMessageInput,
   type SkillInput,
   type VideoGenerationRequest,
@@ -28,7 +29,7 @@ import { setProviderFetch } from "./engines/provider-factory.js";
 import { WORKSPACE_TOOL_DESCRIPTORS } from "./engines/workspace-tools.js";
 import { CredentialStore } from "./infrastructure/credential-store.js";
 import { AppDatabase } from "./infrastructure/database.js";
-import { createMainWindow, loadRenderer } from "./window.js";
+import { applyWindowMode, createMainWindow, loadRenderer } from "./window.js";
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -75,6 +76,7 @@ function providerInput(value: unknown): ProviderAccountInput {
   if (!Array.isArray(models) || models.some((model) => typeof model !== "string")) {
     throw new Error("模型列表格式无效");
   }
+  const modelMetadata = input["modelMetadata"];
   return {
     id: optionalString(input, "id"),
     providerType,
@@ -83,6 +85,29 @@ function providerInput(value: unknown): ProviderAccountInput {
     apiKey: optionalString(input, "apiKey"),
     enabled: typeof input["enabled"] === "boolean" ? input["enabled"] : undefined,
     models,
+    modelMetadata:
+      typeof modelMetadata === "object" && modelMetadata !== null
+        ? (modelMetadata as ProviderAccountInput["modelMetadata"])
+        : undefined,
+  };
+}
+
+function providerProbeInput(value: unknown): ProviderModelProbeInput {
+  const input = record(value);
+  const providerType = input["providerType"];
+  if (
+    providerType !== "openai" &&
+    providerType !== "anthropic" &&
+    providerType !== "google" &&
+    providerType !== "openai-compatible"
+  ) {
+    throw new Error("供应商类型无效");
+  }
+  return {
+    id: optionalString(input, "id"),
+    providerType,
+    baseURL: optionalString(input, "baseURL"),
+    apiKey: optionalString(input, "apiKey"),
   };
 }
 
@@ -292,9 +317,18 @@ async function bootstrap(): Promise<void> {
     }
   });
 
-  ipcMain.handle(IPC.invoke, async (_event, payload: unknown) => {
+  ipcMain.handle(IPC.invoke, async (event, payload: unknown) => {
     const request = readRequest(payload);
     switch (request.method) {
+      case "window.setMode": {
+        const mode = string(request.input, "mode");
+        if (mode !== "setup" && mode !== "normal") {
+          throw new Error(`未知窗口模式：${mode}`);
+        }
+        const sender = BrowserWindow.fromWebContents(event.sender);
+        if (sender) applyWindowMode(sender, mode);
+        return;
+      }
       case "engines.list":
         return engines?.list() ?? [];
       case "providers.list":
@@ -305,6 +339,8 @@ async function bootstrap(): Promise<void> {
         return providers.remove(string(request.input, "id"));
       case "providers.refreshModels":
         return providers.refreshModels(string(request.input, "id"));
+      case "providers.fetchModels":
+        return providers.fetchModels(providerProbeInput(request.input));
       case "gateway.account":
         return gateway.account();
       case "gateway.login":

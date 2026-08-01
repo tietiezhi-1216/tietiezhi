@@ -21,6 +21,7 @@ const api: DesktopAPI = {
     save: (input) => invoke("providers.save", input),
     remove: (id) => invoke("providers.remove", { id }),
     refreshModels: (id) => invoke("providers.refreshModels", { id }),
+    fetchModels: (input) => invoke("providers.fetchModels", input),
   },
   gateway: {
     account: () => invoke("gateway.account"),
@@ -82,6 +83,9 @@ const api: DesktopAPI = {
     check: () => invoke("updates.check"),
     download: () => invoke("updates.download"),
     install: () => invoke("updates.install"),
+  },
+  appWindow: {
+    setMode: (mode) => invoke("window.setMode", { mode }),
   },
   onEngineEvent(listener) {
     const handler = (_event: Electron.IpcRendererEvent, payload: EngineEvent) => listener(payload);

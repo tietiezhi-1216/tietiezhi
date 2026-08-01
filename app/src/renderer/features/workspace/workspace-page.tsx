@@ -18,6 +18,7 @@ import {
   FolderOpen,
   Info,
   Loader2,
+  LogIn,
   MessageSquarePlus,
   MoreHorizontal,
   PanelLeftClose,
@@ -72,8 +73,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { GateStarfield } from "@/components/gate-starfield";
 import { ProductSwitcher } from "@/components/product-switcher";
 import { ProductOrbitStage } from "@/components/product-orbit-stage";
+import { ProviderEditDialog } from "@/features/settings/provider-edit-dialog";
 import { WorkspaceModeSwitcher } from "@/components/workspace-mode-switcher";
 import { GatewayAccountButton } from "@/components/gateway-account-button";
 import { ProductMascotMotion } from "@/components/product-mascot-motion";
@@ -126,6 +129,7 @@ export function WorkspacePage({
   const [bootstrapped, setBootstrapped] = useState(false);
   const [gateBusy, setGateBusy] = useState(false);
   const [gateError, setGateError] = useState("");
+  const [gateProviderOpen, setGateProviderOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [messages, setMessages] = useState<AppMessage[]>([]);
@@ -202,6 +206,12 @@ export function WorkspacePage({
     (conversation) =>
       !conversation.workspace || /[/\\]workspaces[/\\][\w-]+$/.test(conversation.workspace),
   );
+  // Onboarding gate: without a signed-in gateway account or a user-added
+  // provider, the workspace UI stays hidden until one entry is completed.
+  // The built-in gateway row always exists, so it never counts as setup.
+  const setupRequired =
+    !providers.some((provider) => !provider.builtIn) &&
+    gatewayView?.loggedIn !== true;
 
   const refreshConversations = async () => {
     setConversations(await window.tietiezhi.conversations.list());
@@ -238,6 +248,15 @@ export function WorkspacePage({
       refreshConversations(),
     ]).finally(() => setBootstrapped(true));
   }, [providerVersion]);
+
+  // The main process shrinks the window for onboarding and restores the
+  // remembered workspace bounds once setup completes.
+  useEffect(() => {
+    if (!bootstrapped) return;
+    void window.tietiezhi.appWindow
+      .setMode(setupRequired ? "setup" : "normal")
+      .catch(() => undefined);
+  }, [bootstrapped, setupRequired]);
 
   useEffect(() => {
     if (!selectedProvider) {
@@ -701,12 +720,6 @@ export function WorkspacePage({
 
   const empty = !providerId || !model;
   const activeConversation = conversations.find((conversation) => conversation.id === activeId);
-  // Onboarding gate: without a signed-in gateway account or a user-added
-  // provider, the workspace UI stays hidden until one entry is completed.
-  // The built-in gateway row always exists, so it never counts as setup.
-  const setupRequired =
-    !providers.some((provider) => !provider.builtIn) &&
-    gatewayView?.loggedIn !== true;
 
   const gateLogin = async () => {
     setGateBusy(true);
@@ -723,43 +736,52 @@ export function WorkspacePage({
 
   if (!bootstrapped || setupRequired) {
     return (
-      <div className="bg-background flex h-full min-h-0 flex-col">
-        <header className="h-12 shrink-0 [-webkit-app-region:drag]" />
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 px-4 pb-16">
-          <img
-            src="./tietiezhi.png"
-            alt="Tietiezhi"
-            draggable={false}
-            className="size-24 object-contain select-none"
-          />
-          {bootstrapped && (
-            <div className="flex flex-col items-center gap-3">
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  disabled={gateBusy}
-                  onClick={() => void gateLogin()}
-                >
-                  {gateBusy && <Loader2 className="animate-spin" />}
-                  登录中转站
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={gateBusy}
-                  onClick={() => onOpenSettings("providers")}
-                >
-                  添加供应商
-                </Button>
-              </div>
-              {gateError && (
-                <p className="text-destructive max-w-sm text-center text-xs">
-                  {gateError}
-                </p>
-              )}
+      <div className="bg-background relative flex h-full min-h-0 flex-col overflow-hidden">
+        <GateStarfield className="text-muted-foreground" />
+        <header className="relative z-10 h-12 shrink-0 [-webkit-app-region:drag]" />
+        {/* Optical centering: the stage sits slightly above true center. */}
+        <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-[6vh]">
+          <div
+            className={cn(
+              "flex flex-col items-center transition-opacity duration-500",
+              bootstrapped ? "opacity-100" : "opacity-0",
+            )}
+          >
+            <ProductOrbitStage variant="tietiezhi" className="-mt-4 -mb-1" />
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={gateBusy}
+                onClick={() => void gateLogin()}
+                className="border-foreground/10 bg-foreground/[0.05] text-foreground hover:border-foreground/20 hover:bg-foreground/10 h-10 rounded-full px-5 shadow-none backdrop-blur"
+              >
+                {gateBusy ? <Loader2 className="animate-spin" /> : <LogIn />}
+                铁铁汁登录
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={gateBusy}
+                onClick={() => setGateProviderOpen(true)}
+                className="text-muted-foreground hover:text-foreground hover:bg-foreground/[0.06] h-10 rounded-full px-5"
+              >
+                <Plus />
+                添加供应商
+              </Button>
             </div>
-          )}
+            {gateError && (
+              <p className="text-destructive mt-4 max-w-sm text-center text-xs">
+                {gateError}
+              </p>
+            )}
+          </div>
         </div>
+        <ProviderEditDialog
+          open={gateProviderOpen}
+          onOpenChange={setGateProviderOpen}
+          onSaved={onProviderChanged}
+        />
       </div>
     );
   }

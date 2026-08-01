@@ -2,9 +2,13 @@ import { randomUUID } from "node:crypto";
 
 import type {
   ModelMetadata,
+  ModelModality,
   ModelWireAPI,
   ProviderAccount,
   ProviderAccountInput,
+  ProviderModelList,
+  ProviderModelProbeInput,
+  ProviderType,
 } from "@shared/contracts";
 
 import { CredentialStore } from "../infrastructure/credential-store.js";
@@ -20,6 +24,24 @@ const WIRE_APIS = new Set<ModelWireAPI>([
   "anthropic_messages",
   "gemini_generate_content",
 ]);
+
+const MODALITIES = new Set<ModelModality>([
+  "text",
+  "image",
+  "audio",
+  "video",
+  "file",
+]);
+
+function optionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
 
 function defaultBaseURL(type: ProviderAccount["providerType"]): string {
   switch (type) {
@@ -82,7 +104,7 @@ export class ProviderService {
       credentialRef,
       enabled: input.enabled ?? true,
       models: [...new Set(input.models.map((model) => model.trim()).filter(Boolean))],
-      modelMetadata: existing?.modelMetadata ?? {},
+      modelMetadata: input.modelMetadata ?? existing?.modelMetadata ?? {},
       builtIn: existing?.builtIn ?? false,
     };
     if (provider.models.length === 0) throw new Error("至少填写一个模型");
@@ -109,7 +131,13 @@ export class ProviderService {
 
   async key(provider: ProviderAccount): Promise<string> {
     const key = await this.credentials.get(provider.credentialRef);
-    if (!key) throw new Error(`供应商“${provider.displayName}”尚未配置 API Key`);
+    if (!key) {
+      throw new Error(
+        provider.builtIn
+          ? "尚未登录铁铁汁账号，登录后自动配置"
+          : `供应商“${provider.displayName}”尚未配置 API Key`,
+      );
+    }
     return key;
   }
 
@@ -128,11 +156,37 @@ export class ProviderService {
   async refreshModels(id: string): Promise<ProviderAccount> {
     const provider = this.require(id);
     const apiKey = await this.key(provider);
-    const base = provider.baseURL.replace(/\/+$/, "");
+    const { models, modelMetadata } = await this.#probeModels(
+      provider.providerType,
+      provider.baseURL,
+      apiKey,
+    );
+    return this.updateModels(id, models, modelMetadata);
+  }
+
+  /** Probe a provider's /models without requiring it to be saved first. */
+  async fetchModels(input: ProviderModelProbeInput): Promise<ProviderModelList> {
+    let apiKey = input.apiKey?.trim() ?? "";
+    if (!apiKey && input.id) {
+      const existing = this.database.provider(input.id);
+      if (existing) apiKey = (await this.credentials.get(existing.credentialRef)) ?? "";
+    }
+    if (!apiKey) throw new Error("请先填写 API Key");
+    const baseURL = (input.baseURL ?? defaultBaseURL(input.providerType)).trim();
+    if (!baseURL) throw new Error("请先填写 Base URL");
+    return this.#probeModels(input.providerType, baseURL, apiKey);
+  }
+
+  async #probeModels(
+    providerType: ProviderType,
+    baseURL: string,
+    apiKey: string,
+  ): Promise<ProviderModelList> {
+    const base = baseURL.replace(/\/+$/, "");
     const headers = new Headers({ accept: "application/json" });
-    if (provider.providerType === "google") {
+    if (providerType === "google") {
       headers.set("x-goog-api-key", apiKey);
-    } else if (provider.providerType === "anthropic") {
+    } else if (providerType === "anthropic") {
       headers.set("x-api-key", apiKey);
       headers.set("anthropic-version", "2023-06-01");
     } else {
@@ -175,25 +229,43 @@ export class ProviderService {
         WIRE_APIS.has(record["default_wire_api"] as ModelWireAPI)
           ? (record["default_wire_api"] as ModelWireAPI)
           : undefined;
-      const supportedParameters = Array.isArray(record["supported_parameters"])
-        ? record["supported_parameters"].filter(
-            (parameter): parameter is string => typeof parameter === "string",
-          )
-        : [];
+      const inputModalities = stringList(record["input_modalities"]).filter(
+        (modality): modality is ModelModality =>
+          MODALITIES.has(modality as ModelModality),
+      );
+      const reasoningEfforts = stringList(record["reasoning_efforts"]);
+      const defaultReasoningEffort =
+        typeof record["default_reasoning_effort"] === "string"
+          ? record["default_reasoning_effort"]
+          : undefined;
+      // The gateway emits `reasoning` as a profile object; plain providers may
+      // use a boolean. Either shape marks the model as reasoning-capable.
+      const rawReasoning = record["reasoning"];
       const metadata: ModelMetadata = {
         defaultWireAPI,
         wireAPIs,
-        reasoning: typeof record["reasoning"] === "boolean" ? record["reasoning"] : undefined,
-        supportedParameters,
+        reasoning:
+          typeof rawReasoning === "boolean"
+            ? rawReasoning
+            : typeof rawReasoning === "object" && rawReasoning !== null
+              ? true
+              : undefined,
+        reasoningEfforts: reasoningEfforts.length > 0 ? reasoningEfforts : undefined,
+        defaultReasoningEffort,
+        inputModalities: inputModalities.length > 0 ? inputModalities : undefined,
+        toolCall: optionalBoolean(record["tool_call"]),
+        streaming: optionalBoolean(record["streaming"]),
+        supportedParameters: stringList(record["supported_parameters"]),
       };
       return [{ id, metadata }];
     });
     const models = entries.map((entry) => entry.id);
     if (models.length === 0) throw new Error("供应商没有返回可用模型");
-    return this.updateModels(
-      id,
+    return {
       models,
-      Object.fromEntries(entries.map((entry) => [entry.id, entry.metadata])),
-    );
+      modelMetadata: Object.fromEntries(
+        entries.map((entry) => [entry.id, entry.metadata]),
+      ),
+    };
   }
 }

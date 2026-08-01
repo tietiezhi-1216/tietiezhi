@@ -5,6 +5,7 @@ import {
   BrainCircuit,
   Check,
   ChevronDown,
+  Eye,
   Sparkles,
   Wrench,
 } from "lucide-react";
@@ -24,7 +25,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { chatModels } from "@/lib/model-capabilities";
+import { chatModels, modelCapabilities } from "@/lib/model-capabilities";
 import { cn } from "@/lib/utils";
 import type { ProviderAccount } from "@shared/contracts";
 
@@ -55,6 +56,46 @@ const OTHER_FAMILY: ModelFamily = {
 function familyFor(model: string): ModelFamily {
   const normalized = model.trim().toLowerCase();
   return MODEL_FAMILIES.find((family) => family.matches(normalized)) ?? OTHER_FAMILY;
+}
+
+function ModelCapabilityIcons({
+  model,
+  metadata,
+  builtIn,
+  selected,
+}: {
+  model: string;
+  metadata: ProviderAccount["modelMetadata"][string] | undefined;
+  builtIn: boolean;
+  selected: boolean;
+}) {
+  const capabilities = modelCapabilities(model, metadata);
+  const multimodal = capabilities.inputModalities.some((item) => item !== "text");
+  const efforts = capabilities.reasoningEfforts?.join(" / ");
+  return (
+    <span className="text-muted-foreground flex shrink-0 items-center gap-1.5">
+      {multimodal && (
+        <Eye
+          aria-label="支持多模态输入"
+          className="size-3.5"
+        >
+          <title>{`支持输入：${capabilities.inputModalities.join("、")}`}</title>
+        </Eye>
+      )}
+      {capabilities.toolCall && (
+        <Wrench aria-label="支持工具调用" className="size-3.5">
+          <title>支持工具调用</title>
+        </Wrench>
+      )}
+      {capabilities.reasoning && (
+        <BrainCircuit aria-label="支持思考" className="size-3.5">
+          <title>{efforts ? `支持思考，等级：${efforts}` : "支持思考"}</title>
+        </BrainCircuit>
+      )}
+      {builtIn && <Sparkles aria-label="内置渠道" className="size-3.5" />}
+      {selected && <Check className="size-3.5 text-cyan-600" />}
+    </span>
+  );
 }
 
 export function WorkspaceModelSelect({
@@ -264,16 +305,12 @@ export function WorkspaceModelSelect({
                         >
                           {candidate}
                         </span>
-                        <span className="text-muted-foreground flex shrink-0 items-center gap-1.5">
-                          <Wrench aria-label="支持工具" className="size-3.5" />
-                          {metadata?.reasoning && (
-                            <BrainCircuit aria-label="支持推理" className="size-3.5" />
-                          )}
-                          {activeProvider.provider.builtIn && (
-                            <Sparkles aria-label="内置渠道" className="size-3.5" />
-                          )}
-                          {selected && <Check className="size-3.5 text-cyan-600" />}
-                        </span>
+                        <ModelCapabilityIcons
+                          model={candidate}
+                          metadata={metadata}
+                          builtIn={activeProvider.provider.builtIn}
+                          selected={selected}
+                        />
                       </CommandItem>
                     );
                   })}

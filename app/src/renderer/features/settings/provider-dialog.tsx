@@ -39,6 +39,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { ProviderEditDialog } from "@/features/settings/provider-edit-dialog";
 import { SkillsSection } from "@/features/settings/skills-section";
 import { SystemPromptSection } from "@/features/settings/system-prompt-section";
 import { ToolsSection } from "@/features/settings/tools-section";
@@ -47,7 +48,6 @@ import { cn } from "@/lib/utils";
 import type {
   GatewayAccountView,
   ProviderAccount,
-  ProviderType,
   UpdateState,
 } from "@shared/contracts";
 
@@ -307,69 +307,34 @@ function ProviderSection({
   onChanged: () => void;
 }) {
   const [providers, setProviders] = useState<ProviderAccount[]>([]);
-  const [selectedId, setSelectedId] = useState<string>();
-  const selected = providers.find((provider) => provider.id === selectedId);
-  const [providerType, setProviderType] = useState<ProviderType>("openai-compatible");
-  const [displayName, setDisplayName] = useState("");
-  const [baseURL, setBaseURL] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [models, setModels] = useState("");
+  const [gateway, setGateway] = useState<GatewayAccountView>();
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const refresh = async () => setProviders(await window.tietiezhi.providers.list());
+  const refresh = async () => {
+    setProviders(await window.tietiezhi.providers.list());
+    try {
+      setGateway(await window.tietiezhi.gateway.account());
+    } catch {
+      setGateway({ providerId: "builtin-official", supported: false, loggedIn: false });
+    }
+  };
 
   useEffect(() => {
     if (open) void refresh();
   }, [open]);
 
-  useEffect(() => {
-    if (selected === undefined) {
-      setProviderType("openai-compatible");
-      setDisplayName("");
-      setBaseURL("");
-      setModels("");
-    } else {
-      setProviderType(selected.providerType);
-      setDisplayName(selected.displayName);
-      setBaseURL(selected.baseURL);
-      setModels(selected.models.join(", "));
-    }
-    setApiKey("");
-    setError("");
-  }, [selected, selectedId]);
-
-  const save = async () => {
+  const login = async () => {
     setBusy(true);
     setError("");
     try {
-      await window.tietiezhi.providers.save({
-        id: selected?.id,
-        providerType,
-        displayName,
-        baseURL,
-        apiKey: apiKey || undefined,
-        enabled: true,
-        models: models.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean),
-      });
+      setGateway(await window.tietiezhi.gateway.login());
       await refresh();
-      setSelectedId(undefined);
       onChanged();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const remove = async () => {
-    if (!selected || selected.builtIn) return;
-    setBusy(true);
-    try {
-      await window.tietiezhi.providers.remove(selected.id);
-      await refresh();
-      setSelectedId(undefined);
-      onChanged();
     } finally {
       setBusy(false);
     }
@@ -391,6 +356,8 @@ function ProviderSection({
 
   const builtInProvider = providers.find((provider) => provider.builtIn);
   const customProviders = providers.filter((provider) => !provider.builtIn);
+  const loggedIn = gateway?.loggedIn === true;
+  const editing = providers.find((provider) => provider.id === editingId);
 
   return (
     <SettingsSection>
@@ -406,25 +373,39 @@ function ProviderSection({
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <span className="truncate text-sm font-semibold">Tietiezhi Gateway</span>
               <span className="text-muted-foreground text-xs">
-                {builtInProvider.models.length} 个可用模型 · 凭据由中转站账号管理
+                {loggedIn ? `${builtInProvider.models.length} 个可用模型` : "未登录"}
               </span>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() => void refreshModels(builtInProvider)}
-            >
-              <RefreshCw className={busy ? "animate-spin" : undefined} />
-              刷新模型列表
-            </Button>
+            {loggedIn ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => void refreshModels(builtInProvider)}
+              >
+                <RefreshCw className={busy ? "animate-spin" : undefined} />
+                刷新模型列表
+              </Button>
+            ) : (
+              <Button size="sm" disabled={busy} onClick={() => void login()}>
+                {busy ? <Loader2 className="animate-spin" /> : <LogIn />}
+                铁铁汁登录
+              </Button>
+            )}
           </div>
         )}
 
         <div className="flex flex-col gap-2.5">
           <div className="flex items-center justify-between gap-3 px-0.5">
             <h3 className="text-sm font-medium">自定义供应商</h3>
-            <Button variant="outline" size="sm" onClick={() => setSelectedId("new")}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setEditingId(undefined);
+                setEditorOpen(true);
+              }}
+            >
               <Plus /> 添加供应商
             </Button>
           </div>
@@ -449,7 +430,15 @@ function ProviderSection({
                   {provider.baseURL || "默认地址"} · {provider.models.length} 个模型
                 </span>
               </div>
-              <Button variant="ghost" size="icon" aria-label="编辑" onClick={() => setSelectedId(provider.id)}>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="编辑"
+                onClick={() => {
+                  setEditingId(provider.id);
+                  setEditorOpen(true);
+                }}
+              >
                 <KeyRound />
               </Button>
             </div>
@@ -458,42 +447,15 @@ function ProviderSection({
         {error && <p className="text-destructive text-xs">{error}</p>}
       </div>
 
-      <Dialog open={selectedId !== undefined} onOpenChange={(next) => !next && setSelectedId(undefined)}>
-        <DialogContent className="sm:max-w-2xl">
-          <DialogTitle>{selected ? `编辑 ${selected.displayName}` : "添加供应商"}</DialogTitle>
-          <div className="grid gap-4 py-2">
-            <Field label="类型">
-              <Select value={providerType} onValueChange={(value) => setProviderType(value as ProviderType)}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="openai">OpenAI</SelectItem>
-                  <SelectItem value="anthropic">Anthropic</SelectItem>
-                  <SelectItem value="google">Google</SelectItem>
-                  <SelectItem value="openai-compatible">OpenAI-compatible</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field label="名称"><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></Field>
-            <Field label="Base URL"><Input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://example.com/v1" /></Field>
-            <Field label={selected ? "API Key（留空则保持原值）" : "API Key"}>
-              <Input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="off" />
-            </Field>
-            <Field label="模型">
-              <Input value={models} onChange={(event) => setModels(event.target.value)} placeholder="gpt-5, gpt-image-1" />
-            </Field>
-            {error && <p className="text-destructive text-xs">{error}</p>}
-            <div className="flex items-center justify-between">
-              <div>{selected && <Button variant="destructive" onClick={() => void remove()} disabled={busy}><Trash2 /> 删除</Button>}</div>
-              <div className="flex gap-2">
-                <Button variant="outline" onClick={() => setSelectedId(undefined)}>取消</Button>
-                <Button onClick={() => void save()} disabled={busy || !displayName.trim()}>
-                  {busy && <Loader2 className="animate-spin" />} 保存
-                </Button>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+      <ProviderEditDialog
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        provider={editing}
+        onSaved={() => {
+          void refresh();
+          onChanged();
+        }}
+      />
     </SettingsSection>
   );
 }
@@ -690,14 +652,5 @@ function AboutSection() {
         Diff、系统提示词和按需技能加载。
       </p>
     </SettingsSection>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-1.5">
-      <Label>{label}</Label>
-      {children}
-    </div>
   );
 }

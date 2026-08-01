@@ -12,11 +12,32 @@ export type ModelWireAPI =
   | "anthropic_messages"
   | "gemini_generate_content";
 
+export type ModelModality = "text" | "image" | "audio" | "video" | "file";
+
 export interface ModelMetadata {
   defaultWireAPI?: ModelWireAPI;
   wireAPIs: ModelWireAPI[];
   reasoning?: boolean;
+  /** Reasoning effort levels the model accepts, e.g. ["low","medium","high"]. */
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  inputModalities?: ModelModality[];
+  toolCall?: boolean;
+  streaming?: boolean;
   supportedParameters: string[];
+}
+
+export interface ProviderModelList {
+  models: string[];
+  modelMetadata: Record<string, ModelMetadata>;
+}
+
+export interface ProviderModelProbeInput {
+  /** Saved provider id — lets the probe reuse the stored API key. */
+  id?: string;
+  providerType: ProviderType;
+  baseURL?: string;
+  apiKey?: string;
 }
 
 export interface ProviderAccount {
@@ -39,6 +60,7 @@ export interface ProviderAccountInput {
   apiKey?: string;
   enabled?: boolean;
   models: string[];
+  modelMetadata?: Record<string, ModelMetadata>;
 }
 
 export type EngineKind = "native" | "cli";
@@ -449,6 +471,7 @@ export interface DesktopAPI {
     save(input: ProviderAccountInput): Promise<ProviderAccount>;
     remove(id: string): Promise<void>;
     refreshModels(id: string): Promise<ProviderAccount>;
+    fetchModels(input: ProviderModelProbeInput): Promise<ProviderModelList>;
   };
   gateway: {
     account(): Promise<GatewayAccountView>;
@@ -507,6 +530,9 @@ export interface DesktopAPI {
     check(): Promise<UpdateState>;
     download(): Promise<UpdateState>;
     install(): Promise<void>;
+  };
+  appWindow: {
+    setMode(mode: "setup" | "normal"): Promise<void>;
   };
   onEngineEvent(listener: (event: EngineEvent) => void): () => void;
   onMediaEvent(listener: (event: MediaEvent) => void): () => void;
