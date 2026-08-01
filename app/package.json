@@ -19,7 +19,8 @@
     "smoke:package": "node scripts/package-smoke.mjs",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/main/**/*.test.ts"
+    "test": "tsx --test src/main/**/*.test.ts",
+    "version:timestamp": "node scripts/set-release-version.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.24",

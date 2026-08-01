@@ -65,7 +65,9 @@ export class UpdateService {
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.autoRunAppAfterInstall = true;
-    autoUpdater.allowPrerelease = false;
+    // Date-based release versions (YYYY.M.D-tHHmmss) carry a SemVer prerelease
+    // segment, so the updater must accept prerelease versions to see them.
+    autoUpdater.allowPrerelease = true;
     autoUpdater.allowDowngrade = false;
     autoUpdater.disableDifferentialDownload = false;
     autoUpdater.logger = {
