@@ -13,10 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import {
-  providerImageModels,
-  providerVideoModels,
-} from "@/lib/model-capabilities";
+import { providerImageModels } from "@/lib/model-capabilities";
 import {
   aspectRatioForResolution,
   mediaModelCapabilities,
@@ -29,7 +26,6 @@ import type {
   MediaResolution,
   MediaType,
   ProviderAccount,
-  VideoGenerationRequest,
 } from "@shared/contracts";
 
 import { CreateComposer } from "./create-composer";
@@ -99,22 +95,15 @@ export function CreatePage({
         .map((provider): CreateProvider => ({
           ...provider,
           imageModels: providerImageModels(provider),
-          videoModels: providerVideoModels(provider),
+          videoModels: [],
         }))
-        .filter(
-          (provider) =>
-            provider.imageModels.length > 0 || provider.videoModels.length > 0,
-        ),
+        .filter((provider) => provider.imageModels.length > 0),
     [providers],
   );
   const availableProviders = useMemo(
     () =>
-      createProviders.filter((provider) =>
-        mode === "image"
-          ? provider.imageModels.length > 0
-          : provider.videoModels.length > 0,
-      ),
-    [createProviders, mode],
+      createProviders.filter((provider) => provider.imageModels.length > 0),
+    [createProviders],
   );
   const selectedProvider = availableProviders.find(
     (provider) => provider.id === providerId,
@@ -191,7 +180,7 @@ export function CreatePage({
           (job) => job.status === "queued" || job.status === "running",
         );
         setActiveJobId(runningJob?.id);
-        if (runningJob) setMode(runningJob.type);
+        if (runningJob?.type === "image") setMode("image");
       })
       .catch((cause: unknown) => {
         if (active) {
@@ -221,14 +210,10 @@ export function CreatePage({
   );
 
   useEffect(() => {
-    const selectedModels =
-      mode === "image"
-        ? selectedProvider?.imageModels
-        : selectedProvider?.videoModels;
+    const selectedModels = selectedProvider?.imageModels;
     if (selectedProvider && selectedModels?.includes(model)) return;
     const nextProvider = availableProviders[0];
-    const nextModels =
-      mode === "image" ? nextProvider?.imageModels : nextProvider?.videoModels;
+    const nextModels = nextProvider?.imageModels;
     setProviderId(nextProvider?.id ?? "");
     setModel(nextModels?.[0] ?? "");
   }, [availableProviders, mode, model, selectedProvider]);
@@ -286,31 +271,16 @@ export function CreatePage({
     setBusy(true);
     setError("");
     try {
-      const job =
-        mode === "video"
-          ? await window.tietiezhi.media.generateVideo({
-              providerAccountId: providerId,
-              model,
-              prompt: prompt.trim(),
-              aspectRatio,
-              resolution:
-                resolution !== undefined && /^\d+x\d+$/.test(resolution)
-                  ? (resolution as `${number}x${number}`)
-                  : undefined,
-              duration,
-              count,
-              references,
-            } satisfies VideoGenerationRequest)
-          : await window.tietiezhi.media.generateImage({
-              providerAccountId: providerId,
-              model,
-              prompt: prompt.trim(),
-              aspectRatio,
-              resolution,
-              quality,
-              count,
-              references,
-            } satisfies ImageGenerationRequest);
+      const job = await window.tietiezhi.media.generateImage({
+        providerAccountId: providerId,
+        model,
+        prompt: prompt.trim(),
+        aspectRatio,
+        resolution,
+        quality,
+        count,
+        references,
+      } satisfies ImageGenerationRequest);
       upsertJob(job);
       setActiveJobId(job.id);
       setPrompt("");
@@ -356,7 +326,8 @@ export function CreatePage({
   }, []);
 
   const changeMode = useCallback((nextMode: MediaType) => {
-    setMode(nextMode);
+    if (nextMode !== "image") return;
+    setMode("image");
     setReferences([]);
     setError("");
   }, []);
@@ -434,7 +405,11 @@ export function CreatePage({
   }, []);
 
   const reuseJob = useCallback((job: MediaJob) => {
-    setMode(job.type);
+    if (job.type !== "image") {
+      setError("历史视频资产仅支持查看，不能重新生成");
+      return;
+    }
+    setMode("image");
     setProviderId(job.providerId);
     setModel(job.modelId);
     setPrompt(job.prompt);

@@ -70,7 +70,6 @@ const api: DesktopAPI = {
     importAssets: () => invoke("media.importAssets"),
     removeAsset: (id) => invoke("media.removeAsset", { id }),
     generateImage: (input) => invoke("media.generateImage", input),
-    generateVideo: (input) => invoke("media.generateVideo", input),
     cancel: (id) => invoke("media.cancel", { id }),
     retry: (id) => invoke("media.retry", { id }),
     remove: (id) => invoke("media.remove", { id }),

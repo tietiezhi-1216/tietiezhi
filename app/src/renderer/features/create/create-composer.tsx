@@ -1,7 +1,6 @@
 import { useState } from "react";
 import {
   ArrowUp,
-  Clapperboard,
   Image as ImageIcon,
   Images,
   LoaderCircle,
@@ -442,29 +441,8 @@ export function CreateComposer({
             </span>
           )}
         </Button>
-        <div className="flex shrink-0 rounded-lg bg-muted/70 p-0.5">
-          {([
-            ["image", "图片", ImageIcon],
-            ["video", "视频", Clapperboard],
-          ] as const).map(([value, label, Icon]) => (
-            <Button
-              key={value}
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={busy || running}
-              onClick={() => setMode(value)}
-              className={cn(
-                "h-7 gap-1.5 rounded-md px-2.5 text-xs",
-                mode === value
-                  ? "bg-background text-foreground shadow-sm hover:bg-background"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Icon className="size-3.5" />
-              {label}
-            </Button>
-          ))}
+        <div className="bg-muted/70 text-foreground flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs">
+          <ImageIcon className="size-3.5" />图片
         </div>
         <CreateModelSelect
           mode={mode}

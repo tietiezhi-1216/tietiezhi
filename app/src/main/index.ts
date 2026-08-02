@@ -425,8 +425,6 @@ async function bootstrap(): Promise<void> {
         return media.removeAsset(string(request.input, "id"));
       case "media.generateImage":
         return media.generateImage(imageInput(request.input));
-      case "media.generateVideo":
-        return media.generateVideo(videoInput(request.input));
       case "media.cancel":
         return media.cancel(string(request.input, "id"));
       case "media.retry":

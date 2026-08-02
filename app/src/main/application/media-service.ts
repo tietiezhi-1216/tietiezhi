@@ -101,8 +101,8 @@ export class MediaService {
       properties: ["openFile", "multiSelections"],
       filters: [
         {
-          name: "图片与视频",
-          extensions: ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov"],
+          name: "图片",
+          extensions: ["png", "jpg", "jpeg", "webp", "gif"],
         },
       ],
     });
@@ -110,7 +110,7 @@ export class MediaService {
     const imported: LocalMediaAsset[] = [];
     for (const sourcePath of result.filePaths) {
       const type = mediaTypeForPath(sourcePath);
-      if (type === undefined) continue;
+      if (type !== "image") continue;
       const id = randomUUID();
       const directory = join(app.getPath("userData"), "media", "library", id);
       const filePath = join(directory, `original${extname(sourcePath).toLowerCase()}`);
@@ -141,13 +141,21 @@ export class MediaService {
   async removeAsset(id: string): Promise<void> {
     const asset = this.database.listMediaAssets().find((candidate) => candidate.id === id);
     if (asset === undefined) return;
+    const importedDirectory = resolve(app.getPath("userData"), "media", "library", id);
+    if (
+      asset.source === "imported" &&
+      (!MediaService.isManagedArtifact(asset.filePath) ||
+        resolve(dirname(asset.filePath)) !== importedDirectory)
+    ) {
+      throw new Error("素材文件路径无效，已停止删除");
+    }
     try {
       this.database.removeMediaAsset(id);
     } catch {
       throw new Error("该素材已被生成记录引用，暂时不能删除");
     }
     if (asset.source === "imported") {
-      await rm(dirname(asset.filePath), { recursive: true, force: true });
+      await rm(importedDirectory, { recursive: true, force: true });
     }
   }
 
@@ -505,16 +513,7 @@ export class MediaService {
     const original = this.database.listMediaJobs().find((job) => job.id === id);
     if (original === undefined) throw new Error("媒体任务不存在");
     if (original.type === "video") {
-      return this.generateVideo({
-        providerAccountId: original.providerId,
-        model: original.modelId,
-        prompt: original.prompt,
-        aspectRatio: original.aspectRatio,
-        resolution: original.resolution,
-        duration: original.duration,
-        count: original.count,
-        references: original.references.map(({ assetId, role }) => ({ assetId, role })),
-      });
+      throw new Error("历史视频任务仅支持查看，不能重新生成");
     }
     return this.generateImage({
       providerAccountId: original.providerId,
@@ -532,8 +531,16 @@ export class MediaService {
     await this.cancel(id);
     await this.#tasks.get(id);
     const job = this.database.listMediaJobs().find((candidate) => candidate.id === id);
+    let directory: string | undefined;
+    if (job) {
+      const mediaRoot = resolve(app.getPath("userData"), "media");
+      directory = resolve(mediaRoot, job.id);
+      if (relative(mediaRoot, directory) !== job.id || dirname(directory) !== mediaRoot) {
+        throw new Error("媒体任务路径无效，已停止删除");
+      }
+    }
     this.database.removeMediaJob(id);
-    if (job) await rm(join(app.getPath("userData"), "media", job.id), { recursive: true, force: true });
+    if (directory !== undefined) await rm(directory, { recursive: true, force: true });
     this.#sink({ schemaVersion: 1, type: "media.job.removed", jobId: id });
   }
 
