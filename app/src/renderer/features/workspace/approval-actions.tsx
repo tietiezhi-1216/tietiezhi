@@ -37,7 +37,7 @@ export function ApprovalActions({
     }
   };
   return (
-    <div className="border-amber-500/25 bg-amber-500/5 mt-1 space-y-2 rounded-lg border px-3 py-2.5">
+    <div className="border-amber-500/60 mt-1 space-y-2 border-l-2 py-1.5 pl-3">
       <div className="flex items-start gap-2 font-medium">
         <ShieldAlert className="size-3.5 text-amber-500" />
         <span className="min-w-0 flex-1 leading-5">{approval.description}</span>

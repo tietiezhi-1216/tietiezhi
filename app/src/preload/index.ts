@@ -43,8 +43,13 @@ const api: DesktopAPI = {
     choose: () => invoke("workspace.choose"),
     reveal: (path) => invoke("workspace.reveal", { path }),
     listFiles: (conversationId) => invoke("workspace.listFiles", { conversationId }),
+    listDirectory: (conversationId, path) =>
+      invoke("workspace.listDirectory", { conversationId, path }),
     readFile: (conversationId, path) =>
       invoke("workspace.readFile", { conversationId, path }),
+    gitStatus: (conversationId) => invoke("workspace.gitStatus", { conversationId }),
+    gitDiff: (conversationId, path, staged) =>
+      invoke("workspace.gitDiff", { conversationId, path, staged }),
   },
   tools: {
     list: () => invoke("tools.list"),

@@ -48,7 +48,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
@@ -77,11 +76,9 @@ import { ProductOrbitStage } from "@/components/product-orbit-stage";
 import { ProviderEditDialog } from "@/features/settings/provider-edit-dialog";
 import { WorkspaceModeSwitcher } from "@/components/workspace-mode-switcher";
 import { GatewayAccountButton } from "@/components/gateway-account-button";
-import { ProductMascotMotion } from "@/components/product-mascot-motion";
 import { OctopusPeekButton } from "@/components/octopus-peek-button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { chatModels } from "@/lib/model-capabilities";
 import { Markdown, fadeTokens, isFadeSpace } from "./markdown";
@@ -89,6 +86,7 @@ import { WorkspaceModelSelect } from "./workspace-model-select";
 import { ApprovalActions } from "./approval-actions";
 import { applyWorkspaceEvents } from "./workspace-events";
 import { formatRelativeTime, useRelativeNow } from "./relative-time";
+import { WorkspacePanel } from "./workspace-panel";
 import type { SettingsCategory } from "@/features/settings/provider-dialog";
 import type { ProductArea } from "@/App";
 import type {
@@ -101,7 +99,6 @@ import type {
   GatewayAccountView,
   ProviderAccount,
   WorkspaceInfo,
-  WorkspaceFile,
   TaskMode,
   PermissionProfileId,
 } from "@shared/contracts";
@@ -916,7 +913,7 @@ export function WorkspacePage({
   }
 
   return (
-    <div className="flex h-full min-h-0 bg-transparent">
+    <div className="relative flex h-full min-h-0 bg-transparent">
       <aside
         ref={sidebarRef}
         aria-hidden={!sidebarOpen}
@@ -1308,34 +1305,16 @@ export function WorkspacePage({
                     />
                   ))}
                 </div>
-                <div
-                  role="status"
-                  aria-live="polite"
-                  aria-label={
-                    retry
-                      ? `正在进行第 ${retry.attempt}/${retry.maxRetries} 次重试`
-                      : runId
-                        ? `正在生成，模型 ${model}`
-                        : "任务状态"
-                  }
-                  className="mt-auto flex h-12 items-center gap-2"
-                >
-                  <div className="relative size-12 shrink-0 overflow-hidden">
-                    <ProductMascotMotion
-                      src="./mode-mascots/paper-plane/code.png"
-                      blinkSrc="./mode-mascots/paper-plane/code-blink.png"
-                      variant="workspace"
-                      className="size-12"
-                    />
-                  </div>
-                  {runId && (
-                    <span className="text-muted-foreground text-shimmer min-w-0 truncate text-xs">
+                {runId && (
+                  <div role="status" aria-live="polite" className="text-muted-foreground mt-auto flex h-8 items-center gap-2 text-xs">
+                    <Loader2 className="size-3.5 animate-spin" />
+                    <span className="text-shimmer min-w-0 truncate">
                       {retry
                         ? `正在进行第 ${retry.attempt}/${retry.maxRetries} 次重试 · ${retry.reason}`
                         : `正在生成 · ${model}`}
                     </span>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </ScrollArea>
           </div>
@@ -1417,6 +1396,16 @@ export function WorkspacePage({
                     </DropdownMenuLabel>
                   </DropdownMenuContent>
                 </DropdownMenu>
+                <WorkspaceModelSelect
+                  providers={providers}
+                  providerId={providerId}
+                  model={model}
+                  onSelect={(nextProviderId, nextModel) => {
+                    setProviderId(nextProviderId);
+                    setModel(nextModel);
+                  }}
+                  onOpenSettings={onOpenSettings}
+                />
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -1463,16 +1452,6 @@ export function WorkspacePage({
                 <span className={cn("min-w-0 flex-1 truncate text-[11px]", error ? "text-destructive" : "text-muted-foreground")}>
                   {error || (empty ? "请先配置可用模型" : "")}
                 </span>
-                <WorkspaceModelSelect
-                  providers={providers}
-                  providerId={providerId}
-                  model={model}
-                  onSelect={(nextProviderId, nextModel) => {
-                    setProviderId(nextProviderId);
-                    setModel(nextModel);
-                  }}
-                  onOpenSettings={onOpenSettings}
-                />
                 {runId ? (
                   <Button
                     type="button"
@@ -1502,7 +1481,7 @@ export function WorkspacePage({
         </div>
       </section>
       {activeId && panelOpen && (
-        <AgentPanel
+        <WorkspacePanel
           activeId={activeId}
           messages={messages}
           workspace={workspace}
@@ -1849,13 +1828,23 @@ function toolGroupSummary(calls: ToolCallPart[]): string {
     if (call.status === "denied") return `${toolVerb(call)} · 已拒绝`;
     if (call.status === "failed") return `${toolVerb(call)} · 失败`;
   }
-  const commands = calls.filter((call) => call.toolName === "runCommand").length;
-  const tools = calls.length - commands;
-  const parts = [
+  const count = (names: string[]) => calls.filter((call) => names.includes(call.toolName)).length;
+  const commands = count(["runCommand"]);
+  const searches = count(["searchFiles"]);
+  const reads = count(["readFile", "listFiles"]);
+  const edits = count(["writeFile", "replaceText"]);
+  const skills = count(["listSkills", "readSkill"]);
+  const known = commands + searches + reads + edits + skills;
+  const other = calls.length - known;
+  const segments = [
     commands > 0 ? `${running ? "正在运行" : "运行了"} ${commands} 个命令` : "",
-    tools > 0 ? `${running ? "正在使用" : "使用了"} ${tools} 个工具` : "",
+    searches > 0 ? `${running ? "正在搜索" : "搜索了"} ${searches} 次` : "",
+    reads > 0 ? `${running ? "正在读取" : "读取了"} ${reads} 个文件` : "",
+    edits > 0 ? `${running ? "正在修改" : "修改了"} ${edits} 个文件` : "",
+    skills > 0 ? `${running ? "正在读取" : "读取了"} ${skills} 个技能` : "",
+    other > 0 ? `${running ? "正在使用" : "使用了"} ${other} 个工具` : "",
   ].filter(Boolean);
-  return `${parts.join(" 并 ")}${running ? "…" : ""}`;
+  return `${segments.join(" 并 ")}${running ? "…" : ""}`;
 }
 
 function toolGroups(parts: AppMessage["parts"]): Map<string, ToolCallPart[]> {
@@ -1894,6 +1883,11 @@ function ToolTimeline({
   const running = calls.some((call) => call.status === "running");
   const failed = calls.some((call) => call.status === "failed");
   const waiting = calls.some((call) => call.status === "approval");
+  const startedAt = calls.map((call) => call.startedAt).filter((value): value is number => value !== undefined);
+  const completedAt = calls.map((call) => call.completedAt).filter((value): value is number => value !== undefined);
+  const duration = !running && startedAt.length > 0 && completedAt.length > 0
+    ? formatDuration(Math.max(...completedAt) - Math.min(...startedAt))
+    : undefined;
   return (
     <Collapsible key={waiting ? "waiting" : "settled"} defaultOpen={waiting}>
       <div className="text-xs">
@@ -1902,6 +1896,7 @@ function ToolTimeline({
             {running ? <Loader2 className="size-3 animate-spin" /> : <ToolIcon name={first.toolName} className="size-3" />}
           </span>
           <span className="min-w-0 flex-1 truncate">{toolGroupSummary(calls)}</span>
+          {duration && <span className="text-muted-foreground/70 shrink-0 text-[10px] tabular-nums">{duration}</span>}
           <ChevronRight className="size-3.5 shrink-0 opacity-0 transition-[opacity,rotate] group-hover/tool:opacity-100 group-data-[state=open]/tool:rotate-90" />
         </CollapsibleTrigger>
         <CollapsibleContent className="pb-2 pl-6">
@@ -2051,217 +2046,6 @@ const Message = memo(function Message({
   );
 });
 
-function AgentPanel({
-  activeId,
-  messages,
-  workspace,
-  onClose,
-}: {
-  activeId?: string;
-  messages: AppMessage[];
-  workspace?: WorkspaceInfo;
-  onClose: () => void;
-}) {
-  const panelRef = useRef<HTMLElement>(null);
-  const [files, setFiles] = useState<WorkspaceFile[]>([]);
-  const [selectedFile, setSelectedFile] = useState("");
-  const [fileContent, setFileContent] = useState("");
-  const [fileError, setFileError] = useState("");
-  const parts = messages.flatMap((message) => message.parts);
-  const diffs = parts.filter(
-    (part): part is Extract<(typeof parts)[number], { type: "diff" }> =>
-      part.type === "diff",
-  );
-
-  useEffect(() => {
-    setFiles([]);
-    setSelectedFile("");
-    setFileContent("");
-    if (!activeId || !workspace) return;
-    void window.tietiezhi.workspace.listFiles(activeId).then(setFiles).catch(() => setFiles([]));
-  }, [activeId, workspace, diffs.length]);
-
-  useEffect(() => {
-    const width = Number(window.localStorage.getItem("workspace-panel-width-v2"));
-    if (Number.isFinite(width) && width >= 300 && width <= 560) {
-      panelRef.current?.style.setProperty("width", `${width}px`);
-    }
-  }, []);
-
-  const beginPanelResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || !panelRef.current) return;
-    event.preventDefault();
-    const handle = event.currentTarget;
-    const startX = event.clientX;
-    const startWidth = panelRef.current.getBoundingClientRect().width;
-    let width = startWidth;
-    handle.setPointerCapture(event.pointerId);
-    const move = (moveEvent: PointerEvent) => {
-      width = Math.min(560, Math.max(300, startWidth + startX - moveEvent.clientX));
-      panelRef.current?.style.setProperty("width", `${width}px`);
-    };
-    const finish = () => {
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", finish);
-      handle.removeEventListener("pointercancel", finish);
-      handle.removeEventListener("lostpointercapture", finish);
-      window.localStorage.setItem("workspace-panel-width-v2", String(Math.round(width)));
-    };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", finish);
-    handle.addEventListener("pointercancel", finish);
-    handle.addEventListener("lostpointercapture", finish);
-  };
-
-  const resetPanelWidth = () => {
-    panelRef.current?.style.setProperty("width", "360px");
-    window.localStorage.setItem("workspace-panel-width-v2", "360");
-  };
-
-  const openFile = async (path: string) => {
-    if (!activeId) return;
-    setSelectedFile(path);
-    setFileError("");
-    try {
-      setFileContent(await window.tietiezhi.workspace.readFile(activeId, path));
-    } catch (cause) {
-      setFileContent("");
-      setFileError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-
-  return (
-    <aside
-      ref={panelRef}
-      aria-label="工作区文件与变更"
-      className="bg-background relative flex min-h-0 w-90 min-w-75 max-w-[48vw] shrink-0 flex-col border-l"
-    >
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="调整工作区面板宽度"
-        title="拖动调整宽度，双击恢复默认"
-        onPointerDown={beginPanelResize}
-        onDoubleClick={resetPanelWidth}
-        className="group absolute inset-y-0 -left-1 z-30 w-2 touch-none cursor-col-resize before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-transparent before:transition-colors hover:before:bg-ring/70"
-      />
-      <Tabs defaultValue={diffs.length > 0 ? "changes" : "files"} className="min-h-0 flex-1 gap-0">
-        <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-          <FolderOpen className="text-muted-foreground size-4 shrink-0" />
-          <span className="text-sm font-medium">工作区</span>
-          <span className="text-muted-foreground text-xs">文件与变更</span>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="ml-auto"
-            onClick={onClose}
-            aria-label="收起工作区面板"
-          >
-            <PanelRightClose />
-          </Button>
-        </div>
-        <div className="flex h-10 shrink-0 items-center border-b px-3">
-          <TabsList variant="line" className="h-9 min-w-0 flex-1 justify-start">
-            <TabsTrigger value="changes">
-              变更 {diffs.length > 0 && <Badge variant="secondary">{diffs.length}</Badge>}
-            </TabsTrigger>
-            <TabsTrigger value="files">文件</TabsTrigger>
-          </TabsList>
-        </div>
-        <TabsContent value="changes" className="min-h-0">
-          <ScrollArea className="h-full">
-            <div className="space-y-3 p-3">
-              {diffs.length === 0 ? <EmptyPanel text="Agent 修改文件后会显示逐行变更" /> : diffs.map((diff, index) => (
-                <Card key={`${diff.toolCallId}-${index}`} size="sm">
-                  <CardHeader><CardTitle className="font-mono text-xs">{diff.path}</CardTitle></CardHeader>
-                  <CardContent>
-                    {diff.omitted ? (
-                      <p className="text-muted-foreground text-xs">
-                        文件较大（{formatBytes(diff.bytes ?? 0)}），已省略逐行 Diff。
-                      </p>
-                    ) : (
-                      <LineDiff before={diff.before} after={diff.after} />
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          </ScrollArea>
-        </TabsContent>
-        <TabsContent value="files" className="min-h-0">
-          <div className="grid h-full min-h-0 grid-rows-[minmax(8rem,40%)_minmax(0,1fr)]">
-            <ScrollArea className="border-b">
-              <div className="p-2">
-                {files.length === 0 ? <EmptyPanel text="Workspace 中暂无可预览文件" /> : files.map((file) => (
-                  <button
-                    key={file.path}
-                    type="button"
-                    disabled={file.type === "directory"}
-                    onClick={() => void openFile(file.path)}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
-                      file.type === "directory" && "text-muted-foreground",
-                      selectedFile === file.path && "bg-muted",
-                    )}
-                  >
-                    {file.type === "directory" ? <Folder className="size-3.5" /> : <FileCode2 className="size-3.5" />}
-                    <span className="truncate">{file.path}</span>
-                  </button>
-                ))}
-              </div>
-            </ScrollArea>
-            <ScrollArea>
-              <div className="p-3">
-                {fileError ? <p className="text-destructive text-xs">{fileError}</p> : selectedFile ? (
-                  <>
-                    <p className="text-muted-foreground mb-2 font-mono text-[10px]">{selectedFile}</p>
-                    <pre className="select-text whitespace-pre-wrap break-words font-mono text-[10px] leading-4">{fileContent}</pre>
-                  </>
-                ) : <EmptyPanel text="选择文件以预览内容" />}
-              </div>
-            </ScrollArea>
-          </div>
-        </TabsContent>
-      </Tabs>
-    </aside>
-  );
-}
-
-function EmptyPanel({ text }: { text: string }) {
-  return <p className="text-muted-foreground rounded-lg border border-dashed p-4 text-center text-xs">{text}</p>;
-}
-
-function LineDiff({ before, after }: { before: string; after: string }) {
-  const oldLines = before.split("\n");
-  const newLines = after.split("\n");
-  let prefix = 0;
-  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
-  let suffix = 0;
-  while (
-    suffix < oldLines.length - prefix &&
-    suffix < newLines.length - prefix &&
-    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
-  ) suffix += 1;
-  const rows = [
-    ...oldLines.slice(0, prefix).map((text, index) => ({ kind: "same", text, line: index + 1 })),
-    ...oldLines.slice(prefix, oldLines.length - suffix).map((text, index) => ({ kind: "remove", text, line: prefix + index + 1 })),
-    ...newLines.slice(prefix, newLines.length - suffix).map((text, index) => ({ kind: "add", text, line: prefix + index + 1 })),
-    ...newLines.slice(newLines.length - suffix).map((text, index) => ({ kind: "same", text, line: newLines.length - suffix + index + 1 })),
-  ];
-  return (
-    <pre className="max-h-80 overflow-auto rounded-md border font-mono text-[10px] leading-4">
-      {rows.map((row, index) => (
-        <div key={`${row.kind}-${row.line}-${index}`} className={cn("grid grid-cols-[2.5rem_1rem_minmax(0,1fr)] px-2", row.kind === "remove" && "bg-destructive/10 text-destructive", row.kind === "add" && "bg-emerald-500/10 text-emerald-500")}>
-          <span className="text-muted-foreground text-right">{row.line}</span>
-          <span className="text-center">{row.kind === "remove" ? "-" : row.kind === "add" ? "+" : " "}</span>
-          <span>{row.text || " "}</span>
-        </div>
-      ))}
-    </pre>
-  );
-}
-
 function formatValue(value: unknown): string {
   if (typeof value === "string") return value;
   try {
@@ -2269,12 +2053,6 @@ function formatValue(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function ToolIcon({ name, className }: { name: string; className?: string }) {

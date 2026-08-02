@@ -330,6 +330,49 @@ export interface WorkspaceFile {
   size?: number;
 }
 
+export interface WorkspaceDirectoryEntry extends WorkspaceFile {
+  name: string;
+  hidden: boolean;
+}
+
+export type WorkspaceChangeStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "untracked";
+
+export interface WorkspaceChangeEntry {
+  path: string;
+  oldPath?: string;
+  status: WorkspaceChangeStatus;
+  staged: boolean;
+  unstaged: boolean;
+  additions: number | null;
+  deletions: number | null;
+}
+
+export interface WorkspaceGitStatus {
+  repository: boolean;
+  branch?: string;
+  changes: WorkspaceChangeEntry[];
+}
+
+export interface WorkspaceDiffLine {
+  kind: "meta" | "hunk" | "context" | "addition" | "deletion";
+  text: string;
+  oldLine?: number;
+  newLine?: number;
+}
+
+export interface WorkspaceDiffFile {
+  path: string;
+  staged: boolean;
+  binary: boolean;
+  truncated: boolean;
+  lines: WorkspaceDiffLine[];
+}
+
 export interface WorkspaceToolDescriptor {
   id: string;
   name: string;
@@ -548,7 +591,10 @@ export interface DesktopAPI {
     choose(): Promise<WorkspaceInfo | null>;
     reveal(path: string): Promise<void>;
     listFiles(conversationId: string): Promise<WorkspaceFile[]>;
+    listDirectory(conversationId: string, path?: string): Promise<WorkspaceDirectoryEntry[]>;
     readFile(conversationId: string, path: string): Promise<string>;
+    gitStatus(conversationId: string): Promise<WorkspaceGitStatus>;
+    gitDiff(conversationId: string, path: string, staged?: boolean): Promise<WorkspaceDiffFile>;
   };
   tools: {
     list(): Promise<WorkspaceToolDescriptor[]>;

@@ -404,12 +404,33 @@ async function bootstrap(): Promise<void> {
         if (!conversation?.workspace) throw new Error("会话尚未绑定 Workspace");
         return workspaces.listFiles(conversation.workspace);
       }
+      case "workspace.listDirectory": {
+        const input = record(request.input);
+        const conversation = database.conversation(string(input, "conversationId"));
+        if (!conversation?.workspace) throw new Error("会话尚未绑定 Workspace");
+        return workspaces.listDirectory(conversation.workspace, optionalString(input, "path"));
+      }
       case "workspace.readFile": {
         const conversation = database.conversation(string(request.input, "conversationId"));
         if (!conversation?.workspace) throw new Error("会话尚未绑定 Workspace");
         return workspaces.readTextFile(
           conversation.workspace,
           string(request.input, "path"),
+        );
+      }
+      case "workspace.gitStatus": {
+        const conversation = database.conversation(string(request.input, "conversationId"));
+        if (!conversation?.workspace) throw new Error("会话尚未绑定 Workspace");
+        return workspaces.gitStatus(conversation.workspace);
+      }
+      case "workspace.gitDiff": {
+        const input = record(request.input);
+        const conversation = database.conversation(string(input, "conversationId"));
+        if (!conversation?.workspace) throw new Error("会话尚未绑定 Workspace");
+        return workspaces.gitDiff(
+          conversation.workspace,
+          string(input, "path"),
+          input["staged"] === true,
         );
       }
       case "tools.list":
