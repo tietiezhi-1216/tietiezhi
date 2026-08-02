@@ -161,6 +161,7 @@ function commandResult(
   workspace: string,
   signal: AbortSignal,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+  assertCommandStaysInWorkspace(command);
   return new Promise((resolvePromise, reject) => {
     const child = spawn(command, {
       cwd: workspace,
@@ -207,6 +208,14 @@ function commandResult(
       resolvePromise({ exitCode, stdout, stderr });
     });
   });
+}
+
+export function assertCommandStaysInWorkspace(command: string): void {
+  const escape =
+    /(?:^|[\s"'<>])\/(?!\/)|(?:^|[\s"'=])\.\.(?:[\\/]|\s|$)|(?:^|[\s"'])~(?:[\\/]|\s|$)|\$(?:\{)?HOME(?:\})?|%USERPROFILE%|\$env:(?:USERPROFILE|HOME)|\bcd\s+-\b/i;
+  if (escape.test(command)) {
+    throw new Error("Shell 命令包含可能越过 Workspace 的路径");
+  }
 }
 
 export function createWorkspaceTools(context: ToolContext, skills: SkillDetail[] = []) {

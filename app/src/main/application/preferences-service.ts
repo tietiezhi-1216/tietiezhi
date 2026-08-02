@@ -7,7 +7,21 @@ import { DEFAULT_SYSTEM_PROMPT, type AgentPreferences } from "@shared/contracts"
 
 const DEFAULT_PREFERENCES: AgentPreferences = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
+  defaultPermissionProfiles: { "ai-sdk": "ask" },
 };
+
+function permissionProfiles(value: unknown): AgentPreferences["defaultPermissionProfiles"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return DEFAULT_PREFERENCES.defaultPermissionProfiles;
+  }
+  const result: AgentPreferences["defaultPermissionProfiles"] = {};
+  for (const [engineId, profile] of Object.entries(value)) {
+    if (profile === "ask" || profile === "agent-managed" || profile === "full-access") {
+      result[engineId] = profile;
+    }
+  }
+  return { ...DEFAULT_PREFERENCES.defaultPermissionProfiles, ...result };
+}
 
 export class PreferencesService {
   readonly #path = join(app.getPath("userData"), "agent-preferences.json");
@@ -21,6 +35,9 @@ export class PreferencesService {
         systemPrompt: typeof systemPrompt === "string" && systemPrompt.trim()
           ? systemPrompt
           : DEFAULT_SYSTEM_PROMPT,
+        defaultPermissionProfiles: permissionProfiles(
+          Reflect.get(parsed, "defaultPermissionProfiles"),
+        ),
       };
     } catch {
       return DEFAULT_PREFERENCES;
@@ -30,6 +47,7 @@ export class PreferencesService {
   async save(input: AgentPreferences): Promise<AgentPreferences> {
     const normalized = {
       systemPrompt: (input.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT).slice(0, 20_000),
+      defaultPermissionProfiles: permissionProfiles(input.defaultPermissionProfiles),
     };
     await mkdir(dirname(this.#path), { recursive: true });
     const temporaryPath = `${this.#path}.tmp`;

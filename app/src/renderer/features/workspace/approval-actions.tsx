@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Check, Loader2, ShieldAlert, X } from "lucide-react";
+import { Check, ChevronDown, Loader2, ShieldAlert, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { ApprovalDecision, ApprovalRecord } from "@shared/contracts";
 
 function formatValue(value: unknown): string {
@@ -36,17 +37,27 @@ export function ApprovalActions({
     }
   };
   return (
-    <div className="border-amber-500/30 bg-amber-500/5 space-y-2 rounded-md border p-2">
-      <div className="flex items-center gap-2 font-medium">
+    <div className="border-amber-500/25 bg-amber-500/5 mt-1 space-y-2 rounded-lg border px-3 py-2.5">
+      <div className="flex items-start gap-2 font-medium">
         <ShieldAlert className="size-3.5 text-amber-500" />
-        <span>{approval.description}</span>
+        <span className="min-w-0 flex-1 leading-5">{approval.description}</span>
+        <span className="text-muted-foreground shrink-0 text-[10px] font-normal">
+          {approval.risk === "high" ? "高风险" : "需要授权"}
+        </span>
       </div>
       {showInput && (
-        <pre className="bg-muted max-h-28 overflow-auto rounded p-2 text-[10px] whitespace-pre-wrap">
-          {formatValue(approval.input)}
-        </pre>
+        <Collapsible>
+          <CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-[11px]">
+            <ChevronDown className="size-3" /> 查看操作详情
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <pre className="bg-muted mt-1.5 max-h-36 overflow-auto rounded-md p-2 text-[10px] whitespace-pre-wrap">
+              {formatValue(approval.input)}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
       )}
-      <div className="flex flex-wrap justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-1.5">
         <Button type="button" size="xs" variant="ghost" disabled={pending} onClick={() => void answer("deny")}>
           <X />拒绝
         </Button>

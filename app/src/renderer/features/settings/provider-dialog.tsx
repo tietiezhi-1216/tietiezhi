@@ -48,6 +48,8 @@ import { cn } from "@/lib/utils";
 import type {
   GatewayAccountView,
   ProviderAccount,
+  PermissionProfileId,
+  EngineDescriptor,
   UpdateState,
 } from "@shared/contracts";
 
@@ -570,52 +572,111 @@ function UpdateSection({ open }: { open: boolean }) {
 }
 
 function PermissionsSection() {
-  const rules = [
-    {
-      title: "读取 Workspace",
-      description: "Agent 可以读取当前 Workspace 内的文本文件和目录结构。",
-      badge: "自动允许",
-    },
-    {
-      title: "写入与替换文件",
-      description: "每次写入前都会展示目标路径和操作说明，只有允许后才会执行。",
-      badge: "每次询问",
-    },
-    {
-      title: "运行 Shell 命令",
-      description: "命令固定在当前 Workspace 中运行，并使用高风险审批。",
-      badge: "每次询问",
-    },
-  ];
+  const [engine, setEngine] = useState<EngineDescriptor>();
+  const [profileId, setProfileId] = useState<PermissionProfileId>("ask");
+  const [requestedProfile, setRequestedProfile] = useState<PermissionProfileId>();
+  const [busy, setBusy] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void Promise.all([
+      window.tietiezhi.engines.list(),
+      window.tietiezhi.preferences.get(),
+    ]).then(([engines, preferences]) => {
+      setEngine(engines.find((candidate) => candidate.id === "ai-sdk"));
+      setProfileId(preferences.defaultPermissionProfiles["ai-sdk"] ?? "ask");
+    }).catch((cause: unknown) => {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }).finally(() => setBusy(false));
+  }, []);
+
+  const saveProfile = async (next: PermissionProfileId) => {
+    setBusy(true);
+    setError("");
+    try {
+      const preferences = await window.tietiezhi.preferences.get();
+      const saved = await window.tietiezhi.preferences.save({
+        ...preferences,
+        defaultPermissionProfiles: {
+          ...preferences.defaultPermissionProfiles,
+          "ai-sdk": next,
+        },
+      });
+      setProfileId(saved.defaultPermissionProfiles["ai-sdk"] ?? "ask");
+      window.dispatchEvent(new CustomEvent("tietiezhi:preferences-changed"));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const choose = (value: string) => {
+    if (value !== "ask" && value !== "agent-managed" && value !== "full-access") return;
+    if (value === "full-access") setRequestedProfile(value);
+    else void saveProfile(value);
+  };
+
+  const profiles = engine?.capabilities.permissions.profiles ?? [];
+  const current = profiles.find((profile) => profile.id === profileId);
+  const rules = profileId === "ask"
+    ? ["读取自动允许", "文件修改每次询问", "Shell 每次询问"]
+    : profileId === "agent-managed"
+      ? ["读取自动允许", "普通文件修改自动允许", "危险 Shell 仍会询问"]
+      : ["读取与修改自动允许", "Shell 自动允许", "Workspace 安全边界始终有效"];
   return (
     <SettingsSection>
       <div className="flex max-w-md flex-col gap-2">
         <Label>默认权限模式</Label>
-        <Select value="ask" disabled>
+        <Select value={profileId} disabled={busy || profiles.length === 0} onValueChange={choose}>
           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent><SelectItem value="ask">请求批准</SelectItem></SelectContent>
+          <SelectContent>
+            {profiles.map((profile) => (
+              <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>
+            ))}
+          </SelectContent>
         </Select>
         <p className="text-muted-foreground text-xs leading-relaxed">
-          所有写文件、执行命令等操作都先在对话里询问你。
+          {current?.description ?? "新任务会继承此设置，已有任务保持自己的权限模式。"}
         </p>
+        {error && <p className="text-destructive text-xs">{error}</p>}
       </div>
       <Separator />
       <div className="divide-y rounded-lg border">
-        {rules.map((rule) => (
-          <div key={rule.title} className="flex items-start gap-4 px-4 py-4">
+        {rules.map((rule, index) => (
+          <div key={rule} className="flex items-start gap-4 px-4 py-4">
             <span className="bg-muted grid size-9 shrink-0 place-items-center rounded-lg">
               <ShieldCheck className="size-4" />
             </span>
             <span className="min-w-0 flex-1">
-              <strong className="text-sm">{rule.title}</strong>
+              <strong className="text-sm">{["Workspace 读取", "文件与工具", "Shell 与边界"][index]}</strong>
               <span className="text-muted-foreground mt-1 block text-xs leading-5">
-                {rule.description}
+                {rule}
               </span>
             </span>
-            <Badge variant="outline">{rule.badge}</Badge>
           </div>
         ))}
       </div>
+      <Dialog open={requestedProfile === "full-access"} onOpenChange={(open) => !open && setRequestedProfile(undefined)}>
+        <DialogContent className="max-w-md">
+          <DialogTitle>将完全访问设为默认？</DialogTitle>
+          <p className="text-muted-foreground text-sm leading-6">
+            之后创建的任务会自动执行工作区文件操作和 Shell 命令。现有任务不会改变，Workspace 路径和进程安全限制仍然有效。
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setRequestedProfile(undefined)}>取消</Button>
+            <Button
+              className="bg-amber-600 text-white hover:bg-amber-600/90"
+              onClick={() => {
+                setRequestedProfile(undefined);
+                void saveProfile("full-access");
+              }}
+            >
+              设为新任务默认
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </SettingsSection>
   );
 }

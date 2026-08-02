@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { SettingsSection } from "@/features/settings/settings-section";
 import { DEFAULT_SYSTEM_PROMPT } from "@shared/contracts";
+import type { AgentPreferences } from "@shared/contracts";
 
 export function SystemPromptSection() {
   const [draft, setDraft] = useState("");
@@ -14,11 +15,15 @@ export function SystemPromptSection() {
   const [busy, setBusy] = useState(true);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [permissionProfiles, setPermissionProfiles] = useState<
+    AgentPreferences["defaultPermissionProfiles"]
+  >({ "ai-sdk": "ask" });
 
   useEffect(() => {
     void window.tietiezhi.preferences.get().then((preferences) => {
       setDraft(preferences.systemPrompt);
       setSavedValue(preferences.systemPrompt);
+      setPermissionProfiles(preferences.defaultPermissionProfiles);
     }).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : String(cause));
     }).finally(() => setBusy(false));
@@ -29,7 +34,10 @@ export function SystemPromptSection() {
     setSaved(false);
     setError("");
     try {
-      const preferences = await window.tietiezhi.preferences.save({ systemPrompt: draft });
+      const preferences = await window.tietiezhi.preferences.save({
+        systemPrompt: draft,
+        defaultPermissionProfiles: permissionProfiles,
+      });
       setDraft(preferences.systemPrompt);
       setSavedValue(preferences.systemPrompt);
       setSaved(true);

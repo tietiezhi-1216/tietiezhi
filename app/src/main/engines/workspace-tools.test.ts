@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resolveWorkspacePath } from "./workspace-tools.js";
+import { assertCommandStaysInWorkspace, resolveWorkspacePath } from "./workspace-tools.js";
 
 test("允许解析 Workspace 内路径", async () => {
   const root = await mkdtemp(join(tmpdir(), "tietiezhi-workspace-"));
@@ -29,4 +29,12 @@ test("拒绝通过符号链接逃出 Workspace", async () => {
     resolveWorkspacePath(root, "escape/created/file.txt", true),
     /符号链接超出 Workspace/,
   );
+});
+
+test("Shell 拒绝明显越过 Workspace 的路径", () => {
+  assert.doesNotThrow(() => assertCommandStaysInWorkspace("pnpm test"));
+  assert.doesNotThrow(() => assertCommandStaysInWorkspace("rm -rf dist"));
+  assert.throws(() => assertCommandStaysInWorkspace("cat /etc/passwd"), /越过 Workspace/);
+  assert.throws(() => assertCommandStaysInWorkspace("cd ../other"), /越过 Workspace/);
+  assert.throws(() => assertCommandStaysInWorkspace("cat $HOME/.ssh/config"), /越过 Workspace/);
 });

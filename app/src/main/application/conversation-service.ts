@@ -8,6 +8,7 @@ import type {
   EngineEvent,
   SendMessageInput,
   UsageInfo,
+  PermissionProfileId,
 } from "@shared/contracts";
 
 import { AppDatabase } from "../infrastructure/database.js";
@@ -119,15 +120,40 @@ export class ConversationService {
     this.database.saveConversation(conversation);
   }
 
+  async setPermission(id: string, profileId: PermissionProfileId): Promise<Conversation> {
+    const conversation = this.database.conversation(id);
+    if (conversation === null) throw new Error("对话不存在");
+    const descriptor = await this.engines.require(conversation.activeEngineId).descriptor();
+    if (!descriptor.capabilities.permissions.profiles.some((profile) => profile.id === profileId)) {
+      throw new Error("当前 Agent 不支持该权限模式");
+    }
+    conversation.permissionProfileId = profileId;
+    conversation.updatedAt = Date.now();
+    this.database.saveConversation(conversation);
+    return conversation;
+  }
+
   async send(input: SendMessageInput): Promise<{ conversationId: string; runId: string }> {
     const prompt = input.text.trim();
     if (prompt === "") throw new Error("消息不能为空");
     const provider = this.providers.require(input.providerAccountId);
     if (!provider.models.includes(input.model)) throw new Error("所选模型不属于当前供应商");
     const engineId = input.engineId ?? "ai-sdk";
+    const engineDescriptor = await this.engines.require(engineId).descriptor();
+    const preferences = await this.preferences.get();
     const now = Date.now();
     const conversationId = input.conversationId ?? randomUUID();
     const existing = this.database.conversation(conversationId);
+    const requestedPermission =
+      input.permissionProfileId ??
+      existing?.permissionProfileId ??
+      preferences.defaultPermissionProfiles[engineId] ??
+      engineDescriptor.capabilities.permissions.defaultProfileId;
+    const permissionProfileId = engineDescriptor.capabilities.permissions.profiles.some(
+      (profile) => profile.id === requestedPermission,
+    )
+      ? requestedPermission
+      : engineDescriptor.capabilities.permissions.defaultProfileId;
     const workspace =
       input.workspace !== undefined
         ? existing?.workspace === input.workspace
@@ -146,6 +172,7 @@ export class ConversationService {
       providerAccountId: provider.id,
       workspace: workspace.path,
       taskMode: input.taskMode ?? "code",
+      permissionProfileId,
     };
     conversation.updatedAt = now;
     conversation.activeEngineId = engineId;
@@ -153,6 +180,7 @@ export class ConversationService {
     conversation.providerAccountId = provider.id;
     conversation.workspace = workspace.path;
     conversation.taskMode = input.taskMode ?? conversation.taskMode;
+    conversation.permissionProfileId = permissionProfileId;
     this.database.saveConversation(conversation);
 
     const prior = this.database.messages(conversationId);
@@ -194,7 +222,6 @@ export class ConversationService {
     });
 
     const controller = new AbortController();
-    const preferences = await this.preferences.get();
     const enabledSkills = await this.skills.enabled();
     const modePrompt =
       conversation.taskMode === "work"
@@ -217,6 +244,7 @@ export class ConversationService {
       controller,
       workspace: workspace.path,
       titlePrompt: existing === null ? prompt : undefined,
+      permissionProfileId,
     });
     this.#tasks.set(runId, task);
     void task.then(
@@ -238,6 +266,7 @@ export class ConversationService {
     controller: AbortController;
     workspace: string;
     titlePrompt?: string;
+    permissionProfileId: PermissionProfileId;
   }): Promise<void> {
     const provider = this.providers.require(input.providerId);
     const engine = this.engines.require(input.engineId);
@@ -296,6 +325,7 @@ export class ConversationService {
         skills: input.skills,
         workspace: input.workspace,
         messages: input.messages,
+        permissionProfileId: input.permissionProfileId,
         abortSignal: input.controller.signal,
       })) {
         if (
@@ -320,6 +350,7 @@ export class ConversationService {
           );
           if (existingCall?.type === "tool-call") {
             existingCall.status = "running";
+            existingCall.startedAt ??= event.createdAt;
           } else {
             input.assistantMessage.parts.push({
               type: "tool-call",
@@ -327,6 +358,7 @@ export class ConversationService {
               toolName: event.toolName,
               input: event.input,
               status: "running",
+              startedAt: event.createdAt,
             });
           }
         } else if (event.type === "tool.approval_required") {
@@ -342,12 +374,16 @@ export class ConversationService {
           );
           if (call?.type === "tool-call") {
             call.status = event.decision === "deny" ? "denied" : "running";
+            if (event.decision === "deny") call.completedAt = event.createdAt;
           }
         } else if (event.type === "tool.result") {
           const call = input.assistantMessage.parts.find(
             (part) => part.type === "tool-call" && part.toolCallId === event.toolCallId,
           );
-          if (call?.type === "tool-call") call.status = event.isError ? "failed" : "completed";
+          if (call?.type === "tool-call") {
+            call.status = event.isError ? "failed" : "completed";
+            call.completedAt = event.createdAt;
+          }
           input.assistantMessage.parts.push({
             type: "tool-result",
             toolCallId: event.toolCallId,

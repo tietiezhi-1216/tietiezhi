@@ -23,6 +23,25 @@ export class ApprovalManager {
     return this.database.approvals(conversationId);
   }
 
+  recordAutomatic(
+    record: Omit<
+      ApprovalRecord,
+      "status" | "createdAt" | "expiresAt" | "resolvedAt" | "decision" | "reason"
+    >,
+    reason: string,
+  ): void {
+    const createdAt = Date.now();
+    this.database.saveApproval({
+      ...record,
+      status: "approved",
+      createdAt,
+      expiresAt: createdAt,
+      resolvedAt: createdAt,
+      decision: "allow-once",
+      reason,
+    });
+  }
+
   request(
     record: Omit<ApprovalRecord, "status" | "createdAt" | "expiresAt">,
     signal: AbortSignal,

@@ -35,6 +35,8 @@ const api: DesktopAPI = {
     cancel: (runId) => invoke("conversations.cancel", { runId }),
     remove: (id) => invoke("conversations.remove", { id }),
     rename: (id, title) => invoke("conversations.rename", { id, title }),
+    setPermission: (id, permissionProfileId) =>
+      invoke("conversations.setPermission", { id, permissionProfileId }),
   },
   workspace: {
     createTemporary: () => invoke("workspace.createTemporary"),

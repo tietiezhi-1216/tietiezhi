@@ -7,6 +7,7 @@ import {
   IPC,
   type ApprovalDecision,
   type AgentPreferences,
+  type PermissionProfileId,
   type ImageGenerationRequest,
   type ProviderAccountInput,
   type ProviderModelProbeInput,
@@ -124,12 +125,21 @@ function sendInput(value: unknown): SendMessageInput {
     systemPrompt: optionalString(input, "systemPrompt"),
     workspace: optionalString(input, "workspace"),
     taskMode: taskMode === "work" ? "work" : "code",
+    permissionProfileId:
+      input["permissionProfileId"] === undefined
+        ? undefined
+        : permissionProfileId(input["permissionProfileId"]),
   };
 }
 
 function approvalDecision(value: unknown): ApprovalDecision {
   if (value === "allow-once" || value === "allow-for-run" || value === "deny") return value;
   throw new Error("审批决定无效");
+}
+
+function permissionProfileId(value: unknown): PermissionProfileId {
+  if (value === "ask" || value === "agent-managed" || value === "full-access") return value;
+  throw new Error("权限模式无效");
 }
 
 function imageInput(value: unknown): ImageGenerationRequest {
@@ -221,8 +231,18 @@ function skillInput(value: unknown): SkillInput {
 
 function preferencesInput(value: unknown): AgentPreferences {
   const input = record(value);
+  const profiles = isRecord(input["defaultPermissionProfiles"])
+    ? input["defaultPermissionProfiles"]
+    : {};
+  const defaultPermissionProfiles: AgentPreferences["defaultPermissionProfiles"] = {};
+  for (const [engineId, profile] of Object.entries(profiles)) {
+    if (profile === "ask" || profile === "agent-managed" || profile === "full-access") {
+      defaultPermissionProfiles[engineId] = profile;
+    }
+  }
   return {
     systemPrompt: typeof input["systemPrompt"] === "string" ? input["systemPrompt"] : "",
+    defaultPermissionProfiles,
   };
 }
 
@@ -367,6 +387,11 @@ async function bootstrap(): Promise<void> {
         return conversations.rename(
           string(request.input, "id"),
           string(request.input, "title"),
+        );
+      case "conversations.setPermission":
+        return conversations.setPermission(
+          string(request.input, "id"),
+          permissionProfileId(record(request.input)["permissionProfileId"]),
         );
       case "workspace.createTemporary":
         return workspaces.createTemporary();

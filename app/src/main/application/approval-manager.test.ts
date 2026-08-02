@@ -56,3 +56,26 @@ test("取消任务会关闭审批且不能再次响应", async () => {
   assert.equal(manager.list()[0]?.status, "cancelled");
   assert.throws(() => manager.resolve("approval-1", "allow-once"), /不存在或已经结束/);
 });
+
+test("自动审批会写入可审计的已批准记录", () => {
+  const store = new MemoryApprovalStore();
+  const manager = new ApprovalManager(store);
+  manager.recordAutomatic(
+    {
+      id: "auto-1",
+      runId: "run-1",
+      conversationId: "conversation-1",
+      messageId: "message-1",
+      toolCallId: "tool-1",
+      toolName: "writeFile",
+      description: "写入 src/a.ts",
+      input: { path: "src/a.ts" },
+      risk: "medium",
+    },
+    "由智能审批自动允许",
+  );
+  const approval = manager.list("conversation-1")[0];
+  assert.equal(approval?.status, "approved");
+  assert.equal(approval?.decision, "allow-once");
+  assert.equal(approval?.reason, "由智能审批自动允许");
+});

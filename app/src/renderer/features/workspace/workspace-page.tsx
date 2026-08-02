@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
 } from "react";
 import {
   ArrowUp,
@@ -28,6 +27,7 @@ import {
   Pencil,
   Plus,
   ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Square,
   SquarePen,
@@ -90,6 +90,7 @@ import { Markdown, fadeTokens, isFadeSpace } from "./markdown";
 import { WorkspaceModelSelect } from "./workspace-model-select";
 import { ApprovalActions } from "./approval-actions";
 import { applyWorkspaceEvents } from "./workspace-events";
+import { formatRelativeTime, useRelativeNow } from "./relative-time";
 import type { SettingsCategory } from "@/features/settings/provider-dialog";
 import type { ProductArea } from "@/App";
 import type {
@@ -97,6 +98,7 @@ import type {
   ApprovalRecord,
   AppMessage,
   Conversation,
+  EngineDescriptor,
   EngineEvent,
   GatewayAccountView,
   ProviderAccount,
@@ -104,6 +106,7 @@ import type {
   WorkspaceInfo,
   WorkspaceFile,
   TaskMode,
+  PermissionProfileId,
 } from "@shared/contracts";
 
 type RetryEvent = Extract<EngineEvent, { type: "run.retrying" }>;
@@ -134,12 +137,19 @@ export function WorkspacePage({
   const [gateError, setGateError] = useState("");
   const [gateProviderOpen, setGateProviderOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [engines, setEngines] = useState<EngineDescriptor[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [messages, setMessages] = useState<AppMessage[]>([]);
   const [providerId, setProviderId] = useState(
     () => window.localStorage.getItem("workspace-provider") ?? "",
   );
   const engineId = "ai-sdk";
+  const [defaultPermissionProfileId, setDefaultPermissionProfileId] =
+    useState<PermissionProfileId>("ask");
+  const [permissionProfileId, setPermissionProfileId] =
+    useState<PermissionProfileId>("ask");
+  const [requestedPermissionProfileId, setRequestedPermissionProfileId] =
+    useState<PermissionProfileId>();
   const [model, setModel] = useState(
     () => window.localStorage.getItem("workspace-model") ?? "",
   );
@@ -249,8 +259,30 @@ export function WorkspacePage({
           }),
         ),
       refreshConversations(),
+      window.tietiezhi.engines.list().then(setEngines),
+      window.tietiezhi.preferences.get().then((preferences) => {
+        const profile = preferences.defaultPermissionProfiles[engineId] ?? "ask";
+        setDefaultPermissionProfileId(profile);
+        if (activeId === undefined) setPermissionProfileId(profile);
+      }),
     ]).finally(() => setBootstrapped(true));
   }, [providerVersion]);
+
+  useEffect(() => {
+    if (activeId === undefined) setPermissionProfileId(defaultPermissionProfileId);
+  }, [activeId, defaultPermissionProfileId]);
+
+  useEffect(() => {
+    const refreshPermissionDefault = () => {
+      void window.tietiezhi.preferences.get().then((preferences) => {
+        const profile = preferences.defaultPermissionProfiles[engineId] ?? "ask";
+        setDefaultPermissionProfileId(profile);
+        if (activeId === undefined) setPermissionProfileId(profile);
+      });
+    };
+    window.addEventListener("tietiezhi:preferences-changed", refreshPermissionDefault);
+    return () => window.removeEventListener("tietiezhi:preferences-changed", refreshPermissionDefault);
+  }, [activeId]);
 
   // The main process shrinks the window for onboarding and restores the
   // remembered workspace bounds once setup completes.
@@ -351,13 +383,23 @@ export function WorkspacePage({
               return [...current.filter((item) => !ids.has(item.id)), ...approvalsInBatch];
             });
           }
-          const resolvedIds = new Set(
-            events
-              .filter((candidate) => candidate.type === "tool.approval_resolved")
-              .map((candidate) => candidate.approvalId),
+          const resolvedEvents = events.filter(
+            (candidate): candidate is Extract<EngineEvent, { type: "tool.approval_resolved" }> =>
+              candidate.type === "tool.approval_resolved",
           );
-          if (resolvedIds.size > 0) {
-            setApprovals((current) => current.filter((item) => !resolvedIds.has(item.id)));
+          if (resolvedEvents.length > 0) {
+            setApprovals((current) => current.map((item) => {
+              const resolved = resolvedEvents.find((candidate) => candidate.approvalId === item.id);
+              return resolved
+                ? {
+                    ...item,
+                    status: resolved.decision === "deny" ? "denied" : "approved",
+                    decision: resolved.decision,
+                    resolvedAt: resolved.createdAt,
+                    reason: resolved.reason,
+                  }
+                : item;
+            }));
           }
           setRetry((current) => {
             let next = current;
@@ -382,6 +424,7 @@ export function WorkspacePage({
           if (terminal) {
             setRunId(undefined);
             void refreshConversations();
+            void window.tietiezhi.approvals.list(terminal.conversationId).then(setApprovals);
           }
         }, 50);
       });
@@ -525,6 +568,18 @@ export function WorkspacePage({
     scrollToBottom(runId ? "instant" : "smooth");
   }, [messages, runId, scrollToBottom]);
 
+  useEffect(() => {
+    const pending = approvals.findLast((approval) => approval.status === "pending");
+    if (!pending) return;
+    const frame = window.requestAnimationFrame(() => {
+      const message = scrollHostRef.current?.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(pending.messageId)}"]`,
+      );
+      message?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [approvals]);
+
   const open = async (id: string) => {
     stickToBottomRef.current = true;
     initialHistoryScrollDoneRef.current = false;
@@ -536,6 +591,7 @@ export function WorkspacePage({
     setProviderId(detail.conversation.providerAccountId ?? providerId);
     setModel(detail.conversation.activeModelId ?? model);
     setTaskMode(detail.conversation.taskMode);
+    setPermissionProfileId(detail.conversation.permissionProfileId);
     setRunId(
       detail.messages.findLast(
         (message) =>
@@ -554,9 +610,7 @@ export function WorkspacePage({
           }
         : undefined,
     );
-    setApprovals(
-      (await window.tietiezhi.approvals.list(id)).filter((approval) => approval.status === "pending"),
-    );
+    setApprovals(await window.tietiezhi.approvals.list(id));
     setError("");
   };
 
@@ -587,11 +641,13 @@ export function WorkspacePage({
         engineId,
         workspace: workspace?.path,
         taskMode,
+        permissionProfileId,
       });
       setActiveId(started.conversationId);
       setRunId(started.runId);
       const detail = await window.tietiezhi.conversations.load(started.conversationId);
       setMessages(detail.messages);
+      setPermissionProfileId(detail.conversation.permissionProfileId);
       if (detail.conversation.workspace) {
         const path = detail.conversation.workspace;
         setWorkspace({
@@ -613,7 +669,14 @@ export function WorkspacePage({
     async (approvalId: string, decision: ApprovalDecision) => {
       try {
         await window.tietiezhi.approvals.resolve(approvalId, decision);
-        setApprovals((current) => current.filter((item) => item.id !== approvalId));
+        setApprovals((current) => current.map((item) => item.id === approvalId
+          ? {
+              ...item,
+              status: decision === "deny" ? "denied" : "approved",
+              decision,
+              resolvedAt: Date.now(),
+            }
+          : item));
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
         throw cause;
@@ -761,6 +824,35 @@ export function WorkspacePage({
 
   const empty = !providerId || !model;
   const activeConversation = conversations.find((conversation) => conversation.id === activeId);
+  const activeEngine = engines.find((engine) => engine.id === engineId);
+  const permissionProfiles = activeEngine?.capabilities.permissions.profiles ?? [];
+  const activePermissionProfile = permissionProfiles.find(
+    (profile) => profile.id === permissionProfileId,
+  );
+
+  const commitPermission = async (profileId: PermissionProfileId) => {
+    setError("");
+    try {
+      if (activeId) {
+        const updated = await window.tietiezhi.conversations.setPermission(activeId, profileId);
+        setConversations((current) =>
+          current.map((conversation) => conversation.id === updated.id ? updated : conversation),
+        );
+      }
+      setPermissionProfileId(profileId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const selectPermission = (profileId: PermissionProfileId) => {
+    const profile = permissionProfiles.find((candidate) => candidate.id === profileId);
+    if (profile?.requiresConfirmation) {
+      setRequestedPermissionProfileId(profileId);
+      return;
+    }
+    void commitPermission(profileId);
+  };
 
   const gateLogin = async () => {
     setGateBusy(true);
@@ -1328,13 +1420,51 @@ export function WorkspacePage({
                     </DropdownMenuLabel>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <span
-                  className={cn(
-                    "text-muted-foreground min-w-0 flex-1 truncate text-[11px]",
-                    error && "text-destructive",
-                  )}
-                >
-                  {error || (empty ? "请先配置可用模型" : "Enter 发送 · Shift+Enter 换行")}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className={cn(
+                        "text-muted-foreground hover:text-foreground h-7 max-w-36 shrink-0 gap-1.5 rounded-full px-2 text-xs",
+                        permissionProfileId === "full-access" && "text-amber-600 dark:text-amber-400",
+                      )}
+                      aria-label={`权限：${activePermissionProfile?.name ?? "请求批准"}`}
+                    >
+                      <ShieldCheck className="size-3.5" />
+                      <span className="truncate">{activePermissionProfile?.name ?? "请求批准"}</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" side="top" className="w-72">
+                    <DropdownMenuLabel>当前任务权限</DropdownMenuLabel>
+                    {permissionProfiles.map((profile) => (
+                      <DropdownMenuItem
+                        key={profile.id}
+                        onSelect={() => selectPermission(profile.id)}
+                        className="items-start gap-2 py-2"
+                      >
+                        <Check className={cn("mt-0.5 size-3.5", profile.id !== permissionProfileId && "opacity-0")} />
+                        <span className="min-w-0">
+                          <span className="block text-xs font-medium">{profile.name}</span>
+                          <span className="text-muted-foreground mt-0.5 block text-[11px] leading-4">
+                            {profile.description}
+                          </span>
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                    {runId && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuLabel className="text-muted-foreground font-normal">
+                          更改将在下一次发送消息时生效
+                        </DropdownMenuLabel>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <span className={cn("min-w-0 flex-1 truncate text-[11px]", error ? "text-destructive" : "text-muted-foreground")}>
+                  {error || (empty ? "请先配置可用模型" : "")}
                 </span>
                 <WorkspaceModelSelect
                   providers={providers}
@@ -1381,9 +1511,34 @@ export function WorkspacePage({
           workspace={workspace}
           approvals={approvals}
           onClose={() => setPanelOpen(false)}
-          onResolve={resolveApproval}
         />
       )}
+      <AlertDialog
+        open={requestedPermissionProfileId === "full-access"}
+        onOpenChange={(open) => !open && setRequestedPermissionProfileId(undefined)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>为当前任务启用完全访问？</AlertDialogTitle>
+            <AlertDialogDescription>
+              Agent 将自动执行工作区内的文件操作和 Shell 命令，不再逐次询问。Workspace
+              路径边界、命令超时、输出限制和停止任务仍然有效。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setRequestedPermissionProfileId(undefined);
+                void commitPermission("full-access");
+              }}
+              className="bg-amber-600 text-white hover:bg-amber-600/90"
+            >
+              仅为当前任务启用
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Dialog open={renaming !== undefined} onOpenChange={(open) => !open && setRenaming(undefined)}>
         <DialogContent className="max-w-sm">
           <DialogHeader><DialogTitle>重命名任务</DialogTitle></DialogHeader>
@@ -1504,14 +1659,6 @@ function formatTps(tokensPerSecond: number): string {
     : tokensPerSecond.toFixed(1);
 }
 
-function StatValue({ children, title }: { children: ReactNode; title: string }) {
-  return (
-    <span className="text-muted-foreground px-1 text-[11px]" title={title}>
-      {children}
-    </span>
-  );
-}
-
 function DetailRow({
   label,
   value,
@@ -1553,13 +1700,22 @@ function FadeStreamText({ text }: { text: string }) {
   );
 }
 
-function MessageStats({
+function messageStatus(status: AppMessage["status"]): string {
+  if (status === "waiting_approval") return "等待审批";
+  if (status === "streaming" || status === "pending") return "生成中";
+  if (status === "failed") return "失败";
+  if (status === "cancelled") return "已取消";
+  return "已完成";
+}
+
+function MessageMetadata({
   message,
   providerName,
 }: {
   message: AppMessage;
   providerName?: string;
 }) {
+  const now = useRelativeNow();
   const usage = message.usage;
   const durationMs =
     message.completedAt === undefined
@@ -1577,50 +1733,16 @@ function MessageStats({
     usage?.outputTokens != null && generationMs != null && generationMs > 0
       ? usage.outputTokens / (generationMs / 1_000)
       : null;
-  const hasStats =
-    message.modelId !== undefined ||
-    providerName !== undefined ||
-    usage !== undefined ||
-    durationMs !== null ||
-    firstTokenMs !== null;
-  if (!hasStats || message.status === "pending" || message.status === "streaming") return null;
-
-  const usageTitle = usage
-    ? `实际 Token：输入 ${usage.inputTokens ?? 0} · 输出 ${usage.outputTokens ?? 0} · 总计 ${usage.totalTokens ?? 0}`
-    : "";
+  const timestamp = message.completedAt ?? message.createdAt;
+  const exactTime = new Date(timestamp).toLocaleString("zh-CN");
   return (
-    <div className="flex min-h-6 flex-wrap items-center gap-0.5">
-      {message.modelId && (
-        <StatValue
-          title={
-            providerName
-              ? `模型：${message.modelId} · 供应商：${providerName}`
-              : `模型：${message.modelId}`
-          }
-        >
-          {message.modelId}
-        </StatValue>
-      )}
-      {usage?.totalTokens != null && (
-        <StatValue title={usageTitle}>
-          {tokenFormatter.format(usage.totalTokens)} tokens
-        </StatValue>
-      )}
-      {tokensPerSecond != null && (
-        <StatValue title="输出 Token 除以纯生成耗时">
-          {formatTps(tokensPerSecond)} tokens/s
-        </StatValue>
-      )}
-      {firstTokenMs != null && (
-        <StatValue title={`从发送到收到第一个 Token：${firstTokenMs}ms`}>
-          首字 {formatDuration(firstTokenMs)}
-        </StatValue>
-      )}
-      {durationMs != null && (
-        <StatValue title={`本次回复总耗时：${durationMs}ms`}>
-          耗时 {formatDuration(durationMs)}
-        </StatValue>
-      )}
+    <div className="flex min-h-6 items-center">
+      <div className="text-muted-foreground flex translate-y-0.5 items-center gap-1 opacity-0 transition-[opacity,translate] duration-200 ease-out group-hover/message:translate-y-0 group-hover/message:opacity-100 group-focus-within/message:translate-y-0 group-focus-within/message:opacity-100 [@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100">
+        <time dateTime={new Date(timestamp).toISOString()} title={exactTime} className="px-1 text-[11px] tabular-nums">
+          {message.status === "streaming" || message.status === "pending"
+            ? "正在生成"
+            : formatRelativeTime(timestamp, now)}
+        </time>
       <Popover>
         <PopoverTrigger asChild>
           <Button
@@ -1637,6 +1759,11 @@ function MessageStats({
         <PopoverContent align="start" className="w-64 gap-0 p-0">
           <div className="border-b px-3 py-2 text-xs font-semibold">消息详情</div>
           <div className="flex flex-col gap-1.5 px-3 py-2.5">
+            <DetailRow label="状态" value={messageStatus(message.status)} />
+            <DetailRow
+              label={message.role === "user" ? "发送时间" : "生成时间"}
+              value={exactTime}
+            />
             {message.modelId && <DetailRow label="模型" value={message.modelId} />}
             {providerName && <DetailRow label="供应商" value={providerName} />}
             {usage && (
@@ -1692,16 +1819,136 @@ function MessageStats({
             {generationMs != null && (
               <DetailRow label="纯生成耗时" value={formatDuration(generationMs)} />
             )}
-            {message.completedAt !== undefined && (
-              <DetailRow
-                label="完成时间"
-                value={new Date(message.completedAt).toLocaleString("zh-CN")}
-              />
-            )}
+            {message.runId && <DetailRow label="运行" value={message.runId} />}
           </div>
         </PopoverContent>
       </Popover>
+      </div>
     </div>
+  );
+}
+
+type ToolCallPart = Extract<AppMessage["parts"][number], { type: "tool-call" }>;
+const READ_ONLY_TOOLS = new Set(["listFiles", "readFile", "searchFiles", "listSkills", "readSkill"]);
+
+function toolVerb(call: ToolCallPart): string {
+  const value = typeof call.input === "object" && call.input !== null ? call.input : {};
+  const path = Reflect.get(value, "path");
+  const command = Reflect.get(value, "command");
+  if (call.toolName === "readFile") return `读取 ${typeof path === "string" ? path : "文件"}`;
+  if (call.toolName === "listFiles") return "查看文件列表";
+  if (call.toolName === "searchFiles") return "搜索工作区";
+  if (call.toolName === "writeFile") return `写入 ${typeof path === "string" ? path : "文件"}`;
+  if (call.toolName === "replaceText") return `修改 ${typeof path === "string" ? path : "文件"}`;
+  if (call.toolName === "runCommand") return `运行 ${typeof command === "string" ? command : "命令"}`;
+  if (call.toolName === "listSkills") return "查看可用技能";
+  if (call.toolName === "readSkill") return "读取技能说明";
+  return call.toolName;
+}
+
+function toolGroupSummary(calls: ToolCallPart[]): string {
+  const running = calls.some((call) => call.status === "running");
+  const failed = calls.filter((call) => call.status === "failed").length;
+  if (calls.length === 1) {
+    const call = calls[0]!;
+    if (call.status === "approval") return `${toolVerb(call)} · 等待授权`;
+    if (call.status === "denied") return `${toolVerb(call)} · 已拒绝`;
+    if (call.status === "failed") return `${toolVerb(call)} · 失败`;
+    return toolVerb(call);
+  }
+  if (running) return `正在读取 ${calls.length} 项…`;
+  if (failed > 0) return `读取了 ${calls.length} 项，${failed} 项失败`;
+  return `读取了 ${calls.length} 项`;
+}
+
+function toolGroups(parts: AppMessage["parts"]): Map<string, ToolCallPart[]> {
+  const groups = new Map<string, ToolCallPart[]>();
+  let current: ToolCallPart[] | undefined;
+  for (const part of parts) {
+    if (part.type === "tool-call") {
+      if (READ_ONLY_TOOLS.has(part.toolName)) {
+        current ??= [];
+        current.push(part);
+        groups.set(part.toolCallId, current);
+      } else {
+        current = undefined;
+        groups.set(part.toolCallId, [part]);
+      }
+    } else if (part.type === "text" || part.type === "reasoning" || part.type === "error") {
+      current = undefined;
+    }
+  }
+  return groups;
+}
+
+function ToolTimeline({
+  calls,
+  parts,
+  approvals,
+  onResolveApproval,
+}: {
+  calls: ToolCallPart[];
+  parts: AppMessage["parts"];
+  approvals: ApprovalRecord[];
+  onResolveApproval: (approvalId: string, decision: ApprovalDecision) => Promise<void>;
+}) {
+  const first = calls[0]!;
+  const running = calls.some((call) => call.status === "running");
+  const failed = calls.some((call) => call.status === "failed");
+  const waiting = calls.some((call) => call.status === "approval");
+  return (
+    <Collapsible key={waiting ? "waiting" : "settled"} defaultOpen={waiting}>
+      <div className="border-border/60 relative pl-5 text-xs before:absolute before:top-1 before:bottom-1 before:left-1.5 before:w-px before:bg-border/70">
+        <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group/tool flex min-h-7 w-full items-center gap-2 text-left transition-colors">
+          <span className={cn("bg-background relative z-10 -ml-5 grid size-3 place-items-center", failed && "text-destructive", waiting && "text-amber-500")}>
+            {running ? <Loader2 className="size-3 animate-spin" /> : <ToolIcon name={first.toolName} className="size-3" />}
+          </span>
+          <span className="min-w-0 flex-1 truncate">{toolGroupSummary(calls)}</span>
+          <ChevronRight className="size-3.5 shrink-0 opacity-0 transition-[opacity,rotate] group-hover/tool:opacity-100 group-data-[state=open]/tool:rotate-90" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="pb-1.5 pl-0.5">
+          <div className="space-y-2 pt-1">
+            {calls.map((call) => {
+              const result = parts.find(
+                (part): part is Extract<AppMessage["parts"][number], { type: "tool-result" }> =>
+                  part.type === "tool-result" && part.toolCallId === call.toolCallId,
+              );
+              const diff = parts.find(
+                (part): part is Extract<AppMessage["parts"][number], { type: "diff" }> =>
+                  part.type === "diff" && part.toolCallId === call.toolCallId,
+              );
+              const approval = approvals.find(
+                (item) => item.toolCallId === call.toolCallId && item.status === "pending",
+              );
+              const duration = call.startedAt !== undefined && call.completedAt !== undefined
+                ? formatDuration(Math.max(0, call.completedAt - call.startedAt))
+                : undefined;
+              return (
+                <div key={call.toolCallId} className="space-y-1.5">
+                  {calls.length > 1 && (
+                    <div className="flex items-center gap-2 text-[11px]">
+                      <ToolIcon name={call.toolName} className="text-muted-foreground size-3" />
+                      <span className="min-w-0 flex-1 truncate">{toolVerb(call)}</span>
+                      {duration && <span className="text-muted-foreground tabular-nums">{duration}</span>}
+                    </div>
+                  )}
+                  <details className="text-muted-foreground text-[10px]">
+                    <summary className="hover:text-foreground cursor-pointer select-none">调用详情</summary>
+                    <div className="mt-1 grid gap-1.5">
+                      <pre className="bg-muted max-h-36 overflow-auto rounded-md p-2 whitespace-pre-wrap">{formatValue(call.input)}</pre>
+                      {result && <pre className={cn("bg-muted max-h-48 overflow-auto rounded-md p-2 whitespace-pre-wrap", result.isError && "text-destructive")}>{formatValue(result.output)}</pre>}
+                      {diff && <p>{diff.omitted ? `Diff 过大，已省略（${diff.bytes ?? 0} bytes）` : `已生成 ${diff.path} 的 Diff`}</p>}
+                      <span>工具：{call.toolName}{duration ? ` · ${duration}` : ""}</span>
+                    </div>
+                  </details>
+                  {approval && <ApprovalActions approval={approval} onResolve={onResolveApproval} showInput />}
+                </div>
+              );
+            })}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
   );
 }
 
@@ -1728,10 +1975,13 @@ const Message = memo(function Message({
       part.type === "tool-call" ||
       part.type === "error",
   );
+  const groups = toolGroups(message.parts);
   return (
     <article
+      tabIndex={0}
+      data-message-id={message.id}
       className={cn(
-        "animate-in fade-in slide-in-from-bottom-1 flex min-w-0 flex-col gap-2 text-sm leading-7 duration-300",
+        "group/message animate-in fade-in slide-in-from-bottom-1 flex min-w-0 flex-col gap-2 text-sm leading-7 outline-none duration-300",
         message.role === "user" && "bg-muted ml-auto max-w-[70%] rounded-xl px-3 py-2.5",
       )}
     >
@@ -1772,23 +2022,16 @@ const Message = memo(function Message({
           );
         }
         if (part.type === "tool-call") {
-          const approval = approvals.find((item) => item.toolCallId === part.toolCallId);
+          const group = groups.get(part.toolCallId) ?? [part];
+          if (group[0]?.toolCallId !== part.toolCallId) return null;
           return (
-            <div
+            <ToolTimeline
               key={part.toolCallId}
-              className="bg-muted/30 flex flex-col gap-2 rounded-lg border px-3 py-2 text-xs"
-            >
-              <div className="flex items-center gap-2">
-                <ToolIcon name={part.toolName} className="text-muted-foreground size-3.5" />
-                <span className="min-w-0 flex-1 truncate font-mono">{part.toolName}</span>
-                <Badge variant={part.status === "failed" ? "destructive" : "outline"}>
-                  {toolStatus(part.status)}
-                </Badge>
-              </div>
-              {approval && (
-                <ApprovalActions approval={approval} onResolve={onResolveApproval} showInput />
-              )}
-            </div>
+              calls={group}
+              parts={message.parts}
+              approvals={approvals}
+              onResolveApproval={onResolveApproval}
+            />
           );
         }
         if (part.type === "error") {
@@ -1805,9 +2048,7 @@ const Message = memo(function Message({
           <Loader2 className="size-3.5 animate-spin" /> 正在生成
         </p>
       )}
-      {message.role === "assistant" && (
-        <MessageStats message={message} providerName={providerName} />
-      )}
+      <MessageMetadata message={message} providerName={providerName} />
     </article>
   );
 });
@@ -1818,14 +2059,12 @@ function AgentPanel({
   workspace,
   approvals,
   onClose,
-  onResolve,
 }: {
   activeId?: string;
   messages: AppMessage[];
   workspace?: WorkspaceInfo;
   approvals: ApprovalRecord[];
   onClose: () => void;
-  onResolve: (approvalId: string, decision: ApprovalDecision) => Promise<void>;
 }) {
   const panelRef = useRef<HTMLElement>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
@@ -1959,10 +2198,14 @@ function AgentPanel({
         {approvals.length > 0 && (
           <div className="space-y-2 border-b p-3">
             {approvals.map((approval) => (
-              <Card key={approval.id} size="sm" className="border-amber-500/30">
+              <Card key={approval.id} size="sm" className={cn(approval.status === "pending" && "border-amber-500/30")}>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
-                    <ShieldAlert className="size-4 text-amber-500" />
+                    {approval.status === "pending" ? (
+                      <ShieldAlert className="size-4 text-amber-500" />
+                    ) : (
+                      <ShieldCheck className={cn("size-4", approval.status === "approved" ? "text-emerald-500" : "text-muted-foreground")} />
+                    )}
                     {approval.description}
                   </CardTitle>
                 </CardHeader>
@@ -1970,8 +2213,20 @@ function AgentPanel({
                   <pre className="bg-muted max-h-24 overflow-auto rounded-md p-2 text-[10px] whitespace-pre-wrap">
                     {formatValue(approval.input)}
                   </pre>
-                  <div className="mt-3">
-                    <ApprovalActions approval={approval} onResolve={onResolve} />
+                  {approval.reason && <p className="text-muted-foreground mt-2 text-[10px]">{approval.reason}</p>}
+                  <div className="mt-2 flex items-center justify-between gap-2 text-[10px]">
+                    <span className="text-muted-foreground">{new Date(approval.createdAt).toLocaleString("zh-CN")}</span>
+                    <Badge variant="outline">
+                      {approval.status === "pending"
+                        ? "等待处理"
+                        : approval.status === "approved"
+                          ? "已允许"
+                          : approval.status === "denied"
+                            ? "已拒绝"
+                            : approval.status === "expired"
+                              ? "已过期"
+                              : "已取消"}
+                    </Badge>
                   </div>
                 </CardContent>
               </Card>

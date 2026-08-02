@@ -65,6 +65,16 @@ export interface ProviderAccountInput {
 
 export type EngineKind = "native" | "cli";
 export type TaskMode = "work" | "code";
+export type PermissionProfileId = "ask" | "agent-managed" | "full-access";
+
+export interface PermissionProfile {
+  id: PermissionProfileId;
+  name: string;
+  description: string;
+  risk: "low" | "medium" | "high";
+  requiresConfirmation: boolean;
+  scope: "conversation";
+}
 
 export interface EngineDescriptor {
   id: string;
@@ -80,6 +90,10 @@ export interface EngineDescriptor {
     video: boolean;
     sessionResume: boolean;
     workspaceAccess: boolean;
+    permissions: {
+      defaultProfileId: PermissionProfileId;
+      profiles: PermissionProfile[];
+    };
   };
 }
 
@@ -140,6 +154,9 @@ export type MessagePart =
       toolName: string;
       input: unknown;
       status: "running" | "approval" | "completed" | "failed" | "denied";
+      startedAt?: number;
+      completedAt?: number;
+      summary?: string;
     }
   | {
       type: "tool-result";
@@ -188,6 +205,7 @@ export interface Conversation {
   providerAccountId?: string;
   workspace?: string;
   taskMode: TaskMode;
+  permissionProfileId: PermissionProfileId;
 }
 
 export interface ConversationDetail {
@@ -204,6 +222,7 @@ export interface SendMessageInput {
   systemPrompt?: string;
   workspace?: string;
   taskMode?: TaskMode;
+  permissionProfileId?: PermissionProfileId;
 }
 
 export type FinishReason = "stop" | "length" | "tool" | "cancelled" | "error";
@@ -337,6 +356,7 @@ export interface SkillInput {
 
 export interface AgentPreferences {
   systemPrompt: string;
+  defaultPermissionProfiles: Partial<Record<string, PermissionProfileId>>;
 }
 
 export const DEFAULT_SYSTEM_PROMPT = `你是铁铁汁（Tietiezhi），一个运行在用户桌面上的智能体助手。
@@ -521,6 +541,7 @@ export interface DesktopAPI {
     cancel(runId: string): Promise<void>;
     remove(id: string): Promise<void>;
     rename(id: string, title: string): Promise<void>;
+    setPermission(id: string, permissionProfileId: PermissionProfileId): Promise<Conversation>;
   };
   workspace: {
     createTemporary(): Promise<WorkspaceInfo>;

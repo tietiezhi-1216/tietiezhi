@@ -4,6 +4,7 @@ import type {
   EngineDetectionResult,
   EngineEvent,
   ProviderAccount,
+  PermissionProfileId,
   SkillDetail,
 } from "@shared/contracts";
 
@@ -18,6 +19,7 @@ export interface EngineRunOptions {
   skills: SkillDetail[];
   workspace: string;
   messages: AppMessage[];
+  permissionProfileId: PermissionProfileId;
   abortSignal: AbortSignal;
 }
 

@@ -36,6 +36,10 @@ function integer(row: Row, key: string): number {
   return typeof value === "number" ? value : Number(value ?? 0);
 }
 
+function permissionProfile(value: string): Conversation["permissionProfileId"] {
+  return value === "agent-managed" || value === "full-access" ? value : "ask";
+}
+
 function parseJSON<T>(value: unknown, fallback: T): T {
   if (typeof value !== "string") return fallback;
   try {
@@ -89,7 +93,8 @@ export class AppDatabase {
         active_model_id TEXT,
         provider_account_id TEXT,
         workspace TEXT,
-        task_mode TEXT NOT NULL DEFAULT 'code'
+        task_mode TEXT NOT NULL DEFAULT 'code',
+        permission_profile_id TEXT NOT NULL DEFAULT 'ask'
       );
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
@@ -252,6 +257,27 @@ export class AppDatabase {
     } catch {
       // Column already exists.
     }
+    const permissionMigration = this.#db
+      .prepare("SELECT version FROM schema_migrations WHERE version = 2")
+      .get();
+    if (permissionMigration === undefined) {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        const columns = this.#db.prepare("PRAGMA table_info(conversations)").all() as Row[];
+        if (!columns.some((column) => text(column, "name") === "permission_profile_id")) {
+          this.#db.exec(
+            "ALTER TABLE conversations ADD COLUMN permission_profile_id TEXT NOT NULL DEFAULT 'ask'",
+          );
+        }
+        this.#db
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?)")
+          .run(Date.now());
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        this.#db.exec("ROLLBACK");
+        throw error;
+      }
+    }
   }
 
   recoverInterruptedRuns(): void {
@@ -372,6 +398,7 @@ export class AppDatabase {
         providerAccountId: optionalText(row, "provider_account_id"),
         workspace: optionalText(row, "workspace"),
         taskMode: text(row, "task_mode") === "work" ? "work" : "code",
+        permissionProfileId: permissionProfile(text(row, "permission_profile_id")),
       }),
     );
   }
@@ -385,8 +412,9 @@ export class AppDatabase {
       .prepare(
         `INSERT INTO conversations (
           id, title, created_at, updated_at, active_engine_id,
-          active_model_id, provider_account_id, workspace, task_mode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          active_model_id, provider_account_id, workspace, task_mode,
+          permission_profile_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           title = excluded.title,
           updated_at = excluded.updated_at,
@@ -394,7 +422,8 @@ export class AppDatabase {
           active_model_id = excluded.active_model_id,
           provider_account_id = excluded.provider_account_id,
           workspace = excluded.workspace,
-          task_mode = excluded.task_mode`,
+          task_mode = excluded.task_mode,
+          permission_profile_id = excluded.permission_profile_id`,
       )
       .run(
         conversation.id,
@@ -406,6 +435,7 @@ export class AppDatabase {
         conversation.providerAccountId ?? null,
         conversation.workspace ?? null,
         conversation.taskMode,
+        conversation.permissionProfileId,
       );
   }
 

@@ -14,6 +14,7 @@ import { APPROVAL_TIMEOUT_MS, ApprovalManager } from "../application/approval-ma
 import type { AIEngine, EngineRunOptions, EngineTitleOptions } from "./engine.js";
 import { languageModel } from "./provider-factory.js";
 import { createWorkspaceTools, type WorkspaceToolEvent } from "./workspace-tools.js";
+import { AI_SDK_PERMISSION_PROFILES, requiresToolApproval } from "./permission-policy.js";
 
 class EventQueue {
   readonly #items: EngineEvent[] = [];
@@ -52,6 +53,16 @@ function approvalDescription(toolName: string, input: unknown): string {
   }
   const path = typeof value["path"] === "string" ? value["path"] : "?";
   return toolName === "writeFile" ? `写入 ${path}` : `修改 ${path}`;
+}
+
+function permissionInstruction(profile: EngineRunOptions["permissionProfileId"]): string {
+  if (profile === "full-access") {
+    return "当前任务已由用户授予完全访问；可以直接使用工作区工具，但不得尝试越过 Workspace。";
+  }
+  if (profile === "agent-managed") {
+    return "当前任务使用智能审批；普通工作区修改可直接执行，危险 Shell 会由系统请求用户批准。";
+  }
+  return "修改文件或执行命令前必须等待用户审批。";
 }
 
 function retryDelay(attempt: number): number {
@@ -291,6 +302,10 @@ export class AISDKEngine implements AIEngine {
         video: false,
         sessionResume: true,
         workspaceAccess: true,
+        permissions: {
+          defaultProfileId: "ask",
+          profiles: AI_SDK_PERMISSION_PROFILES,
+        },
       },
     };
   }
@@ -345,7 +360,7 @@ export class AISDKEngine implements AIEngine {
       const instructions = [
         "你是 Tietiezhi Workspace Agent。",
         `所有操作仅允许在 Workspace 目录中进行：${options.workspace}`,
-        "先检查现有文件，再进行修改。修改文件或执行命令前必须等待用户审批。",
+        `先检查现有文件，再进行修改。${permissionInstruction(options.permissionProfileId)}`,
         options.skills.length > 0
           ? "当前存在已启用技能。先用 listSkills 查看描述，任务匹配时再用 readSkill 加载完整说明。"
           : "",
@@ -377,7 +392,47 @@ export class AISDKEngine implements AIEngine {
                 tools,
                 toolApproval: ({ toolCall }) => {
                   if (!WORKSPACE_APPROVAL_TOOLS.has(toolCall.toolName)) return undefined;
-                  return allowedForRun.has(toolCall.toolName) ? "approved" : "user-approval";
+                  if (
+                    !requiresToolApproval(
+                      options.permissionProfileId,
+                      toolCall.toolName,
+                      toolCall.input,
+                    )
+                  ) {
+                    this.approvals.recordAutomatic(
+                      {
+                        id: `auto:${options.runId}:${toolCall.toolCallId}`,
+                        runId: options.runId,
+                        conversationId: options.conversationId,
+                        messageId: options.messageId,
+                        toolCallId: toolCall.toolCallId,
+                        toolName: toolCall.toolName,
+                        description: approvalDescription(toolCall.toolName, toolCall.input),
+                        input: toolCall.input,
+                        risk: toolCall.toolName === "runCommand" ? "high" : "medium",
+                      },
+                      `由“${options.permissionProfileId}”权限策略自动允许`,
+                    );
+                    return "approved";
+                  }
+                  if (allowedForRun.has(toolCall.toolName)) {
+                    this.approvals.recordAutomatic(
+                      {
+                        id: `auto:${options.runId}:${toolCall.toolCallId}`,
+                        runId: options.runId,
+                        conversationId: options.conversationId,
+                        messageId: options.messageId,
+                        toolCallId: toolCall.toolCallId,
+                        toolName: toolCall.toolName,
+                        description: approvalDescription(toolCall.toolName, toolCall.input),
+                        input: toolCall.input,
+                        risk: toolCall.toolName === "runCommand" ? "high" : "medium",
+                      },
+                      "由本轮同类工具授权自动允许",
+                    );
+                    return "approved";
+                  }
+                  return "user-approval";
                 },
                 maxRetries: 4,
                 providerOptions:
