@@ -26,14 +26,12 @@ import {
   PanelRightClose,
   Pencil,
   Plus,
-  ShieldAlert,
   ShieldCheck,
   Sparkles,
   Square,
   SquarePen,
   TerminalSquare,
   Trash2,
-  Wrench,
   X,
 } from "lucide-react";
 
@@ -102,7 +100,6 @@ import type {
   EngineEvent,
   GatewayAccountView,
   ProviderAccount,
-  WorkspaceToolDescriptor,
   WorkspaceInfo,
   WorkspaceFile,
   TaskMode,
@@ -1412,7 +1409,7 @@ export function WorkspacePage({
                       <FolderOpen /> 选择项目文件夹
                     </DropdownMenuItem>
                     <DropdownMenuItem onSelect={() => setPanelOpen(true)}>
-                      <Wrench /> 打开工作区工具
+                      <PanelRight /> 打开文件与变更
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuLabel className="text-muted-foreground font-normal">
@@ -1509,7 +1506,6 @@ export function WorkspacePage({
           activeId={activeId}
           messages={messages}
           workspace={workspace}
-          approvals={approvals}
           onClose={() => setPanelOpen(false)}
         />
       )}
@@ -1829,7 +1825,6 @@ function MessageMetadata({
 }
 
 type ToolCallPart = Extract<AppMessage["parts"][number], { type: "tool-call" }>;
-const READ_ONLY_TOOLS = new Set(["listFiles", "readFile", "searchFiles", "listSkills", "readSkill"]);
 
 function toolVerb(call: ToolCallPart): string {
   const value = typeof call.input === "object" && call.input !== null ? call.input : {};
@@ -1848,17 +1843,19 @@ function toolVerb(call: ToolCallPart): string {
 
 function toolGroupSummary(calls: ToolCallPart[]): string {
   const running = calls.some((call) => call.status === "running");
-  const failed = calls.filter((call) => call.status === "failed").length;
   if (calls.length === 1) {
     const call = calls[0]!;
     if (call.status === "approval") return `${toolVerb(call)} · 等待授权`;
     if (call.status === "denied") return `${toolVerb(call)} · 已拒绝`;
     if (call.status === "failed") return `${toolVerb(call)} · 失败`;
-    return toolVerb(call);
   }
-  if (running) return `正在读取 ${calls.length} 项…`;
-  if (failed > 0) return `读取了 ${calls.length} 项，${failed} 项失败`;
-  return `读取了 ${calls.length} 项`;
+  const commands = calls.filter((call) => call.toolName === "runCommand").length;
+  const tools = calls.length - commands;
+  const parts = [
+    commands > 0 ? `${running ? "正在运行" : "运行了"} ${commands} 个命令` : "",
+    tools > 0 ? `${running ? "正在使用" : "使用了"} ${tools} 个工具` : "",
+  ].filter(Boolean);
+  return `${parts.join(" 并 ")}${running ? "…" : ""}`;
 }
 
 function toolGroups(parts: AppMessage["parts"]): Map<string, ToolCallPart[]> {
@@ -1866,7 +1863,8 @@ function toolGroups(parts: AppMessage["parts"]): Map<string, ToolCallPart[]> {
   let current: ToolCallPart[] | undefined;
   for (const part of parts) {
     if (part.type === "tool-call") {
-      if (READ_ONLY_TOOLS.has(part.toolName)) {
+      const isolated = part.status === "approval" || part.status === "denied" || part.status === "failed";
+      if (!isolated) {
         current ??= [];
         current.push(part);
         groups.set(part.toolCallId, current);
@@ -1898,16 +1896,16 @@ function ToolTimeline({
   const waiting = calls.some((call) => call.status === "approval");
   return (
     <Collapsible key={waiting ? "waiting" : "settled"} defaultOpen={waiting}>
-      <div className="border-border/60 relative pl-5 text-xs before:absolute before:top-1 before:bottom-1 before:left-1.5 before:w-px before:bg-border/70">
-        <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group/tool flex min-h-7 w-full items-center gap-2 text-left transition-colors">
-          <span className={cn("bg-background relative z-10 -ml-5 grid size-3 place-items-center", failed && "text-destructive", waiting && "text-amber-500")}>
+      <div className="text-xs">
+        <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group/tool flex min-h-8 w-full items-center gap-2 text-left transition-colors">
+          <span className={cn("grid size-4 shrink-0 place-items-center", failed && "text-destructive", waiting && "text-amber-500")}>
             {running ? <Loader2 className="size-3 animate-spin" /> : <ToolIcon name={first.toolName} className="size-3" />}
           </span>
           <span className="min-w-0 flex-1 truncate">{toolGroupSummary(calls)}</span>
           <ChevronRight className="size-3.5 shrink-0 opacity-0 transition-[opacity,rotate] group-hover/tool:opacity-100 group-data-[state=open]/tool:rotate-90" />
         </CollapsibleTrigger>
-        <CollapsibleContent className="pb-1.5 pl-0.5">
-          <div className="space-y-2 pt-1">
+        <CollapsibleContent className="pb-2 pl-6">
+          <div className="space-y-2 pt-0.5">
             {calls.map((call) => {
               const result = parts.find(
                 (part): part is Extract<AppMessage["parts"][number], { type: "tool-result" }> =>
@@ -2057,13 +2055,11 @@ function AgentPanel({
   activeId,
   messages,
   workspace,
-  approvals,
   onClose,
 }: {
   activeId?: string;
   messages: AppMessage[];
   workspace?: WorkspaceInfo;
-  approvals: ApprovalRecord[];
   onClose: () => void;
 }) {
   const panelRef = useRef<HTMLElement>(null);
@@ -2071,26 +2067,11 @@ function AgentPanel({
   const [selectedFile, setSelectedFile] = useState("");
   const [fileContent, setFileContent] = useState("");
   const [fileError, setFileError] = useState("");
-  const [availableTools, setAvailableTools] = useState<WorkspaceToolDescriptor[]>([]);
   const parts = messages.flatMap((message) => message.parts);
-  const calls = parts.filter(
-    (part): part is Extract<(typeof parts)[number], { type: "tool-call" }> =>
-      part.type === "tool-call",
-  );
   const diffs = parts.filter(
     (part): part is Extract<(typeof parts)[number], { type: "diff" }> =>
       part.type === "diff",
   );
-  const results = parts.filter(
-    (part): part is Extract<(typeof parts)[number], { type: "tool-result" }> =>
-      part.type === "tool-result",
-  );
-  const reasoning = parts
-    .filter((part): part is Extract<(typeof parts)[number], { type: "reasoning" }> =>
-      part.type === "reasoning",
-    )
-    .map((part) => part.text)
-    .join("\n");
 
   useEffect(() => {
     setFiles([]);
@@ -2101,12 +2082,8 @@ function AgentPanel({
   }, [activeId, workspace, diffs.length]);
 
   useEffect(() => {
-    void window.tietiezhi.tools.list().then(setAvailableTools).catch(() => setAvailableTools([]));
-  }, []);
-
-  useEffect(() => {
-    const width = Number(window.localStorage.getItem("workspace-panel-width"));
-    if (Number.isFinite(width) && width >= 320 && width <= 720) {
+    const width = Number(window.localStorage.getItem("workspace-panel-width-v2"));
+    if (Number.isFinite(width) && width >= 300 && width <= 560) {
       panelRef.current?.style.setProperty("width", `${width}px`);
     }
   }, []);
@@ -2120,7 +2097,7 @@ function AgentPanel({
     let width = startWidth;
     handle.setPointerCapture(event.pointerId);
     const move = (moveEvent: PointerEvent) => {
-      width = Math.min(720, Math.max(320, startWidth + startX - moveEvent.clientX));
+      width = Math.min(560, Math.max(300, startWidth + startX - moveEvent.clientX));
       panelRef.current?.style.setProperty("width", `${width}px`);
     };
     const finish = () => {
@@ -2128,7 +2105,7 @@ function AgentPanel({
       handle.removeEventListener("pointerup", finish);
       handle.removeEventListener("pointercancel", finish);
       handle.removeEventListener("lostpointercapture", finish);
-      window.localStorage.setItem("workspace-panel-width", String(Math.round(width)));
+      window.localStorage.setItem("workspace-panel-width-v2", String(Math.round(width)));
     };
     handle.addEventListener("pointermove", move);
     handle.addEventListener("pointerup", finish);
@@ -2137,8 +2114,8 @@ function AgentPanel({
   };
 
   const resetPanelWidth = () => {
-    panelRef.current?.style.setProperty("width", "400px");
-    window.localStorage.setItem("workspace-panel-width", "400");
+    panelRef.current?.style.setProperty("width", "360px");
+    window.localStorage.setItem("workspace-panel-width-v2", "360");
   };
 
   const openFile = async (path: string) => {
@@ -2156,8 +2133,8 @@ function AgentPanel({
   return (
     <aside
       ref={panelRef}
-      aria-label="工作区工具"
-      className="bg-background relative flex min-h-0 w-100 min-w-80 max-w-[60vw] shrink-0 flex-col border-l"
+      aria-label="工作区文件与变更"
+      className="bg-background relative flex min-h-0 w-90 min-w-75 max-w-[48vw] shrink-0 flex-col border-l"
     >
       <div
         role="separator"
@@ -2168,11 +2145,11 @@ function AgentPanel({
         onDoubleClick={resetPanelWidth}
         className="group absolute inset-y-0 -left-1 z-30 w-2 touch-none cursor-col-resize before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-transparent before:transition-colors hover:before:bg-ring/70"
       />
-      <Tabs defaultValue="run" className="min-h-0 flex-1 gap-0">
+      <Tabs defaultValue={diffs.length > 0 ? "changes" : "files"} className="min-h-0 flex-1 gap-0">
         <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-          <Wrench className="text-muted-foreground size-4 shrink-0" />
+          <FolderOpen className="text-muted-foreground size-4 shrink-0" />
           <span className="text-sm font-medium">工作区</span>
-          <span className="text-muted-foreground text-xs">文件、变更与运行工具</span>
+          <span className="text-muted-foreground text-xs">文件与变更</span>
           <Button
             type="button"
             variant="ghost"
@@ -2186,140 +2163,12 @@ function AgentPanel({
         </div>
         <div className="flex h-10 shrink-0 items-center border-b px-3">
           <TabsList variant="line" className="h-9 min-w-0 flex-1 justify-start">
-            <TabsTrigger value="run">
-              工具 {calls.length > 0 && <Badge variant="secondary">{calls.length}</Badge>}
-            </TabsTrigger>
             <TabsTrigger value="changes">
               变更 {diffs.length > 0 && <Badge variant="secondary">{diffs.length}</Badge>}
             </TabsTrigger>
             <TabsTrigger value="files">文件</TabsTrigger>
           </TabsList>
         </div>
-        {approvals.length > 0 && (
-          <div className="space-y-2 border-b p-3">
-            {approvals.map((approval) => (
-              <Card key={approval.id} size="sm" className={cn(approval.status === "pending" && "border-amber-500/30")}>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    {approval.status === "pending" ? (
-                      <ShieldAlert className="size-4 text-amber-500" />
-                    ) : (
-                      <ShieldCheck className={cn("size-4", approval.status === "approved" ? "text-emerald-500" : "text-muted-foreground")} />
-                    )}
-                    {approval.description}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <pre className="bg-muted max-h-24 overflow-auto rounded-md p-2 text-[10px] whitespace-pre-wrap">
-                    {formatValue(approval.input)}
-                  </pre>
-                  {approval.reason && <p className="text-muted-foreground mt-2 text-[10px]">{approval.reason}</p>}
-                  <div className="mt-2 flex items-center justify-between gap-2 text-[10px]">
-                    <span className="text-muted-foreground">{new Date(approval.createdAt).toLocaleString("zh-CN")}</span>
-                    <Badge variant="outline">
-                      {approval.status === "pending"
-                        ? "等待处理"
-                        : approval.status === "approved"
-                          ? "已允许"
-                          : approval.status === "denied"
-                            ? "已拒绝"
-                            : approval.status === "expired"
-                              ? "已过期"
-                              : "已取消"}
-                    </Badge>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-        <TabsContent value="run" className="min-h-0">
-          <ScrollArea className="h-full">
-            <div className="space-y-3 p-3">
-              <Card size="sm">
-                <CardContent>
-                  <div className="flex items-center gap-2 text-xs">
-                    <FolderOpen className="size-3.5" />
-                    <span>{workspace?.name ?? "等待创建临时 Workspace"}</span>
-                  </div>
-                  {workspace?.path && <p className="text-muted-foreground mt-2 break-all font-mono text-[10px]">{workspace.path}</p>}
-                </CardContent>
-              </Card>
-              <Collapsible defaultOpen={calls.length === 0}>
-                <Card size="sm">
-                  <CollapsibleTrigger className="w-full text-left">
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-2">
-                        <Wrench className="size-3.5" />
-                        可用工具
-                        <Badge variant="secondary" className="ml-auto">
-                          {availableTools.length}
-                        </Badge>
-                      </CardTitle>
-                    </CardHeader>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <CardContent className="grid gap-1.5">
-                      {availableTools.map((tool) => (
-                        <div
-                          key={tool.id}
-                          className="bg-muted/35 flex items-center gap-2 rounded-md px-2 py-1.5"
-                          title={tool.description}
-                        >
-                          <ToolIcon name={tool.id} className="text-muted-foreground size-3.5" />
-                          <span className="min-w-0 flex-1 truncate text-xs">{tool.name}</span>
-                          {tool.approvalRequired && (
-                            <Badge variant="outline" className="text-[9px]">
-                              审批
-                            </Badge>
-                          )}
-                        </div>
-                      ))}
-                    </CardContent>
-                  </CollapsibleContent>
-                </Card>
-              </Collapsible>
-              {reasoning && (
-                <Collapsible>
-                  <Card size="sm">
-                    <CollapsibleTrigger className="w-full text-left">
-                      <CardHeader><CardTitle>推理过程</CardTitle></CardHeader>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <CardContent className="text-muted-foreground whitespace-pre-wrap text-xs leading-5">{reasoning}</CardContent>
-                    </CollapsibleContent>
-                  </Card>
-                </Collapsible>
-              )}
-              {calls.length === 0 ? (
-                <EmptyPanel text="Agent 调用工具后会显示在这里" />
-              ) : calls.map((call) => {
-                const result = results.find((item) => item.toolCallId === call.toolCallId);
-                return (
-                  <Collapsible key={call.toolCallId}>
-                    <Card size="sm">
-                      <CollapsibleTrigger className="w-full text-left">
-                        <CardHeader>
-                          <CardTitle className="flex items-center gap-2">
-                            <ToolIcon name={call.toolName} className="size-3.5" />
-                            <span className="font-mono">{call.toolName}</span>
-                            <Badge className="ml-auto" variant={call.status === "failed" ? "destructive" : "outline"}>{toolStatus(call.status)}</Badge>
-                          </CardTitle>
-                        </CardHeader>
-                      </CollapsibleTrigger>
-                      <CollapsibleContent>
-                        <CardContent className="space-y-2">
-                          <pre className="bg-muted max-h-32 overflow-auto rounded-md p-2 text-[10px] whitespace-pre-wrap">{formatValue(call.input)}</pre>
-                          {result && <pre className="bg-muted max-h-48 overflow-auto rounded-md p-2 text-[10px] whitespace-pre-wrap">{formatValue(result.output)}</pre>}
-                        </CardContent>
-                      </CollapsibleContent>
-                    </Card>
-                  </Collapsible>
-                );
-              })}
-            </div>
-          </ScrollArea>
-        </TabsContent>
         <TabsContent value="changes" className="min-h-0">
           <ScrollArea className="h-full">
             <div className="space-y-3 p-3">
@@ -2434,12 +2283,4 @@ function ToolIcon({ name, className }: { name: string; className?: string }) {
     return <Sparkles className={className} />;
   }
   return <FileCode2 className={className} />;
-}
-
-function toolStatus(status: Extract<AppMessage["parts"][number], { type: "tool-call" }>["status"]) {
-  if (status === "approval") return "等待审批";
-  if (status === "completed") return "完成";
-  if (status === "failed") return "失败";
-  if (status === "denied") return "已拒绝";
-  return "运行中";
 }
