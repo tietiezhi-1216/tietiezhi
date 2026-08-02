@@ -91,6 +91,8 @@ import { WorkspaceModelSelect } from "./workspace-model-select";
 import type { SettingsCategory } from "@/features/settings/provider-dialog";
 import type { ProductArea } from "@/App";
 import type {
+  ApprovalDecision,
+  ApprovalRecord,
   AppMessage,
   Conversation,
   EngineEvent,
@@ -102,7 +104,6 @@ import type {
   TaskMode,
 } from "@shared/contracts";
 
-type ApprovalEvent = Extract<EngineEvent, { type: "tool.approval_required" }>;
 type RetryEvent = Extract<EngineEvent, { type: "run.retrying" }>;
 const IS_MACOS = navigator.userAgent.includes("Mac");
 const SIDEBAR_MIN_WIDTH = 200;
@@ -149,7 +150,7 @@ export function WorkspacePage({
   const [error, setError] = useState("");
   const [isAtHistoryBottom, setIsAtHistoryBottom] = useState(true);
   const [workspace, setWorkspace] = useState<WorkspaceInfo>();
-  const [approvals, setApprovals] = useState<ApprovalEvent[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
   const [panelOpen, setPanelOpen] = useState(
     () => window.localStorage.getItem("workspace-panel-open") === "true",
   );
@@ -326,15 +327,35 @@ export function WorkspacePage({
           const events = queuedEvents.current.splice(0);
           if (events.length === 0) return;
           setMessages((current) => applyEvents(current, events));
-          const approvalsInBatch = events.filter(
-            (candidate): candidate is ApprovalEvent =>
-              candidate.type === "tool.approval_required",
-          );
+          const approvalsInBatch = events
+            .filter((candidate) => candidate.type === "tool.approval_required")
+            .map((candidate): ApprovalRecord => ({
+              id: candidate.approvalId,
+              runId: candidate.runId,
+              conversationId: candidate.conversationId,
+              messageId: candidate.messageId,
+              toolCallId: candidate.toolCallId,
+              toolName: candidate.toolName,
+              description: candidate.description,
+              input: candidate.input,
+              risk: candidate.risk,
+              status: "pending",
+              createdAt: candidate.createdAt,
+              expiresAt: candidate.expiresAt,
+            }));
           if (approvalsInBatch.length > 0) {
             setApprovals((current) => {
-              const ids = new Set(approvalsInBatch.map((item) => item.approvalId));
-              return [...current.filter((item) => !ids.has(item.approvalId)), ...approvalsInBatch];
+              const ids = new Set(approvalsInBatch.map((item) => item.id));
+              return [...current.filter((item) => !ids.has(item.id)), ...approvalsInBatch];
             });
+          }
+          const resolvedIds = new Set(
+            events
+              .filter((candidate) => candidate.type === "tool.approval_resolved")
+              .map((candidate) => candidate.approvalId),
+          );
+          if (resolvedIds.size > 0) {
+            setApprovals((current) => current.filter((item) => !resolvedIds.has(item.id)));
           }
           setRetry((current) => {
             let next = current;
@@ -515,7 +536,10 @@ export function WorkspacePage({
     setTaskMode(detail.conversation.taskMode);
     setRunId(
       detail.messages.findLast(
-        (message) => message.status === "pending" || message.status === "streaming",
+        (message) =>
+          message.status === "pending" ||
+          message.status === "streaming" ||
+          message.status === "waiting_approval",
       )?.runId,
     );
     const path = detail.conversation.workspace;
@@ -528,7 +552,9 @@ export function WorkspacePage({
           }
         : undefined,
     );
-    setApprovals([]);
+    setApprovals(
+      (await window.tietiezhi.approvals.list(id)).filter((approval) => approval.status === "pending"),
+    );
     setError("");
   };
 
@@ -580,6 +606,19 @@ export function WorkspacePage({
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
+
+  const resolveApproval = useCallback(
+    async (approvalId: string, decision: ApprovalDecision) => {
+      try {
+        await window.tietiezhi.approvals.resolve(approvalId, decision);
+        setApprovals((current) => current.filter((item) => item.id !== approvalId));
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+        throw cause;
+      }
+    },
+    [],
+  );
 
   const remove = async (id: string) => {
     setError("");
@@ -1173,6 +1212,8 @@ export function WorkspacePage({
                         providers.find((provider) => provider.id === message.providerAccountId)
                           ?.displayName
                       }
+                      approvals={approvals}
+                      onResolveApproval={resolveApproval}
                     />
                   ))}
                 </div>
@@ -1338,12 +1379,7 @@ export function WorkspacePage({
           workspace={workspace}
           approvals={approvals}
           onClose={() => setPanelOpen(false)}
-          onResolve={async (approvalId, approved) => {
-            await window.tietiezhi.approvals.resolve(approvalId, approved);
-            setApprovals((current) =>
-              current.filter((item) => item.approvalId !== approvalId),
-            );
-          }}
+          onResolve={resolveApproval}
         />
       )}
       <Dialog open={renaming !== undefined} onOpenChange={(open) => !open && setRenaming(undefined)}>
@@ -1670,9 +1706,13 @@ function MessageStats({
 const Message = memo(function Message({
   message,
   providerName,
+  approvals,
+  onResolveApproval,
 }: {
   message: AppMessage;
   providerName?: string;
+  approvals: ApprovalRecord[];
+  onResolveApproval: (approvalId: string, decision: ApprovalDecision) => Promise<void>;
 }) {
   const tailPart = message.parts.at(-1);
   const streamingTail =
@@ -1730,16 +1770,22 @@ const Message = memo(function Message({
           );
         }
         if (part.type === "tool-call") {
+          const approval = approvals.find((item) => item.toolCallId === part.toolCallId);
           return (
             <div
               key={part.toolCallId}
-              className="bg-muted/30 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs"
+              className="bg-muted/30 flex flex-col gap-2 rounded-lg border px-3 py-2 text-xs"
             >
-              <ToolIcon name={part.toolName} className="text-muted-foreground size-3.5" />
-              <span className="min-w-0 flex-1 truncate font-mono">{part.toolName}</span>
-              <Badge variant={part.status === "failed" ? "destructive" : "outline"}>
-                {toolStatus(part.status)}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <ToolIcon name={part.toolName} className="text-muted-foreground size-3.5" />
+                <span className="min-w-0 flex-1 truncate font-mono">{part.toolName}</span>
+                <Badge variant={part.status === "failed" ? "destructive" : "outline"}>
+                  {toolStatus(part.status)}
+                </Badge>
+              </div>
+              {approval && (
+                <ApprovalActions approval={approval} onResolve={onResolveApproval} showInput />
+              )}
             </div>
           );
         }
@@ -1763,6 +1809,55 @@ const Message = memo(function Message({
     </article>
   );
 });
+
+function ApprovalActions({
+  approval,
+  onResolve,
+  showInput = false,
+}: {
+  approval: ApprovalRecord;
+  onResolve: (approvalId: string, decision: ApprovalDecision) => Promise<void>;
+  showInput?: boolean;
+}) {
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState("");
+  const answer = async (decision: ApprovalDecision) => {
+    if (pending) return;
+    setPending(true);
+    setFailure("");
+    try {
+      await onResolve(approval.id, decision);
+    } catch (cause) {
+      setFailure(cause instanceof Error ? cause.message : String(cause));
+      setPending(false);
+    }
+  };
+  return (
+    <div className="border-amber-500/30 bg-amber-500/5 space-y-2 rounded-md border p-2">
+      <div className="flex items-center gap-2 font-medium">
+        <ShieldAlert className="size-3.5 text-amber-500" />
+        <span>{approval.description}</span>
+      </div>
+      {showInput && (
+        <pre className="bg-muted max-h-28 overflow-auto rounded p-2 text-[10px] whitespace-pre-wrap">
+          {formatValue(approval.input)}
+        </pre>
+      )}
+      <div className="flex flex-wrap justify-end gap-2">
+        <Button type="button" size="xs" variant="ghost" disabled={pending} onClick={() => void answer("deny")}>
+          <X />拒绝
+        </Button>
+        <Button type="button" size="xs" variant="outline" disabled={pending} onClick={() => void answer("allow-for-run")}>
+          本轮不再询问
+        </Button>
+        <Button type="button" size="xs" disabled={pending} onClick={() => void answer("allow-once")}>
+          {pending ? <Loader2 className="animate-spin" /> : <Check />}允许一次
+        </Button>
+      </div>
+      {failure && <p className="text-destructive text-xs">{failure}</p>}
+    </div>
+  );
+}
 
 function applyEvents(current: AppMessage[], events: EngineEvent[]): AppMessage[] {
   const next = [...current];
@@ -1816,18 +1911,33 @@ function applyEvents(current: AppMessage[], events: EngineEvent[]): AppMessage[]
       }
       message.status = "streaming";
     } else if (event.type === "tool.call") {
-      message.parts.push({
-        type: "tool-call",
-        toolCallId: event.toolCallId,
-        toolName: event.toolName,
-        input: event.input,
-        status: "running",
-      });
+      const existingCall = message.parts.find(
+        (part) => part.type === "tool-call" && part.toolCallId === event.toolCallId,
+      );
+      if (existingCall?.type === "tool-call") {
+        existingCall.status = "running";
+      } else {
+        message.parts.push({
+          type: "tool-call",
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          input: event.input,
+          status: "running",
+        });
+      }
       message.status = "streaming";
     } else if (event.type === "tool.approval_required") {
+      message.status = "waiting_approval";
       message.parts = message.parts.map((part) =>
         part.type === "tool-call" && part.toolCallId === event.toolCallId
           ? { ...part, status: "approval" }
+          : part,
+      );
+    } else if (event.type === "tool.approval_resolved") {
+      message.status = "streaming";
+      message.parts = message.parts.map((part) =>
+        part.type === "tool-call" && part.toolCallId === event.toolCallId
+          ? { ...part, status: event.decision === "deny" ? "denied" : "running" }
           : part,
       );
     } else if (event.type === "tool.result") {
@@ -1880,9 +1990,9 @@ function AgentPanel({
   activeId?: string;
   messages: AppMessage[];
   workspace?: WorkspaceInfo;
-  approvals: ApprovalEvent[];
+  approvals: ApprovalRecord[];
   onClose: () => void;
-  onResolve: (approvalId: string, approved: boolean) => Promise<void>;
+  onResolve: (approvalId: string, decision: ApprovalDecision) => Promise<void>;
 }) {
   const panelRef = useRef<HTMLElement>(null);
   const [files, setFiles] = useState<WorkspaceFile[]>([]);
@@ -2016,7 +2126,7 @@ function AgentPanel({
         {approvals.length > 0 && (
           <div className="space-y-2 border-b p-3">
             {approvals.map((approval) => (
-              <Card key={approval.approvalId} size="sm" className="border-amber-500/30">
+              <Card key={approval.id} size="sm" className="border-amber-500/30">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <ShieldAlert className="size-4 text-amber-500" />
@@ -2027,13 +2137,8 @@ function AgentPanel({
                   <pre className="bg-muted max-h-24 overflow-auto rounded-md p-2 text-[10px] whitespace-pre-wrap">
                     {formatValue(approval.input)}
                   </pre>
-                  <div className="mt-3 flex justify-end gap-2">
-                    <Button type="button" size="xs" variant="outline" onClick={() => void onResolve(approval.approvalId, false)}>
-                      <X />拒绝
-                    </Button>
-                    <Button type="button" size="xs" onClick={() => void onResolve(approval.approvalId, true)}>
-                      <Check />允许
-                    </Button>
+                  <div className="mt-3">
+                    <ApprovalActions approval={approval} onResolve={onResolve} />
                   </div>
                 </CardContent>
               </Card>

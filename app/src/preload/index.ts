@@ -60,8 +60,9 @@ const api: DesktopAPI = {
     save: (input) => invoke("preferences.save", input),
   },
   approvals: {
-    resolve: (approvalId, approved) =>
-      invoke("approvals.resolve", { approvalId, approved }),
+    list: (conversationId) => invoke("approvals.list", { conversationId }),
+    resolve: (approvalId, decision) =>
+      invoke("approvals.resolve", { approvalId, decision }),
   },
   media: {
     list: () => invoke("media.list"),

@@ -1,6 +1,7 @@
 import { generateText, ToolLoopAgent, type ModelMessage } from "ai";
 
 import type {
+  ApprovalDecision,
   AppError,
   EngineDescriptor,
   EngineDetectionResult,
@@ -9,7 +10,7 @@ import type {
   UsageInfo,
 } from "@shared/contracts";
 
-import { ApprovalManager } from "../application/approval-manager.js";
+import { APPROVAL_TIMEOUT_MS, ApprovalManager } from "../application/approval-manager.js";
 import type { AIEngine, EngineRunOptions, EngineTitleOptions } from "./engine.js";
 import { languageModel } from "./provider-factory.js";
 import { createWorkspaceTools, type WorkspaceToolEvent } from "./workspace-tools.js";
@@ -42,6 +43,16 @@ class EventQueue {
 }
 
 const STREAM_MAX_RETRIES = 5;
+const WORKSPACE_APPROVAL_TOOLS = new Set(["writeFile", "replaceText", "runCommand"]);
+
+function approvalDescription(toolName: string, input: unknown): string {
+  const value = record(input) ?? {};
+  if (toolName === "runCommand") {
+    return `执行命令：${typeof value["command"] === "string" ? value["command"] : "?"}`;
+  }
+  const path = typeof value["path"] === "string" ? value["path"] : "?";
+  return toolName === "writeFile" ? `写入 ${path}` : `修改 ${path}`;
+}
 
 function retryDelay(attempt: number): number {
   const exponential = Math.min(8_000, 500 * 2 ** (attempt - 1));
@@ -73,14 +84,63 @@ function textOf(message: EngineRunOptions["messages"][number]): string {
     .join("");
 }
 
-function toMessages(messages: EngineRunOptions["messages"]): ModelMessage[] {
+export function toModelMessages(messages: EngineRunOptions["messages"]): ModelMessage[] {
   return messages.flatMap((message): ModelMessage[] => {
-    if (message.role !== "user" && message.role !== "assistant" && message.role !== "system") {
-      return [];
+    if (message.role === "user" || message.role === "system") {
+      const content = textOf(message);
+      return content === "" ? [] : [{ role: message.role, content }];
     }
-    const content = textOf(message);
-    return content === "" ? [] : [{ role: message.role, content }];
+    if (message.role !== "assistant") return [];
+    const assistantContent: Array<
+      | { type: "text"; text: string }
+      | { type: "reasoning"; text: string }
+      | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
+    > = [];
+    const toolContent: Array<{
+      type: "tool-result";
+      toolCallId: string;
+      toolName: string;
+      output: { type: "text"; value: string };
+    }> = [];
+    for (const part of message.parts) {
+      if (part.type === "text" && part.text !== "") {
+        assistantContent.push({ type: "text", text: part.text });
+      } else if (part.type === "reasoning" && part.text !== "") {
+        assistantContent.push({ type: "reasoning", text: part.text });
+      } else if (part.type === "tool-call") {
+        assistantContent.push({
+          type: "tool-call",
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          input: part.input,
+        });
+      } else if (part.type === "tool-result") {
+        toolContent.push({
+          type: "tool-result",
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          output: { type: "text", value: formatToolHistory(part.output) },
+        });
+      }
+    }
+    return [
+      ...(assistantContent.length > 0
+        ? ([{ role: "assistant", content: assistantContent }] satisfies ModelMessage[])
+        : []),
+      ...(toolContent.length > 0
+        ? ([{ role: "tool", content: toolContent }] satisfies ModelMessage[])
+        : []),
+    ];
   });
+}
+
+function formatToolHistory(output: unknown): string {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output);
+  } catch {
+    return String(output);
+  }
 }
 
 function usageOf(value: unknown): UsageInfo {
@@ -191,19 +251,6 @@ function base(
 }
 
 function toolEvent(options: EngineRunOptions, event: WorkspaceToolEvent): EngineEvent | null {
-  if (event.type === "approval" && event.approvalId && event.description && event.risk) {
-    return {
-      ...base(options),
-      type: "tool.approval_required",
-      messageId: options.messageId,
-      approvalId: event.approvalId,
-      toolCallId: event.toolCallId,
-      toolName: event.toolName,
-      description: event.description,
-      input: event.input,
-      risk: event.risk,
-    };
-  }
   if (
     event.type === "diff" &&
     event.path !== undefined &&
@@ -286,7 +333,6 @@ export class AISDKEngine implements AIEngine {
         {
           workspace: options.workspace,
           signal: controller.signal,
-          approvals: this.approvals,
           emit: (event) => {
             const mapped = toolEvent(options, event);
             if (mapped) queue.push(mapped);
@@ -307,6 +353,8 @@ export class AISDKEngine implements AIEngine {
         .filter(Boolean)
         .join("\n");
       void (async () => {
+        const messages = toModelMessages(options.messages);
+        const allowedForRun = new Set<string>();
         try {
           for (let retryAttempt = 0; ; retryAttempt += 1) {
             let fullText = "";
@@ -325,6 +373,10 @@ export class AISDKEngine implements AIEngine {
                 model: languageModel(options.provider, options.apiKey, options.model),
                 instructions,
                 tools,
+                toolApproval: ({ toolCall }) => {
+                  if (!WORKSPACE_APPROVAL_TOOLS.has(toolCall.toolName)) return undefined;
+                  return allowedForRun.has(toolCall.toolName) ? "approved" : "user-approval";
+                },
                 maxRetries: 4,
                 providerOptions:
                   options.provider.providerType === "openai"
@@ -332,9 +384,19 @@ export class AISDKEngine implements AIEngine {
                     : undefined,
               });
               const result = await agent.stream({
-                messages: toMessages(options.messages),
+                messages,
                 abortSignal: controller.signal,
               });
+              let approval:
+                | {
+                    approvalId: string;
+                    toolCallId: string;
+                    toolName: string;
+                    input: unknown;
+                    decision: Promise<ApprovalDecision>;
+                    expiresAt: number;
+                  }
+                | undefined;
               for await (const part of result.fullStream) {
                 if (part.type === "text-delta") {
                   fullText += part.text;
@@ -371,6 +433,44 @@ export class AISDKEngine implements AIEngine {
                     output: part.output,
                     isError: false,
                   });
+                } else if (part.type === "tool-approval-request" && !part.isAutomatic) {
+                  const description = approvalDescription(part.toolCall.toolName, part.toolCall.input);
+                  const risk = part.toolCall.toolName === "runCommand" ? "high" : "medium";
+                  const expiresAt = Date.now() + APPROVAL_TIMEOUT_MS;
+                  const decision = this.approvals.request(
+                    {
+                      id: part.approvalId,
+                      runId: options.runId,
+                      conversationId: options.conversationId,
+                      messageId: options.messageId,
+                      toolCallId: part.toolCall.toolCallId,
+                      toolName: part.toolCall.toolName,
+                      description,
+                      input: part.toolCall.input,
+                      risk,
+                    },
+                    controller.signal,
+                  );
+                  approval = {
+                    approvalId: part.approvalId,
+                    toolCallId: part.toolCall.toolCallId,
+                    toolName: part.toolCall.toolName,
+                    input: part.toolCall.input,
+                    decision,
+                    expiresAt,
+                  };
+                  queue.push({
+                    ...base(options),
+                    type: "tool.approval_required",
+                    messageId: options.messageId,
+                    approvalId: part.approvalId,
+                    toolCallId: part.toolCall.toolCallId,
+                    toolName: part.toolCall.toolName,
+                    description,
+                    input: part.toolCall.input,
+                    risk,
+                    expiresAt,
+                  });
                 } else if (part.type === "tool-error") {
                   queue.push({
                     ...base(options),
@@ -401,6 +501,35 @@ export class AISDKEngine implements AIEngine {
                   messageId: options.messageId,
                   text: fullText,
                 });
+              }
+              messages.push(...(await result.responseMessages));
+              if (approval !== undefined) {
+                const decision = await approval.decision;
+                if (decision === "allow-for-run") allowedForRun.add(approval.toolName);
+                const approved = decision !== "deny";
+                messages.push({
+                  role: "tool",
+                  content: [
+                    {
+                      type: "tool-approval-response",
+                      approvalId: approval.approvalId,
+                      approved,
+                      reason: approved ? undefined : "用户拒绝了此操作",
+                    },
+                  ],
+                });
+                queue.push({
+                  ...base(options),
+                  type: "tool.approval_resolved",
+                  messageId: options.messageId,
+                  approvalId: approval.approvalId,
+                  toolCallId: approval.toolCallId,
+                  toolName: approval.toolName,
+                  decision,
+                  ...(approved ? {} : { reason: "用户拒绝了此操作" }),
+                });
+                retryAttempt = -1;
+                continue;
               }
               queue.push({
                 ...base(options),

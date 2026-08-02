@@ -5,6 +5,8 @@ import { DatabaseSync, type StatementResultingChanges } from "node:sqlite";
 import { app } from "electron";
 
 import type {
+  ApprovalDecision,
+  ApprovalRecord,
   AppMessage,
   Conversation,
   ConversationDetail,
@@ -117,6 +119,25 @@ export class AppDatabase {
         usage_json TEXT,
         error_json TEXT
       );
+      CREATE TABLE IF NOT EXISTS approvals (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        tool_call_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        input_json TEXT NOT NULL,
+        risk TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        decision TEXT,
+        reason TEXT
+      );
+      CREATE INDEX IF NOT EXISTS approvals_conversation_status
+        ON approvals(conversation_id, status, created_at);
       CREATE TABLE IF NOT EXISTS media_jobs (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
@@ -237,6 +258,13 @@ export class AppDatabase {
     const now = Date.now();
     this.#db
       .prepare(
+        `UPDATE approvals
+         SET status = 'expired', resolved_at = ?, reason = '应用在审批完成前退出'
+         WHERE status = 'pending'`,
+      )
+      .run(now);
+    this.#db
+      .prepare(
         `UPDATE runs
          SET status = 'failed', completed_at = ?, finish_reason = 'error',
              error_json = ?
@@ -254,7 +282,7 @@ export class AppDatabase {
       .prepare(
         `UPDATE messages
          SET status = 'failed'
-         WHERE status IN ('pending', 'streaming')`,
+         WHERE status IN ('pending', 'streaming', 'waiting_approval')`,
       )
       .run();
     this.#db
@@ -481,6 +509,66 @@ export class AppDatabase {
         error === undefined ? null : JSON.stringify(error),
         id,
       );
+  }
+
+  saveApproval(approval: ApprovalRecord): void {
+    this.#db
+      .prepare(
+        `INSERT INTO approvals (
+          id, run_id, conversation_id, message_id, tool_call_id, tool_name,
+          description, input_json, risk, status, created_at, expires_at,
+          resolved_at, decision, reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          status = excluded.status,
+          resolved_at = excluded.resolved_at,
+          decision = excluded.decision,
+          reason = excluded.reason`,
+      )
+      .run(
+        approval.id,
+        approval.runId,
+        approval.conversationId,
+        approval.messageId,
+        approval.toolCallId,
+        approval.toolName,
+        approval.description,
+        JSON.stringify(approval.input),
+        approval.risk,
+        approval.status,
+        approval.createdAt,
+        approval.expiresAt,
+        approval.resolvedAt ?? null,
+        approval.decision ?? null,
+        approval.reason ?? null,
+      );
+  }
+
+  approvals(conversationId?: string): ApprovalRecord[] {
+    const rows = (
+      conversationId === undefined
+        ? this.#db.prepare("SELECT * FROM approvals ORDER BY created_at").all()
+        : this.#db
+            .prepare("SELECT * FROM approvals WHERE conversation_id = ? ORDER BY created_at")
+            .all(conversationId)
+    ) as Row[];
+    return rows.map((row) => ({
+      id: text(row, "id"),
+      runId: text(row, "run_id"),
+      conversationId: text(row, "conversation_id"),
+      messageId: text(row, "message_id"),
+      toolCallId: text(row, "tool_call_id"),
+      toolName: text(row, "tool_name"),
+      description: text(row, "description"),
+      input: parseJSON<unknown>(row["input_json"], null),
+      risk: text(row, "risk") === "high" ? "high" : "medium",
+      status: text(row, "status") as ApprovalRecord["status"],
+      createdAt: integer(row, "created_at"),
+      expiresAt: integer(row, "expires_at"),
+      resolvedAt: integer(row, "resolved_at") || undefined,
+      decision: optionalText(row, "decision") as ApprovalDecision | undefined,
+      reason: optionalText(row, "reason"),
+    }));
   }
 
   saveMediaJob(job: MediaJob): void {

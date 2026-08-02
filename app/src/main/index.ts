@@ -5,6 +5,7 @@ import { app, BrowserWindow, ipcMain, net, protocol } from "electron";
 
 import {
   IPC,
+  type ApprovalDecision,
   type AgentPreferences,
   type ImageGenerationRequest,
   type ProviderAccountInput,
@@ -124,6 +125,11 @@ function sendInput(value: unknown): SendMessageInput {
     workspace: optionalString(input, "workspace"),
     taskMode: taskMode === "work" ? "work" : "code",
   };
+}
+
+function approvalDecision(value: unknown): ApprovalDecision {
+  if (value === "allow-once" || value === "allow-for-run" || value === "deny") return value;
+  throw new Error("审批决定无效");
 }
 
 function imageInput(value: unknown): ImageGenerationRequest {
@@ -247,7 +253,7 @@ async function bootstrap(): Promise<void> {
   const workspaces = new WorkspaceService();
   const preferences = new PreferencesService();
   const skills = new SkillService();
-  approvals = new ApprovalManager();
+  approvals = new ApprovalManager(database);
   engines = new EngineManager();
   await engines.registerReady(new AISDKEngine(approvals));
   const conversations = new ConversationService(
@@ -405,8 +411,10 @@ async function bootstrap(): Promise<void> {
       case "approvals.resolve":
         return approvals?.resolve(
           string(request.input, "approvalId"),
-          record(request.input)["approved"] === true,
+          approvalDecision(record(request.input)["decision"]),
         );
+      case "approvals.list":
+        return approvals?.list(optionalString(record(request.input), "conversationId"));
       case "media.list":
         return media.list();
       case "media.listAssets":

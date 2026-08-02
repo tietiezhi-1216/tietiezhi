@@ -6,19 +6,14 @@ import { jsonSchema, tool } from "ai";
 
 import type { SkillDetail, WorkspaceToolDescriptor } from "@shared/contracts";
 
-import { ApprovalManager } from "../application/approval-manager.js";
-
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_OUTPUT_BYTES = 200_000;
 
 export interface WorkspaceToolEvent {
-  type: "approval" | "diff";
+  type: "diff";
   toolCallId: string;
   toolName: string;
   input?: unknown;
-  approvalId?: string;
-  description?: string;
-  risk?: "medium" | "high";
   path?: string;
   before?: string;
   after?: string;
@@ -27,7 +22,6 @@ export interface WorkspaceToolEvent {
 interface ToolContext {
   workspace: string;
   signal: AbortSignal;
-  approvals: ApprovalManager;
   emit(event: WorkspaceToolEvent): void;
 }
 
@@ -124,28 +118,6 @@ export async function resolveWorkspacePath(
   if (physical.startsWith("..")) throw new Error("路径通过符号链接超出 Workspace");
   if (createParent) await mkdir(dirname(target), { recursive: true });
   return target;
-}
-
-async function approval(
-  context: ToolContext,
-  toolCallId: string,
-  toolName: string,
-  input: unknown,
-  description: string,
-  risk: "medium" | "high",
-): Promise<void> {
-  const approved = await context.approvals.request(context.signal, (approvalId) => {
-    context.emit({
-      type: "approval",
-      approvalId,
-      toolCallId,
-      toolName,
-      input,
-      description,
-      risk,
-    });
-  });
-  if (!approved) throw new Error("用户拒绝了此操作");
 }
 
 async function collectFiles(root: string, directory: string, depth: number): Promise<string[]> {
@@ -300,14 +272,6 @@ export function createWorkspaceTools(context: ToolContext, skills: SkillDetail[]
         } catch {
           before = "";
         }
-        await approval(
-          context,
-          options.toolCallId,
-          "writeFile",
-          input,
-          `写入 ${input.path}`,
-          "medium",
-        );
         await writeFile(path, input.content, "utf8");
         context.emit({
           type: "diff",
@@ -340,14 +304,6 @@ export function createWorkspaceTools(context: ToolContext, skills: SkillDetail[]
           throw new Error(`要求 oldText 精确出现一次，实际出现 ${occurrences} 次`);
         }
         const after = before.replace(input.oldText, input.newText);
-        await approval(
-          context,
-          options.toolCallId,
-          "replaceText",
-          input,
-          `修改 ${input.path}`,
-          "medium",
-        );
         await writeFile(path, after, "utf8");
         context.emit({
           type: "diff",
@@ -368,15 +324,7 @@ export function createWorkspaceTools(context: ToolContext, skills: SkillDetail[]
         required: ["command"],
         additionalProperties: false,
       }),
-      execute: async (input, options) => {
-        await approval(
-          context,
-          options.toolCallId,
-          "runCommand",
-          input,
-          `执行命令：${input.command}`,
-          "high",
-        );
+      execute: async (input) => {
         return commandResult(input.command, context.workspace, context.signal);
       },
     }),

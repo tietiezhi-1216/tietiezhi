@@ -96,6 +96,7 @@ export type MessageRole = "system" | "user" | "assistant" | "tool";
 export type MessageStatus =
   | "pending"
   | "streaming"
+  | "waiting_approval"
   | "completed"
   | "failed"
   | "cancelled";
@@ -107,6 +108,27 @@ export interface UsageInfo {
   cachedInputTokens: number | null;
   cacheWriteTokens: number | null;
   reasoningTokens: number | null;
+}
+
+export type ApprovalDecision = "allow-once" | "allow-for-run" | "deny";
+export type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
+
+export interface ApprovalRecord {
+  id: string;
+  runId: string;
+  conversationId: string;
+  messageId: string;
+  toolCallId: string;
+  toolName: string;
+  description: string;
+  input: unknown;
+  risk: "medium" | "high";
+  status: ApprovalStatus;
+  createdAt: number;
+  expiresAt: number;
+  resolvedAt?: number;
+  decision?: ApprovalDecision;
+  reason?: string;
 }
 
 export type MessagePart =
@@ -227,6 +249,16 @@ export type EngineEvent =
       description: string;
       input: unknown;
       risk: "medium" | "high";
+      expiresAt: number;
+    })
+  | (EngineEventBase & {
+      type: "tool.approval_resolved";
+      messageId: string;
+      approvalId: string;
+      toolCallId: string;
+      toolName: string;
+      decision: ApprovalDecision;
+      reason?: string;
     })
   | (EngineEventBase & {
       type: "tool.result";
@@ -509,7 +541,8 @@ export interface DesktopAPI {
     save(input: AgentPreferences): Promise<AgentPreferences>;
   };
   approvals: {
-    resolve(approvalId: string, approved: boolean): Promise<void>;
+    list(conversationId?: string): Promise<ApprovalRecord[]>;
+    resolve(approvalId: string, decision: ApprovalDecision): Promise<void>;
   };
   media: {
     list(): Promise<MediaJob[]>;

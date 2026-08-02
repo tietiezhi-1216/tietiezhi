@@ -315,18 +315,34 @@ export class ConversationService {
         } else if (event.type === "reasoning.delta") {
           appendReasoning(input.assistantMessage, event.delta);
         } else if (event.type === "tool.call") {
-          input.assistantMessage.parts.push({
-            type: "tool-call",
-            toolCallId: event.toolCallId,
-            toolName: event.toolName,
-            input: event.input,
-            status: "running",
-          });
+          const existingCall = input.assistantMessage.parts.find(
+            (part) => part.type === "tool-call" && part.toolCallId === event.toolCallId,
+          );
+          if (existingCall?.type === "tool-call") {
+            existingCall.status = "running";
+          } else {
+            input.assistantMessage.parts.push({
+              type: "tool-call",
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              input: event.input,
+              status: "running",
+            });
+          }
         } else if (event.type === "tool.approval_required") {
+          input.assistantMessage.status = "waiting_approval";
           const call = input.assistantMessage.parts.find(
             (part) => part.type === "tool-call" && part.toolCallId === event.toolCallId,
           );
           if (call?.type === "tool-call") call.status = "approval";
+        } else if (event.type === "tool.approval_resolved") {
+          input.assistantMessage.status = "streaming";
+          const call = input.assistantMessage.parts.find(
+            (part) => part.type === "tool-call" && part.toolCallId === event.toolCallId,
+          );
+          if (call?.type === "tool-call") {
+            call.status = event.decision === "deny" ? "denied" : "running";
+          }
         } else if (event.type === "tool.result") {
           const call = input.assistantMessage.parts.find(
             (part) => part.type === "tool-call" && part.toolCallId === event.toolCallId,
@@ -372,6 +388,7 @@ export class ConversationService {
         }
         persist(
           event.type === "tool.approval_required" ||
+            event.type === "tool.approval_resolved" ||
             event.type === "tool.result" ||
             event.type === "artifact.diff" ||
             event.type === "run.retry.started" ||
