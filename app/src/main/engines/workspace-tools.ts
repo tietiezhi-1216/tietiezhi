@@ -8,6 +8,7 @@ import type { SkillDetail, WorkspaceToolDescriptor } from "@shared/contracts";
 
 const MAX_FILE_BYTES = 1_000_000;
 const MAX_OUTPUT_BYTES = 200_000;
+const MAX_DIFF_BYTES = 200_000;
 
 export interface WorkspaceToolEvent {
   type: "diff";
@@ -17,6 +18,23 @@ export interface WorkspaceToolEvent {
   path?: string;
   before?: string;
   after?: string;
+  omitted?: boolean;
+  bytes?: number;
+}
+
+function emitDiff(
+  context: ToolContext,
+  input: Omit<WorkspaceToolEvent, "type" | "before" | "after"> & {
+    before: string;
+    after: string;
+  },
+): void {
+  const bytes = Math.max(Buffer.byteLength(input.before), Buffer.byteLength(input.after));
+  context.emit(
+    bytes > MAX_DIFF_BYTES
+      ? { ...input, type: "diff", before: "", after: "", omitted: true, bytes }
+      : { ...input, type: "diff", bytes },
+  );
 }
 
 interface ToolContext {
@@ -273,8 +291,7 @@ export function createWorkspaceTools(context: ToolContext, skills: SkillDetail[]
           before = "";
         }
         await writeFile(path, input.content, "utf8");
-        context.emit({
-          type: "diff",
+        emitDiff(context, {
           toolCallId: options.toolCallId,
           toolName: "writeFile",
           path: input.path,
@@ -305,8 +322,7 @@ export function createWorkspaceTools(context: ToolContext, skills: SkillDetail[]
         }
         const after = before.replace(input.oldText, input.newText);
         await writeFile(path, after, "utf8");
-        context.emit({
-          type: "diff",
+        emitDiff(context, {
           toolCallId: options.toolCallId,
           toolName: "replaceText",
           path: input.path,

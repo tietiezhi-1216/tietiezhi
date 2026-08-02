@@ -154,6 +154,8 @@ export type MessagePart =
       path: string;
       before: string;
       after: string;
+      omitted?: boolean;
+      bytes?: number;
     }
   | { type: "image"; artifactId: string; mimeType: string }
   | { type: "attachment"; name: string; path?: string; mimeType?: string }
@@ -275,6 +277,8 @@ export type EngineEvent =
       path: string;
       before: string;
       after: string;
+      omitted?: boolean;
+      bytes?: number;
     })
   | (EngineEventBase & { type: "usage"; messageId: string; usage: UsageInfo })
   | (EngineEventBase & {
@@ -550,7 +554,6 @@ export interface DesktopAPI {
     importAssets(): Promise<LocalMediaAsset[]>;
     removeAsset(id: string): Promise<void>;
     generateImage(input: ImageGenerationRequest): Promise<MediaJob>;
-    generateVideo(input: VideoGenerationRequest): Promise<MediaJob>;
     cancel(id: string): Promise<void>;
     retry(id: string): Promise<MediaJob>;
     remove(id: string): Promise<void>;

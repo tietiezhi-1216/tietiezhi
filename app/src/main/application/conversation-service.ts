@@ -362,6 +362,8 @@ export class ConversationService {
             path: event.path,
             before: event.before,
             after: event.after,
+            omitted: event.omitted,
+            bytes: event.bytes,
           });
         } else if (event.type === "usage") {
           usage = event.usage;

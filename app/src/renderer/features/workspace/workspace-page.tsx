@@ -88,6 +88,7 @@ import { cn } from "@/lib/utils";
 import { chatModels } from "@/lib/model-capabilities";
 import { Markdown, fadeTokens, isFadeSpace } from "./markdown";
 import { WorkspaceModelSelect } from "./workspace-model-select";
+import { ApprovalActions } from "./approval-actions";
 import type { SettingsCategory } from "@/features/settings/provider-dialog";
 import type { ProductArea } from "@/App";
 import type {
@@ -1810,55 +1811,6 @@ const Message = memo(function Message({
   );
 });
 
-function ApprovalActions({
-  approval,
-  onResolve,
-  showInput = false,
-}: {
-  approval: ApprovalRecord;
-  onResolve: (approvalId: string, decision: ApprovalDecision) => Promise<void>;
-  showInput?: boolean;
-}) {
-  const [pending, setPending] = useState(false);
-  const [failure, setFailure] = useState("");
-  const answer = async (decision: ApprovalDecision) => {
-    if (pending) return;
-    setPending(true);
-    setFailure("");
-    try {
-      await onResolve(approval.id, decision);
-    } catch (cause) {
-      setFailure(cause instanceof Error ? cause.message : String(cause));
-      setPending(false);
-    }
-  };
-  return (
-    <div className="border-amber-500/30 bg-amber-500/5 space-y-2 rounded-md border p-2">
-      <div className="flex items-center gap-2 font-medium">
-        <ShieldAlert className="size-3.5 text-amber-500" />
-        <span>{approval.description}</span>
-      </div>
-      {showInput && (
-        <pre className="bg-muted max-h-28 overflow-auto rounded p-2 text-[10px] whitespace-pre-wrap">
-          {formatValue(approval.input)}
-        </pre>
-      )}
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button type="button" size="xs" variant="ghost" disabled={pending} onClick={() => void answer("deny")}>
-          <X />拒绝
-        </Button>
-        <Button type="button" size="xs" variant="outline" disabled={pending} onClick={() => void answer("allow-for-run")}>
-          本轮不再询问
-        </Button>
-        <Button type="button" size="xs" disabled={pending} onClick={() => void answer("allow-once")}>
-          {pending ? <Loader2 className="animate-spin" /> : <Check />}允许一次
-        </Button>
-      </div>
-      {failure && <p className="text-destructive text-xs">{failure}</p>}
-    </div>
-  );
-}
-
 function applyEvents(current: AppMessage[], events: EngineEvent[]): AppMessage[] {
   const next = [...current];
   const cloned = new Set<number>();
@@ -1960,6 +1912,8 @@ function applyEvents(current: AppMessage[], events: EngineEvent[]): AppMessage[]
         path: event.path,
         before: event.before,
         after: event.after,
+        omitted: event.omitted,
+        bytes: event.bytes,
       });
     } else if (event.type === "usage") {
       message.usage = event.usage;
@@ -2238,7 +2192,15 @@ function AgentPanel({
               {diffs.length === 0 ? <EmptyPanel text="Agent 修改文件后会显示逐行变更" /> : diffs.map((diff, index) => (
                 <Card key={`${diff.toolCallId}-${index}`} size="sm">
                   <CardHeader><CardTitle className="font-mono text-xs">{diff.path}</CardTitle></CardHeader>
-                  <CardContent><LineDiff before={diff.before} after={diff.after} /></CardContent>
+                  <CardContent>
+                    {diff.omitted ? (
+                      <p className="text-muted-foreground text-xs">
+                        文件较大（{formatBytes(diff.bytes ?? 0)}），已省略逐行 Diff。
+                      </p>
+                    ) : (
+                      <LineDiff before={diff.before} after={diff.after} />
+                    )}
+                  </CardContent>
                 </Card>
               ))}
             </div>
@@ -2324,6 +2286,12 @@ function formatValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function ToolIcon({ name, className }: { name: string; className?: string }) {

@@ -265,6 +265,8 @@ function toolEvent(options: EngineRunOptions, event: WorkspaceToolEvent): Engine
       path: event.path,
       before: event.before,
       after: event.after,
+      omitted: event.omitted,
+      bytes: event.bytes,
     };
   }
   return null;
