@@ -10,16 +10,20 @@ import { LoaderCircle } from "lucide-react";
 
 import { GatewayAccountButton } from "@/components/gateway-account-button";
 import { ProductSwitcher } from "@/components/product-switcher";
-import {
-  ProviderDialog,
-  type SettingsCategory,
-} from "@/features/settings/provider-dialog";
-import { WorkspacePage } from "@/features/workspace/workspace-page";
+import type { SettingsCategory } from "@/features/settings/provider-dialog";
 import { cn } from "@/lib/utils";
 
 export type ProductArea = "workspace" | "create";
 const IS_MACOS = navigator.userAgent.includes("Mac");
 const importCreatePage = () => import("@/features/create/create-page");
+const WorkspacePage = lazy(async () => {
+  const module = await import("@/features/workspace/workspace-page");
+  return { default: module.WorkspacePage };
+});
+const ProviderDialog = lazy(async () => {
+  const module = await import("@/features/settings/provider-dialog");
+  return { default: module.ProviderDialog };
+});
 const CreatePage = lazy(async () => {
   const module = await importCreatePage();
   return { default: module.CreatePage };
@@ -67,13 +71,15 @@ export function App() {
     <div className="text-foreground h-svh overflow-hidden bg-transparent">
       <div className="relative h-full">
         <AreaLayer active={area === "workspace"}>
-          <WorkspacePage
-            active={area === "workspace"}
-            providerVersion={providerVersion}
-            onOpenSettings={openSettings}
-            onProviderChanged={() => setProviderVersion((value) => value + 1)}
-            onSwitchArea={switchArea}
-          />
+          <Suspense fallback={<AppFallback />}>
+            <WorkspacePage
+              active={area === "workspace"}
+              providerVersion={providerVersion}
+              onOpenSettings={openSettings}
+              onProviderChanged={() => setProviderVersion((value) => value + 1)}
+              onSwitchArea={switchArea}
+            />
+          </Suspense>
         </AreaLayer>
         {mounted.includes("create") && (
           <AreaLayer active={area === "create"}>
@@ -95,12 +101,16 @@ export function App() {
           </AreaLayer>
         )}
       </div>
-      <ProviderDialog
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        onChanged={() => setProviderVersion((value) => value + 1)}
-        initialCategory={settingsCategory}
-      />
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          <ProviderDialog
+            open
+            onOpenChange={setSettingsOpen}
+            onChanged={() => setProviderVersion((value) => value + 1)}
+            initialCategory={settingsCategory}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -138,6 +148,14 @@ function CreateFallback() {
       <span className="animate-in fade-in-0 fill-mode-both delay-300 duration-200">
         <LoaderCircle className="size-5 animate-spin" />
       </span>
+    </div>
+  );
+}
+
+function AppFallback() {
+  return (
+    <div className="bg-background grid h-full place-items-center">
+      <LoaderCircle className="text-muted-foreground size-5 animate-spin" />
     </div>
   );
 }
