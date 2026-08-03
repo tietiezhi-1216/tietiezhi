@@ -1,7 +1,38 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isRetryableStreamError, normalizeEngineError, toModelMessages } from "./ai-sdk-engine.js";
+import type { ProviderAccount } from "@shared/contracts";
+
+import {
+  isRetryableStreamError,
+  modelProviderOptions,
+  modelSupportsTools,
+  normalizeEngineError,
+  toModelMessages,
+} from "./ai-sdk-engine.js";
+
+const configurableProvider: ProviderAccount = {
+  id: "compatible-test",
+  vendorId: "other",
+  providerType: "openai-compatible",
+  displayName: "Compatible",
+  baseURL: "https://example.test/v1",
+  credentialRef: "provider:compatible-test",
+  enabled: true,
+  models: ["reasoning-model"],
+  modelMetadata: {
+    "reasoning-model": {
+      wireAPIs: ["chat_completions"],
+      toolCall: true,
+      supportedParameters: [],
+      overrides: {
+        toolCall: false,
+        defaultReasoningEffort: "high",
+      },
+    },
+  },
+  builtIn: false,
+};
 
 test("Provider 错误优先展示响应体中的具体原因", () => {
   const error = new Error("Failed after 3 attempts");
@@ -58,4 +89,70 @@ test("恢复会话时保留工具调用和工具结果", () => {
   assert.equal(messages.length, 2);
   assert.equal(messages[0]?.role, "assistant");
   assert.equal(messages[1]?.role, "tool");
+});
+
+test("恢复会话时忽略没有结果的中断工具调用", () => {
+  const messages = toModelMessages([
+    {
+      id: "assistant-interrupted",
+      conversationId: "conversation-1",
+      role: "assistant",
+      createdAt: 1,
+      status: "cancelled",
+      parts: [
+        { type: "text", text: "准备读取文件" },
+        {
+          type: "tool-call",
+          toolCallId: "call-orphaned",
+          toolName: "readFile",
+          input: { path: "README.md" },
+          status: "running",
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(messages, [
+    { role: "assistant", content: [{ type: "text", text: "准备读取文件" }] },
+  ]);
+});
+
+test("用户粘贴图片会转换为 AI SDK 多模态消息", () => {
+  const messages = toModelMessages([
+    {
+      id: "user-image",
+      conversationId: "conversation-1",
+      role: "user",
+      createdAt: 1,
+      status: "completed",
+      parts: [
+        { type: "text", text: "分析这张图" },
+        {
+          type: "attachment",
+          name: "paste.png",
+          mimeType: "image/png",
+          dataUrl: "data:image/png;base64,aGVsbG8=",
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(messages, [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "分析这张图" },
+        {
+          type: "image",
+          image: "data:image/png;base64,aGVsbG8=",
+          mediaType: "image/png",
+        },
+      ],
+    },
+  ]);
+});
+
+test("模型规则会关闭工具并传递默认思考等级", () => {
+  assert.equal(modelSupportsTools(configurableProvider, "reasoning-model"), false);
+  assert.deepEqual(modelProviderOptions(configurableProvider, "reasoning-model"), {
+    compatible: { reasoningEffort: "high" },
+  });
 });

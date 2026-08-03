@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { ProviderAccount } from "@shared/contracts";
 import {
+  modelCapabilities,
   providerImageModels,
   providerVideoModels,
 } from "../../renderer/lib/model-capabilities.js";
@@ -10,6 +11,7 @@ import { mediaModelCapabilities } from "../../shared/media-model-capabilities.js
 
 const provider: ProviderAccount = {
   id: "builtin-official",
+  vendorId: "tietiezhi",
   providerType: "openai-compatible",
   displayName: "Tietiezhi Gateway",
   baseURL: "https://gateway.example.test/v1",
@@ -51,6 +53,27 @@ test("Create 只向视频模式暴露 Gemini 协议 Veo 模型", () => {
   assert.deepEqual(providerVideoModels(provider), [
     "veo-3.1-generate-preview",
   ]);
+});
+
+test("模型手动规则优先于供应商元数据和名称推断", () => {
+  const capabilities = modelCapabilities("gpt-5", {
+    wireAPIs: ["responses"],
+    reasoning: true,
+    reasoningEfforts: ["low", "medium", "high"],
+    inputModalities: ["text", "image"],
+    toolCall: true,
+    streaming: true,
+    supportedParameters: [],
+    overrides: {
+      reasoning: false,
+      inputModalities: ["text"],
+      toolCall: false,
+    },
+  });
+
+  assert.equal(capabilities.reasoning, false);
+  assert.deepEqual(capabilities.inputModalities, ["text"]);
+  assert.equal(capabilities.toolCall, false);
 });
 
 test("Gemini 3.1 Flash 图片模型提供 512、1K、2K 和 4K", () => {

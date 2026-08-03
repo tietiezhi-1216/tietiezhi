@@ -7,12 +7,13 @@ import type {
   EngineDetectionResult,
   EngineEvent,
   FinishReason,
+  ProviderAccount,
   UsageInfo,
 } from "@shared/contracts";
 
 import { APPROVAL_TIMEOUT_MS, ApprovalManager } from "../application/approval-manager.js";
 import type { AIEngine, EngineRunOptions, EngineTitleOptions } from "./engine.js";
-import { languageModel } from "./provider-factory.js";
+import { languageModel, languageModelProviderName } from "./provider-factory.js";
 import { createWorkspaceTools, type WorkspaceToolEvent } from "./workspace-tools.js";
 import { AI_SDK_PERMISSION_PROFILES, requiresToolApproval } from "./permission-policy.js";
 
@@ -45,6 +46,79 @@ class EventQueue {
 
 const STREAM_MAX_RETRIES = 5;
 const WORKSPACE_APPROVAL_TOOLS = new Set(["writeFile", "replaceText", "runCommand"]);
+
+type JSONValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JSONValue[]
+  | { [key: string]: JSONValue };
+type ModelProviderOptions = Record<string, Record<string, JSONValue>>;
+
+export function modelSupportsTools(provider: ProviderAccount, model: string): boolean {
+  const metadata = provider.modelMetadata[model];
+  return metadata?.overrides?.toolCall ?? metadata?.toolCall ?? true;
+}
+
+export function modelProviderOptions(
+  provider: ProviderAccount,
+  model: string,
+): ModelProviderOptions | undefined {
+  const metadata = provider.modelMetadata[model];
+  const effort =
+    metadata?.overrides?.defaultReasoningEffort ?? metadata?.defaultReasoningEffort;
+  const providerName = languageModelProviderName(provider, model);
+  if (providerName === "openai") {
+    return { openai: { store: false, ...(effort ? { reasoningEffort: effort } : {}) } };
+  }
+  if (providerName === "anthropic") {
+    const supported = ["low", "medium", "high", "xhigh", "max"];
+    return effort && supported.includes(effort)
+      ? { anthropic: { effort } }
+      : undefined;
+  }
+  if (providerName === "google") {
+    const supported = ["minimal", "low", "medium", "high"];
+    return effort && supported.includes(effort)
+      ? { google: { thinkingConfig: { thinkingLevel: effort } } }
+      : undefined;
+  }
+  if (!effort) return undefined;
+  if (providerName === "deepseek") {
+    return ["low", "medium", "high", "xhigh", "max"].includes(effort)
+      ? { deepseek: { reasoningEffort: effort } }
+      : undefined;
+  }
+  if (providerName === "moonshotai") {
+    return effort === "max" ? { moonshotai: { reasoningEffort: effort } } : undefined;
+  }
+  if (providerName === "alibaba") {
+    return { alibaba: { enableThinking: true } };
+  }
+  if (providerName === "xai") {
+    return ["low", "medium", "high"].includes(effort)
+      ? { xai: { reasoningEffort: effort } }
+      : undefined;
+  }
+  if (providerName === "mistral") {
+    return effort === "high" ? { mistral: { reasoningEffort: effort } } : undefined;
+  }
+  if (providerName === "groq") {
+    return ["low", "medium", "high"].includes(effort)
+      ? { groq: { reasoningEffort: effort } }
+      : undefined;
+  }
+  if (providerName === "zhipu") {
+    return { zhipu: { reasoningEffort: effort } };
+  }
+  if (providerName === "openrouter") {
+    return { openrouter: { reasoning: { effort } } };
+  }
+  return providerName === "compatible"
+    ? { compatible: { reasoningEffort: effort } }
+    : undefined;
+}
 
 function approvalDescription(toolName: string, input: unknown): string {
   const value = record(input) ?? {};
@@ -99,7 +173,20 @@ export function toModelMessages(messages: EngineRunOptions["messages"]): ModelMe
   return messages.flatMap((message): ModelMessage[] => {
     if (message.role === "user" || message.role === "system") {
       const content = textOf(message);
-      return content === "" ? [] : [{ role: message.role, content }];
+      if (message.role === "system") return content === "" ? [] : [{ role: "system", content }];
+      const images = message.parts.flatMap((part) =>
+        part.type === "attachment" && part.dataUrl && part.mimeType?.startsWith("image/")
+          ? [{ type: "image" as const, image: part.dataUrl, mediaType: part.mimeType }]
+          : [],
+      );
+      if (images.length === 0) return content === "" ? [] : [{ role: "user", content }];
+      return [{
+        role: "user",
+        content: [
+          ...(content === "" ? [] : [{ type: "text" as const, text: content }]),
+          ...images,
+        ],
+      }];
     }
     if (message.role !== "assistant") return [];
     const assistantContent: Array<
@@ -113,12 +200,19 @@ export function toModelMessages(messages: EngineRunOptions["messages"]): ModelMe
       toolName: string;
       output: { type: "text"; value: string };
     }> = [];
+    const completedToolCallIds = new Set(
+      message.parts.flatMap((part) => part.type === "tool-result" ? [part.toolCallId] : []),
+    );
+    const toolCallIds = new Set(
+      message.parts.flatMap((part) => part.type === "tool-call" ? [part.toolCallId] : []),
+    );
     for (const part of message.parts) {
       if (part.type === "text" && part.text !== "") {
         assistantContent.push({ type: "text", text: part.text });
       } else if (part.type === "reasoning" && part.text !== "") {
         assistantContent.push({ type: "reasoning", text: part.text });
       } else if (part.type === "tool-call") {
+        if (!completedToolCallIds.has(part.toolCallId)) continue;
         assistantContent.push({
           type: "tool-call",
           toolCallId: part.toolCallId,
@@ -126,6 +220,7 @@ export function toModelMessages(messages: EngineRunOptions["messages"]): ModelMe
           input: part.input,
         });
       } else if (part.type === "tool-result") {
+        if (!toolCallIds.has(part.toolCallId)) continue;
         toolContent.push({
           type: "tool-result",
           toolCallId: part.toolCallId,
@@ -389,7 +484,7 @@ export class AISDKEngine implements AIEngine {
               const agent = new ToolLoopAgent({
                 model: languageModel(options.provider, options.apiKey, options.model),
                 instructions,
-                tools,
+                tools: modelSupportsTools(options.provider, options.model) ? tools : {},
                 toolApproval: ({ toolCall }) => {
                   if (!WORKSPACE_APPROVAL_TOOLS.has(toolCall.toolName)) return undefined;
                   if (
@@ -435,10 +530,7 @@ export class AISDKEngine implements AIEngine {
                   return "user-approval";
                 },
                 maxRetries: 4,
-                providerOptions:
-                  options.provider.providerType === "openai"
-                    ? { openai: { store: false } }
-                    : undefined,
+                providerOptions: modelProviderOptions(options.provider, options.model),
               });
               const result = await agent.stream({
                 messages,

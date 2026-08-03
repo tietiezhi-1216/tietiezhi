@@ -105,7 +105,15 @@ export function applyWorkspaceEvents(current: AppMessage[], events: EngineEvent[
     } else if (event.type === "run.failed") {
       message.status = "failed";
       message.completedAt = event.createdAt;
-      message.parts.push({ type: "error", code: event.error.code, message: event.error.message });
+      const duplicate = message.parts.some(
+        (part) =>
+          part.type === "error" &&
+          part.code === event.error.code &&
+          part.message === event.error.message,
+      );
+      if (!duplicate) {
+        message.parts.push({ type: "error", code: event.error.code, message: event.error.message });
+      }
     }
   }
   return cloned.size > 0 ? next : current;

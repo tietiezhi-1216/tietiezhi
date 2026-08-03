@@ -5,7 +5,26 @@ export const IPC = {
   updateEvent: "tietiezhi:update-event",
 } as const;
 
-export type ProviderType = "openai" | "anthropic" | "google" | "openai-compatible";
+export const PROVIDER_TYPES = [
+  "openai",
+  "anthropic",
+  "google",
+  "deepseek",
+  "moonshotai",
+  "zhipu",
+  "alibaba",
+  "minimax",
+  "xai",
+  "mistral",
+  "groq",
+  "openrouter",
+  "togetherai",
+  "cerebras",
+  "ollama",
+  "openai-compatible",
+] as const;
+
+export type ProviderType = (typeof PROVIDER_TYPES)[number];
 export type ModelWireAPI =
   | "responses"
   | "chat_completions"
@@ -13,6 +32,15 @@ export type ModelWireAPI =
   | "gemini_generate_content";
 
 export type ModelModality = "text" | "image" | "audio" | "video" | "file";
+
+export interface ModelMetadataOverrides {
+  reasoning?: boolean;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  inputModalities?: ModelModality[];
+  toolCall?: boolean;
+  streaming?: boolean;
+}
 
 export interface ModelMetadata {
   defaultWireAPI?: ModelWireAPI;
@@ -25,6 +53,8 @@ export interface ModelMetadata {
   toolCall?: boolean;
   streaming?: boolean;
   supportedParameters: string[];
+  /** User-authored capability corrections preserved across model refreshes. */
+  overrides?: ModelMetadataOverrides;
 }
 
 export interface ProviderModelList {
@@ -42,6 +72,8 @@ export interface ProviderModelProbeInput {
 
 export interface ProviderAccount {
   id: string;
+  /** Stable vendor identity shown in the UI, independent from the SDK adapter. */
+  vendorId: string;
   providerType: ProviderType;
   displayName: string;
   baseURL: string;
@@ -54,6 +86,7 @@ export interface ProviderAccount {
 
 export interface ProviderAccountInput {
   id?: string;
+  vendorId: string;
   providerType: ProviderType;
   displayName: string;
   baseURL?: string;
@@ -175,7 +208,14 @@ export type MessagePart =
       bytes?: number;
     }
   | { type: "image"; artifactId: string; mimeType: string }
-  | { type: "attachment"; name: string; path?: string; mimeType?: string }
+  | {
+      type: "attachment";
+      name: string;
+      path?: string;
+      mimeType?: string;
+      /** Data URL is used for pasted images that have no filesystem path. */
+      dataUrl?: string;
+    }
   | { type: "error"; code: string; message: string };
 
 export interface AppMessage {
@@ -223,6 +263,14 @@ export interface SendMessageInput {
   workspace?: string;
   taskMode?: TaskMode;
   permissionProfileId?: PermissionProfileId;
+  images?: ChatImageAttachment[];
+}
+
+export interface ChatImageAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
 }
 
 export type FinishReason = "stop" | "length" | "tool" | "cancelled" | "error";

@@ -74,6 +74,7 @@ export class AppDatabase {
       );
       CREATE TABLE IF NOT EXISTS provider_accounts (
         id TEXT PRIMARY KEY,
+        vendor_id TEXT NOT NULL DEFAULT 'other',
         provider_type TEXT NOT NULL,
         display_name TEXT NOT NULL,
         base_url TEXT NOT NULL,
@@ -252,6 +253,13 @@ export class AppDatabase {
     }
     try {
       this.#db.exec(
+        "ALTER TABLE provider_accounts ADD COLUMN vendor_id TEXT NOT NULL DEFAULT 'other'",
+      );
+    } catch {
+      // Column already exists.
+    }
+    try {
+      this.#db.exec(
         "ALTER TABLE conversations ADD COLUMN task_mode TEXT NOT NULL DEFAULT 'code'",
       );
     } catch {
@@ -271,6 +279,80 @@ export class AppDatabase {
         }
         this.#db
           .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?)")
+          .run(Date.now());
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        this.#db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    const providerMigration = this.#db
+      .prepare("SELECT version FROM schema_migrations WHERE version = 3")
+      .get();
+    if (providerMigration === undefined) {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        this.#db.exec(`
+          UPDATE provider_accounts
+          SET provider_type = CASE rtrim(base_url, '/')
+            WHEN 'https://api.deepseek.com/v1' THEN 'deepseek'
+            WHEN 'https://api.moonshot.cn/v1' THEN 'moonshotai'
+            WHEN 'https://open.bigmodel.cn/api/paas/v4' THEN 'zhipu'
+            WHEN 'https://dashscope.aliyuncs.com/compatible-mode/v1' THEN 'alibaba'
+            WHEN 'https://api.minimaxi.com/v1' THEN 'minimax'
+            WHEN 'https://api.x.ai/v1' THEN 'xai'
+            WHEN 'https://api.mistral.ai/v1' THEN 'mistral'
+            WHEN 'https://api.groq.com/openai/v1' THEN 'groq'
+            WHEN 'https://openrouter.ai/api/v1' THEN 'openrouter'
+            WHEN 'https://api.together.xyz/v1' THEN 'togetherai'
+            WHEN 'https://api.cerebras.ai/v1' THEN 'cerebras'
+            WHEN 'http://127.0.0.1:11434/v1' THEN 'ollama'
+            WHEN 'http://127.0.0.1:11434/api' THEN 'ollama'
+            ELSE provider_type
+          END
+          WHERE provider_type = 'openai-compatible';
+
+          UPDATE provider_accounts
+          SET base_url = 'http://127.0.0.1:11434/api'
+          WHERE provider_type = 'ollama'
+            AND rtrim(base_url, '/') = 'http://127.0.0.1:11434/v1';
+        `);
+        this.#db
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (3, ?)")
+          .run(Date.now());
+        this.#db.exec("COMMIT");
+      } catch (error) {
+        this.#db.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    const vendorMigration = this.#db
+      .prepare("SELECT version FROM schema_migrations WHERE version = 4")
+      .get();
+    if (vendorMigration === undefined) {
+      this.#db.exec("BEGIN IMMEDIATE");
+      try {
+        this.#db.exec(`
+          UPDATE provider_accounts
+          SET vendor_id = CASE
+            WHEN id = 'builtin-official' THEN 'tietiezhi'
+            WHEN provider_type = 'moonshotai' THEN 'moonshot'
+            WHEN provider_type = 'togetherai' THEN 'together'
+            WHEN provider_type <> 'openai-compatible' THEN provider_type
+            WHEN rtrim(base_url, '/') = 'https://ark.cn-beijing.volces.com/api/v3' THEN 'volcengine'
+            WHEN rtrim(base_url, '/') = 'https://api.xiaomimimo.com/v1' THEN 'xiaomi-mimo'
+            WHEN rtrim(base_url, '/') = 'https://qianfan.baidubce.com/v2' THEN 'baidu'
+            WHEN rtrim(base_url, '/') = 'https://api.hunyuan.cloud.tencent.com/v1' THEN 'tencent'
+            WHEN rtrim(base_url, '/') = 'https://api.stepfun.com/v1' THEN 'stepfun'
+            WHEN rtrim(base_url, '/') = 'https://api.siliconflow.cn/v1' THEN 'siliconflow'
+            WHEN rtrim(base_url, '/') = 'https://integrate.api.nvidia.com/v1' THEN 'nvidia'
+            WHEN rtrim(base_url, '/') = 'http://127.0.0.1:1234/v1' THEN 'lm-studio'
+            ELSE 'other'
+          END
+          WHERE vendor_id = 'other';
+        `);
+        this.#db
+          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (4, ?)")
           .run(Date.now());
         this.#db.exec("COMMIT");
       } catch (error) {
@@ -331,6 +413,7 @@ export class AppDatabase {
     return (this.#db.prepare("SELECT * FROM provider_accounts ORDER BY created_at").all() as Row[]).map(
       (row) => ({
         id: text(row, "id"),
+        vendorId: text(row, "vendor_id") || "other",
         providerType: text(row, "provider_type") as ProviderAccount["providerType"],
         displayName: text(row, "display_name"),
         baseURL: text(row, "base_url"),
@@ -355,10 +438,11 @@ export class AppDatabase {
     this.#db
       .prepare(
         `INSERT INTO provider_accounts (
-          id, provider_type, display_name, base_url, credential_ref,
+          id, vendor_id, provider_type, display_name, base_url, credential_ref,
           enabled, models_json, model_metadata_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
+          vendor_id = excluded.vendor_id,
           provider_type = excluded.provider_type,
           display_name = excluded.display_name,
           base_url = excluded.base_url,
@@ -370,6 +454,7 @@ export class AppDatabase {
       )
       .run(
         provider.id,
+        provider.vendorId,
         provider.providerType,
         provider.displayName,
         provider.baseURL,

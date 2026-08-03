@@ -117,13 +117,18 @@ export function modelCapabilities(
   metadata?: ModelMetadata,
 ): ModelCapabilities {
   const guessed = guessCapabilities(model);
+  const overrides = metadata?.overrides;
   return {
-    inputModalities: metadata?.inputModalities ?? guessed.inputModalities,
-    toolCall: metadata?.toolCall ?? guessed.toolCall,
-    streaming: metadata?.streaming ?? guessed.streaming,
-    reasoning: metadata?.reasoning ?? guessed.reasoning,
-    reasoningEfforts: metadata?.reasoningEfforts ?? guessed.reasoningEfforts,
+    inputModalities:
+      overrides?.inputModalities ?? metadata?.inputModalities ?? guessed.inputModalities,
+    toolCall: overrides?.toolCall ?? metadata?.toolCall ?? guessed.toolCall,
+    streaming: overrides?.streaming ?? metadata?.streaming ?? guessed.streaming,
+    reasoning: overrides?.reasoning ?? metadata?.reasoning ?? guessed.reasoning,
+    reasoningEfforts:
+      overrides?.reasoningEfforts ?? metadata?.reasoningEfforts ?? guessed.reasoningEfforts,
     defaultReasoningEffort:
-      metadata?.defaultReasoningEffort ?? guessed.defaultReasoningEffort,
+      overrides?.defaultReasoningEffort ??
+      metadata?.defaultReasoningEffort ??
+      guessed.defaultReasoningEffort,
   };
 }

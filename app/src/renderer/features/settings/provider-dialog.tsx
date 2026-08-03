@@ -399,7 +399,7 @@ function ProviderSection({
 
         <div className="flex flex-col gap-2.5">
           <div className="flex items-center justify-between gap-3 px-0.5">
-            <h3 className="text-sm font-medium">自定义供应商</h3>
+            <h3 className="text-sm font-medium">已添加供应商</h3>
             <Button
               variant="outline"
               size="sm"
@@ -413,7 +413,7 @@ function ProviderSection({
           </div>
           {customProviders.length === 0 ? (
             <div className="text-muted-foreground rounded-lg border border-dashed px-4 py-5 text-center text-xs">
-              暂无自定义供应商，需要时可在右上角添加
+              暂无其他供应商，需要时可在右上角添加
             </div>
           ) : customProviders.map((provider) => (
             <div
@@ -423,7 +423,6 @@ function ProviderSection({
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex items-center gap-2">
                   <span className="truncate text-sm font-medium">{provider.displayName}</span>
-                  <Badge variant="secondary">{provider.providerType}</Badge>
                   {provider.credentialRef && (
                     <Badge variant="outline" className="text-emerald-600 dark:text-emerald-400">已存 Key</Badge>
                   )}

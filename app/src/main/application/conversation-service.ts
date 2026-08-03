@@ -135,7 +135,8 @@ export class ConversationService {
 
   async send(input: SendMessageInput): Promise<{ conversationId: string; runId: string }> {
     const prompt = input.text.trim();
-    if (prompt === "") throw new Error("消息不能为空");
+    const images = input.images ?? [];
+    if (prompt === "" && images.length === 0) throw new Error("消息不能为空");
     const provider = this.providers.require(input.providerAccountId);
     if (!provider.models.includes(input.model)) throw new Error("所选模型不属于当前供应商");
     const engineId = input.engineId ?? "ai-sdk";
@@ -191,7 +192,15 @@ export class ConversationService {
       role: "user",
       createdAt: now,
       status: "completed",
-      parts: [{ type: "text", text: prompt }],
+      parts: [
+        ...(prompt === "" ? [] : [{ type: "text" as const, text: prompt }]),
+        ...images.map((image) => ({
+          type: "attachment" as const,
+          name: image.name,
+          mimeType: image.mimeType,
+          dataUrl: image.dataUrl,
+        })),
+      ],
       engineId,
       modelId: input.model,
       providerAccountId: provider.id,
@@ -243,7 +252,7 @@ export class ConversationService {
       messages: [...prior, userMessage],
       controller,
       workspace: workspace.path,
-      titlePrompt: existing === null ? prompt : undefined,
+      titlePrompt: existing === null ? prompt || "图片对话" : undefined,
       permissionProfileId,
     });
     this.#tasks.set(runId, task);

@@ -16,6 +16,7 @@ import {
   Folder,
   FolderOpen,
   Info,
+  ImagePlus,
   Loader2,
   LogIn,
   MessageSquarePlus,
@@ -70,7 +71,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { GateStarfield } from "@/components/gate-starfield";
+import { GateBackdrop } from "@/components/gate-backdrop";
 import { ProductSwitcher } from "@/components/product-switcher";
 import { ProductOrbitStage } from "@/components/product-orbit-stage";
 import { ProviderEditDialog } from "@/features/settings/provider-edit-dialog";
@@ -80,7 +81,7 @@ import { OctopusPeekButton } from "@/components/octopus-peek-button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { chatModels } from "@/lib/model-capabilities";
+import { chatModels, modelCapabilities } from "@/lib/model-capabilities";
 import { Markdown, fadeTokens, isFadeSpace } from "./markdown";
 import { WorkspaceModelSelect } from "./workspace-model-select";
 import { ApprovalActions } from "./approval-actions";
@@ -93,6 +94,7 @@ import type {
   ApprovalDecision,
   ApprovalRecord,
   AppMessage,
+  ChatImageAttachment,
   Conversation,
   EngineDescriptor,
   EngineEvent,
@@ -151,6 +153,8 @@ export function WorkspacePage({
     () => window.localStorage.getItem("workspace-task-mode") === "work" ? "work" : "code",
   );
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<ChatImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState("");
   const [runId, setRunId] = useState<string>();
   const [retry, setRetry] = useState<RetryEvent>();
   const [error, setError] = useState("");
@@ -193,10 +197,15 @@ export function WorkspacePage({
   const forcedScrollRef = useRef(false);
   const autoScrollFrameRef = useRef<number | undefined>(undefined);
   const sidebarRef = useRef<HTMLElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const sidebarOpenTargetRef = useRef<number | undefined>(undefined);
   const queuedEvents = useRef<EngineEvent[]>([]);
   const eventFrame = useRef<number | undefined>(undefined);
   const selectedProvider = providers.find((provider) => provider.id === providerId);
+  const supportsImageInput = modelCapabilities(
+    model,
+    selectedProvider?.modelMetadata[model],
+  ).inputModalities.includes("image");
   const projectGroups = useMemo(() => {
     const groups = new Map<string, Conversation[]>();
     for (const conversation of conversations) {
@@ -606,11 +615,49 @@ export function WorkspacePage({
     );
     setApprovals(await window.tietiezhi.approvals.list(id));
     setError("");
+    setAttachments([]);
+    setAttachmentError("");
+  };
+
+  const addClipboardImages = async (files: File[]) => {
+    const selected = files.filter((file) => file.type.startsWith("image/")).slice(0, 4);
+    if (selected.length === 0) return;
+    if (!supportsImageInput) {
+      setAttachmentError("当前模型不支持图片输入");
+      return;
+    }
+    if (selected.some((file) => file.size > 10 * 1024 * 1024)) {
+      setAttachmentError("单张图片不能超过 10 MB");
+      return;
+    }
+    const read = (file: File) => new Promise<ChatImageAttachment>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error ?? new Error("读取图片失败"));
+      reader.onload = () => resolve({
+        id: crypto.randomUUID(),
+        name: file.name || `粘贴图片-${Date.now()}.png`,
+        mimeType: file.type,
+        dataUrl: String(reader.result),
+      });
+      reader.readAsDataURL(file);
+    });
+    try {
+      const loaded = await Promise.all(selected.map(read));
+      setAttachments((current) => [...current, ...loaded].slice(0, 4));
+      setAttachmentError("");
+    } catch (cause) {
+      setAttachmentError(cause instanceof Error ? cause.message : "读取图片失败");
+    }
   };
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || !providerId || !model || runId) return;
+    if ((!text && attachments.length === 0) || !providerId || !model || runId) return;
+    if (attachments.length > 0 && !supportsImageInput) {
+      setAttachmentError("当前模型不支持图片输入，请更换模型或移除图片");
+      return;
+    }
+    const pendingAttachments = attachments;
     stickToBottomRef.current = true;
     setRetry(undefined);
     const optimistic: AppMessage = {
@@ -619,12 +666,22 @@ export function WorkspacePage({
       role: "user",
       createdAt: Date.now(),
       status: "completed",
-      parts: [{ type: "text", text }],
+      parts: [
+        ...(text === "" ? [] : [{ type: "text" as const, text }]),
+        ...pendingAttachments.map((image) => ({
+          type: "attachment" as const,
+          name: image.name,
+          mimeType: image.mimeType,
+          dataUrl: image.dataUrl,
+        })),
+      ],
       engineId,
       modelId: model,
     };
     setMessages((current) => [...current, optimistic]);
     setDraft("");
+    setAttachments([]);
+    setAttachmentError("");
     setError("");
     try {
       const started = await window.tietiezhi.conversations.send({
@@ -636,6 +693,7 @@ export function WorkspacePage({
         workspace: workspace?.path,
         taskMode,
         permissionProfileId,
+        images: pendingAttachments,
       });
       setActiveId(started.conversationId);
       setRunId(started.runId);
@@ -655,6 +713,8 @@ export function WorkspacePage({
       await refreshConversations();
     } catch (cause) {
       setMessages((current) => current.filter((message) => message.id !== optimistic.id));
+      setDraft(text);
+      setAttachments(pendingAttachments);
       setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
@@ -864,7 +924,7 @@ export function WorkspacePage({
   if (!bootstrapped || setupRequired) {
     return (
       <div className="bg-background relative flex h-full min-h-0 flex-col overflow-hidden">
-        <GateStarfield className="text-muted-foreground" />
+        <GateBackdrop />
         <header className="relative z-10 h-12 shrink-0 [-webkit-app-region:drag]" />
         {/* Optical centering: the stage sits slightly above true center. */}
         <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-[6vh]">
@@ -1320,6 +1380,23 @@ export function WorkspacePage({
           </div>
         )}
         <div className="relative mx-auto w-full max-w-3xl px-4 pt-2 pb-4">
+          {!activeId && messages.length === 0 && (
+            <div className="bg-muted/70 relative z-10 mx-3 -mb-2 flex h-10 items-start rounded-t-xl border px-1.5 pt-1 shadow-sm">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground h-7 max-w-full shrink-0 gap-1.5 rounded-full px-2 text-xs"
+                onClick={async () => {
+                  const selected = await window.tietiezhi.workspace.choose();
+                  if (selected) setWorkspace(selected);
+                }}
+              >
+                <FolderOpen className="size-3.5" />
+                <span className="truncate">{workspace?.name ?? "选择项目文件夹"}</span>
+              </Button>
+            </div>
+          )}
           {/* 章鱼的定位基准必须正好是输入框这一层（而不是带 px-4 pt-2 的外框），
               才能和创作页的探头高度、右边距完全一致；且必须排在输入框之前，才会沉到它后面。 */}
           <div className="relative">
@@ -1329,9 +1406,50 @@ export function WorkspacePage({
             />
             {/* Solid background: the panel must not let content behind it bleed through. */}
             <div className="bg-muted relative z-20 flex flex-col rounded-2xl border-0 px-2 pt-1.5 pb-1.5 shadow-none transition-colors">
+              {attachments.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto px-2 pt-1 pb-1.5">
+                  {attachments.map((attachment) => (
+                    <div key={attachment.id} className="group/asset relative size-16 shrink-0 overflow-hidden rounded-lg border bg-background">
+                      <img
+                        src={attachment.dataUrl}
+                        alt={attachment.name}
+                        className="size-full object-cover"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="icon-xs"
+                        className="absolute top-1 right-1 rounded-full opacity-90"
+                        aria-label={`移除 ${attachment.name}`}
+                        onClick={() => setAttachments((current) =>
+                          current.filter((candidate) => candidate.id !== attachment.id))}
+                      >
+                        <X />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  void addClipboardImages([...(event.currentTarget.files ?? [])]);
+                  event.currentTarget.value = "";
+                }}
+              />
               <Textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
+                onPaste={(event) => {
+                  const files = [...event.clipboardData.files];
+                  if (!files.some((file) => file.type.startsWith("image/"))) return;
+                  event.preventDefault();
+                  void addClipboardImages(files);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
@@ -1350,21 +1468,6 @@ export function WorkspacePage({
                 className="max-h-40 min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:bg-transparent focus-visible:ring-0 focus-visible:shadow-none disabled:bg-transparent dark:bg-transparent dark:focus-visible:bg-transparent dark:focus-visible:shadow-none dark:disabled:bg-transparent"
               />
               <div className="flex min-h-9 items-center gap-1 pt-0.5 pl-1">
-                {!activeId && messages.length === 0 && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="text-muted-foreground hover:text-foreground h-7 max-w-48 shrink-0 gap-1.5 rounded-full px-2 text-xs"
-                    onClick={async () => {
-                      const selected = await window.tietiezhi.workspace.choose();
-                      if (selected) setWorkspace(selected);
-                    }}
-                  >
-                    <FolderOpen className="size-3.5" />
-                    <span className="truncate">{workspace?.name ?? "选择项目"}</span>
-                  </Button>
-                )}
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -1378,6 +1481,14 @@ export function WorkspacePage({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start" side="top" className="w-60">
+                    <DropdownMenuLabel>添加到本轮消息</DropdownMenuLabel>
+                    <DropdownMenuItem
+                      disabled={!supportsImageInput || attachments.length >= 4}
+                      onSelect={() => imageInputRef.current?.click()}
+                    >
+                      <ImagePlus /> 添加图片
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
                     <DropdownMenuLabel>Workspace</DropdownMenuLabel>
                     <DropdownMenuItem
                       onSelect={async () => {
@@ -1396,16 +1507,6 @@ export function WorkspacePage({
                     </DropdownMenuLabel>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <WorkspaceModelSelect
-                  providers={providers}
-                  providerId={providerId}
-                  model={model}
-                  onSelect={(nextProviderId, nextModel) => {
-                    setProviderId(nextProviderId);
-                    setModel(nextModel);
-                  }}
-                  onOpenSettings={onOpenSettings}
-                />
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -1450,8 +1551,18 @@ export function WorkspacePage({
                   </DropdownMenuContent>
                 </DropdownMenu>
                 <span className={cn("min-w-0 flex-1 truncate text-[11px]", error ? "text-destructive" : "text-muted-foreground")}>
-                  {error || (empty ? "请先配置可用模型" : "")}
+                  {attachmentError || error || (empty ? "请先配置可用模型" : "")}
                 </span>
+                <WorkspaceModelSelect
+                  providers={providers}
+                  providerId={providerId}
+                  model={model}
+                  onSelect={(nextProviderId, nextModel) => {
+                    setProviderId(nextProviderId);
+                    setModel(nextModel);
+                  }}
+                  onOpenSettings={onOpenSettings}
+                />
                 {runId ? (
                   <Button
                     type="button"
@@ -1469,7 +1580,12 @@ export function WorkspacePage({
                     size="icon"
                     className="size-8 shrink-0 rounded-full"
                     onClick={() => void send()}
-                    disabled={!draft.trim() || !providerId || !model}
+                    disabled={
+                      (!draft.trim() && attachments.length === 0) ||
+                      (attachments.length > 0 && !supportsImageInput) ||
+                      !providerId ||
+                      !model
+                    }
                     aria-label="发送"
                   >
                     <ArrowUp />
@@ -1710,6 +1826,19 @@ function MessageMetadata({
       : null;
   const timestamp = message.completedAt ?? message.createdAt;
   const exactTime = new Date(timestamp).toLocaleString("zh-CN");
+  if (message.role === "user") {
+    return (
+      <div className="flex min-h-5 items-center justify-end">
+        <time
+          dateTime={new Date(timestamp).toISOString()}
+          title={exactTime}
+          className="text-muted-foreground px-1 text-[11px] tabular-nums"
+        >
+          {formatRelativeTime(timestamp, now)}
+        </time>
+      </div>
+    );
+  }
   return (
     <div className="flex min-h-6 items-center">
       <div className="text-muted-foreground flex translate-y-0.5 items-center gap-1 opacity-0 transition-[opacity,translate] duration-200 ease-out group-hover/message:translate-y-0 group-hover/message:opacity-100 group-focus-within/message:translate-y-0 group-focus-within/message:opacity-100 [@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100">
@@ -1735,10 +1864,7 @@ function MessageMetadata({
           <div className="border-b px-3 py-2 text-xs font-semibold">消息详情</div>
           <div className="flex flex-col gap-1.5 px-3 py-2.5">
             <DetailRow label="状态" value={messageStatus(message.status)} />
-            <DetailRow
-              label={message.role === "user" ? "发送时间" : "生成时间"}
-              value={exactTime}
-            />
+            <DetailRow label="生成时间" value={exactTime} />
             {message.modelId && <DetailRow label="模型" value={message.modelId} />}
             {providerName && <DetailRow label="供应商" value={providerName} />}
             {usage && (
@@ -1861,7 +1987,7 @@ function toolGroups(parts: AppMessage["parts"]): Map<string, ToolCallPart[]> {
         current = undefined;
         groups.set(part.toolCallId, [part]);
       }
-    } else if (part.type === "text" || part.type === "reasoning" || part.type === "error") {
+    } else if (part.type === "text" || part.type === "error") {
       current = undefined;
     }
   }
@@ -1890,17 +2016,17 @@ function ToolTimeline({
     : undefined;
   return (
     <Collapsible key={waiting ? "waiting" : "settled"} defaultOpen={waiting}>
-      <div className="text-xs">
-        <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group/tool flex min-h-8 w-full items-center gap-2 text-left transition-colors">
+      <div className="border-border/70 bg-muted/20 overflow-hidden rounded-lg border text-xs">
+        <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group/tool flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left transition-colors">
           <span className={cn("grid size-4 shrink-0 place-items-center", failed && "text-destructive", waiting && "text-amber-500")}>
             {running ? <Loader2 className="size-3 animate-spin" /> : <ToolIcon name={first.toolName} className="size-3" />}
           </span>
           <span className="min-w-0 flex-1 truncate">{toolGroupSummary(calls)}</span>
           {duration && <span className="text-muted-foreground/70 shrink-0 text-[10px] tabular-nums">{duration}</span>}
-          <ChevronRight className="size-3.5 shrink-0 opacity-0 transition-[opacity,rotate] group-hover/tool:opacity-100 group-data-[state=open]/tool:rotate-90" />
+          <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/tool:rotate-90" />
         </CollapsibleTrigger>
-        <CollapsibleContent className="pb-2 pl-6">
-          <div className="space-y-2 pt-0.5">
+        <CollapsibleContent className="border-border/70 border-t px-3 py-2">
+          <div className="space-y-2">
             {calls.map((call) => {
               const result = parts.find(
                 (part): part is Extract<AppMessage["parts"][number], { type: "tool-result" }> =>
@@ -1969,15 +2095,29 @@ const Message = memo(function Message({
       part.type === "error",
   );
   const groups = toolGroups(message.parts);
+  const reasoningParts = message.parts.filter(
+    (part): part is Extract<AppMessage["parts"][number], { type: "reasoning" }> =>
+      part.type === "reasoning" && part.text !== "",
+  );
+  const firstReasoningIndex = message.parts.findIndex(
+    (part) => part.type === "reasoning" && part.text !== "",
+  );
+  const combinedReasoning = reasoningParts.map((part) => part.text).join("\n\n");
   return (
     <article
       tabIndex={0}
       data-message-id={message.id}
       className={cn(
         "group/message animate-in fade-in slide-in-from-bottom-1 flex min-w-0 flex-col gap-2 text-sm leading-7 outline-none duration-300",
-        message.role === "user" && "bg-muted ml-auto max-w-[70%] rounded-xl px-3 py-2.5",
+        message.role === "user" && "ml-auto w-fit max-w-[70%]",
       )}
     >
+      <div
+        className={cn(
+          "flex min-w-0 flex-col gap-2",
+          message.role === "user" && "bg-muted rounded-xl px-3 py-2.5",
+        )}
+      >
       {message.parts.map((part, index) => {
         if (part.type === "text" && part.text !== "") {
           return message.role === "assistant" ? (
@@ -1993,6 +2133,7 @@ const Message = memo(function Message({
           );
         }
         if (part.type === "reasoning" && part.text !== "") {
+          if (index !== firstReasoningIndex) return null;
           return (
             <Collapsible
               key={`reasoning-${index}`}
@@ -2003,11 +2144,11 @@ const Message = memo(function Message({
                   <ChevronRight className="size-3.5" />
                   思考过程
                 </CollapsibleTrigger>
-                <CollapsibleContent className="text-muted-foreground border-border/60 border-t px-2.5 py-2 leading-relaxed whitespace-pre-wrap select-text">
-                  {part === streamingTail ? (
-                    <FadeStreamText text={part.text} />
+                <CollapsibleContent className="text-muted-foreground border-border/60 border-t px-2.5 py-2 leading-relaxed select-text">
+                  {streamingTail?.type === "reasoning" ? (
+                    <FadeStreamText text={combinedReasoning} />
                   ) : (
-                    part.text
+                    <Markdown content={combinedReasoning} />
                   )}
                 </CollapsibleContent>
               </div>
@@ -2028,10 +2169,27 @@ const Message = memo(function Message({
           );
         }
         if (part.type === "error") {
+          const firstMatchingError = message.parts.findIndex(
+            (candidate) =>
+              candidate.type === "error" &&
+              candidate.code === part.code &&
+              candidate.message === part.message,
+          );
+          if (firstMatchingError !== index) return null;
           return (
             <p key={`error-${index}`} className="text-destructive mt-2 text-sm">
               {part.message}
             </p>
+          );
+        }
+        if (part.type === "attachment" && part.dataUrl?.startsWith("data:image/")) {
+          return (
+            <img
+              key={`attachment-${index}`}
+              src={part.dataUrl}
+              alt={part.name}
+              className="max-h-72 max-w-full rounded-lg object-contain"
+            />
           );
         }
         return null;
@@ -2041,6 +2199,7 @@ const Message = memo(function Message({
           <Loader2 className="size-3.5 animate-spin" /> 正在生成
         </p>
       )}
+      </div>
       <MessageMetadata message={message} providerName={providerName} />
     </article>
   );

@@ -27,20 +27,26 @@ interface MotionDefinition {
 const liftProgress = (phase: number): number => (1 - Math.cos(phase)) / 2;
 
 const MOTIONS: Record<ProductMotionVariant, MotionDefinition> = {
-  // The onboarding mascot renders at ~160px from a 512px canvas, so the
-  // amplitudes need to be large enough to survive the downscale.
   tietiezhi: {
-    duration: 6_800,
+    duration: 7_800,
     frame: (phase) => ({
-      translateX: Math.sin(phase) * 7 + Math.sin(phase * 2) * 2.4,
-      translateY: -liftProgress(phase) * 14 + Math.sin(phase * 2) * 2.2,
-      rotation: Math.sin(phase) * 0.034 - Math.sin(phase * 2) * 0.012,
-      scaleX: 1 + Math.sin(phase * 2) * 0.012 - liftProgress(phase) * 0.008,
-      scaleY: 1 + liftProgress(phase) * 0.024 - Math.sin(phase * 2) * 0.008,
-      waveAmplitude: 7.5,
-      waveSpread: 4.2,
-      waveStart: 0.48,
-      waveTurns: 3,
+      translateX:
+        Math.sin(phase) * 6 +
+        Math.sin(phase * 2) * 1.2 +
+        Math.sin(phase * 3) * 0.5,
+      translateY:
+        -liftProgress(phase) * 11 +
+        Math.sin(phase * 2) * 1.4 +
+        Math.sin(phase * 3) * 0.5,
+      rotation: Math.sin(phase) * 0.007 + Math.sin(phase * 2) * 0.0025,
+      scaleX:
+        1 + liftProgress(phase) * 0.006 + Math.sin(phase * 2) * 0.0015,
+      scaleY:
+        1 + liftProgress(phase) * 0.016 - Math.sin(phase * 2) * 0.002,
+      waveAmplitude: 0,
+      waveSpread: 0,
+      waveStart: 0.53,
+      waveTurns: 2,
     }),
   },
   workspace: {
@@ -106,6 +112,7 @@ const MOTIONS: Record<ProductMotionVariant, MotionDefinition> = {
 };
 
 const BLINK_SCHEDULES: Partial<Record<ProductMotionVariant, number[]>> = {
+  tietiezhi: [0.32],
   workspace: [0.18, 0.61, 0.665],
   create: [0.22, 0.54, 0.595],
 };
@@ -221,6 +228,23 @@ function drawWarpedMascot(
   context.restore();
 }
 
+function drawStableMascot(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  frame: MascotFrame,
+) {
+  const anchorX = CANVAS_SIZE / 2;
+  const anchorY = CANVAS_SIZE * 0.82;
+
+  context.save();
+  context.translate(anchorX + frame.translateX, anchorY + frame.translateY);
+  context.rotate(frame.rotation);
+  context.scale(frame.scaleX, frame.scaleY);
+  context.translate(-anchorX, -anchorY);
+  context.drawImage(image, 0, 0, CANVAS_SIZE, CANVAS_SIZE);
+  context.restore();
+}
+
 export function ProductMascotMotion({
   src,
   blinkSrc,
@@ -272,13 +296,17 @@ export function ProductMascotMotion({
       frameContext.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
       frameContext.imageSmoothingEnabled = true;
       frameContext.imageSmoothingQuality = "high";
-      drawWarpedMascot(
-        frameContext,
-        image,
-        frame,
-        phase,
-        intensity === "compact" ? 8 : 4,
-      );
+      if (variant === "tietiezhi") {
+        drawStableMascot(frameContext, image, frame);
+      } else {
+        drawWarpedMascot(
+          frameContext,
+          image,
+          frame,
+          phase,
+          intensity === "compact" ? 8 : 4,
+        );
+      }
 
       const expressionAmount = blinkImage
         ? blinkAmount(progress, variant, motion.duration)
@@ -296,13 +324,17 @@ export function ProductMascotMotion({
         frameContext.save();
         frameContext.globalAlpha = expressionAmount;
         frameContext.globalCompositeOperation = "source-atop";
-        drawWarpedMascot(
-          frameContext,
-          blinkImage,
-          frame,
-          phase,
-          intensity === "compact" ? 8 : 4,
-        );
+        if (variant === "tietiezhi") {
+          drawStableMascot(frameContext, blinkImage, frame);
+        } else {
+          drawWarpedMascot(
+            frameContext,
+            blinkImage,
+            frame,
+            phase,
+            intensity === "compact" ? 8 : 4,
+          );
+        }
         frameContext.restore();
       }
 

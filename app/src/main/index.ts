@@ -5,12 +5,15 @@ import { app, BrowserWindow, ipcMain, net, protocol } from "electron";
 
 import {
   IPC,
+  PROVIDER_TYPES,
   type ApprovalDecision,
   type AgentPreferences,
+  type ChatImageAttachment,
   type PermissionProfileId,
   type ImageGenerationRequest,
   type ProviderAccountInput,
   type ProviderModelProbeInput,
+  type ProviderType,
   type SendMessageInput,
   type SkillInput,
   type VideoGenerationRequest,
@@ -47,6 +50,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isProviderType(value: unknown): value is ProviderType {
+  return typeof value === "string" && PROVIDER_TYPES.includes(value as ProviderType);
+}
+
 function record(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) throw new Error("请求参数格式不正确");
   return value;
@@ -66,12 +73,7 @@ function optionalString(value: Record<string, unknown>, key: string): string | u
 function providerInput(value: unknown): ProviderAccountInput {
   const input = record(value);
   const providerType = input["providerType"];
-  if (
-    providerType !== "openai" &&
-    providerType !== "anthropic" &&
-    providerType !== "google" &&
-    providerType !== "openai-compatible"
-  ) {
+  if (!isProviderType(providerType)) {
     throw new Error("供应商类型无效");
   }
   const models = input["models"];
@@ -81,6 +83,7 @@ function providerInput(value: unknown): ProviderAccountInput {
   const modelMetadata = input["modelMetadata"];
   return {
     id: optionalString(input, "id"),
+    vendorId: string(input, "vendorId"),
     providerType,
     displayName: string(input, "displayName"),
     baseURL: optionalString(input, "baseURL"),
@@ -97,12 +100,7 @@ function providerInput(value: unknown): ProviderAccountInput {
 function providerProbeInput(value: unknown): ProviderModelProbeInput {
   const input = record(value);
   const providerType = input["providerType"];
-  if (
-    providerType !== "openai" &&
-    providerType !== "anthropic" &&
-    providerType !== "google" &&
-    providerType !== "openai-compatible"
-  ) {
+  if (!isProviderType(providerType)) {
     throw new Error("供应商类型无效");
   }
   return {
@@ -116,9 +114,29 @@ function providerProbeInput(value: unknown): ProviderModelProbeInput {
 function sendInput(value: unknown): SendMessageInput {
   const input = record(value);
   const taskMode = optionalString(input, "taskMode");
+  const textValue = input["text"];
+  if (typeof textValue !== "string") throw new Error("参数 text 无效");
+  const rawImages = input["images"];
+  const images: ChatImageAttachment[] = rawImages === undefined
+    ? []
+    : Array.isArray(rawImages)
+      ? rawImages.map((value) => {
+          const image = record(value);
+          const id = string(image, "id");
+          const name = string(image, "name");
+          const mimeType = string(image, "mimeType");
+          const dataUrl = string(image, "dataUrl");
+          if (!mimeType.startsWith("image/") || !dataUrl.startsWith(`data:${mimeType};base64,`)) {
+            throw new Error("粘贴图片格式无效");
+          }
+          if (dataUrl.length > 14 * 1024 * 1024) throw new Error("单张图片不能超过 10 MB");
+          return { id, name, mimeType, dataUrl };
+        })
+      : (() => { throw new Error("图片列表格式无效"); })();
+  if (images.length > 4) throw new Error("每次最多添加 4 张图片");
   return {
     conversationId: optionalString(input, "conversationId"),
-    text: string(input, "text"),
+    text: textValue,
     providerAccountId: string(input, "providerAccountId"),
     model: string(input, "model"),
     engineId: optionalString(input, "engineId"),
@@ -129,6 +147,7 @@ function sendInput(value: unknown): SendMessageInput {
       input["permissionProfileId"] === undefined
         ? undefined
         : permissionProfileId(input["permissionProfileId"]),
+    images,
   };
 }
 

@@ -82,4 +82,15 @@ describe("applyWorkspaceEvents", () => {
     const twice = applyWorkspaceEvents(once, [toolResult]);
     expect(twice[0]?.parts.filter((part) => part.type === "tool-result")).toHaveLength(1);
   });
+
+  it("重复失败事件不会产生重复错误", () => {
+    const failure = event({
+      type: "run.failed",
+      messageId: "message-1",
+      error: { code: "AGENT_ERROR", message: "请求失败", retryable: false },
+    });
+    const once = applyWorkspaceEvents([message], [failure]);
+    const twice = applyWorkspaceEvents(once, [failure]);
+    expect(twice[0]?.parts.filter((part) => part.type === "error")).toHaveLength(1);
+  });
 });
