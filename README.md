@@ -4,44 +4,30 @@
 
 # Tietiezhi
 
-**基于 AI SDK 的 Electron 桌面 AI 应用。**
+**从 Workspace 开始构建的 Electron 桌面 Agent。**
 
 </div>
 
-## 当前能力
+## 当前阶段
 
-Tietiezhi 当前聚焦两个模块：
+项目正在从基础重新构建，目前只实现本地 Workspace 与对话存储：
 
-| 模块 | 能力 |
-| --- | --- |
-| Workspace | AI SDK `ToolLoopAgent`、项目或 UUID 临时目录、文件工具、Shell、统一审批、Diff、文件预览、流式响应和会话持久化 |
-| Create | AI SDK 原生图片生成、比例与数量设置、异步任务、停止、重试、删除和本地图片资产 |
+- 项目 Workspace：绑定用户选择的真实目录。
+- 临时 Workspace：在应用数据目录创建 UUID 隔离目录。
+- Conversation：一个 Workspace 可以包含多个对话。
+- Message：使用自有结构保存到 SQLite，不依赖任何 AI SDK。
 
-Workspace 始终以 Agent 方式运行：用户未选择项目时，应用创建 UUID 临时 Workspace，工具仍只在该目录内工作。应用不依赖任何外部 CLI；当前不提供 MCP、视频、多 Agent、自动化或设备互联。
+Agent Loop、Provider、工具、审批和 Create 尚未接入。
 
-应用保留 Tietiezhi Gateway 账号入口。用户可以通过系统浏览器完成 PKCE 授权，登录后自动获得内置中转站凭据并同步模型，无需手工填写 API Key；也可以继续配置 OpenAI、Anthropic、Google 或 OpenAI-compatible 供应商。
-
-## 架构
+## 数据关系
 
 ```text
-React Renderer
-  -> Typed Preload IPC
-  -> Application Core
-  -> EngineManager
-  -> AISDKEngine / ToolLoopAgent
-  -> Restricted Workspace Tools / Approval
-  -> EngineEvent
-  -> SQLite / Renderer
+Workspace (project | temporary)
+  └── Conversation
+        └── Message
 ```
 
-- Renderer 不接触 AI SDK、API Key、SQLite 和本地文件。
-- 中转站 Session 与 API Key 通过 Electron `safeStorage` 加密。
-- SQLite 只保存 Provider 的 `credentialRef`。
-- 对话和图片生成共用 Provider 配置。
-- 文件路径经过 Workspace 边界检查；写入、替换和 Shell 命令必须由用户审批。
-- 图片文件通过受限的 `tietiezhi-media://` 协议展示。
-
-## 开发
+## 启动
 
 要求 Node.js 24+ 和 pnpm 10。
 
@@ -58,23 +44,6 @@ pnpm typecheck
 pnpm test
 pnpm build
 TIETIEZHI_HEADLESS=1 ./node_modules/.bin/electron .
-pnpm smoke:package <已打包应用可执行文件>
 ```
-
-打包：
-
-```bash
-pnpm dist:mac
-pnpm dist:win
-```
-
-## 仓库
-
-| 目录 | 说明 |
-| --- | --- |
-| `app/` | Electron 桌面应用 |
-| `server/` | Go 服务 |
-| `website/` | 官网 |
-| `assets/` | 品牌资源 |
 
 项目采用 [Apache License 2.0](./LICENSE)。

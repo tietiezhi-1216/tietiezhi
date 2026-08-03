@@ -15,19 +15,18 @@
 
 ## 产品范围
 
-Tietiezhi 当前是 Electron + TypeScript 桌面 AI 应用，只保留两个产品模块：
+Tietiezhi 当前从 Workspace 基础重新构建，只保留一个产品模块：
 
-- Workspace：基于统一 `AIEngine` 和 `EngineEvent` 的 AI SDK `ToolLoopAgent`。始终绑定项目目录；未选择项目时创建 UUID 临时 Workspace。
-- Create：基于 AI SDK `generateImage` 的图片生成与本地资产管理。
+- Workspace：包含 `project` 项目目录和 `temporary` UUID 临时目录两种来源。
+- Conversation：始终绑定一个 Workspace，并在 SQLite 中保存 Message。
 
-Workspace 内置受限文件工具、Shell、审批和 Diff；第一阶段不包含 MCP、外部 CLI、视频、多 Agent、自动化和设备互联。
+当前阶段不包含模型 Provider、Agent Loop、工具、审批、Diff、Create、MCP、外部 CLI、多 Agent、自动化和设备互联。后续 Agent Core 必须建立在稳定的 Workspace、Conversation 和 Message 契约之上。
 
 ## 仓库结构
 
 - `app/`：Electron 主应用。
-- `app/src/main/application/`：Conversation、Engine、Provider、Media 应用服务。
-- `app/src/main/engines/`：AI SDK Engine 和 Provider 工厂。
-- `app/src/main/infrastructure/`：SQLite 与安全凭据存储。
+- `app/src/main/application/`：Workspace 与 Conversation 应用服务。
+- `app/src/main/infrastructure/`：SQLite 本地存储。
 - `app/src/preload/`：类型化 Electron IPC。
 - `app/src/renderer/`：React 19 + Tailwind + shadcn/ui。
 - `app/src/shared/`：Main、Preload、Renderer 的稳定契约。
@@ -58,10 +57,7 @@ TIETIEZHI_HEADLESS=1 ./node_modules/.bin/electron .
 ## 架构约束
 
 - UI 只调用 `window.tietiezhi`。
-- Application Core 只依赖自有消息和事件类型。
-- 只有 `app/src/main/engines/` 可以导入 AI SDK Provider。
-- 所有流式输出必须先转换为带 `schemaVersion` 的 `EngineEvent`。
-- 会话、消息、Run、Provider、MediaJob 和 Artifact 使用 SQLite。
-- 图片原始文件保存在应用数据目录，Renderer 只能通过受限的 `tietiezhi-media://` 协议读取。
-- 停止生成必须取消真实 Provider 请求。
-- 所有工具路径必须限制在会话 Workspace；文件写入、替换和 Shell 命令必须经过 UI 审批。
+- Application Core 只依赖 `app/src/shared/` 中的自有契约。
+- Workspace、Conversation 和 Message 使用 SQLite。
+- Conversation 必须通过 `workspaceId` 绑定 Workspace，不得通过路径正则推断 Workspace 类型。
+- Renderer 不得直接读取 Workspace 文件；路径解析和边界检查必须位于 Electron Main。

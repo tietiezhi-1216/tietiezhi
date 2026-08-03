@@ -3,6 +3,7 @@
 
 # ---- Node / 前端 ----
 node_modules/
+/desktop/
 app/release/
 pnpm-debug.log*
 *.local

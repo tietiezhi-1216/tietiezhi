@@ -153,6 +153,7 @@
     --animate-area-automation-float: area-automation-float 4.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
     --animate-area-create-float: area-create-float 4.9s cubic-bezier(0.45, 0, 0.55, 1) infinite;
     --animate-orbit-star-twinkle: orbit-star-twinkle 4.8s ease-in-out infinite;
+    --animate-octopus-blink: octopus-blink 5.2s linear infinite;
 
     @keyframes capsule-sweep {
         from { transform: translateX(-100%); }
@@ -201,6 +202,10 @@
         0%, 100% { opacity: 0.24; transform: scale(0.72); }
         48% { opacity: 0.95; transform: scale(1.18); }
         64% { opacity: 0.5; transform: scale(0.9); }
+    }
+    @keyframes octopus-blink {
+        0%, 88%, 92%, 95%, 100% { opacity: 0; }
+        89%, 91%, 96%, 98% { opacity: 1; }
     }
 }
 

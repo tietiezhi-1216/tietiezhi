@@ -1,51 +1,43 @@
 import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { DatabaseSync, type StatementResultingChanges } from "node:sqlite";
 
-import { app } from "electron";
-
 import type {
-  ApprovalDecision,
-  ApprovalRecord,
-  AppMessage,
   Conversation,
-  ConversationDetail,
-  LocalMediaAsset,
-  MediaArtifact,
-  MediaJob,
-  MediaJobReference,
+  Message,
   MessagePart,
-  ProviderAccount,
-  UsageInfo,
+  MessageRole,
+  MessageStatus,
+  Workspace,
+  WorkspaceKind,
 } from "@shared/contracts";
 
 type Row = Record<string, unknown>;
 
 function text(row: Row, key: string): string {
   const value = row[key];
-  return typeof value === "string" ? value : "";
+  if (typeof value !== "string") throw new Error(`数据库字段 ${key} 无效`);
+  return value;
 }
 
 function optionalText(row: Row, key: string): string | undefined {
-  const value = text(row, key);
-  return value === "" ? undefined : value;
+  const value = row[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
 function integer(row: Row, key: string): number {
   const value = row[key];
-  return typeof value === "number" ? value : Number(value ?? 0);
+  if (typeof value !== "number") throw new Error(`数据库字段 ${key} 无效`);
+  return value;
 }
 
-function permissionProfile(value: string): Conversation["permissionProfileId"] {
-  return value === "agent-managed" || value === "full-access" ? value : "ask";
-}
-
-function parseJSON<T>(value: unknown, fallback: T): T {
-  if (typeof value !== "string") return fallback;
+function parseParts(value: unknown): MessagePart[] {
+  if (typeof value !== "string") return [];
   try {
-    return JSON.parse(value) as T;
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as MessagePart[]) : [];
   } catch {
-    return fallback;
+    return [];
   }
 }
 
@@ -56,807 +48,217 @@ function changes(result: StatementResultingChanges): number {
 export class AppDatabase {
   readonly #db: DatabaseSync;
 
-  constructor(path = join(app.getPath("userData"), "tietiezhi.sqlite3")) {
+  constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true });
     this.#db = new DatabaseSync(path);
     this.#db.exec("PRAGMA journal_mode = WAL");
     this.#db.exec("PRAGMA foreign_keys = ON");
     this.#db.exec("PRAGMA busy_timeout = 5000");
     this.#migrate();
-    this.recoverInterruptedRuns();
   }
 
   #migrate(): void {
+    // These tables intentionally coexist with the legacy AI SDK tables. The
+    // new Workspace core never reads or mutates the old conversation data.
     this.#db.exec(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        version INTEGER PRIMARY KEY,
-        applied_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS provider_accounts (
+      CREATE TABLE IF NOT EXISTS workspaces (
         id TEXT PRIMARY KEY,
-        vendor_id TEXT NOT NULL DEFAULT 'other',
-        provider_type TEXT NOT NULL,
-        display_name TEXT NOT NULL,
-        base_url TEXT NOT NULL,
-        credential_ref TEXT NOT NULL,
-        enabled INTEGER NOT NULL,
-        models_json TEXT NOT NULL,
-        model_metadata_json TEXT NOT NULL DEFAULT '{}',
+        kind TEXT NOT NULL CHECK (kind IN ('project', 'temporary')),
+        name TEXT NOT NULL,
+        root_path TEXT NOT NULL UNIQUE,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS conversations (
+
+      CREATE TABLE IF NOT EXISTS workspace_conversations (
         id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
         title TEXT NOT NULL,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        active_engine_id TEXT NOT NULL,
-        active_model_id TEXT,
-        provider_account_id TEXT,
-        workspace TEXT,
-        task_mode TEXT NOT NULL DEFAULT 'code',
-        permission_profile_id TEXT NOT NULL DEFAULT 'ask'
+        updated_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS messages (
+      CREATE INDEX IF NOT EXISTS workspace_conversations_workspace_updated
+        ON workspace_conversations(workspace_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS conversation_messages (
         id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL
+          REFERENCES workspace_conversations(id) ON DELETE CASCADE,
         parent_message_id TEXT,
-        role TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        status TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
+        status TEXT NOT NULL
+          CHECK (status IN ('completed', 'streaming', 'failed', 'cancelled')),
         parts_json TEXT NOT NULL,
-        engine_id TEXT,
-        model_id TEXT,
-        run_id TEXT,
-        usage_json TEXT
-      );
-      CREATE INDEX IF NOT EXISTS messages_conversation_created
-        ON messages(conversation_id, created_at);
-      CREATE TABLE IF NOT EXISTS runs (
-        id TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-        engine_id TEXT NOT NULL,
-        model_id TEXT NOT NULL,
-        started_at INTEGER NOT NULL,
-        completed_at INTEGER,
-        status TEXT NOT NULL,
-        finish_reason TEXT,
-        usage_json TEXT,
-        error_json TEXT
-      );
-      CREATE TABLE IF NOT EXISTS approvals (
-        id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-        tool_call_id TEXT NOT NULL,
-        tool_name TEXT NOT NULL,
-        description TEXT NOT NULL,
-        input_json TEXT NOT NULL,
-        risk TEXT NOT NULL,
-        status TEXT NOT NULL,
         created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        resolved_at INTEGER,
-        decision TEXT,
-        reason TEXT
+        updated_at INTEGER NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS approvals_conversation_status
-        ON approvals(conversation_id, status, created_at);
-      CREATE TABLE IF NOT EXISTS media_jobs (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        provider_id TEXT NOT NULL,
-        model_id TEXT NOT NULL,
-        prompt TEXT NOT NULL,
-        aspect_ratio TEXT,
-        resolution TEXT,
-        quality TEXT,
-        duration INTEGER,
-        result_count INTEGER NOT NULL DEFAULT 1,
-        status TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        error_json TEXT
-      );
-      CREATE TABLE IF NOT EXISTS artifacts (
-        id TEXT PRIMARY KEY,
-        job_id TEXT NOT NULL REFERENCES media_jobs(id) ON DELETE CASCADE,
-        type TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        mime_type TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS media_assets (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        type TEXT NOT NULL,
-        source TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        mime_type TEXT NOT NULL,
-        width INTEGER,
-        height INTEGER,
-        duration INTEGER,
-        origin_job_id TEXT,
-        created_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS media_job_inputs (
-        job_id TEXT NOT NULL REFERENCES media_jobs(id) ON DELETE CASCADE,
-        asset_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE RESTRICT,
-        role TEXT NOT NULL,
-        position INTEGER NOT NULL,
-        PRIMARY KEY (job_id, asset_id, role)
-      );
-      CREATE INDEX IF NOT EXISTS media_assets_created
-        ON media_assets(created_at DESC);
+      CREATE INDEX IF NOT EXISTS conversation_messages_conversation_created
+        ON conversation_messages(conversation_id, created_at);
     `);
-    this.#db.exec(`
-      INSERT OR IGNORE INTO media_assets (
-        id, name, type, source, file_path, mime_type, origin_job_id, created_at
-      )
-      SELECT
-        artifacts.id,
-        CASE artifacts.type
-          WHEN 'video' THEN '生成视频-'
-          ELSE '生成图片-'
-        END || substr(artifacts.id, 1, 8),
-        artifacts.type,
-        'generated',
-        artifacts.file_path,
-        artifacts.mime_type,
-        artifacts.job_id,
-        artifacts.created_at
-      FROM artifacts
-      INNER JOIN media_jobs ON media_jobs.id = artifacts.job_id
-    `);
-    this.#db.exec(`
-      UPDATE media_assets
-      SET name =
-        CASE type
-          WHEN 'video' THEN '生成视频-'
-          ELSE '生成图片-'
-        END || substr(id, 1, 8)
-      WHERE source = 'generated'
-    `);
-    try {
-      this.#db.exec("ALTER TABLE media_jobs ADD COLUMN aspect_ratio TEXT");
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.#db.exec("ALTER TABLE media_jobs ADD COLUMN result_count INTEGER NOT NULL DEFAULT 1");
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.#db.exec("ALTER TABLE media_jobs ADD COLUMN resolution TEXT");
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.#db.exec("ALTER TABLE media_jobs ADD COLUMN duration INTEGER");
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.#db.exec("ALTER TABLE media_jobs ADD COLUMN quality TEXT");
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.#db.exec(
-        "ALTER TABLE provider_accounts ADD COLUMN model_metadata_json TEXT NOT NULL DEFAULT '{}'",
-      );
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.#db.exec(
-        "ALTER TABLE provider_accounts ADD COLUMN vendor_id TEXT NOT NULL DEFAULT 'other'",
-      );
-    } catch {
-      // Column already exists.
-    }
-    try {
-      this.#db.exec(
-        "ALTER TABLE conversations ADD COLUMN task_mode TEXT NOT NULL DEFAULT 'code'",
-      );
-    } catch {
-      // Column already exists.
-    }
-    const permissionMigration = this.#db
-      .prepare("SELECT version FROM schema_migrations WHERE version = 2")
-      .get();
-    if (permissionMigration === undefined) {
-      this.#db.exec("BEGIN IMMEDIATE");
-      try {
-        const columns = this.#db.prepare("PRAGMA table_info(conversations)").all() as Row[];
-        if (!columns.some((column) => text(column, "name") === "permission_profile_id")) {
-          this.#db.exec(
-            "ALTER TABLE conversations ADD COLUMN permission_profile_id TEXT NOT NULL DEFAULT 'ask'",
-          );
-        }
-        this.#db
-          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?)")
-          .run(Date.now());
-        this.#db.exec("COMMIT");
-      } catch (error) {
-        this.#db.exec("ROLLBACK");
-        throw error;
-      }
-    }
-    const providerMigration = this.#db
-      .prepare("SELECT version FROM schema_migrations WHERE version = 3")
-      .get();
-    if (providerMigration === undefined) {
-      this.#db.exec("BEGIN IMMEDIATE");
-      try {
-        this.#db.exec(`
-          UPDATE provider_accounts
-          SET provider_type = CASE rtrim(base_url, '/')
-            WHEN 'https://api.deepseek.com/v1' THEN 'deepseek'
-            WHEN 'https://api.moonshot.cn/v1' THEN 'moonshotai'
-            WHEN 'https://open.bigmodel.cn/api/paas/v4' THEN 'zhipu'
-            WHEN 'https://dashscope.aliyuncs.com/compatible-mode/v1' THEN 'alibaba'
-            WHEN 'https://api.minimaxi.com/v1' THEN 'minimax'
-            WHEN 'https://api.x.ai/v1' THEN 'xai'
-            WHEN 'https://api.mistral.ai/v1' THEN 'mistral'
-            WHEN 'https://api.groq.com/openai/v1' THEN 'groq'
-            WHEN 'https://openrouter.ai/api/v1' THEN 'openrouter'
-            WHEN 'https://api.together.xyz/v1' THEN 'togetherai'
-            WHEN 'https://api.cerebras.ai/v1' THEN 'cerebras'
-            WHEN 'http://127.0.0.1:11434/v1' THEN 'ollama'
-            WHEN 'http://127.0.0.1:11434/api' THEN 'ollama'
-            ELSE provider_type
-          END
-          WHERE provider_type = 'openai-compatible';
+  }
 
-          UPDATE provider_accounts
-          SET base_url = 'http://127.0.0.1:11434/api'
-          WHERE provider_type = 'ollama'
-            AND rtrim(base_url, '/') = 'http://127.0.0.1:11434/v1';
-        `);
-        this.#db
-          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (3, ?)")
-          .run(Date.now());
-        this.#db.exec("COMMIT");
-      } catch (error) {
-        this.#db.exec("ROLLBACK");
-        throw error;
-      }
-    }
-    const vendorMigration = this.#db
-      .prepare("SELECT version FROM schema_migrations WHERE version = 4")
-      .get();
-    if (vendorMigration === undefined) {
-      this.#db.exec("BEGIN IMMEDIATE");
-      try {
-        this.#db.exec(`
-          UPDATE provider_accounts
-          SET vendor_id = CASE
-            WHEN id = 'builtin-official' THEN 'tietiezhi'
-            WHEN provider_type = 'moonshotai' THEN 'moonshot'
-            WHEN provider_type = 'togetherai' THEN 'together'
-            WHEN provider_type <> 'openai-compatible' THEN provider_type
-            WHEN rtrim(base_url, '/') = 'https://ark.cn-beijing.volces.com/api/v3' THEN 'volcengine'
-            WHEN rtrim(base_url, '/') = 'https://api.xiaomimimo.com/v1' THEN 'xiaomi-mimo'
-            WHEN rtrim(base_url, '/') = 'https://qianfan.baidubce.com/v2' THEN 'baidu'
-            WHEN rtrim(base_url, '/') = 'https://api.hunyuan.cloud.tencent.com/v1' THEN 'tencent'
-            WHEN rtrim(base_url, '/') = 'https://api.stepfun.com/v1' THEN 'stepfun'
-            WHEN rtrim(base_url, '/') = 'https://api.siliconflow.cn/v1' THEN 'siliconflow'
-            WHEN rtrim(base_url, '/') = 'https://integrate.api.nvidia.com/v1' THEN 'nvidia'
-            WHEN rtrim(base_url, '/') = 'http://127.0.0.1:1234/v1' THEN 'lm-studio'
-            ELSE 'other'
-          END
-          WHERE vendor_id = 'other';
-        `);
-        this.#db
-          .prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (4, ?)")
-          .run(Date.now());
-        this.#db.exec("COMMIT");
-      } catch (error) {
-        this.#db.exec("ROLLBACK");
-        throw error;
-      }
+  transaction<T>(operation: () => T): T {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      this.#db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
     }
   }
 
-  recoverInterruptedRuns(): void {
-    const now = Date.now();
-    this.#db
-      .prepare(
-        `UPDATE approvals
-         SET status = 'expired', resolved_at = ?, reason = '应用在审批完成前退出'
-         WHERE status = 'pending'`,
-      )
-      .run(now);
-    this.#db
-      .prepare(
-        `UPDATE runs
-         SET status = 'failed', completed_at = ?, finish_reason = 'error',
-             error_json = ?
-         WHERE status = 'running'`,
-      )
-      .run(
-        now,
-        JSON.stringify({
-          code: "APP_RESTARTED",
-          message: "应用在任务完成前退出",
-          retryable: true,
-        }),
-      );
-    this.#db
-      .prepare(
-        `UPDATE messages
-         SET status = 'failed'
-         WHERE status IN ('pending', 'streaming', 'waiting_approval')`,
-      )
-      .run();
-    this.#db
-      .prepare(
-        `UPDATE media_jobs
-         SET status = 'failed', updated_at = ?, error_json = ?
-         WHERE status IN ('queued', 'running')`,
-      )
-      .run(
-        now,
-        JSON.stringify({
-          code: "APP_RESTARTED",
-          message: "应用在媒体生成完成前退出",
-          retryable: true,
-        }),
-      );
+  listWorkspaces(): Workspace[] {
+    return (this.#db.prepare("SELECT * FROM workspaces ORDER BY updated_at DESC").all() as Row[])
+      .map((row) => this.#workspace(row));
   }
 
-  listProviders(): ProviderAccount[] {
-    return (this.#db.prepare("SELECT * FROM provider_accounts ORDER BY created_at").all() as Row[]).map(
-      (row) => ({
-        id: text(row, "id"),
-        vendorId: text(row, "vendor_id") || "other",
-        providerType: text(row, "provider_type") as ProviderAccount["providerType"],
-        displayName: text(row, "display_name"),
-        baseURL: text(row, "base_url"),
-        credentialRef: text(row, "credential_ref"),
-        enabled: integer(row, "enabled") === 1,
-        models: parseJSON<string[]>(row["models_json"], []),
-        modelMetadata: parseJSON<ProviderAccount["modelMetadata"]>(
-          row["model_metadata_json"],
-          {},
-        ),
-        builtIn: text(row, "id") === "builtin-official",
-      }),
+  workspace(id: string): Workspace | null {
+    const row = this.#db.prepare("SELECT * FROM workspaces WHERE id = ?").get(id) as
+      | Row
+      | undefined;
+    return row ? this.#workspace(row) : null;
+  }
+
+  workspaceByPath(path: string): Workspace | null {
+    const row = this.#db.prepare("SELECT * FROM workspaces WHERE root_path = ?").get(path) as
+      | Row
+      | undefined;
+    return row ? this.#workspace(row) : null;
+  }
+
+  saveWorkspace(workspace: Workspace): void {
+    this.#db.prepare(`
+      INSERT INTO workspaces (id, kind, name, root_path, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(root_path) DO UPDATE SET
+        kind = excluded.kind,
+        name = excluded.name,
+        updated_at = excluded.updated_at
+    `).run(
+      workspace.id,
+      workspace.kind,
+      workspace.name,
+      workspace.path,
+      workspace.createdAt,
+      workspace.updatedAt,
     );
   }
 
-  provider(id: string): ProviderAccount | null {
-    return this.listProviders().find((provider) => provider.id === id) ?? null;
+  touchWorkspace(id: string, updatedAt: number): void {
+    this.#db.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").run(updatedAt, id);
   }
 
-  saveProvider(provider: ProviderAccount): void {
-    const now = Date.now();
-    this.#db
-      .prepare(
-        `INSERT INTO provider_accounts (
-          id, vendor_id, provider_type, display_name, base_url, credential_ref,
-          enabled, models_json, model_metadata_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          vendor_id = excluded.vendor_id,
-          provider_type = excluded.provider_type,
-          display_name = excluded.display_name,
-          base_url = excluded.base_url,
-          credential_ref = excluded.credential_ref,
-          enabled = excluded.enabled,
-          models_json = excluded.models_json,
-          model_metadata_json = excluded.model_metadata_json,
-          updated_at = excluded.updated_at`,
-      )
-      .run(
-        provider.id,
-        provider.vendorId,
-        provider.providerType,
-        provider.displayName,
-        provider.baseURL,
-        provider.credentialRef,
-        provider.enabled ? 1 : 0,
-        JSON.stringify(provider.models),
-        JSON.stringify(provider.modelMetadata),
-        now,
-        now,
-      );
+  removeWorkspace(id: string): boolean {
+    return changes(this.#db.prepare("DELETE FROM workspaces WHERE id = ?").run(id)) > 0;
   }
 
-  removeProvider(id: string): boolean {
-    return changes(this.#db.prepare("DELETE FROM provider_accounts WHERE id = ?").run(id)) > 0;
-  }
-
-  listConversations(): Conversation[] {
-    return (this.#db.prepare("SELECT * FROM conversations ORDER BY updated_at DESC").all() as Row[]).map(
-      (row) => ({
-        id: text(row, "id"),
-        title: text(row, "title"),
-        createdAt: integer(row, "created_at"),
-        updatedAt: integer(row, "updated_at"),
-        activeEngineId: text(row, "active_engine_id"),
-        activeModelId: optionalText(row, "active_model_id"),
-        providerAccountId: optionalText(row, "provider_account_id"),
-        workspace: optionalText(row, "workspace"),
-        taskMode: text(row, "task_mode") === "work" ? "work" : "code",
-        permissionProfileId: permissionProfile(text(row, "permission_profile_id")),
-      }),
-    );
+  listConversations(workspaceId?: string): Conversation[] {
+    const rows = workspaceId
+      ? this.#db.prepare(
+          "SELECT * FROM workspace_conversations WHERE workspace_id = ? ORDER BY updated_at DESC",
+        ).all(workspaceId)
+      : this.#db.prepare(
+          "SELECT * FROM workspace_conversations ORDER BY updated_at DESC",
+        ).all();
+    return (rows as Row[]).map((row) => this.#conversation(row));
   }
 
   conversation(id: string): Conversation | null {
-    return this.listConversations().find((conversation) => conversation.id === id) ?? null;
+    const row = this.#db.prepare("SELECT * FROM workspace_conversations WHERE id = ?").get(id) as
+      | Row
+      | undefined;
+    return row ? this.#conversation(row) : null;
   }
 
   saveConversation(conversation: Conversation): void {
-    this.#db
-      .prepare(
-        `INSERT INTO conversations (
-          id, title, created_at, updated_at, active_engine_id,
-          active_model_id, provider_account_id, workspace, task_mode,
-          permission_profile_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          title = excluded.title,
-          updated_at = excluded.updated_at,
-          active_engine_id = excluded.active_engine_id,
-          active_model_id = excluded.active_model_id,
-          provider_account_id = excluded.provider_account_id,
-          workspace = excluded.workspace,
-          task_mode = excluded.task_mode,
-          permission_profile_id = excluded.permission_profile_id`,
-      )
-      .run(
-        conversation.id,
-        conversation.title,
-        conversation.createdAt,
-        conversation.updatedAt,
-        conversation.activeEngineId,
-        conversation.activeModelId ?? null,
-        conversation.providerAccountId ?? null,
-        conversation.workspace ?? null,
-        conversation.taskMode,
-        conversation.permissionProfileId,
-      );
+    this.#db.prepare(`
+      INSERT INTO workspace_conversations (id, workspace_id, title, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        updated_at = excluded.updated_at
+    `).run(
+      conversation.id,
+      conversation.workspaceId,
+      conversation.title,
+      conversation.createdAt,
+      conversation.updatedAt,
+    );
   }
 
   removeConversation(id: string): boolean {
-    return changes(this.#db.prepare("DELETE FROM conversations WHERE id = ?").run(id)) > 0;
+    return changes(
+      this.#db.prepare("DELETE FROM workspace_conversations WHERE id = ?").run(id),
+    ) > 0;
   }
 
-  messages(conversationId: string): AppMessage[] {
-    const rows = this.#db
-      .prepare("SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at, rowid")
-      .all(conversationId) as Row[];
-    return rows.map((row) => ({
+  messages(conversationId: string): Message[] {
+    return (this.#db.prepare(`
+      SELECT * FROM conversation_messages
+      WHERE conversation_id = ?
+      ORDER BY created_at, rowid
+    `).all(conversationId) as Row[]).map((row) => this.#message(row));
+  }
+
+  saveMessage(message: Message): void {
+    this.#db.prepare(`
+      INSERT INTO conversation_messages (
+        id, conversation_id, parent_message_id, role, status,
+        parts_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        parts_json = excluded.parts_json,
+        updated_at = excluded.updated_at
+    `).run(
+      message.id,
+      message.conversationId,
+      message.parentMessageId ?? null,
+      message.role,
+      message.status,
+      JSON.stringify(message.parts),
+      message.createdAt,
+      message.updatedAt,
+    );
+  }
+
+  close(): void {
+    this.#db.close();
+  }
+
+  #workspace(row: Row): Workspace {
+    return {
+      id: text(row, "id"),
+      kind: text(row, "kind") as WorkspaceKind,
+      name: text(row, "name"),
+      path: text(row, "root_path"),
+      createdAt: integer(row, "created_at"),
+      updatedAt: integer(row, "updated_at"),
+    };
+  }
+
+  #conversation(row: Row): Conversation {
+    return {
+      id: text(row, "id"),
+      workspaceId: text(row, "workspace_id"),
+      title: text(row, "title"),
+      createdAt: integer(row, "created_at"),
+      updatedAt: integer(row, "updated_at"),
+    };
+  }
+
+  #message(row: Row): Message {
+    return {
       id: text(row, "id"),
       conversationId: text(row, "conversation_id"),
       parentMessageId: optionalText(row, "parent_message_id"),
-      role: text(row, "role") as AppMessage["role"],
+      role: text(row, "role") as MessageRole,
+      status: text(row, "status") as MessageStatus,
+      parts: parseParts(row["parts_json"]),
       createdAt: integer(row, "created_at"),
-      status: text(row, "status") as AppMessage["status"],
-      parts: parseJSON<MessagePart[]>(row["parts_json"], []),
-      engineId: optionalText(row, "engine_id"),
-      modelId: optionalText(row, "model_id"),
-      runId: optionalText(row, "run_id"),
-      usage: parseJSON<UsageInfo | undefined>(row["usage_json"], undefined),
-    }));
-  }
-
-  detail(id: string): ConversationDetail | null {
-    const conversation = this.conversation(id);
-    return conversation ? { conversation, messages: this.messages(id) } : null;
-  }
-
-  saveMessage(message: AppMessage): void {
-    this.#db
-      .prepare(
-        `INSERT INTO messages (
-          id, conversation_id, parent_message_id, role, created_at, status,
-          parts_json, engine_id, model_id, run_id, usage_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          status = excluded.status,
-          parts_json = excluded.parts_json,
-          usage_json = excluded.usage_json`,
-      )
-      .run(
-        message.id,
-        message.conversationId,
-        message.parentMessageId ?? null,
-        message.role,
-        message.createdAt,
-        message.status,
-        JSON.stringify(message.parts),
-        message.engineId ?? null,
-        message.modelId ?? null,
-        message.runId ?? null,
-        message.usage === undefined ? null : JSON.stringify(message.usage),
-      );
-  }
-
-  startRun(input: {
-    id: string;
-    conversationId: string;
-    messageId: string;
-    engineId: string;
-    modelId: string;
-    startedAt: number;
-  }): void {
-    this.#db
-      .prepare(
-        `INSERT INTO runs (
-          id, conversation_id, message_id, engine_id, model_id, started_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, 'running')`,
-      )
-      .run(
-        input.id,
-        input.conversationId,
-        input.messageId,
-        input.engineId,
-        input.modelId,
-        input.startedAt,
-      );
-  }
-
-  finishRun(
-    id: string,
-    status: "completed" | "failed" | "cancelled",
-    finishReason: string,
-    usage?: UsageInfo,
-    error?: unknown,
-  ): void {
-    this.#db
-      .prepare(
-        `UPDATE runs SET
-          completed_at = ?, status = ?, finish_reason = ?, usage_json = ?, error_json = ?
-         WHERE id = ?`,
-      )
-      .run(
-        Date.now(),
-        status,
-        finishReason,
-        usage === undefined ? null : JSON.stringify(usage),
-        error === undefined ? null : JSON.stringify(error),
-        id,
-      );
-  }
-
-  saveApproval(approval: ApprovalRecord): void {
-    this.#db
-      .prepare(
-        `INSERT INTO approvals (
-          id, run_id, conversation_id, message_id, tool_call_id, tool_name,
-          description, input_json, risk, status, created_at, expires_at,
-          resolved_at, decision, reason
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          status = excluded.status,
-          resolved_at = excluded.resolved_at,
-          decision = excluded.decision,
-          reason = excluded.reason`,
-      )
-      .run(
-        approval.id,
-        approval.runId,
-        approval.conversationId,
-        approval.messageId,
-        approval.toolCallId,
-        approval.toolName,
-        approval.description,
-        JSON.stringify(approval.input),
-        approval.risk,
-        approval.status,
-        approval.createdAt,
-        approval.expiresAt,
-        approval.resolvedAt ?? null,
-        approval.decision ?? null,
-        approval.reason ?? null,
-      );
-  }
-
-  approvals(conversationId?: string): ApprovalRecord[] {
-    const rows = (
-      conversationId === undefined
-        ? this.#db.prepare("SELECT * FROM approvals ORDER BY created_at").all()
-        : this.#db
-            .prepare("SELECT * FROM approvals WHERE conversation_id = ? ORDER BY created_at")
-            .all(conversationId)
-    ) as Row[];
-    return rows.map((row) => ({
-      id: text(row, "id"),
-      runId: text(row, "run_id"),
-      conversationId: text(row, "conversation_id"),
-      messageId: text(row, "message_id"),
-      toolCallId: text(row, "tool_call_id"),
-      toolName: text(row, "tool_name"),
-      description: text(row, "description"),
-      input: parseJSON<unknown>(row["input_json"], null),
-      risk: text(row, "risk") === "high" ? "high" : "medium",
-      status: text(row, "status") as ApprovalRecord["status"],
-      createdAt: integer(row, "created_at"),
-      expiresAt: integer(row, "expires_at"),
-      resolvedAt: integer(row, "resolved_at") || undefined,
-      decision: optionalText(row, "decision") as ApprovalDecision | undefined,
-      reason: optionalText(row, "reason"),
-    }));
-  }
-
-  saveMediaJob(job: MediaJob): void {
-    this.#db
-      .prepare(
-        `INSERT INTO media_jobs (
-          id, type, provider_id, model_id, prompt, aspect_ratio, resolution,
-          quality, duration, result_count, status, created_at, updated_at, error_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          status = excluded.status,
-          updated_at = excluded.updated_at,
-          error_json = excluded.error_json`,
-      )
-      .run(
-        job.id,
-        job.type,
-        job.providerId,
-        job.modelId,
-        job.prompt,
-        job.aspectRatio ?? null,
-        job.resolution ?? null,
-        job.quality ?? null,
-        job.duration ?? null,
-        job.count,
-        job.status,
-        job.createdAt,
-        job.updatedAt,
-        job.error === undefined ? null : JSON.stringify(job.error),
-      );
-    for (const artifact of job.artifacts) this.saveArtifact(artifact);
-    this.#db.prepare("DELETE FROM media_job_inputs WHERE job_id = ?").run(job.id);
-    const referenceStatement = this.#db.prepare(
-      `INSERT INTO media_job_inputs (job_id, asset_id, role, position)
-       VALUES (?, ?, ?, ?)`,
-    );
-    for (const reference of job.references) {
-      referenceStatement.run(
-        job.id,
-        reference.assetId,
-        reference.role,
-        reference.order,
-      );
-    }
-  }
-
-  saveArtifact(artifact: MediaArtifact): void {
-    this.#db
-      .prepare(
-        `INSERT OR REPLACE INTO artifacts (
-          id, job_id, type, file_path, mime_type, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        artifact.id,
-        artifact.jobId,
-        artifact.type,
-        artifact.filePath,
-        artifact.mimeType,
-        artifact.createdAt,
-      );
-  }
-
-  listMediaJobs(): MediaJob[] {
-    const artifacts = this.#db.prepare("SELECT * FROM artifacts ORDER BY created_at").all() as Row[];
-    const byJob = new Map<string, MediaArtifact[]>();
-    for (const row of artifacts) {
-      const artifact: MediaArtifact = {
-        id: text(row, "id"),
-        jobId: text(row, "job_id"),
-        type: text(row, "type") === "video" ? "video" : "image",
-        filePath: text(row, "file_path"),
-        mimeType: text(row, "mime_type"),
-        createdAt: integer(row, "created_at"),
-      };
-      byJob.set(artifact.jobId, [...(byJob.get(artifact.jobId) ?? []), artifact]);
-    }
-    const assets = new Map(this.listMediaAssets().map((asset) => [asset.id, asset]));
-    const referencesByJob = new Map<string, MediaJobReference[]>();
-    const referenceRows = this.#db
-      .prepare("SELECT * FROM media_job_inputs ORDER BY job_id, position")
-      .all() as Row[];
-    for (const row of referenceRows) {
-      const assetId = text(row, "asset_id");
-      const asset = assets.get(assetId);
-      if (asset === undefined) continue;
-      const reference: MediaJobReference = {
-        assetId,
-        role:
-          text(row, "role") === "first-frame"
-            ? "first-frame"
-            : text(row, "role") === "last-frame"
-              ? "last-frame"
-              : "reference",
-        order: integer(row, "position"),
-        asset,
-      };
-      const jobId = text(row, "job_id");
-      referencesByJob.set(jobId, [
-        ...(referencesByJob.get(jobId) ?? []),
-        reference,
-      ]);
-    }
-    return (this.#db.prepare("SELECT * FROM media_jobs ORDER BY created_at DESC").all() as Row[]).map(
-      (row) => ({
-        id: text(row, "id"),
-        type: text(row, "type") === "video" ? "video" : "image",
-        providerId: text(row, "provider_id"),
-        modelId: text(row, "model_id"),
-        prompt: text(row, "prompt"),
-        aspectRatio: optionalText(row, "aspect_ratio") as `${number}:${number}` | undefined,
-        resolution: optionalText(row, "resolution") as MediaJob["resolution"],
-        quality: optionalText(row, "quality") as MediaJob["quality"],
-        duration: integer(row, "duration") || undefined,
-        count: Math.max(1, integer(row, "result_count")),
-        status: text(row, "status") as MediaJob["status"],
-        createdAt: integer(row, "created_at"),
-        updatedAt: integer(row, "updated_at"),
-        artifacts: byJob.get(text(row, "id")) ?? [],
-        references: referencesByJob.get(text(row, "id")) ?? [],
-        error: parseJSON<MediaJob["error"]>(row["error_json"], undefined),
-      }),
-    );
-  }
-
-  removeMediaJob(id: string): boolean {
-    return changes(this.#db.prepare("DELETE FROM media_jobs WHERE id = ?").run(id)) > 0;
-  }
-
-  saveMediaAsset(asset: LocalMediaAsset): void {
-    this.#db
-      .prepare(
-        `INSERT OR REPLACE INTO media_assets (
-          id, name, type, source, file_path, mime_type, width, height,
-          duration, origin_job_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        asset.id,
-        asset.name,
-        asset.type,
-        asset.source,
-        asset.filePath,
-        asset.mimeType,
-        asset.width ?? null,
-        asset.height ?? null,
-        asset.duration ?? null,
-        asset.originJobId ?? null,
-        asset.createdAt,
-      );
-  }
-
-  listMediaAssets(): LocalMediaAsset[] {
-    return (
-      this.#db
-        .prepare("SELECT * FROM media_assets ORDER BY created_at DESC")
-        .all() as Row[]
-    ).map((row) => ({
-      id: text(row, "id"),
-      name: text(row, "name"),
-      type: text(row, "type") === "video" ? "video" : "image",
-      source: text(row, "source") === "generated" ? "generated" : "imported",
-      filePath: text(row, "file_path"),
-      mimeType: text(row, "mime_type"),
-      width: integer(row, "width") || undefined,
-      height: integer(row, "height") || undefined,
-      duration: integer(row, "duration") || undefined,
-      originJobId: optionalText(row, "origin_job_id"),
-      createdAt: integer(row, "created_at"),
-    }));
-  }
-
-  removeMediaAsset(id: string): boolean {
-    return changes(this.#db.prepare("DELETE FROM media_assets WHERE id = ?").run(id)) > 0;
+      updatedAt: integer(row, "updated_at"),
+    };
   }
 }

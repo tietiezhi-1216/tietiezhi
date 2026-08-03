@@ -1,2223 +1,435 @@
+import { useEffect, useMemo, useState } from "react";
 import {
-  memo,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-} from "react";
-import {
-  ArrowUp,
-  Check,
-  ChevronRight,
-  FileCode2,
   Folder,
   FolderOpen,
-  Info,
-  ImagePlus,
-  Loader2,
-  LogIn,
+  MessageSquare,
   MessageSquarePlus,
   MoreHorizontal,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PanelRight,
-  PanelRightClose,
-  Pencil,
   Plus,
-  ShieldCheck,
-  Sparkles,
-  Square,
-  SquarePen,
-  TerminalSquare,
-  Trash2,
-  X,
+  Send,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import { GateBackdrop } from "@/components/gate-backdrop";
-import { ProductSwitcher } from "@/components/product-switcher";
-import { ProductOrbitStage } from "@/components/product-orbit-stage";
-import { ProviderEditDialog } from "@/features/settings/provider-edit-dialog";
-import { WorkspaceModeSwitcher } from "@/components/workspace-mode-switcher";
-import { GatewayAccountButton } from "@/components/gateway-account-button";
-import { OctopusPeekButton } from "@/components/octopus-peek-button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { chatModels, modelCapabilities } from "@/lib/model-capabilities";
-import { Markdown, fadeTokens, isFadeSpace } from "./markdown";
-import { WorkspaceModelSelect } from "./workspace-model-select";
-import { ApprovalActions } from "./approval-actions";
-import { applyWorkspaceEvents } from "./workspace-events";
-import { formatRelativeTime, useRelativeNow } from "./relative-time";
-import { WorkspacePanel } from "./workspace-panel";
-import type { SettingsCategory } from "@/features/settings/provider-dialog";
-import type { ProductArea } from "@/App";
-import type {
-  ApprovalDecision,
-  ApprovalRecord,
-  AppMessage,
-  ChatImageAttachment,
-  Conversation,
-  EngineDescriptor,
-  EngineEvent,
-  GatewayAccountView,
-  ProviderAccount,
-  WorkspaceInfo,
-  TaskMode,
-  PermissionProfileId,
-} from "@shared/contracts";
+import type { Conversation, ConversationDetail, Message, Workspace } from "@shared/contracts";
 
-type RetryEvent = Extract<EngineEvent, { type: "run.retrying" }>;
-const IS_MACOS = navigator.userAgent.includes("Mac");
-const SIDEBAR_MIN_WIDTH = 200;
-const SIDEBAR_MAX_WIDTH = 480;
-const SIDEBAR_DEFAULT_WIDTH = 256;
-const SIDEBAR_COLLAPSE_THRESHOLD = 140;
-
-export function WorkspacePage({
-  active,
-  providerVersion,
-  onOpenSettings,
-  onProviderChanged,
-  onSwitchArea,
-}: {
-  /** 本页在后台待命时仍然挂载，全局快捷键要靠它避让。 */
-  active: boolean;
-  providerVersion: number;
-  onOpenSettings: (category?: SettingsCategory) => void;
-  onProviderChanged: () => void;
-  onSwitchArea: (area: ProductArea) => void;
-}) {
-  const [providers, setProviders] = useState<ProviderAccount[]>([]);
-  const [gatewayView, setGatewayView] = useState<GatewayAccountView>();
-  const [bootstrapped, setBootstrapped] = useState(false);
-  const [gateBusy, setGateBusy] = useState(false);
-  const [gateError, setGateError] = useState("");
-  const [gateProviderOpen, setGateProviderOpen] = useState(false);
+export function WorkspacePage() {
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [engines, setEngines] = useState<EngineDescriptor[]>([]);
-  const [activeId, setActiveId] = useState<string>();
-  const [messages, setMessages] = useState<AppMessage[]>([]);
-  const [providerId, setProviderId] = useState(
-    () => window.localStorage.getItem("workspace-provider") ?? "",
-  );
-  const engineId = "ai-sdk";
-  const [defaultPermissionProfileId, setDefaultPermissionProfileId] =
-    useState<PermissionProfileId>("ask");
-  const [permissionProfileId, setPermissionProfileId] =
-    useState<PermissionProfileId>("ask");
-  const [requestedPermissionProfileId, setRequestedPermissionProfileId] =
-    useState<PermissionProfileId>();
-  const [model, setModel] = useState(
-    () => window.localStorage.getItem("workspace-model") ?? "",
-  );
-  const [taskMode, setTaskMode] = useState<TaskMode>(
-    () => window.localStorage.getItem("workspace-task-mode") === "work" ? "work" : "code",
-  );
+  const [active, setActive] = useState<ConversationDetail>();
   const [draft, setDraft] = useState("");
-  const [attachments, setAttachments] = useState<ChatImageAttachment[]>([]);
-  const [attachmentError, setAttachmentError] = useState("");
-  const [runId, setRunId] = useState<string>();
-  const [retry, setRetry] = useState<RetryEvent>();
   const [error, setError] = useState("");
-  const [isAtHistoryBottom, setIsAtHistoryBottom] = useState(true);
-  const [workspace, setWorkspace] = useState<WorkspaceInfo>();
-  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
-  const [panelOpen, setPanelOpen] = useState(
-    () => window.localStorage.getItem("workspace-panel-open") === "true",
+  const [busy, setBusy] = useState(false);
+
+  const projects = useMemo(
+    () => workspaces.filter((workspace) => workspace.kind === "project"),
+    [workspaces],
   );
-  const [sidebarOpen, setSidebarOpen] = useState(
-    () => window.localStorage.getItem("workspace-sidebar-open") !== "false",
+  const temporaryWorkspaces = useMemo(
+    () => workspaces.filter((workspace) => workspace.kind === "temporary"),
+    [workspaces],
   );
-  const [projectsOpen, setProjectsOpen] = useState(
-    () => window.localStorage.getItem("workspace-projects-open") !== "false",
-  );
-  const [tasksOpen, setTasksOpen] = useState(
-    () => window.localStorage.getItem("workspace-tasks-open") === "true",
-  );
-  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>(() => {
-    try {
-      const saved: unknown = JSON.parse(
-        window.localStorage.getItem("workspace-expanded-projects") ?? "{}",
-      );
-      if (typeof saved !== "object" || saved === null) return {};
-      return Object.fromEntries(
-        Object.entries(saved).filter(
-          (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
-        ),
-      );
-    } catch {
-      return {};
-    }
-  });
-  const [renaming, setRenaming] = useState<Conversation>();
-  const [renameTitle, setRenameTitle] = useState("");
-  const scrollHostRef = useRef<HTMLDivElement>(null);
-  const stickToBottomRef = useRef(true);
-  const initialHistoryScrollDoneRef = useRef(false);
-  const isAutoScrollingRef = useRef(false);
-  const forcedScrollRef = useRef(false);
-  const autoScrollFrameRef = useRef<number | undefined>(undefined);
-  const sidebarRef = useRef<HTMLElement>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
-  const sidebarOpenTargetRef = useRef<number | undefined>(undefined);
-  const queuedEvents = useRef<EngineEvent[]>([]);
-  const eventFrame = useRef<number | undefined>(undefined);
-  const selectedProvider = providers.find((provider) => provider.id === providerId);
-  const supportsImageInput = modelCapabilities(
-    model,
-    selectedProvider?.modelMetadata[model],
-  ).inputModalities.includes("image");
-  const projectGroups = useMemo(() => {
+  const conversationsByWorkspace = useMemo(() => {
     const groups = new Map<string, Conversation[]>();
     for (const conversation of conversations) {
-      if (!conversation.workspace || /[/\\]workspaces[/\\][\w-]+$/.test(conversation.workspace)) {
-        continue;
-      }
-      const current = groups.get(conversation.workspace) ?? [];
-      current.push(conversation);
-      groups.set(conversation.workspace, current);
+      const group = groups.get(conversation.workspaceId) ?? [];
+      group.push(conversation);
+      groups.set(conversation.workspaceId, group);
     }
-    return [...groups.entries()];
+    return groups;
   }, [conversations]);
-  const temporaryTasks = conversations.filter(
-    (conversation) =>
-      !conversation.workspace || /[/\\]workspaces[/\\][\w-]+$/.test(conversation.workspace),
-  );
-  // Onboarding gate: without a signed-in gateway account or a user-added
-  // provider, the workspace UI stays hidden until one entry is completed.
-  // The built-in gateway row always exists, so it never counts as setup.
-  const setupRequired =
-    !providers.some((provider) => !provider.builtIn) &&
-    gatewayView?.loggedIn !== true;
 
-  const refreshConversations = async () => {
-    setConversations(await window.tietiezhi.conversations.list());
+  const refresh = async () => {
+    const [nextWorkspaces, nextConversations] = await Promise.all([
+      window.tietiezhi.workspaces.list(),
+      window.tietiezhi.conversations.list(),
+    ]);
+    setWorkspaces(nextWorkspaces);
+    setConversations(nextConversations);
   };
 
   useEffect(() => {
-    void Promise.all([
-      window.tietiezhi.providers.list().then((value) => {
-        setProviders(value);
-        setProviderId(
-          (current) => {
-            const available = value.find(
-              (provider) =>
-                provider.id === current && chatModels(provider.models).length > 0,
-            );
-            return (
-              available?.id ??
-              value.find((provider) => chatModels(provider.models).length > 0)?.id ??
-              ""
-            );
-          },
-        );
-      }),
-      window.tietiezhi.gateway
-        .account()
-        .then(setGatewayView)
-        .catch(() =>
-          setGatewayView({
-            providerId: "builtin-official",
-            supported: false,
-            loggedIn: false,
-          }),
-        ),
-      refreshConversations(),
-      window.tietiezhi.engines.list().then(setEngines),
-      window.tietiezhi.preferences.get().then((preferences) => {
-        const profile = preferences.defaultPermissionProfiles[engineId] ?? "ask";
-        setDefaultPermissionProfileId(profile);
-        if (activeId === undefined) setPermissionProfileId(profile);
-      }),
-    ]).finally(() => setBootstrapped(true));
-  }, [providerVersion]);
-
-  useEffect(() => {
-    if (activeId === undefined) setPermissionProfileId(defaultPermissionProfileId);
-  }, [activeId, defaultPermissionProfileId]);
-
-  useEffect(() => {
-    const refreshPermissionDefault = () => {
-      void window.tietiezhi.preferences.get().then((preferences) => {
-        const profile = preferences.defaultPermissionProfiles[engineId] ?? "ask";
-        setDefaultPermissionProfileId(profile);
-        if (activeId === undefined) setPermissionProfileId(profile);
-      });
-    };
-    window.addEventListener("tietiezhi:preferences-changed", refreshPermissionDefault);
-    return () => window.removeEventListener("tietiezhi:preferences-changed", refreshPermissionDefault);
-  }, [activeId]);
-
-  // The main process shrinks the window for onboarding and restores the
-  // remembered workspace bounds once setup completes.
-  useEffect(() => {
-    if (!bootstrapped) return;
-    void window.tietiezhi.appWindow
-      .setMode(setupRequired ? "setup" : "normal")
-      .catch(() => undefined);
-  }, [bootstrapped, setupRequired]);
-
-  useEffect(() => {
-    if (!selectedProvider) {
-      setModel("");
-      return;
-    }
-    const models = chatModels(selectedProvider.models);
-    if (!models.includes(model)) setModel(models[0] ?? "");
-  }, [selectedProvider, model]);
-
-  useEffect(() => {
-    window.localStorage.setItem("workspace-provider", providerId);
-    window.localStorage.setItem("workspace-model", model);
-    window.localStorage.setItem("workspace-task-mode", taskMode);
-  }, [providerId, model, taskMode]);
-
-  useEffect(() => {
-    window.localStorage.setItem("workspace-sidebar-open", String(sidebarOpen));
-    const sidebar = sidebarRef.current;
-    if (!sidebar) return;
-    const savedWidth = Number(window.localStorage.getItem("workspace-sidebar-width"));
-    const width =
-      Number.isFinite(savedWidth) &&
-      savedWidth >= SIDEBAR_MIN_WIDTH &&
-      savedWidth <= SIDEBAR_MAX_WIDTH
-        ? savedWidth
-        : SIDEBAR_DEFAULT_WIDTH;
-    const openWidth = sidebarOpenTargetRef.current ?? width;
-    sidebarOpenTargetRef.current = undefined;
-    const frame = window.requestAnimationFrame(() => {
-      sidebar.style.setProperty("width", sidebarOpen ? `${openWidth}px` : "0px");
+    void refresh().catch((cause: unknown) => {
+      setError(cause instanceof Error ? cause.message : String(cause));
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [sidebarOpen]);
+  }, []);
 
-  useEffect(() => {
-    window.localStorage.setItem("workspace-panel-open", String(panelOpen));
-  }, [panelOpen]);
-
-  useEffect(() => {
-    window.localStorage.setItem("workspace-projects-open", String(projectsOpen));
-    window.localStorage.setItem("workspace-tasks-open", String(tasksOpen));
-    window.localStorage.setItem(
-      "workspace-expanded-projects",
-      JSON.stringify(expandedProjects),
-    );
-  }, [expandedProjects, projectsOpen, tasksOpen]);
-
-  useEffect(() => {
-    if (!active) return;
-    const handleShortcut = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== "b" || (!event.metaKey && !event.ctrlKey)) return;
-      event.preventDefault();
-      setSidebarOpen((current) => !current);
-    };
-    window.addEventListener("keydown", handleShortcut);
-    return () => window.removeEventListener("keydown", handleShortcut);
-  }, [active]);
-
-  useEffect(() => {
-    const unsubscribe = window.tietiezhi.onEngineEvent((event) => {
-        if (event.conversationId !== activeId && activeId !== undefined) return;
-        queuedEvents.current.push(event);
-        if (eventFrame.current !== undefined) return;
-        eventFrame.current = window.setTimeout(() => {
-          eventFrame.current = undefined;
-          const events = queuedEvents.current.splice(0);
-          if (events.length === 0) return;
-          setMessages((current) => applyWorkspaceEvents(current, events));
-          const approvalsInBatch = events
-            .filter((candidate) => candidate.type === "tool.approval_required")
-            .map((candidate): ApprovalRecord => ({
-              id: candidate.approvalId,
-              runId: candidate.runId,
-              conversationId: candidate.conversationId,
-              messageId: candidate.messageId,
-              toolCallId: candidate.toolCallId,
-              toolName: candidate.toolName,
-              description: candidate.description,
-              input: candidate.input,
-              risk: candidate.risk,
-              status: "pending",
-              createdAt: candidate.createdAt,
-              expiresAt: candidate.expiresAt,
-            }));
-          if (approvalsInBatch.length > 0) {
-            setApprovals((current) => {
-              const ids = new Set(approvalsInBatch.map((item) => item.id));
-              return [...current.filter((item) => !ids.has(item.id)), ...approvalsInBatch];
-            });
-          }
-          const resolvedEvents = events.filter(
-            (candidate): candidate is Extract<EngineEvent, { type: "tool.approval_resolved" }> =>
-              candidate.type === "tool.approval_resolved",
-          );
-          if (resolvedEvents.length > 0) {
-            setApprovals((current) => current.map((item) => {
-              const resolved = resolvedEvents.find((candidate) => candidate.approvalId === item.id);
-              return resolved
-                ? {
-                    ...item,
-                    status: resolved.decision === "deny" ? "denied" : "approved",
-                    decision: resolved.decision,
-                    resolvedAt: resolved.createdAt,
-                    reason: resolved.reason,
-                  }
-                : item;
-            }));
-          }
-          setRetry((current) => {
-            let next = current;
-            for (const candidate of events) {
-              if (candidate.type === "run.retrying") next = candidate;
-              else if (
-                candidate.type === "text.delta" ||
-                candidate.type === "reasoning.delta" ||
-                candidate.type === "tool.call" ||
-                candidate.type === "run.completed" ||
-                candidate.type === "run.failed"
-              ) {
-                next = undefined;
-              }
-            }
-            return next;
-          });
-          const terminal = events.findLast(
-            (candidate) =>
-              candidate.type === "run.completed" || candidate.type === "run.failed",
-          );
-          if (terminal) {
-            setRunId(undefined);
-            void refreshConversations();
-            void window.tietiezhi.approvals.list(terminal.conversationId).then(setApprovals);
-          }
-        }, 50);
-      });
-    return () => {
-      unsubscribe();
-      if (eventFrame.current !== undefined) {
-        window.clearTimeout(eventFrame.current);
-        eventFrame.current = undefined;
-      }
-      queuedEvents.current = [];
-    };
-  }, [activeId]);
-
-  const scrollToBottom = useCallback(
-    (behavior: ScrollBehavior, forced = false) => {
-      const viewport = scrollHostRef.current?.querySelector<HTMLElement>(
-        "[data-slot='scroll-area-viewport']",
-      );
-      if (!viewport) return;
-
-      if (autoScrollFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(autoScrollFrameRef.current);
-        autoScrollFrameRef.current = undefined;
-      }
-
-      isAutoScrollingRef.current = true;
-      forcedScrollRef.current = forced;
-      setIsAtHistoryBottom(true);
-
-      const finish = () => {
-        viewport.scrollTop = Math.max(
-          0,
-          viewport.scrollHeight - viewport.clientHeight,
-        );
-        isAutoScrollingRef.current = false;
-        forcedScrollRef.current = false;
-        autoScrollFrameRef.current = undefined;
-        stickToBottomRef.current = true;
-        setIsAtHistoryBottom(true);
-      };
-
-      if (behavior !== "smooth") {
-        finish();
-        return;
-      }
-
-      stickToBottomRef.current = false;
-      const startedAt = performance.now();
-      const startTop = viewport.scrollTop;
-      const duration = 520;
-      const animate = (now: number) => {
-        const progress = Math.min(1, (now - startedAt) / duration);
-        const eased = 1 - Math.pow(1 - progress, 3);
-        const target = Math.max(
-          0,
-          viewport.scrollHeight - viewport.clientHeight,
-        );
-        viewport.scrollTop = startTop + (target - startTop) * eased;
-        if (progress < 1) {
-          autoScrollFrameRef.current =
-            window.requestAnimationFrame(animate);
-          return;
-        }
-        finish();
-      };
-      autoScrollFrameRef.current = window.requestAnimationFrame(animate);
-    },
-    [],
-  );
-
-  useEffect(() => {
-    const viewport = scrollHostRef.current?.querySelector<HTMLElement>(
-      "[data-slot='scroll-area-viewport']",
-    );
-    if (!viewport || messages.length === 0) return;
-
-    const updateScrollState = () => {
-      if (isAutoScrollingRef.current) return;
-      const distanceFromBottom =
-        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-      if (distanceFromBottom > 72) stickToBottomRef.current = false;
-      else if (distanceFromBottom < 4) stickToBottomRef.current = true;
-      setIsAtHistoryBottom(distanceFromBottom < 24);
-    };
-    const handleWheel = (event: WheelEvent) => {
-      // 触控板抬手后仍会派发惯性 wheel 事件，主动「回到底部」要豁免，否则动画刚起步就被掐断。
-      if (event.deltaY < 0 && !forcedScrollRef.current) {
-        isAutoScrollingRef.current = false;
-        if (autoScrollFrameRef.current !== undefined) {
-          window.cancelAnimationFrame(autoScrollFrameRef.current);
-          autoScrollFrameRef.current = undefined;
-        }
-        stickToBottomRef.current = false;
-        setIsAtHistoryBottom(false);
-      }
-    };
-
-    updateScrollState();
-    viewport.addEventListener("scroll", updateScrollState, { passive: true });
-    viewport.addEventListener("wheel", handleWheel, { passive: true });
-    return () => {
-      viewport.removeEventListener("scroll", updateScrollState);
-      viewport.removeEventListener("wheel", handleWheel);
-    };
-  }, [activeId, messages.length > 0]);
-
-  useLayoutEffect(() => {
-    if (messages.length === 0 || initialHistoryScrollDoneRef.current) return;
-    initialHistoryScrollDoneRef.current = true;
-    const frame = window.requestAnimationFrame(() => {
-      scrollToBottom("auto");
-      window.requestAnimationFrame(() => scrollToBottom("auto"));
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [messages.length, scrollToBottom]);
-
-  useEffect(() => {
-    const viewport = scrollHostRef.current?.querySelector<HTMLElement>(
-      "[data-slot='scroll-area-viewport']",
-    );
-    const content = viewport?.firstElementChild;
-    if (!viewport || !(content instanceof HTMLElement)) return;
-    const observer = new ResizeObserver(() => {
-      if (stickToBottomRef.current) scrollToBottom("auto");
-    });
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, [activeId, scrollToBottom]);
-
-  useEffect(
-    () => () => {
-      if (autoScrollFrameRef.current !== undefined) {
-        window.cancelAnimationFrame(autoScrollFrameRef.current);
-      }
-    },
-    [],
-  );
-
-  useEffect(() => {
-    if (!stickToBottomRef.current) return;
-    scrollToBottom(runId ? "instant" : "smooth");
-  }, [messages, runId, scrollToBottom]);
-
-  useEffect(() => {
-    const pending = approvals.findLast((approval) => approval.status === "pending");
-    if (!pending) return;
-    const frame = window.requestAnimationFrame(() => {
-      const message = scrollHostRef.current?.querySelector<HTMLElement>(
-        `[data-message-id="${CSS.escape(pending.messageId)}"]`,
-      );
-      message?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [approvals]);
-
-  const open = async (id: string) => {
-    stickToBottomRef.current = true;
-    initialHistoryScrollDoneRef.current = false;
-    setIsAtHistoryBottom(true);
-    setRetry(undefined);
-    const detail = await window.tietiezhi.conversations.load(id);
-    setActiveId(id);
-    setMessages(detail.messages);
-    setProviderId(detail.conversation.providerAccountId ?? providerId);
-    setModel(detail.conversation.activeModelId ?? model);
-    setTaskMode(detail.conversation.taskMode);
-    setPermissionProfileId(detail.conversation.permissionProfileId);
-    setRunId(
-      detail.messages.findLast(
-        (message) =>
-          message.status === "pending" ||
-          message.status === "streaming" ||
-          message.status === "waiting_approval",
-      )?.runId,
-    );
-    const path = detail.conversation.workspace;
-    setWorkspace(
-      path
-        ? {
-            path,
-            name: path.split(/[\\/]/).filter(Boolean).at(-1) ?? "Workspace",
-            temporary: /[/\\]workspaces[/\\][\w-]+$/.test(path),
-          }
-        : undefined,
-    );
-    setApprovals(await window.tietiezhi.approvals.list(id));
+  const openConversation = async (id: string) => {
     setError("");
-    setAttachments([]);
-    setAttachmentError("");
+    try {
+      setActive(await window.tietiezhi.conversations.load(id));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
   };
 
-  const addClipboardImages = async (files: File[]) => {
-    const selected = files.filter((file) => file.type.startsWith("image/")).slice(0, 4);
-    if (selected.length === 0) return;
-    if (!supportsImageInput) {
-      setAttachmentError("当前模型不支持图片输入");
-      return;
-    }
-    if (selected.some((file) => file.size > 10 * 1024 * 1024)) {
-      setAttachmentError("单张图片不能超过 10 MB");
-      return;
-    }
-    const read = (file: File) => new Promise<ChatImageAttachment>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(reader.error ?? new Error("读取图片失败"));
-      reader.onload = () => resolve({
-        id: crypto.randomUUID(),
-        name: file.name || `粘贴图片-${Date.now()}.png`,
-        mimeType: file.type,
-        dataUrl: String(reader.result),
-      });
-      reader.readAsDataURL(file);
-    });
+  const createConversation = async (workspace: Workspace) => {
+    setError("");
     try {
-      const loaded = await Promise.all(selected.map(read));
-      setAttachments((current) => [...current, ...loaded].slice(0, 4));
-      setAttachmentError("");
+      const detail = await window.tietiezhi.conversations.create({
+        workspaceId: workspace.id,
+      });
+      setActive(detail);
+      await refresh();
     } catch (cause) {
-      setAttachmentError(cause instanceof Error ? cause.message : "读取图片失败");
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const addProject = async () => {
+    setError("");
+    try {
+      const workspace = await window.tietiezhi.workspaces.chooseProject();
+      if (!workspace) return;
+      await refresh();
+      await createConversation(workspace);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const createTemporaryTask = async () => {
+    setError("");
+    try {
+      const workspace = await window.tietiezhi.workspaces.createTemporary();
+      await createConversation(workspace);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
     }
   };
 
   const send = async () => {
     const text = draft.trim();
-    if ((!text && attachments.length === 0) || !providerId || !model || runId) return;
-    if (attachments.length > 0 && !supportsImageInput) {
-      setAttachmentError("当前模型不支持图片输入，请更换模型或移除图片");
-      return;
-    }
-    const pendingAttachments = attachments;
-    stickToBottomRef.current = true;
-    setRetry(undefined);
-    const optimistic: AppMessage = {
-      id: `optimistic-${crypto.randomUUID()}`,
-      conversationId: activeId ?? "",
-      role: "user",
-      createdAt: Date.now(),
-      status: "completed",
-      parts: [
-        ...(text === "" ? [] : [{ type: "text" as const, text }]),
-        ...pendingAttachments.map((image) => ({
-          type: "attachment" as const,
-          name: image.name,
-          mimeType: image.mimeType,
-          dataUrl: image.dataUrl,
-        })),
-      ],
-      engineId,
-      modelId: model,
-    };
-    setMessages((current) => [...current, optimistic]);
-    setDraft("");
-    setAttachments([]);
-    setAttachmentError("");
+    if (!active || !text || busy) return;
+    setBusy(true);
     setError("");
     try {
-      const started = await window.tietiezhi.conversations.send({
-        conversationId: activeId,
-        text,
-        providerAccountId: providerId,
-        model,
-        engineId,
-        workspace: workspace?.path,
-        taskMode,
-        permissionProfileId,
-        images: pendingAttachments,
+      const message = await window.tietiezhi.conversations.appendMessage({
+        conversationId: active.conversation.id,
+        role: "user",
+        parts: [{ type: "text", text }],
       });
-      setActiveId(started.conversationId);
-      setRunId(started.runId);
-      const detail = await window.tietiezhi.conversations.load(started.conversationId);
-      setMessages(detail.messages);
-      setPermissionProfileId(detail.conversation.permissionProfileId);
-      if (detail.conversation.workspace) {
-        const path = detail.conversation.workspace;
-        setWorkspace({
-          path,
-          name: /[/\\]workspaces[/\\][\w-]+$/.test(path)
-            ? "临时 Workspace"
-            : (path.split(/[\\/]/).filter(Boolean).at(-1) ?? "Workspace"),
-          temporary: /[/\\]workspaces[/\\][\w-]+$/.test(path),
-        });
-      }
-      await refreshConversations();
-    } catch (cause) {
-      setMessages((current) => current.filter((message) => message.id !== optimistic.id));
-      setDraft(text);
-      setAttachments(pendingAttachments);
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-
-  const resolveApproval = useCallback(
-    async (approvalId: string, decision: ApprovalDecision) => {
-      try {
-        await window.tietiezhi.approvals.resolve(approvalId, decision);
-        setApprovals((current) => current.map((item) => item.id === approvalId
-          ? {
-              ...item,
-              status: decision === "deny" ? "denied" : "approved",
-              decision,
-              resolvedAt: Date.now(),
-            }
-          : item));
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
-        throw cause;
-      }
-    },
-    [],
-  );
-
-  const remove = async (id: string) => {
-    setError("");
-    try {
-      await window.tietiezhi.conversations.remove(id);
-      if (activeId === id) {
-        setActiveId(undefined);
-        setMessages([]);
-        setRetry(undefined);
-        setWorkspace(undefined);
-        setApprovals([]);
-      }
-      await refreshConversations();
+      const title = active.messages.length === 0
+        ? await window.tietiezhi.conversations.rename(active.conversation.id, text.slice(0, 32))
+        : active.conversation;
+      setActive((current) => current
+        ? { ...current, conversation: title, messages: [...current.messages, message] }
+        : current);
+      setDraft("");
+      await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-
-  const saveRename = async () => {
-    if (!renaming || !renameTitle.trim()) return;
-    setError("");
-    try {
-      await window.tietiezhi.conversations.rename(renaming.id, renameTitle);
-      setRenaming(undefined);
-      await refreshConversations();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-
-  const startProjectTask = (path: string) => {
-    setWorkspace({
-      path,
-      name: path.split(/[\\/]/).filter(Boolean).at(-1) ?? "项目",
-      temporary: false,
-    });
-    setExpandedProjects((current) => ({ ...current, [path]: true }));
-    setActiveId(undefined);
-    setMessages([]);
-    setRetry(undefined);
-    setApprovals([]);
-    setError("");
-  };
-
-  const beginSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || !sidebarRef.current) return;
-    event.preventDefault();
-    const handle = event.currentTarget;
-    const startX = event.clientX;
-    const startWidth = sidebarRef.current.getBoundingClientRect().width;
-    let renderedWidth = startWidth;
-    let targetWidth = startWidth;
-    let collapse = false;
-    let pausedUntil = 0;
-    let frame: number | undefined;
-    let finished = false;
-    const sidebar = sidebarRef.current;
-    sidebar.style.setProperty("transition", "none");
-    handle.setPointerCapture(event.pointerId);
-
-    const animate = (time: number) => {
-      if (finished || collapse) {
-        frame = undefined;
-        return;
-      }
-      if (time < pausedUntil) {
-        frame = window.requestAnimationFrame(animate);
-        return;
-      }
-      if (pausedUntil > 0) {
-        renderedWidth = sidebar.getBoundingClientRect().width;
-        pausedUntil = 0;
-        sidebar.style.setProperty("transition", "none");
-      }
-      renderedWidth += (targetWidth - renderedWidth) * 0.22;
-      if (Math.abs(targetWidth - renderedWidth) < 0.35) {
-        renderedWidth = targetWidth;
-      }
-      sidebar.style.setProperty("width", `${renderedWidth}px`);
-      frame = window.requestAnimationFrame(animate);
-    };
-    frame = window.requestAnimationFrame(animate);
-
-    const move = (moveEvent: PointerEvent) => {
-      const rawWidth = startWidth + moveEvent.clientX - startX;
-      const nextCollapse = rawWidth <= SIDEBAR_COLLAPSE_THRESHOLD;
-      if (nextCollapse !== collapse) {
-        collapse = nextCollapse;
-        sidebar.style.removeProperty("transition");
-        sidebar.style.removeProperty("opacity");
-        if (!collapse) {
-          sidebarOpenTargetRef.current = SIDEBAR_MIN_WIDTH;
-          targetWidth = Math.max(SIDEBAR_MIN_WIDTH, rawWidth);
-          pausedUntil = performance.now() + 90;
-          if (frame === undefined) frame = window.requestAnimationFrame(animate);
-        }
-        setSidebarOpen(!collapse);
-        return;
-      }
-      if (collapse) return;
-      targetWidth = Math.min(
-        SIDEBAR_MAX_WIDTH,
-        Math.max(SIDEBAR_MIN_WIDTH, rawWidth),
-      );
-    };
-    const finish = () => {
-      finished = true;
-      if (frame !== undefined) window.cancelAnimationFrame(frame);
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", finish);
-      handle.removeEventListener("pointercancel", finish);
-      handle.removeEventListener("lostpointercapture", finish);
-      sidebar.style.removeProperty("transition");
-      sidebar.style.removeProperty("opacity");
-      if (!collapse) {
-        window.requestAnimationFrame(() => {
-          sidebar.style.setProperty("width", `${targetWidth}px`);
-        });
-        window.localStorage.setItem(
-          "workspace-sidebar-width",
-          String(Math.round(targetWidth)),
-        );
-      }
-    };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", finish);
-    handle.addEventListener("pointercancel", finish);
-    handle.addEventListener("lostpointercapture", finish);
-  };
-
-  const resetSidebarWidth = () => {
-    sidebarRef.current?.style.setProperty("width", `${SIDEBAR_DEFAULT_WIDTH}px`);
-    window.localStorage.setItem(
-      "workspace-sidebar-width",
-      String(SIDEBAR_DEFAULT_WIDTH),
-    );
-  };
-
-  const empty = !providerId || !model;
-  const activeConversation = conversations.find((conversation) => conversation.id === activeId);
-  const activeEngine = engines.find((engine) => engine.id === engineId);
-  const permissionProfiles = activeEngine?.capabilities.permissions.profiles ?? [];
-  const activePermissionProfile = permissionProfiles.find(
-    (profile) => profile.id === permissionProfileId,
-  );
-
-  const commitPermission = async (profileId: PermissionProfileId) => {
-    setError("");
-    try {
-      if (activeId) {
-        const updated = await window.tietiezhi.conversations.setPermission(activeId, profileId);
-        setConversations((current) =>
-          current.map((conversation) => conversation.id === updated.id ? updated : conversation),
-        );
-      }
-      setPermissionProfileId(profileId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-
-  const selectPermission = (profileId: PermissionProfileId) => {
-    const profile = permissionProfiles.find((candidate) => candidate.id === profileId);
-    if (profile?.requiresConfirmation) {
-      setRequestedPermissionProfileId(profileId);
-      return;
-    }
-    void commitPermission(profileId);
-  };
-
-  const gateLogin = async () => {
-    setGateBusy(true);
-    setGateError("");
-    try {
-      setGatewayView(await window.tietiezhi.gateway.login());
-      onProviderChanged();
-    } catch (cause) {
-      setGateError(cause instanceof Error ? cause.message : String(cause));
     } finally {
-      setGateBusy(false);
+      setBusy(false);
     }
   };
-
-  if (!bootstrapped || setupRequired) {
-    return (
-      <div className="bg-background relative flex h-full min-h-0 flex-col overflow-hidden">
-        <GateBackdrop />
-        <header className="relative z-10 h-12 shrink-0 [-webkit-app-region:drag]" />
-        {/* Optical centering: the stage sits slightly above true center. */}
-        <div className="relative z-10 flex min-h-0 flex-1 flex-col items-center justify-center px-4 pb-[6vh]">
-          <div
-            className={cn(
-              "flex flex-col items-center transition-opacity duration-500",
-              bootstrapped ? "opacity-100" : "opacity-0",
-            )}
-          >
-            <ProductOrbitStage variant="tietiezhi" className="-mt-4 -mb-1" />
-            <div className="flex items-center gap-3">
-              <Button
-                type="button"
-                disabled={gateBusy}
-                onClick={() => void gateLogin()}
-                className="h-10 rounded-full px-5 dark:bg-white dark:text-neutral-950 dark:hover:bg-white/90"
-              >
-                {gateBusy ? <Loader2 className="animate-spin" /> : <LogIn />}
-                铁铁汁登录
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={gateBusy}
-                onClick={() => setGateProviderOpen(true)}
-                className="h-10 rounded-full px-5"
-              >
-                <Plus />
-                添加供应商
-              </Button>
-            </div>
-            {gateError && (
-              <p className="text-destructive mt-4 max-w-sm text-center text-xs">
-                {gateError}
-              </p>
-            )}
-          </div>
-        </div>
-        <ProviderEditDialog
-          open={gateProviderOpen}
-          onOpenChange={setGateProviderOpen}
-          onSaved={onProviderChanged}
-        />
-      </div>
-    );
-  }
 
   return (
-    <div className="relative flex h-full min-h-0 bg-transparent">
-      <aside
-        ref={sidebarRef}
-        aria-hidden={!sidebarOpen}
-        inert={!sidebarOpen}
-        className={cn(
-          "@container/sidebar bg-sidebar/70 text-sidebar-foreground relative flex w-64 shrink-0 flex-col overflow-hidden border-r backdrop-blur-2xl transition-[width,opacity,border-color] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] supports-[backdrop-filter]:bg-sidebar/60",
-          sidebarOpen
-            ? "opacity-100"
-            : "pointer-events-none border-r-transparent opacity-0",
-        )}
-      >
-          <div
-            className={cn(
-              "flex h-12 shrink-0 items-center border-b px-2 [-webkit-app-region:drag]",
-              IS_MACOS && "pl-24",
-            )}
+    <main className="bg-background flex h-full min-h-0">
+      <aside className="bg-sidebar flex w-72 shrink-0 flex-col border-r pt-3">
+        <div className="flex h-10 items-center gap-2 px-3 [-webkit-app-region:drag]">
+          <img src="/tietiezhi.png" alt="Tietiezhi" className="size-7 rounded-lg" />
+          <span className="font-semibold">Tietiezhi</span>
+          <Button
+            type="button"
+            size="sm"
+            className="ml-auto [-webkit-app-region:no-drag]"
+            onClick={() => void createTemporaryTask()}
           >
-            <ProductSwitcher
-              area="workspace"
-              onSwitch={onSwitchArea}
-              variant="sidebar"
-            />
+            <MessageSquarePlus />新建任务
+          </Button>
+        </div>
+
+        <ScrollArea className="min-h-0 flex-1 px-2 py-3">
+          <SidebarSection
+            title="项目"
+            actionLabel="添加项目"
+            onAction={() => void addProject()}
+          >
+            {projects.length === 0 ? (
+              <EmptyRow icon={Folder} label="添加一个项目文件夹" onClick={() => void addProject()} />
+            ) : projects.map((workspace) => (
+              <WorkspaceGroup
+                key={workspace.id}
+                workspace={workspace}
+                conversations={conversationsByWorkspace.get(workspace.id) ?? []}
+                activeId={active?.conversation.id}
+                onCreate={() => void createConversation(workspace)}
+                onOpen={(id) => void openConversation(id)}
+              />
+            ))}
+          </SidebarSection>
+
+          <SidebarSection title="任务">
+            {temporaryWorkspaces.length === 0 ? (
+              <p className="text-muted-foreground px-2 py-2 text-xs">暂无临时任务</p>
+            ) : temporaryWorkspaces.map((workspace) => {
+              const items = conversationsByWorkspace.get(workspace.id) ?? [];
+              return items.map((conversation) => (
+                <ConversationRow
+                  key={conversation.id}
+                  conversation={conversation}
+                  active={active?.conversation.id === conversation.id}
+                  onOpen={() => void openConversation(conversation.id)}
+                />
+              ));
+            })}
+          </SidebarSection>
+        </ScrollArea>
+      </aside>
+
+      <section className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center border-b px-5 [-webkit-app-region:drag]">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium">
+              {active?.conversation.title ?? "Workspace"}
+            </p>
+            <p className="text-muted-foreground truncate text-xs">
+              {active
+                ? `${active.workspace.kind === "project" ? "项目" : "临时任务"} · ${active.workspace.path}`
+                : "选择项目，或创建一个临时任务"}
+            </p>
           </div>
-          <div className="p-2">
+          {active && (
             <Button
               type="button"
               variant="ghost"
-              className="w-full justify-start text-xs"
-              onClick={() => {
-                setActiveId(undefined);
-                setMessages([]);
-                setRetry(undefined);
-                setError("");
-                setWorkspace(undefined);
-                setApprovals([]);
-              }}
+              size="sm"
+              className="ml-auto [-webkit-app-region:no-drag]"
+              onClick={() => void window.tietiezhi.workspaces.reveal(active.workspace.id)}
             >
-              <MessageSquarePlus /> 新建任务
+              <FolderOpen />打开文件夹
             </Button>
-          </div>
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="pb-3">
-              <div className="relative flex w-full min-w-0 flex-col p-2">
-                <div className="group/header relative">
-                  <button
-                    type="button"
-                    aria-expanded={projectsOpen}
-                    onClick={() => setProjectsOpen((current) => !current)}
-                    className="text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground flex h-8 w-fit items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors duration-300"
-                  >
-                    <span>项目</span>
-                    <ChevronRight
-                      className={cn(
-                        "size-4 opacity-0 transition-[opacity,rotate] duration-300 group-hover/header:opacity-100",
-                        projectsOpen && "rotate-90",
-                      )}
-                    />
-                  </button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    className="text-sidebar-foreground absolute top-1/2 right-1 size-5 -translate-y-1/2 opacity-0 transition-opacity duration-300 group-hover/header:opacity-100 focus-visible:opacity-100"
-                    onClick={async () => {
-                      const selected = await window.tietiezhi.workspace.choose();
-                      if (selected) {
-                        setWorkspace(selected);
-                        setActiveId(undefined);
-                        setMessages([]);
-                        setRetry(undefined);
-                      }
-                    }}
-                    aria-label="添加项目"
-                  >
-                    <Plus />
-                  </Button>
-                </div>
-                <div
-                  className={cn(
-                    "grid overflow-hidden transition-[grid-template-rows,opacity,translate] duration-[360ms]",
-                    projectsOpen
-                      ? "grid-rows-[1fr] translate-y-0 opacity-100"
-                      : "pointer-events-none grid-rows-[0fr] -translate-y-1 opacity-0",
-                  )}
-                >
-                  <div className="min-h-0 overflow-hidden">
-                    {projectGroups.length === 0 ? (
-                      <button
-                        type="button"
-                        className="text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs"
-                        onClick={async () => {
-                          const selected = await window.tietiezhi.workspace.choose();
-                          if (selected) setWorkspace(selected);
-                        }}
-                      >
-                        <Folder className="size-4" /> 添加一个项目文件夹
-                      </button>
-                    ) : (
-                      <div className="flex w-full min-w-0 flex-col">
-                        {projectGroups.map(([path, projectTasks]) => {
-                          const expanded = expandedProjects[path] ?? true;
-                          return (
-                            <div key={path} className="relative min-w-0">
-                              <div className="group/project-row relative">
-                                <button
-                                  type="button"
-                                  aria-expanded={expanded}
-                                  onClick={() =>
-                                    setExpandedProjects((current) => ({
-                                      ...current,
-                                      [path]: !expanded,
-                                    }))
-                                  }
-                                  className="group/project hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex h-8 w-full items-center gap-2 overflow-hidden rounded-md p-2 pr-14 text-left text-sm"
-                                >
-                                  <span className="text-sidebar-foreground/70 relative size-4 shrink-0">
-                                    <Folder
-                                      className={cn(
-                                        "absolute inset-0 size-4 transition-[opacity,transform] duration-300",
-                                        expanded
-                                          ? "-rotate-6 scale-90 opacity-0"
-                                          : "opacity-100",
-                                      )}
-                                    />
-                                    <FolderOpen
-                                      className={cn(
-                                        "absolute inset-0 size-4 transition-[opacity,transform] duration-300",
-                                        expanded
-                                          ? "opacity-100"
-                                          : "rotate-6 scale-90 opacity-0",
-                                      )}
-                                    />
-                                  </span>
-                                  <span className="truncate">
-                                    {path.split(/[\\/]/).filter(Boolean).at(-1)}
-                                  </span>
-                                </button>
-                                <div className="pointer-events-none absolute top-1 right-1 flex items-center opacity-0 transition-opacity duration-300 group-hover/project-row:pointer-events-auto group-hover/project-row:opacity-100 group-focus-within/project-row:pointer-events-auto group-focus-within/project-row:opacity-100">
-                                  <DropdownMenu>
-                                    <DropdownMenuTrigger asChild>
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon-xs"
-                                        aria-label="项目操作"
-                                        className="data-[state=open]:bg-sidebar-accent"
-                                      >
-                                        <MoreHorizontal />
-                                      </Button>
-                                    </DropdownMenuTrigger>
-                                    <DropdownMenuContent
-                                      side="right"
-                                      align="start"
-                                      className="w-max min-w-44"
-                                    >
-                                      <DropdownMenuItem
-                                        className="whitespace-nowrap"
-                                        onSelect={() => startProjectTask(path)}
-                                      >
-                                        <SquarePen />在此项目中新建任务
-                                      </DropdownMenuItem>
-                                      <DropdownMenuItem
-                                        className="whitespace-nowrap"
-                                        onSelect={() => {
-                                          void window.tietiezhi.workspace.reveal(path).catch(
-                                            (cause: unknown) =>
-                                              setError(
-                                                cause instanceof Error
-                                                  ? cause.message
-                                                  : String(cause),
-                                              ),
-                                          );
-                                        }}
-                                      >
-                                        <FolderOpen />
-                                        {IS_MACOS ? "在 Finder 中显示" : "打开项目文件夹"}
-                                      </DropdownMenuItem>
-                                    </DropdownMenuContent>
-                                  </DropdownMenu>
-                                  <Button
-                                    type="button"
-                                    variant="ghost"
-                                    size="icon-xs"
-                                    title="在此项目中新建任务"
-                                    aria-label="在此项目中新建任务"
-                                    onClick={() => startProjectTask(path)}
-                                  >
-                                    <SquarePen />
-                                  </Button>
-                                </div>
-                              </div>
-                              <div
-                                className={cn(
-                                  "grid overflow-hidden transition-[grid-template-rows,opacity,translate] duration-[360ms]",
-                                  expanded
-                                    ? "grid-rows-[1fr] translate-y-0 opacity-100"
-                                    : "pointer-events-none grid-rows-[0fr] -translate-y-1 opacity-0",
-                                )}
-                              >
-                                <div className="min-h-0 overflow-hidden">
-                                  {projectTasks.length === 0 ? (
-                                    <p className="text-muted-foreground py-1 pr-2 pl-8 text-xs">
-                                      暂无任务
-                                    </p>
-                                  ) : (
-                                    <div className="flex w-full min-w-0 flex-col">
-                                      {projectTasks.map((conversation) => (
-                                        <TaskRow
-                                          key={conversation.id}
-                                          conversation={conversation}
-                                          active={activeId === conversation.id}
-                                          nested
-                                          onOpen={open}
-                                          onRemove={remove}
-                                          onRename={(item) => {
-                                            setRenaming(item);
-                                            setRenameTitle(item.title);
-                                          }}
-                                        />
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+          )}
+        </header>
+
+        {active ? (
+          <>
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-5 py-8">
+                {active.messages.length === 0 ? (
+                  <div className="grid min-h-[45vh] place-items-center text-center">
+                    <div>
+                      <MessageSquare className="text-muted-foreground mx-auto mb-4 size-9" />
+                      <h1 className="text-lg font-semibold">开始一段对话</h1>
+                      <p className="text-muted-foreground mt-1 text-sm">
+                        当前阶段只验证 Workspace、Conversation 和 Message 的本地存储。
+                      </p>
+                    </div>
                   </div>
-                </div>
+                ) : active.messages.map((message) => (
+                  <MessageBubble key={message.id} message={message} />
+                ))}
               </div>
-              <div className="relative flex w-full min-w-0 flex-col p-2 pt-0">
-                <div className="group/tasks">
-                  <button
-                          type="button"
-                    aria-expanded={tasksOpen}
-                    onClick={() => setTasksOpen((current) => !current)}
-                    className="text-sidebar-foreground/70 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground flex h-8 w-fit items-center gap-1 rounded-md px-2 text-xs font-medium transition-colors duration-300"
-                  >
-                    <span>任务</span>
-                    <ChevronRight
-                      className={cn(
-                        "size-4 opacity-0 transition-[opacity,rotate] duration-300 group-hover/tasks:opacity-100",
-                        tasksOpen && "rotate-90",
-                      )}
-                    />
-                  </button>
-                </div>
-                <div
-                  className={cn(
-                    "grid overflow-hidden transition-[grid-template-rows,opacity,translate] duration-[360ms]",
-                    tasksOpen
-                      ? "grid-rows-[1fr] translate-y-0 opacity-100"
-                      : "pointer-events-none grid-rows-[0fr] -translate-y-1 opacity-0",
-                  )}
+            </ScrollArea>
+            <div className="mx-auto w-full max-w-3xl px-5 pb-5">
+              <div className="text-muted-foreground mb-2 px-1 text-xs">
+                Agent 内核尚未接入；消息会保存到本地 SQLite。
+              </div>
+              <div className="bg-muted flex items-end gap-2 rounded-2xl p-2">
+                <Textarea
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      void send();
+                    }
+                  }}
+                  placeholder="输入一条消息，验证本地对话存储…"
+                  rows={1}
+                  className="max-h-40 min-h-10 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
+                />
+                <Button
+                  type="button"
+                  size="icon"
+                  className="shrink-0 rounded-xl"
+                  disabled={!draft.trim() || busy}
+                  onClick={() => void send()}
+                  aria-label="保存消息"
                 >
-                  <div className="min-h-0 overflow-hidden">
-                    {temporaryTasks.length === 0 ? (
-                      <p className="text-muted-foreground px-2 py-1 text-xs">暂无任务</p>
-                    ) : (
-                      <div className="flex w-full min-w-0 flex-col">
-                        {temporaryTasks.map((conversation) => (
-                          <TaskRow
-                            key={conversation.id}
-                            conversation={conversation}
-                            active={activeId === conversation.id}
-                            onOpen={open}
-                            onRemove={remove}
-                            onRename={(item) => {
-                              setRenaming(item);
-                              setRenameTitle(item.title);
-                            }}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                  <Send />
+                </Button>
               </div>
             </div>
-          </ScrollArea>
-          <div className="border-t p-2">
-            <GatewayAccountButton
-              onOpenSettings={onOpenSettings}
-              onChanged={onProviderChanged}
-            />
+          </>
+        ) : (
+          <div className="grid min-h-0 flex-1 place-items-center px-6 text-center">
+            <div>
+              <img src="/tietiezhi.png" alt="Tietiezhi" className="mx-auto mb-5 size-16 rounded-2xl" />
+              <h1 className="text-xl font-semibold">从 Workspace 开始</h1>
+              <p className="text-muted-foreground mt-2 max-w-md text-sm">
+                项目绑定你选择的目录；任务使用 Tietiezhi 创建的独立临时目录。
+              </p>
+              <div className="mt-5 flex justify-center gap-2">
+                <Button type="button" variant="outline" onClick={() => void addProject()}>
+                  <FolderOpen />选择项目
+                </Button>
+                <Button type="button" onClick={() => void createTemporaryTask()}>
+                  <MessageSquarePlus />新建任务
+                </Button>
+              </div>
+            </div>
           </div>
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="调整侧栏宽度"
-            title="拖动调整宽度，双击恢复默认"
-            onPointerDown={beginSidebarResize}
-            onDoubleClick={resetSidebarWidth}
-            className="group absolute inset-y-0 -right-1 z-30 w-2 touch-none cursor-col-resize before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-transparent before:transition-colors hover:before:bg-sidebar-ring/70"
-          />
-      </aside>
-      <section className="bg-background flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-3 [-webkit-app-region:drag]">
-          {!sidebarOpen && IS_MACOS && <div aria-hidden="true" className="w-16 shrink-0" />}
-          {!sidebarOpen && (
-            <ProductSwitcher
-              area="workspace"
-              onSwitch={onSwitchArea}
-              compact
-            />
-          )}
+        )}
+
+        {error && (
+          <div className="text-destructive border-t px-5 py-2 text-sm">{error}</div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function SidebarSection({
+  title,
+  actionLabel,
+  onAction,
+  children,
+}: {
+  title: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mb-4">
+      <div className="flex h-8 items-center px-2">
+        <span className="text-muted-foreground text-xs font-medium">{title}</span>
+        {onAction && (
           <Button
             type="button"
             variant="ghost"
-            size="icon-sm"
-            className="[-webkit-app-region:no-drag]"
-            onClick={() => setSidebarOpen((current) => !current)}
-            aria-label={sidebarOpen ? "收起侧栏（⌘B）" : "展开侧栏（⌘B）"}
+            size="icon-xs"
+            className="ml-auto"
+            onClick={onAction}
+            aria-label={actionLabel}
           >
-            {sidebarOpen ? <PanelLeftClose /> : <PanelLeftOpen />}
+            <Plus />
           </Button>
-          <span className="min-w-0 truncate text-sm font-medium">
-            {activeConversation?.title ?? "新建任务"}
-          </span>
-          <div className="ml-auto flex min-w-0 items-center gap-1.5 [-webkit-app-region:no-drag]">
-            <WorkspaceModeSwitcher
-              value={taskMode}
-              disabled={runId !== undefined}
-              onChange={setTaskMode}
-            />
-            {activeId && (
-              <Button
-                type="button"
-                variant={panelOpen ? "secondary" : "ghost"}
-                size="icon-sm"
-                onClick={() => setPanelOpen((current) => !current)}
-                aria-label={panelOpen ? "收起工作区面板" : "展开工作区面板"}
-              >
-                {panelOpen ? <PanelRightClose /> : <PanelRight />}
-              </Button>
-            )}
-          </div>
-        </header>
-        {messages.length === 0 ? (
-          <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-4 py-8">
-            <div className="flex w-full max-w-3xl flex-col items-center justify-center text-center">
-                <ProductOrbitStage variant="workspace" className="-mb-3" />
-                <h1 className="h-7 max-w-full truncate px-4 text-lg font-semibold">
-                  {workspace?.temporary === false
-                    ? workspace.name
-                    : taskMode === "work"
-                      ? "开始一项 Work 任务"
-                      : "开始一项 Code 任务"}
-                </h1>
-                <p className="text-muted-foreground mt-1 text-sm">
-                  {taskMode === "work"
-                    ? "研究、整理资料，并在当前 Workspace 中完成交付。"
-                    : "分析仓库、修改代码，并验证最终结果。"}
-                </p>
-                {empty && (
-                  <div className="mt-4">
-                    <WorkspaceModelSelect
-                      providers={providers}
-                      providerId={providerId}
-                      model={model}
-                      prominent
-                      onSelect={(nextProviderId, nextModel) => {
-                        setProviderId(nextProviderId);
-                        setModel(nextModel);
-                      }}
-                      onOpenSettings={onOpenSettings}
-                    />
-                  </div>
-                )}
-            </div>
-          </div>
-        ) : (
-          <div ref={scrollHostRef} className="min-h-0 flex-1">
-            <ScrollArea className="h-full [&_[data-slot=scroll-area-viewport]>div]:h-full">
-              <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 pt-6 pb-4">
-                <div className="flex flex-col gap-5">
-                  {messages.map((message) => (
-                    <Message
-                      key={message.id}
-                      message={message}
-                      providerName={
-                        providers.find((provider) => provider.id === message.providerAccountId)
-                          ?.displayName
-                      }
-                      approvals={approvals}
-                      onResolveApproval={resolveApproval}
-                    />
-                  ))}
-                </div>
-                {runId && (
-                  <div role="status" aria-live="polite" className="text-muted-foreground mt-auto flex h-8 items-center gap-2 text-xs">
-                    <Loader2 className="size-3.5 animate-spin" />
-                    <span className="text-shimmer min-w-0 truncate">
-                      {retry
-                        ? `正在进行第 ${retry.attempt}/${retry.maxRetries} 次重试 · ${retry.reason}`
-                        : `正在生成 · ${model}`}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </ScrollArea>
-          </div>
         )}
-        <div className="relative mx-auto w-full max-w-3xl px-4 pt-2 pb-4">
-          {!activeId && messages.length === 0 && (
-            <div className="bg-muted/70 relative z-10 mx-3 -mb-2 flex h-10 items-start rounded-t-xl border px-1.5 pt-1 shadow-sm">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-foreground h-7 max-w-full shrink-0 gap-1.5 rounded-full px-2 text-xs"
-                onClick={async () => {
-                  const selected = await window.tietiezhi.workspace.choose();
-                  if (selected) setWorkspace(selected);
-                }}
-              >
-                <FolderOpen className="size-3.5" />
-                <span className="truncate">{workspace?.name ?? "选择项目文件夹"}</span>
-              </Button>
-            </div>
-          )}
-          {/* 章鱼的定位基准必须正好是输入框这一层（而不是带 px-4 pt-2 的外框），
-              才能和创作页的探头高度、右边距完全一致；且必须排在输入框之前，才会沉到它后面。 */}
-          <div className="relative">
-            <OctopusPeekButton
-              visible={messages.length > 0 && !isAtHistoryBottom}
-              onClick={() => scrollToBottom("smooth", true)}
-            />
-            {/* Solid background: the panel must not let content behind it bleed through. */}
-            <div className="bg-muted relative z-20 flex flex-col rounded-2xl border-0 px-2 pt-1.5 pb-1.5 shadow-none transition-colors">
-              {attachments.length > 0 && (
-                <div className="flex gap-2 overflow-x-auto px-2 pt-1 pb-1.5">
-                  {attachments.map((attachment) => (
-                    <div key={attachment.id} className="group/asset relative size-16 shrink-0 overflow-hidden rounded-lg border bg-background">
-                      <img
-                        src={attachment.dataUrl}
-                        alt={attachment.name}
-                        className="size-full object-cover"
-                      />
-                      <Button
-                        type="button"
-                        variant="secondary"
-                        size="icon-xs"
-                        className="absolute top-1 right-1 rounded-full opacity-90"
-                        aria-label={`移除 ${attachment.name}`}
-                        onClick={() => setAttachments((current) =>
-                          current.filter((candidate) => candidate.id !== attachment.id))}
-                      >
-                        <X />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  void addClipboardImages([...(event.currentTarget.files ?? [])]);
-                  event.currentTarget.value = "";
-                }}
-              />
-              <Textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onPaste={(event) => {
-                  const files = [...event.clipboardData.files];
-                  if (!files.some((file) => file.type.startsWith("image/"))) return;
-                  event.preventDefault();
-                  void addClipboardImages(files);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    void send();
-                  }
-                }}
-                placeholder={
-                  empty
-                    ? "登录中转站或配置可用模型"
-                    : taskMode === "work"
-                      ? "描述需要研究、整理或交付的工作…"
-                      : "描述需要分析、修改或验证的代码任务…"
-                }
-                disabled={empty}
-                rows={1}
-                className="max-h-40 min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 shadow-none focus-visible:bg-transparent focus-visible:ring-0 focus-visible:shadow-none disabled:bg-transparent dark:bg-transparent dark:focus-visible:bg-transparent dark:focus-visible:shadow-none dark:disabled:bg-transparent"
-              />
-              <div className="flex min-h-9 items-center gap-1 pt-0.5 pl-1">
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      className="text-muted-foreground hover:text-foreground size-7 shrink-0 rounded-full"
-                      aria-label="添加上下文"
-                    >
-                      <Plus className="size-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" side="top" className="w-60">
-                    <DropdownMenuLabel>添加到本轮消息</DropdownMenuLabel>
-                    <DropdownMenuItem
-                      disabled={!supportsImageInput || attachments.length >= 4}
-                      onSelect={() => imageInputRef.current?.click()}
-                    >
-                      <ImagePlus /> 添加图片
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel>Workspace</DropdownMenuLabel>
-                    <DropdownMenuItem
-                      onSelect={async () => {
-                        const selected = await window.tietiezhi.workspace.choose();
-                        if (selected) setWorkspace(selected);
-                      }}
-                    >
-                      <FolderOpen /> 选择项目文件夹
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => setPanelOpen(true)}>
-                      <PanelRight /> 打开文件与变更
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuLabel className="text-muted-foreground font-normal">
-                      Agent 可通过文件工具读取当前 Workspace
-                    </DropdownMenuLabel>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className={cn(
-                        "text-muted-foreground hover:text-foreground h-7 max-w-36 shrink-0 gap-1.5 rounded-full px-2 text-xs",
-                        permissionProfileId === "full-access" && "text-amber-600 dark:text-amber-400",
-                      )}
-                      aria-label={`权限：${activePermissionProfile?.name ?? "请求批准"}`}
-                    >
-                      <ShieldCheck className="size-3.5" />
-                      <span className="truncate">{activePermissionProfile?.name ?? "请求批准"}</span>
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" side="top" className="w-72">
-                    <DropdownMenuLabel>当前任务权限</DropdownMenuLabel>
-                    {permissionProfiles.map((profile) => (
-                      <DropdownMenuItem
-                        key={profile.id}
-                        onSelect={() => selectPermission(profile.id)}
-                        className="items-start gap-2 py-2"
-                      >
-                        <Check className={cn("mt-0.5 size-3.5", profile.id !== permissionProfileId && "opacity-0")} />
-                        <span className="min-w-0">
-                          <span className="block text-xs font-medium">{profile.name}</span>
-                          <span className="text-muted-foreground mt-0.5 block text-[11px] leading-4">
-                            {profile.description}
-                          </span>
-                        </span>
-                      </DropdownMenuItem>
-                    ))}
-                    {runId && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuLabel className="text-muted-foreground font-normal">
-                          更改将在下一次发送消息时生效
-                        </DropdownMenuLabel>
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <span className={cn("min-w-0 flex-1 truncate text-[11px]", error ? "text-destructive" : "text-muted-foreground")}>
-                  {attachmentError || error || (empty ? "请先配置可用模型" : "")}
-                </span>
-                <WorkspaceModelSelect
-                  providers={providers}
-                  providerId={providerId}
-                  model={model}
-                  onSelect={(nextProviderId, nextModel) => {
-                    setProviderId(nextProviderId);
-                    setModel(nextModel);
-                  }}
-                  onOpenSettings={onOpenSettings}
-                />
-                {runId ? (
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="outline"
-                    className="size-8 shrink-0 rounded-full"
-                    onClick={() => void window.tietiezhi.conversations.cancel(runId)}
-                    aria-label="停止生成"
-                  >
-                    <Square />
-                  </Button>
-                ) : (
-                  <Button
-                    type="button"
-                    size="icon"
-                    className="size-8 shrink-0 rounded-full"
-                    onClick={() => void send()}
-                    disabled={
-                      (!draft.trim() && attachments.length === 0) ||
-                      (attachments.length > 0 && !supportsImageInput) ||
-                      !providerId ||
-                      !model
-                    }
-                    aria-label="发送"
-                  >
-                    <ArrowUp />
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-      {activeId && panelOpen && (
-        <WorkspacePanel
-          activeId={activeId}
-          messages={messages}
-          workspace={workspace}
-          onClose={() => setPanelOpen(false)}
-        />
-      )}
-      <AlertDialog
-        open={requestedPermissionProfileId === "full-access"}
-        onOpenChange={(open) => !open && setRequestedPermissionProfileId(undefined)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>为当前任务启用完全访问？</AlertDialogTitle>
-            <AlertDialogDescription>
-              Agent 将自动执行工作区内的文件操作和 Shell 命令，不再逐次询问。Workspace
-              路径边界、命令超时、输出限制和停止任务仍然有效。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                setRequestedPermissionProfileId(undefined);
-                void commitPermission("full-access");
-              }}
-              className="bg-amber-600 text-white hover:bg-amber-600/90"
-            >
-              仅为当前任务启用
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-      <Dialog open={renaming !== undefined} onOpenChange={(open) => !open && setRenaming(undefined)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader><DialogTitle>重命名任务</DialogTitle></DialogHeader>
-          <Input
-            value={renameTitle}
-            onChange={(event) => setRenameTitle(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && renaming && renameTitle.trim()) {
-                void saveRename();
-              }
-            }}
-            autoFocus
+      </div>
+      <div className="flex flex-col gap-0.5">{children}</div>
+    </section>
+  );
+}
+
+function WorkspaceGroup({
+  workspace,
+  conversations,
+  activeId,
+  onCreate,
+  onOpen,
+}: {
+  workspace: Workspace;
+  conversations: Conversation[];
+  activeId?: string;
+  onCreate: () => void;
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <div>
+      <div className="group flex h-8 items-center rounded-md px-2 hover:bg-sidebar-accent">
+        <Folder className="text-muted-foreground mr-2 size-4 shrink-0" />
+        <span className="min-w-0 flex-1 truncate text-sm">{workspace.name}</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="ghost" size="icon-xs" className="opacity-0 group-hover:opacity-100">
+              <MoreHorizontal />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="right">
+            <DropdownMenuItem onSelect={onCreate}>
+              <MessageSquarePlus />新建对话
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void window.tietiezhi.workspaces.reveal(workspace.id)}>
+              <FolderOpen />打开文件夹
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button type="button" variant="ghost" size="icon-xs" className="opacity-0 group-hover:opacity-100" onClick={onCreate}>
+          <Plus />
+        </Button>
+      </div>
+      <div className="ml-5 flex flex-col gap-0.5">
+        {conversations.map((conversation) => (
+          <ConversationRow
+            key={conversation.id}
+            conversation={conversation}
+            active={activeId === conversation.id}
+            onOpen={() => onOpen(conversation.id)}
           />
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setRenaming(undefined)}>
-              取消
-            </Button>
-            <Button type="button" onClick={() => void saveRename()}>
-              保存
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        ))}
+      </div>
     </div>
   );
 }
 
-function TaskRow({
+function ConversationRow({
   conversation,
   active,
-  nested = false,
   onOpen,
-  onRemove,
-  onRename,
 }: {
   conversation: Conversation;
   active: boolean;
-  nested?: boolean;
-  onOpen: (id: string) => Promise<void>;
-  onRemove: (id: string) => Promise<void>;
-  onRename: (conversation: Conversation) => void;
+  onOpen: () => void;
 }) {
   return (
-    <AlertDialog>
-      <div
-        className={cn(
-          "group/task-row relative flex h-8 items-center rounded-md",
-          active && "bg-sidebar-accent text-sidebar-accent-foreground",
-        )}
-      >
-        <button
-          type="button"
-          onClick={() => void onOpen(conversation.id)}
-          className={cn(
-            "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground flex h-8 min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-md p-2 pr-16 text-left text-sm",
-            nested && "pl-8",
-          )}
-        >
-          <span className="truncate font-normal">{conversation.title}</span>
-        </button>
-        <div className="pointer-events-none absolute top-0.5 right-1 flex items-center opacity-0 transition-opacity duration-300 group-hover/task-row:pointer-events-auto group-hover/task-row:opacity-100 group-focus-within/task-row:pointer-events-auto group-focus-within/task-row:opacity-100">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            title="重命名任务"
-            aria-label="重命名任务"
-            onClick={() => onRename(conversation)}
-          >
-            <Pencil />
-          </Button>
-          <AlertDialogTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              title="删除任务"
-              aria-label="删除任务"
-              className="hover:bg-destructive/10 hover:text-destructive"
-            >
-              <Trash2 />
-            </Button>
-          </AlertDialogTrigger>
-        </div>
-      </div>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>删除这个任务？</AlertDialogTitle>
-          <AlertDialogDescription>
-            对话记录会被永久删除；如果使用临时 Workspace，其中的文件也会一并清理。
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>取消</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            onClick={() => void onRemove(conversation.id)}
-          >
-            删除
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
-}
-
-const tokenFormatter = new Intl.NumberFormat("en-US");
-
-function formatDuration(milliseconds: number): string {
-  if (milliseconds < 1_000) return `${milliseconds}ms`;
-  const seconds = milliseconds / 1_000;
-  return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
-}
-
-function formatTps(tokensPerSecond: number): string {
-  return tokensPerSecond >= 100
-    ? Math.round(tokensPerSecond).toString()
-    : tokensPerSecond.toFixed(1);
-}
-
-function DetailRow({
-  label,
-  value,
-  strong = false,
-}: {
-  label: string;
-  value: string;
-  strong?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 text-xs">
-      <span className="text-muted-foreground shrink-0">{label}</span>
-      <span
-        title={value}
-        className={cn(
-          "text-foreground min-w-0 truncate tabular-nums hover:overflow-x-auto",
-          strong && "font-semibold",
-        )}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function FadeStreamText({ text }: { text: string }) {
-  return (
-    <>
-      {fadeTokens(text).map((part, index) =>
-        isFadeSpace(part) ? (
-          part
-        ) : (
-          <span key={index} className="token-in">
-            {part}
-          </span>
-        ),
-      )}
-    </>
-  );
-}
-
-function messageStatus(status: AppMessage["status"]): string {
-  if (status === "waiting_approval") return "等待审批";
-  if (status === "streaming" || status === "pending") return "生成中";
-  if (status === "failed") return "失败";
-  if (status === "cancelled") return "已取消";
-  return "已完成";
-}
-
-function MessageMetadata({
-  message,
-  providerName,
-}: {
-  message: AppMessage;
-  providerName?: string;
-}) {
-  const now = useRelativeNow();
-  const usage = message.usage;
-  const durationMs =
-    message.completedAt === undefined
-      ? null
-      : Math.max(0, message.completedAt - message.createdAt);
-  const firstTokenMs =
-    message.firstTokenAt === undefined
-      ? null
-      : Math.max(0, message.firstTokenAt - message.createdAt);
-  const generationMs =
-    message.completedAt === undefined || message.firstTokenAt === undefined
-      ? null
-      : Math.max(0, message.completedAt - message.firstTokenAt);
-  const tokensPerSecond =
-    usage?.outputTokens != null && generationMs != null && generationMs > 0
-      ? usage.outputTokens / (generationMs / 1_000)
-      : null;
-  const timestamp = message.completedAt ?? message.createdAt;
-  const exactTime = new Date(timestamp).toLocaleString("zh-CN");
-  if (message.role === "user") {
-    return (
-      <div className="flex min-h-5 items-center justify-end">
-        <time
-          dateTime={new Date(timestamp).toISOString()}
-          title={exactTime}
-          className="text-muted-foreground px-1 text-[11px] tabular-nums"
-        >
-          {formatRelativeTime(timestamp, now)}
-        </time>
-      </div>
-    );
-  }
-  return (
-    <div className="flex min-h-6 items-center">
-      <div className="text-muted-foreground flex translate-y-0.5 items-center gap-1 opacity-0 transition-[opacity,translate] duration-200 ease-out group-hover/message:translate-y-0 group-hover/message:opacity-100 group-focus-within/message:translate-y-0 group-focus-within/message:opacity-100 [@media(hover:none)]:translate-y-0 [@media(hover:none)]:opacity-100">
-        <time dateTime={new Date(timestamp).toISOString()} title={exactTime} className="px-1 text-[11px] tabular-nums">
-          {message.status === "streaming" || message.status === "pending"
-            ? "正在生成"
-            : formatRelativeTime(timestamp, now)}
-        </time>
-      <Popover>
-        <PopoverTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="text-muted-foreground hover:text-foreground size-6"
-            aria-label="消息详情"
-            title="消息详情"
-          >
-            <Info className="size-3.5" />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="start" className="w-64 gap-0 p-0">
-          <div className="border-b px-3 py-2 text-xs font-semibold">消息详情</div>
-          <div className="flex flex-col gap-1.5 px-3 py-2.5">
-            <DetailRow label="状态" value={messageStatus(message.status)} />
-            <DetailRow label="生成时间" value={exactTime} />
-            {message.modelId && <DetailRow label="模型" value={message.modelId} />}
-            {providerName && <DetailRow label="供应商" value={providerName} />}
-            {usage && (
-              <>
-                {usage.inputTokens != null && (
-                  <DetailRow
-                    label="输入"
-                    value={`${tokenFormatter.format(usage.inputTokens)} tokens`}
-                  />
-                )}
-                {usage.cachedInputTokens != null && usage.cachedInputTokens > 0 && (
-                  <DetailRow
-                    label="其中缓存命中"
-                    value={`${tokenFormatter.format(usage.cachedInputTokens)} tokens`}
-                  />
-                )}
-                {usage.cacheWriteTokens != null && usage.cacheWriteTokens > 0 && (
-                  <DetailRow
-                    label="缓存写入"
-                    value={`${tokenFormatter.format(usage.cacheWriteTokens)} tokens`}
-                  />
-                )}
-                {usage.outputTokens != null && (
-                  <DetailRow
-                    label="输出"
-                    value={`${tokenFormatter.format(usage.outputTokens)} tokens`}
-                  />
-                )}
-                {usage.reasoningTokens != null && usage.reasoningTokens > 0 && (
-                  <DetailRow
-                    label="其中推理"
-                    value={`${tokenFormatter.format(usage.reasoningTokens)} tokens`}
-                  />
-                )}
-                {usage.totalTokens != null && (
-                  <DetailRow
-                    label="总计"
-                    value={`${tokenFormatter.format(usage.totalTokens)} tokens`}
-                    strong
-                  />
-                )}
-              </>
-            )}
-            {tokensPerSecond != null && (
-              <DetailRow label="生成速度" value={`${formatTps(tokensPerSecond)} tokens/s`} />
-            )}
-            {firstTokenMs != null && (
-              <DetailRow label="首字延迟" value={formatDuration(firstTokenMs)} />
-            )}
-            {durationMs != null && (
-              <DetailRow label="总耗时" value={formatDuration(durationMs)} />
-            )}
-            {generationMs != null && (
-              <DetailRow label="纯生成耗时" value={formatDuration(generationMs)} />
-            )}
-            {message.runId && <DetailRow label="运行" value={message.runId} />}
-          </div>
-        </PopoverContent>
-      </Popover>
-      </div>
-    </div>
-  );
-}
-
-type ToolCallPart = Extract<AppMessage["parts"][number], { type: "tool-call" }>;
-
-function toolVerb(call: ToolCallPart): string {
-  const value = typeof call.input === "object" && call.input !== null ? call.input : {};
-  const path = Reflect.get(value, "path");
-  const command = Reflect.get(value, "command");
-  if (call.toolName === "readFile") return `读取 ${typeof path === "string" ? path : "文件"}`;
-  if (call.toolName === "listFiles") return "查看文件列表";
-  if (call.toolName === "searchFiles") return "搜索工作区";
-  if (call.toolName === "writeFile") return `写入 ${typeof path === "string" ? path : "文件"}`;
-  if (call.toolName === "replaceText") return `修改 ${typeof path === "string" ? path : "文件"}`;
-  if (call.toolName === "runCommand") return `运行 ${typeof command === "string" ? command : "命令"}`;
-  if (call.toolName === "listSkills") return "查看可用技能";
-  if (call.toolName === "readSkill") return "读取技能说明";
-  return call.toolName;
-}
-
-function toolGroupSummary(calls: ToolCallPart[]): string {
-  const running = calls.some((call) => call.status === "running");
-  if (calls.length === 1) {
-    const call = calls[0]!;
-    if (call.status === "approval") return `${toolVerb(call)} · 等待授权`;
-    if (call.status === "denied") return `${toolVerb(call)} · 已拒绝`;
-    if (call.status === "failed") return `${toolVerb(call)} · 失败`;
-  }
-  const count = (names: string[]) => calls.filter((call) => names.includes(call.toolName)).length;
-  const commands = count(["runCommand"]);
-  const searches = count(["searchFiles"]);
-  const reads = count(["readFile", "listFiles"]);
-  const edits = count(["writeFile", "replaceText"]);
-  const skills = count(["listSkills", "readSkill"]);
-  const known = commands + searches + reads + edits + skills;
-  const other = calls.length - known;
-  const segments = [
-    commands > 0 ? `${running ? "正在运行" : "运行了"} ${commands} 个命令` : "",
-    searches > 0 ? `${running ? "正在搜索" : "搜索了"} ${searches} 次` : "",
-    reads > 0 ? `${running ? "正在读取" : "读取了"} ${reads} 个文件` : "",
-    edits > 0 ? `${running ? "正在修改" : "修改了"} ${edits} 个文件` : "",
-    skills > 0 ? `${running ? "正在读取" : "读取了"} ${skills} 个技能` : "",
-    other > 0 ? `${running ? "正在使用" : "使用了"} ${other} 个工具` : "",
-  ].filter(Boolean);
-  return `${segments.join(" 并 ")}${running ? "…" : ""}`;
-}
-
-function toolGroups(parts: AppMessage["parts"]): Map<string, ToolCallPart[]> {
-  const groups = new Map<string, ToolCallPart[]>();
-  let current: ToolCallPart[] | undefined;
-  for (const part of parts) {
-    if (part.type === "tool-call") {
-      const isolated = part.status === "approval" || part.status === "denied" || part.status === "failed";
-      if (!isolated) {
-        current ??= [];
-        current.push(part);
-        groups.set(part.toolCallId, current);
-      } else {
-        current = undefined;
-        groups.set(part.toolCallId, [part]);
-      }
-    } else if (part.type === "text" || part.type === "error") {
-      current = undefined;
-    }
-  }
-  return groups;
-}
-
-function ToolTimeline({
-  calls,
-  parts,
-  approvals,
-  onResolveApproval,
-}: {
-  calls: ToolCallPart[];
-  parts: AppMessage["parts"];
-  approvals: ApprovalRecord[];
-  onResolveApproval: (approvalId: string, decision: ApprovalDecision) => Promise<void>;
-}) {
-  const first = calls[0]!;
-  const running = calls.some((call) => call.status === "running");
-  const failed = calls.some((call) => call.status === "failed");
-  const waiting = calls.some((call) => call.status === "approval");
-  const startedAt = calls.map((call) => call.startedAt).filter((value): value is number => value !== undefined);
-  const completedAt = calls.map((call) => call.completedAt).filter((value): value is number => value !== undefined);
-  const duration = !running && startedAt.length > 0 && completedAt.length > 0
-    ? formatDuration(Math.max(...completedAt) - Math.min(...startedAt))
-    : undefined;
-  return (
-    <Collapsible key={waiting ? "waiting" : "settled"} defaultOpen={waiting}>
-      <div className="border-border/70 bg-muted/20 overflow-hidden rounded-lg border text-xs">
-        <CollapsibleTrigger className="text-muted-foreground hover:text-foreground group/tool flex min-h-9 w-full items-center gap-2 px-3 py-2 text-left transition-colors">
-          <span className={cn("grid size-4 shrink-0 place-items-center", failed && "text-destructive", waiting && "text-amber-500")}>
-            {running ? <Loader2 className="size-3 animate-spin" /> : <ToolIcon name={first.toolName} className="size-3" />}
-          </span>
-          <span className="min-w-0 flex-1 truncate">{toolGroupSummary(calls)}</span>
-          {duration && <span className="text-muted-foreground/70 shrink-0 text-[10px] tabular-nums">{duration}</span>}
-          <ChevronRight className="size-3.5 shrink-0 transition-transform group-data-[state=open]/tool:rotate-90" />
-        </CollapsibleTrigger>
-        <CollapsibleContent className="border-border/70 border-t px-3 py-2">
-          <div className="space-y-2">
-            {calls.map((call) => {
-              const result = parts.find(
-                (part): part is Extract<AppMessage["parts"][number], { type: "tool-result" }> =>
-                  part.type === "tool-result" && part.toolCallId === call.toolCallId,
-              );
-              const diff = parts.find(
-                (part): part is Extract<AppMessage["parts"][number], { type: "diff" }> =>
-                  part.type === "diff" && part.toolCallId === call.toolCallId,
-              );
-              const approval = approvals.find(
-                (item) => item.toolCallId === call.toolCallId && item.status === "pending",
-              );
-              const duration = call.startedAt !== undefined && call.completedAt !== undefined
-                ? formatDuration(Math.max(0, call.completedAt - call.startedAt))
-                : undefined;
-              return (
-                <div key={call.toolCallId} className="space-y-1.5">
-                  {calls.length > 1 && (
-                    <div className="flex items-center gap-2 text-[11px]">
-                      <ToolIcon name={call.toolName} className="text-muted-foreground size-3" />
-                      <span className="min-w-0 flex-1 truncate">{toolVerb(call)}</span>
-                      {duration && <span className="text-muted-foreground tabular-nums">{duration}</span>}
-                    </div>
-                  )}
-                  <details className="text-muted-foreground text-[10px]">
-                    <summary className="hover:text-foreground cursor-pointer select-none">调用详情</summary>
-                    <div className="mt-1 grid gap-1.5">
-                      <pre className="bg-muted max-h-36 overflow-auto rounded-md p-2 whitespace-pre-wrap">{formatValue(call.input)}</pre>
-                      {result && <pre className={cn("bg-muted max-h-48 overflow-auto rounded-md p-2 whitespace-pre-wrap", result.isError && "text-destructive")}>{formatValue(result.output)}</pre>}
-                      {diff && <p>{diff.omitted ? `Diff 过大，已省略（${diff.bytes ?? 0} bytes）` : `已生成 ${diff.path} 的 Diff`}</p>}
-                      <span>工具：{call.toolName}{duration ? ` · ${duration}` : ""}</span>
-                    </div>
-                  </details>
-                  {approval && <ApprovalActions approval={approval} onResolve={onResolveApproval} showInput />}
-                </div>
-              );
-            })}
-          </div>
-        </CollapsibleContent>
-      </div>
-    </Collapsible>
-  );
-}
-
-const Message = memo(function Message({
-  message,
-  providerName,
-  approvals,
-  onResolveApproval,
-}: {
-  message: AppMessage;
-  providerName?: string;
-  approvals: ApprovalRecord[];
-  onResolveApproval: (approvalId: string, decision: ApprovalDecision) => Promise<void>;
-}) {
-  const tailPart = message.parts.at(-1);
-  const streamingTail =
-    message.status === "streaming" || message.status === "pending"
-      ? tailPart
-      : undefined;
-  const hasVisiblePart = message.parts.some(
-    (part) =>
-      (part.type === "text" && part.text !== "") ||
-      (part.type === "reasoning" && part.text !== "") ||
-      part.type === "tool-call" ||
-      part.type === "error",
-  );
-  const groups = toolGroups(message.parts);
-  const reasoningParts = message.parts.filter(
-    (part): part is Extract<AppMessage["parts"][number], { type: "reasoning" }> =>
-      part.type === "reasoning" && part.text !== "",
-  );
-  const firstReasoningIndex = message.parts.findIndex(
-    (part) => part.type === "reasoning" && part.text !== "",
-  );
-  const combinedReasoning = reasoningParts.map((part) => part.text).join("\n\n");
-  return (
-    <article
-      tabIndex={0}
-      data-message-id={message.id}
+    <button
+      type="button"
+      onClick={onOpen}
       className={cn(
-        "group/message animate-in fade-in slide-in-from-bottom-1 flex min-w-0 flex-col gap-2 text-sm leading-7 outline-none duration-300",
-        message.role === "user" && "ml-auto w-fit max-w-[70%]",
+        "flex h-8 min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm",
+        active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "hover:bg-sidebar-accent/70",
       )}
     >
-      <div
-        className={cn(
-          "flex min-w-0 flex-col gap-2",
-          message.role === "user" && "bg-muted rounded-xl px-3 py-2.5",
-        )}
-      >
-      {message.parts.map((part, index) => {
-        if (part.type === "text" && part.text !== "") {
-          return message.role === "assistant" ? (
-            <Markdown
-              key={`text-${index}`}
-              content={part.text}
-              streaming={part === streamingTail}
-            />
-          ) : (
-            <p key={`text-${index}`} className="px-1 whitespace-pre-wrap select-text">
-              {part.text}
-            </p>
-          );
-        }
-        if (part.type === "reasoning" && part.text !== "") {
-          if (index !== firstReasoningIndex) return null;
-          return (
-            <Collapsible
-              key={`reasoning-${index}`}
-              defaultOpen={message.status === "streaming" || message.status === "pending"}
-            >
-              <div className="border-border/60 bg-muted/30 rounded-lg border text-xs">
-                <CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 font-medium">
-                  <ChevronRight className="size-3.5" />
-                  思考过程
-                </CollapsibleTrigger>
-                <CollapsibleContent className="text-muted-foreground border-border/60 border-t px-2.5 py-2 leading-relaxed select-text">
-                  {streamingTail?.type === "reasoning" ? (
-                    <FadeStreamText text={combinedReasoning} />
-                  ) : (
-                    <Markdown content={combinedReasoning} />
-                  )}
-                </CollapsibleContent>
-              </div>
-            </Collapsible>
-          );
-        }
-        if (part.type === "tool-call") {
-          const group = groups.get(part.toolCallId) ?? [part];
-          if (group[0]?.toolCallId !== part.toolCallId) return null;
-          return (
-            <ToolTimeline
-              key={part.toolCallId}
-              calls={group}
-              parts={message.parts}
-              approvals={approvals}
-              onResolveApproval={onResolveApproval}
-            />
-          );
-        }
-        if (part.type === "error") {
-          const firstMatchingError = message.parts.findIndex(
-            (candidate) =>
-              candidate.type === "error" &&
-              candidate.code === part.code &&
-              candidate.message === part.message,
-          );
-          if (firstMatchingError !== index) return null;
-          return (
-            <p key={`error-${index}`} className="text-destructive mt-2 text-sm">
-              {part.message}
-            </p>
-          );
-        }
-        if (part.type === "attachment" && part.dataUrl?.startsWith("data:image/")) {
-          return (
-            <img
-              key={`attachment-${index}`}
-              src={part.dataUrl}
-              alt={part.name}
-              className="max-h-72 max-w-full rounded-lg object-contain"
-            />
-          );
-        }
-        return null;
-      })}
-      {!hasVisiblePart && (message.status === "streaming" || message.status === "pending") && (
-        <p className="text-muted-foreground flex items-center gap-2">
-          <Loader2 className="size-3.5 animate-spin" /> 正在生成
-        </p>
-      )}
-      </div>
-      <MessageMetadata message={message} providerName={providerName} />
-    </article>
+      <MessageSquare className="text-muted-foreground size-3.5 shrink-0" />
+      <span className="truncate">{conversation.title}</span>
+    </button>
   );
-});
-
-function formatValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
 }
 
-function ToolIcon({ name, className }: { name: string; className?: string }) {
-  if (name === "runCommand") return <TerminalSquare className={className} />;
-  if (name === "listSkills" || name === "readSkill") {
-    return <Sparkles className={className} />;
-  }
-  return <FileCode2 className={className} />;
+function EmptyRow({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: typeof Folder;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-muted-foreground hover:bg-sidebar-accent flex h-9 items-center gap-2 rounded-md px-2 text-left text-xs"
+    >
+      <Icon className="size-4" />{label}
+    </button>
+  );
+}
+
+function MessageBubble({ message }: { message: Message }) {
+  const text = message.parts
+    .filter((part): part is Extract<(typeof message.parts)[number], { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+  return (
+    <article className={cn("max-w-[78%]", message.role === "user" && "ml-auto")}>
+      <div className={cn(
+        "whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-6",
+        message.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted",
+      )}>
+        {text}
+      </div>
+    </article>
+  );
 }
