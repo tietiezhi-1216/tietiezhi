@@ -1,0 +1,33 @@
+{
+  "schema_version": "tietiezhi.gateway.v1",
+  "object": "list",
+  "revision": "catalog-2026-08-03-1",
+  "data": [
+    {
+      "id": "tietiezhi/default",
+      "object": "model",
+      "display_name": "Tietiezhi Default",
+      "description": "通用文本、工具调用与推理模型",
+      "owned_by": "tietiezhi",
+      "created": 1785686400,
+      "status": "available",
+      "capabilities": {
+        "input_modalities": ["text", "image"],
+        "output_modalities": ["text"],
+        "streaming": true,
+        "tool_calling": true,
+        "structured_output": true,
+        "reasoning": true
+      },
+      "limits": {
+        "context_window": 128000,
+        "max_output_tokens": 16384
+      },
+      "supported_parameters": ["temperature", "tools", "reasoning_effort"],
+      "reasoning": {
+        "efforts": ["low", "medium", "high"],
+        "default_effort": "medium"
+      }
+    }
+  ]
+}

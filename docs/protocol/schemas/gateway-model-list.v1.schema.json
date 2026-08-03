@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tietiezhi.example/schemas/gateway-model-list.v1.schema.json",
+  "title": "Tietiezhi Gateway Model List v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "object", "revision", "data"],
+  "properties": {
+    "schema_version": { "const": "tietiezhi.gateway.v1" },
+    "object": { "const": "list" },
+    "revision": { "type": "string", "minLength": 1 },
+    "data": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/model" }
+    }
+  },
+  "$defs": {
+    "nullablePositiveInteger": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "object",
+        "display_name",
+        "owned_by",
+        "created",
+        "status",
+        "capabilities",
+        "limits",
+        "supported_parameters"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "object": { "const": "model" },
+        "display_name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "owned_by": { "type": "string", "minLength": 1 },
+        "created": { "type": "integer", "minimum": 0 },
+        "status": { "enum": ["available", "deprecated", "disabled"] },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input_modalities",
+            "output_modalities",
+            "streaming",
+            "tool_calling",
+            "structured_output",
+            "reasoning"
+          ],
+          "properties": {
+            "input_modalities": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "enum": ["text", "image", "audio", "video", "file"] }
+            },
+            "output_modalities": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "enum": ["text", "image", "audio", "video"] }
+            },
+            "streaming": { "type": "boolean" },
+            "tool_calling": { "type": "boolean" },
+            "structured_output": { "type": "boolean" },
+            "reasoning": { "type": "boolean" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["context_window", "max_output_tokens"],
+          "properties": {
+            "context_window": { "$ref": "#/$defs/nullablePositiveInteger" },
+            "max_output_tokens": { "$ref": "#/$defs/nullablePositiveInteger" }
+          }
+        },
+        "supported_parameters": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "reasoning": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["efforts"],
+          "properties": {
+            "efforts": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "default_effort": { "type": "string", "minLength": 1 }
+          }
+        },
+        "deprecation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["at"],
+          "properties": {
+            "at": { "type": "string", "format": "date-time" },
+            "replacement_model": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  }
+}

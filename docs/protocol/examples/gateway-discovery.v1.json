@@ -1,0 +1,19 @@
+{
+  "schema_version": "tietiezhi.gateway.v1",
+  "issuer": "https://gateway.example.com",
+  "api_base": "https://gateway.example.com/v1",
+  "authorization_endpoint": "https://gateway.example.com/oauth/authorize",
+  "token_endpoint": "https://gateway.example.com/oauth/token",
+  "revocation_endpoint": "https://gateway.example.com/oauth/revoke",
+  "bootstrap_endpoint": "https://gateway.example.com/v1/bootstrap",
+  "models_endpoint": "https://gateway.example.com/v1/models",
+  "authentication_methods": ["oauth_pkce", "api_key"],
+  "grant_types_supported": ["authorization_code", "refresh_token"],
+  "code_challenge_methods_supported": ["S256"],
+  "native_clients": [
+    {
+      "client_id": "tietiezhi-desktop",
+      "redirect_uris": ["http://127.0.0.1/callback"]
+    }
+  ]
+}

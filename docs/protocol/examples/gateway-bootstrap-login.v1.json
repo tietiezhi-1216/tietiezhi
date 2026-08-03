@@ -1,0 +1,53 @@
+{
+  "schema_version": "tietiezhi.gateway.v1",
+  "object": "gateway.bootstrap",
+  "issued_at": "2026-08-03T00:00:00Z",
+  "auth": {
+    "mode": "login",
+    "subject": "user_01",
+    "scopes": ["models:read", "responses:create"],
+    "expires_at": "2026-08-03T01:00:00Z"
+  },
+  "account": {
+    "id": "user_01",
+    "email": "user@example.com",
+    "display_name": "示例用户"
+  },
+  "endpoints": {
+    "models": "https://gateway.example.com/v1/models",
+    "responses": "https://gateway.example.com/v1/responses"
+  },
+  "models": {
+    "schema_version": "tietiezhi.gateway.v1",
+    "object": "list",
+    "revision": "catalog-2026-08-03-1",
+    "data": [
+      {
+        "id": "tietiezhi/default",
+        "object": "model",
+        "display_name": "Tietiezhi Default",
+        "description": "通用文本、工具调用与推理模型",
+        "owned_by": "tietiezhi",
+        "created": 1785686400,
+        "status": "available",
+        "capabilities": {
+          "input_modalities": ["text", "image"],
+          "output_modalities": ["text"],
+          "streaming": true,
+          "tool_calling": true,
+          "structured_output": true,
+          "reasoning": true
+        },
+        "limits": {
+          "context_window": 128000,
+          "max_output_tokens": 16384
+        },
+        "supported_parameters": ["temperature", "tools", "reasoning_effort"],
+        "reasoning": {
+          "efforts": ["low", "medium", "high"],
+          "default_effort": "medium"
+        }
+      }
+    ]
+  }
+}

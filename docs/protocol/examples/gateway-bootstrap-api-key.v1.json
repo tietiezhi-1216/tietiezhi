@@ -1,0 +1,20 @@
+{
+  "schema_version": "tietiezhi.gateway.v1",
+  "object": "gateway.bootstrap",
+  "issued_at": "2026-08-03T00:00:00Z",
+  "auth": {
+    "mode": "api_key",
+    "subject": "key_01",
+    "scopes": ["models:read", "responses:create"]
+  },
+  "endpoints": {
+    "models": "https://gateway.example.com/v1/models",
+    "responses": "https://gateway.example.com/v1/responses"
+  },
+  "models": {
+    "schema_version": "tietiezhi.gateway.v1",
+    "object": "list",
+    "revision": "catalog-2026-08-03-1",
+    "data": []
+  }
+}
