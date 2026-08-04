@@ -42,6 +42,19 @@ describe("登录页", () => {
     expect(onOpenBrowserLogin).toHaveBeenCalledOnce();
   });
 
+  it("浏览器登录失败后显示原因并允许重试", async () => {
+    const onOpenBrowserLogin = vi.fn(() => Promise.reject(
+      new Error("Error invoking remote method 'tietiezhi:invoke': Error: 无法打开默认浏览器"),
+    ));
+    renderLogin({ onOpenBrowserLogin });
+
+    fireEvent.click(screen.getByRole("button", { name: "登录铁铁汁" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("无法打开默认浏览器");
+    expect(screen.getByRole("alert").textContent).not.toContain("Error invoking remote method");
+    expect((screen.getByRole("button", { name: "登录铁铁汁" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("API 密钥通过主进程验证后进入应用", async () => {
     const onAuthenticated = vi.fn();
     const onLoginWithAPIKey = vi.fn(() => Promise.resolve());

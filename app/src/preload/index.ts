@@ -16,6 +16,8 @@ const api: DesktopAPI = {
     cancelLogin: () => invoke("auth.cancelLogin"),
     loginWithAPIKey: (apiKey) => invoke("auth.loginWithAPIKey", { apiKey }),
     openRegistration: () => invoke("auth.openRegistration"),
+    logout: () => invoke("auth.logout"),
+    setAvatar: (avatar) => invoke("auth.setAvatar", { avatar }),
   },
   workspaces: {
     list: () => invoke("workspaces.list"),

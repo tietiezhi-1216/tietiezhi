@@ -1,27 +1,44 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  ChevronDown,
   Folder,
   FolderOpen,
+  LogOut,
   MessageSquare,
   MessageSquarePlus,
   MoreHorizontal,
+  Paintbrush,
   Plus,
   Send,
+  X,
 } from "lucide-react";
 
+import {
+  Avatar,
+  AvatarFallback,
+  AvatarImage,
+} from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import type { Conversation, ConversationDetail, Message, Workspace } from "@shared/contracts";
+import type { AuthStatus, Conversation, ConversationDetail, Message, Workspace } from "@shared/contracts";
 
-export function WorkspacePage() {
+interface WorkspacePageProps {
+  auth: AuthStatus;
+  onAuthChange: (status: AuthStatus) => void;
+  onLogout: () => Promise<void>;
+}
+
+export function WorkspacePage({ auth, onAuthChange, onLogout }: WorkspacePageProps) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [active, setActive] = useState<ConversationDetail>();
@@ -106,6 +123,36 @@ export function WorkspacePage() {
     }
   };
 
+  const setAvatar = async () => {
+    const current = auth.profile?.avatar ?? defaultAvatarURL(auth);
+    const value = window.prompt("输入 HTTPS 头像图片 URL，留空恢复默认头像", current);
+    if (value === null) return;
+    setError("");
+    try {
+      onAuthChange(await window.tietiezhi.auth.setAvatar(value.trim() || null));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const resetAvatar = async () => {
+    setError("");
+    try {
+      onAuthChange(await window.tietiezhi.auth.setAvatar(null));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const logout = async () => {
+    setError("");
+    try {
+      await onLogout();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
   const send = async () => {
     const text = draft.trim();
     if (!active || !text || busy) return;
@@ -184,6 +231,13 @@ export function WorkspacePage() {
             })}
           </SidebarSection>
         </ScrollArea>
+
+        <UserMenu
+          auth={auth}
+          onSetAvatar={() => void setAvatar()}
+          onResetAvatar={() => void resetAvatar()}
+          onLogout={() => void logout()}
+        />
       </aside>
 
       <section className="flex min-w-0 flex-1 flex-col">
@@ -286,6 +340,118 @@ export function WorkspacePage() {
         )}
       </section>
     </main>
+  );
+}
+
+function defaultAvatarURL(auth: AuthStatus): string {
+  const seed = profileName(auth);
+  const colors = avatarGradientColors(seed);
+  const parameters = new URLSearchParams({
+    seed,
+    backgroundType: "gradientLinear",
+    backgroundRotation: String(avatarGradientRotation(seed)),
+    radius: "50",
+  });
+  for (const color of colors) parameters.append("backgroundColor", color);
+  return `https://api.dicebear.com/10.x/toon-head/svg?${parameters.toString()}`;
+}
+
+function avatarHash(seed: string): number {
+  let hash = 2166136261;
+  for (const character of seed) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function avatarGradientColors(seed: string): [string, string] {
+  const fallback: [string, string] = ["0f172a", "38bdf8"];
+  const palettes: Array<[string, string]> = [
+    fallback,
+    ["111827", "f97316"],
+    ["1e1b4b", "a78bfa"],
+    ["164e63", "facc15"],
+    ["2e1065", "fb7185"],
+    ["064e3b", "5eead4"],
+    ["312e81", "f9a8d4"],
+    ["431407", "fdba74"],
+  ];
+  return palettes[avatarHash(seed) % palettes.length] ?? fallback;
+}
+
+function avatarGradientRotation(seed: string): number {
+  return avatarHash(`${seed}:rotation`) % 360;
+}
+
+function profileName(auth: AuthStatus): string {
+  return auth.profile?.displayName || auth.account?.nickname || auth.account?.email || "Tietiezhi 用户";
+}
+
+function profileSubtitle(auth: AuthStatus): string {
+  return auth.profile?.email || (auth.mode === "api_key" ? "API Key 登录" : "已登录");
+}
+
+function profileInitial(auth: AuthStatus): string {
+  return profileName(auth).trim().slice(0, 1).toUpperCase() || "T";
+}
+
+function UserMenu({
+  auth,
+  onSetAvatar,
+  onResetAvatar,
+  onLogout,
+}: {
+  auth: AuthStatus;
+  onSetAvatar: () => void;
+  onResetAvatar: () => void;
+  onLogout: () => void;
+}) {
+  const avatar = auth.profile?.avatar?.trim() || defaultAvatarURL(auth);
+  return (
+    <div className="border-sidebar-border bg-sidebar/95 border-t px-2 py-2 [-webkit-app-region:no-drag]">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="hover:bg-sidebar-accent focus-visible:ring-ring flex w-full items-center gap-2 rounded-xl px-2 py-2 text-left outline-none focus-visible:ring-2"
+          >
+            <Avatar className="size-9 bg-sidebar-accent">
+              <AvatarImage src={avatar} alt={profileName(auth)} />
+              <AvatarFallback>{profileInitial(auth)}</AvatarFallback>
+            </Avatar>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">{profileName(auth)}</span>
+              <span className="text-muted-foreground block truncate text-xs">{profileSubtitle(auth)}</span>
+            </span>
+            <ChevronDown className="text-muted-foreground size-4 shrink-0" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" side="top" className="w-64">
+          <DropdownMenuLabel className="flex min-w-0 items-center gap-2">
+            <Avatar className="size-9">
+              <AvatarImage src={avatar} alt={profileName(auth)} />
+              <AvatarFallback>{profileInitial(auth)}</AvatarFallback>
+            </Avatar>
+            <span className="min-w-0">
+              <span className="block truncate text-sm text-foreground">{profileName(auth)}</span>
+              <span className="block truncate text-xs">{profileSubtitle(auth)}</span>
+            </span>
+          </DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={onSetAvatar}>
+            <Paintbrush />设置头像 URL
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onResetAvatar}>
+            <X />恢复默认头像
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" onSelect={onLogout}>
+            <LogOut />退出登录
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 

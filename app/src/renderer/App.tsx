@@ -2,31 +2,42 @@ import { useEffect, useState } from "react";
 
 import { LoginPage } from "@/features/auth/login-page";
 import { WorkspacePage } from "@/features/workspace/workspace-page";
+import type { AuthStatus } from "@shared/contracts";
 
 export function App() {
-  const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  const authenticated = authStatus?.authenticated ?? false;
 
   useEffect(() => {
     void window.tietiezhi.auth.status().then(
-      (status) => setAuthenticated(status.authenticated),
-      () => setAuthenticated(false),
+      (status) => setAuthStatus(status),
+      () => setAuthStatus({ authenticated: false }),
     );
   }, []);
 
   useEffect(() => {
-    if (authenticated === null) return;
+    if (authStatus === null) return;
     void window.tietiezhi.app.setWindowMode(authenticated ? "normal" : "setup");
-  }, [authenticated]);
+  }, [authenticated, authStatus]);
 
-  if (authenticated === null) return <div className="bg-background h-svh" />;
+  if (authStatus === null) return <div className="bg-background h-svh" />;
 
   return (
     <div className="text-foreground h-svh overflow-hidden bg-transparent">
       {authenticated ? (
-        <WorkspacePage />
+        <WorkspacePage
+          auth={authStatus}
+          onAuthChange={setAuthStatus}
+          onLogout={async () => {
+            await window.tietiezhi.auth.logout();
+            setAuthStatus({ authenticated: false });
+          }}
+        />
       ) : (
         <LoginPage
-          onAuthenticated={() => setAuthenticated(true)}
+          onAuthenticated={() => {
+            void window.tietiezhi.auth.status().then(setAuthStatus);
+          }}
           onOpenBrowserLogin={async () => {
             await window.tietiezhi.auth.openLogin();
           }}

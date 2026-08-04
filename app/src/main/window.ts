@@ -85,6 +85,20 @@ function boundsVisible(bounds: WindowBounds): boolean {
   });
 }
 
+function resizedBoundsAroundCenter(window: BrowserWindow, size: { width: number; height: number }): WindowBounds {
+  const current = window.getBounds();
+  const display = screen.getDisplayMatching(current);
+  const area = display.workArea;
+  const centerX = current.x + current.width / 2;
+  const centerY = current.y + current.height / 2;
+  return {
+    x: Math.round(Math.min(Math.max(centerX - size.width / 2, area.x), area.x + area.width - size.width)),
+    y: Math.round(Math.min(Math.max(centerY - size.height / 2, area.y), area.y + area.height - size.height)),
+    width: size.width,
+    height: size.height,
+  };
+}
+
 /**
  * Switch between the compact onboarding window and the full workspace window.
  * The renderer reports the desired mode after bootstrap; repeated reports of
@@ -96,8 +110,7 @@ export function applyWindowMode(window: BrowserWindow, mode: WindowMode): void {
   writeWindowState({ mode });
   if (mode === "setup") {
     window.setMinimumSize(SETUP_MIN.width, SETUP_MIN.height);
-    window.setSize(SETUP_SIZE.width, SETUP_SIZE.height, true);
-    window.center();
+    window.setBounds(resizedBoundsAroundCenter(window, SETUP_SIZE), true);
     return;
   }
   window.setMinimumSize(NORMAL_MIN.width, NORMAL_MIN.height);

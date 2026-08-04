@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { resolve } from "node:path";
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 
@@ -12,6 +12,54 @@ import { applyWindowMode, createMainWindow, loadRenderer } from "./window.js";
 
 const customDataDirectory = process.env["TIETIEZHI_DATA_DIR"]?.trim();
 if (customDataDirectory) app.setPath("userData", customDataDirectory);
+
+let mainWindow: BrowserWindow | undefined;
+let database: AppDatabase | undefined;
+let authService: GatewayAuthService | undefined;
+
+function registerAppProtocol(): void {
+  if (process.defaultApp) {
+    return;
+  }
+  app.setAsDefaultProtocolClient("tietiezhi");
+}
+
+function focusMainWindow(): void {
+  const window = mainWindow && !mainWindow.isDestroyed()
+    ? mainWindow
+    : BrowserWindow.getAllWindows().find((item) => !item.isDestroyed());
+  if (!window) return;
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+function openMainWindow(): BrowserWindow {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    focusMainWindow();
+    return mainWindow;
+  }
+  mainWindow = createMainWindow();
+  mainWindow.once("closed", () => {
+    mainWindow = undefined;
+  });
+  loadRenderer(mainWindow);
+  return mainWindow;
+}
+
+function handleAppProtocol(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== "tietiezhi:") return;
+  openMainWindow();
+  if (parsed.hostname === "auth" && parsed.pathname === "/callback") {
+    void authService?.completeBrowserLogin(url);
+  }
+}
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -61,12 +109,10 @@ function readRequest(value: unknown): { method: string; input: unknown } {
   return { method: request["method"], input: request["input"] };
 }
 
-let database: AppDatabase | undefined;
-
 async function bootstrap(): Promise<void> {
   const userData = app.getPath("userData");
-  database = new AppDatabase(join(userData, "tietiezhi.sqlite3"));
-  const workspaces = new WorkspaceService(database, join(userData, "workspaces"), {
+  database = new AppDatabase(resolve(userData, "tietiezhi.sqlite3"));
+  const workspaces = new WorkspaceService(database, resolve(userData, "workspaces"), {
     async chooseDirectory() {
       const result = await dialog.showOpenDialog({
         title: "选择项目文件夹",
@@ -78,6 +124,7 @@ async function bootstrap(): Promise<void> {
   });
   const conversations = new ConversationService(database);
   const auth = new GatewayAuthService(userData, (url) => shell.openExternal(url));
+  authService = auth;
 
   ipcMain.handle(IPC.invoke, async (event, payload: unknown) => {
     const request = readRequest(payload);
@@ -101,6 +148,15 @@ async function bootstrap(): Promise<void> {
       case "auth.openRegistration":
         await shell.openExternal(auth.registrationURL());
         return;
+      case "auth.logout":
+        await auth.logout();
+        return;
+      case "auth.setAvatar": {
+        const input = record(request.input);
+        const avatar = input["avatar"];
+        if (avatar !== null && typeof avatar !== "string") throw new Error("头像地址无效");
+        return auth.setAvatar(avatar);
+      }
       case "workspaces.list":
         return workspaces.list();
       case "workspaces.chooseProject":
@@ -146,20 +202,35 @@ async function bootstrap(): Promise<void> {
     return;
   }
 
-  const window = createMainWindow();
-  loadRenderer(window);
+  openMainWindow();
 }
 
-void app.whenReady().then(bootstrap).catch((error: unknown) => {
-  console.error("[host] startup failed:", error);
-  app.exit(1);
-});
+registerAppProtocol();
 
-app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length > 0) return;
-  const window = createMainWindow();
-  loadRenderer(window);
-});
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", (_event, argv) => {
+    const protocolURL = argv.find((value) => value.startsWith("tietiezhi://"));
+    if (protocolURL) handleAppProtocol(protocolURL);
+    else focusMainWindow();
+  });
+
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    handleAppProtocol(url);
+  });
+
+  void app.whenReady().then(bootstrap).catch((error: unknown) => {
+    console.error("[host] startup failed:", error);
+    app.exit(1);
+  });
+
+  app.on("activate", () => {
+    openMainWindow();
+  });
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();

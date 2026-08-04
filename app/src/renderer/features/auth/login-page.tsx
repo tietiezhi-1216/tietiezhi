@@ -14,6 +14,13 @@ interface LoginPageProps {
   onOpenRegistration: () => Promise<void>;
 }
 
+function loginErrorMessage(cause: unknown, fallback: string): string {
+  if (!(cause instanceof Error)) return fallback;
+  return cause.message
+    .replace(/^Error invoking remote method 'tietiezhi:invoke':\s*/u, "")
+    .replace(/^Error:\s*/u, "");
+}
+
 export function LoginPage({
   onAuthenticated,
   onOpenBrowserLogin,
@@ -36,7 +43,7 @@ export function LoginPage({
     } catch (cause) {
       setView("choices");
       if (!(cause instanceof Error && cause.message === "登录已取消")) {
-        setError(cause instanceof Error ? cause.message : "无法完成浏览器登录");
+        setError(loginErrorMessage(cause, "无法完成浏览器登录"));
       }
     } finally {
       setBusy(false);
@@ -54,17 +61,19 @@ export function LoginPage({
       await onLoginWithAPIKey(apiKey);
       onAuthenticated();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "API 密钥登录失败");
+      setError(loginErrorMessage(cause, "API 密钥登录失败"));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <main className="bg-background relative grid h-full min-h-0 place-items-center overflow-hidden px-6">
+    <main className="relative grid h-full min-h-0 place-items-center overflow-hidden bg-white/84 px-6 text-slate-950 backdrop-blur-3xl dark:bg-slate-950/58 dark:text-slate-100">
       <div className="absolute inset-x-0 top-0 h-14 [-webkit-app-region:drag]" />
+      <div className="pointer-events-none absolute -top-32 -left-24 size-80 rounded-full bg-sky-200/35 blur-3xl dark:bg-sky-950/45" />
+      <div className="pointer-events-none absolute -right-28 -bottom-36 size-96 rounded-full bg-amber-100/45 blur-3xl dark:bg-indigo-950/45" />
 
-      <section className="flex w-full max-w-[400px] -translate-y-3 flex-col items-center text-center">
+      <section className="relative z-10 flex w-full max-w-[400px] -translate-y-3 flex-col items-center text-center [-webkit-app-region:no-drag]">
         <div className="relative mb-5 size-16" role="img" aria-label="Tietiezhi 章鱼">
           <img
             src="/octopus-loader/base-open.png"
@@ -83,11 +92,10 @@ export function LoginPage({
             <h1 className="mb-8 text-[28px] leading-none font-medium tracking-[-0.025em]">
               登录 Tietiezhi
             </h1>
-            <div className="flex w-full max-w-[340px] flex-col gap-3">
+            <div className="flex w-full max-w-[288px] flex-col gap-2.5">
               <Button
                 type="button"
-                size="lg"
-                className="h-12 w-full rounded-full text-sm shadow-none"
+                className="h-10 w-full rounded-full border-white/75 bg-white/92 text-sm text-slate-900 shadow-sm shadow-slate-400/10 hover:bg-white dark:border-white/30 dark:bg-slate-100/76 dark:text-slate-900 dark:shadow-black/20 dark:hover:bg-slate-100/88"
                 disabled={busy}
                 onClick={() => void beginBrowserLogin()}
               >
@@ -97,8 +105,7 @@ export function LoginPage({
               <Button
                 type="button"
                 variant="outline"
-                size="lg"
-                className="h-12 w-full rounded-full bg-transparent text-sm shadow-none"
+                className="h-10 w-full rounded-full border-white/75 bg-white/72 text-sm text-slate-800 shadow-sm shadow-slate-400/5 hover:bg-white/88 hover:text-slate-900 dark:border-white/25 dark:bg-slate-800/52 dark:text-slate-100 dark:shadow-black/20 dark:hover:bg-slate-700/68 dark:hover:text-white"
                 disabled={busy}
                 onClick={() => {
                   setView("api_key");
@@ -108,16 +115,21 @@ export function LoginPage({
                 使用其他方式登录
               </Button>
             </div>
-            <div className="w-full max-w-[340px]">
+            <div className="w-full max-w-[288px]">
               <Button
                 type="button"
                 variant="link"
-                className="text-muted-foreground mt-3 h-8 px-3 text-sm font-normal"
+                className="mt-3 h-8 px-3 text-sm font-normal text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
                 onClick={() => void onOpenRegistration()}
               >
                 注册
               </Button>
             </div>
+            {error && (
+              <p role="alert" className="text-destructive mt-3 max-w-[288px] text-xs leading-5">
+                {error}
+              </p>
+            )}
           </>
         )}
 
@@ -145,15 +157,14 @@ export function LoginPage({
                 setError("");
               }}
               placeholder="sk-tietiezhi-..."
-              className="mt-2 h-11 rounded-xl border bg-muted px-4 text-sm"
+              className="mt-2 h-11 rounded-xl border-white/75 bg-white/72 px-4 text-sm shadow-sm shadow-slate-400/5 dark:border-white/25 dark:bg-slate-800/52 dark:shadow-black/20"
               autoFocus
             />
             {error && <p className="text-destructive mt-2 px-1 text-xs">{error}</p>}
             <div className="mt-3 grid grid-cols-2 gap-3">
               <Button
                 type="button"
-                variant="secondary"
-                className="h-10 rounded-full"
+                className="h-10 rounded-full border-white/75 bg-white/72 text-slate-800 hover:bg-white/88 dark:border-white/25 dark:bg-slate-800/52 dark:text-slate-100 dark:hover:bg-slate-700/68"
                 disabled={busy}
                 onClick={() => {
                   setView("choices");
@@ -162,7 +173,11 @@ export function LoginPage({
               >
                 取消
               </Button>
-              <Button type="submit" className="h-10 rounded-full" disabled={busy}>
+              <Button
+                type="submit"
+                className="h-10 rounded-full border-white/75 bg-white/92 text-slate-900 hover:bg-white dark:border-white/30 dark:bg-slate-100/76 dark:text-slate-900 dark:hover:bg-slate-100/88"
+                disabled={busy}
+              >
                 {busy && <LoaderCircle className="animate-spin" />}
                 继续
               </Button>
@@ -172,13 +187,13 @@ export function LoginPage({
 
         {view === "browser" && (
           <>
-            <p className="text-muted-foreground mt-4 text-sm">请继续在浏览器中登录</p>
+            <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">请继续在浏览器中登录</p>
             {error && <p className="text-destructive mt-2 text-xs">{error}</p>}
-            <div className="w-full max-w-[340px]">
+            <div className="w-full max-w-[288px]">
               <Button
                 type="button"
                 variant="outline"
-                className="mt-7 h-11 w-full rounded-full bg-transparent"
+                className="mt-7 h-10 w-full rounded-full border-white/75 bg-white/72 text-slate-800 hover:bg-white/88 dark:border-white/25 dark:bg-slate-800/52 dark:text-slate-100 dark:hover:bg-slate-700/68"
                 onClick={() => {
                   void onCancelBrowserLogin();
                   setView("choices");

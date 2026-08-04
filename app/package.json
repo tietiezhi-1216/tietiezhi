@@ -84,6 +84,14 @@
       "out/**/*",
       "package.json"
     ],
+    "protocols": [
+      {
+        "name": "Tietiezhi",
+        "schemes": [
+          "tietiezhi"
+        ]
+      }
+    ],
     "mac": {
       "icon": "tietiezhi-mark-macos.png",
       "target": [

@@ -65,6 +65,11 @@ export interface WorkspaceDirectoryEntry {
 export interface AuthStatus {
   authenticated: boolean;
   mode?: "login" | "api_key";
+  profile?: {
+    displayName: string;
+    email?: string;
+    avatar?: string;
+  };
   account?: {
     user_id: number;
     email: string;
@@ -83,6 +88,8 @@ export interface DesktopAPI {
     cancelLogin(): Promise<void>;
     loginWithAPIKey(apiKey: string): Promise<AuthStatus>;
     openRegistration(): Promise<void>;
+    logout(): Promise<void>;
+    setAvatar(avatar: string | null): Promise<AuthStatus>;
   };
   workspaces: {
     list(): Promise<Workspace[]>;

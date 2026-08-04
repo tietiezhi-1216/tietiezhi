@@ -1,8 +1,16 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { createServer, type ServerResponse } from "node:http";
+import { execFileSync } from "node:child_process";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingHttpHeaders,
+  type Server as HTTPServer,
+} from "node:http";
+import type { Socket } from "node:net";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { connect as tlsConnect, type TLSSocket } from "node:tls";
 
 import { safeStorage } from "electron";
 
@@ -31,10 +39,267 @@ type StoredCredential =
       apiKey: string;
       expires: number;
       account: NativeTokenData["account"];
+      avatarOverride?: string;
     }
-  | { version: 1; mode: "api_key"; issuer: string; apiKey: string };
+  | { version: 1; mode: "api_key"; issuer: string; apiKey: string; avatarOverride?: string };
 
 const LOGIN_TIMEOUT_MS = 3 * 60 * 1000;
+const NATIVE_REDIRECT_URI = "tietiezhi://auth/callback";
+const LOCAL_CALLBACK_HOST = "127.0.0.1";
+
+interface ActiveBrowserLogin {
+  discovery: GatewayDiscovery;
+  state: string;
+  verifier: string;
+  redirectURI: string;
+  server?: HTTPServer;
+  timeout: NodeJS.Timeout;
+  resolve: (status: AuthStatus) => void;
+  reject: (error: Error) => void;
+}
+
+type GatewayFetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
+function errorRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : null;
+}
+
+function errorCode(value: unknown): string | null {
+  const source = errorRecord(value);
+  if (!source) return null;
+  if (typeof source["code"] === "string") return source["code"];
+  return errorCode(source["cause"]);
+}
+
+function errorMessage(value: unknown): string {
+  return value instanceof Error ? value.message : "未知网络错误";
+}
+
+function networkFailureMessage(cause: unknown): string {
+  const code = errorCode(cause);
+  if (code === "ECONNRESET") return "网关连接被重置，请检查系统代理或网络后重试";
+  if (code === "ENOTFOUND") return "无法解析网关域名，请检查 DNS 或网络";
+  if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") return "连接网关超时，请稍后重试";
+  if (code === "ECONNREFUSED") return "网关连接被拒绝，请检查网络或代理配置";
+  return errorMessage(cause);
+}
+
+function requestBody(body: RequestInit["body"] | undefined): Buffer | undefined {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body === "string") return Buffer.from(body);
+  if (body instanceof URLSearchParams) return Buffer.from(body.toString());
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  throw new Error("当前代理请求体格式不支持");
+}
+
+function requestHeaders(headers: HeadersInit | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  new Headers(headers).forEach((value, key) => {
+    result[key] = value;
+  });
+  return result;
+}
+
+function responseHeaders(headers: IncomingHttpHeaders): Headers {
+  const result = new Headers();
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value === "string") result.append(key, value);
+    if (Array.isArray(value)) {
+      for (const item of value) result.append(key, item);
+    }
+  }
+  return result;
+}
+
+function splitHostPort(value: string): { host: string; port: string | null } {
+  const index = value.lastIndexOf(":");
+  if (index > 0 && /^\d+$/.test(value.slice(index + 1))) {
+    return { host: value.slice(0, index), port: value.slice(index + 1) };
+  }
+  return { host: value, port: null };
+}
+
+function matchesNoProxy(target: URL): boolean {
+  const value = process.env["NO_PROXY"]?.trim() || process.env["no_proxy"]?.trim() || "";
+  if (!value) return false;
+  const hostname = target.hostname.toLowerCase();
+  const port = target.port || (target.protocol === "https:" ? "443" : "80");
+  return value.split(",").some((entry) => {
+    const pattern = entry.trim().toLowerCase();
+    if (!pattern) return false;
+    if (pattern === "*") return true;
+    const { host, port: expectedPort } = splitHostPort(pattern);
+    if (expectedPort && expectedPort !== port) return false;
+    if (host.startsWith(".")) return hostname.endsWith(host);
+    return hostname === host || hostname.endsWith(`.${host}`);
+  });
+}
+
+function proxyFor(target: URL): URL | null {
+  if (matchesNoProxy(target)) return null;
+  const source = target.protocol === "https:"
+    ? process.env["HTTPS_PROXY"]?.trim() || process.env["https_proxy"]?.trim() ||
+      process.env["HTTP_PROXY"]?.trim() || process.env["http_proxy"]?.trim()
+    : process.env["HTTP_PROXY"]?.trim() || process.env["http_proxy"]?.trim();
+  if (!source) return systemProxyFor(target);
+  const proxy = new URL(source);
+  if (proxy.protocol !== "http:") throw new Error("当前仅支持 HTTP 代理访问登录网关");
+  return proxy;
+}
+
+function systemProxyFor(target: URL): URL | null {
+  if (process.platform !== "darwin") return null;
+  const settings = macOSProxySettings();
+  if (!settings) return null;
+  const secure = target.protocol === "https:";
+  const enabled = settings[secure ? "HTTPSEnable" : "HTTPEnable"] === "1";
+  const host = settings[secure ? "HTTPSProxy" : "HTTPProxy"];
+  const port = settings[secure ? "HTTPSPort" : "HTTPPort"];
+  if (!enabled || !host || !port) return null;
+  return new URL(`http://${host}:${port}`);
+}
+
+function macOSProxySettings(): Record<string, string> | null {
+  try {
+    const output = execFileSync("scutil", ["--proxy"], {
+      encoding: "utf8",
+      timeout: 1_000,
+      windowsHide: true,
+    });
+    const settings: Record<string, string> = {};
+    for (const line of output.split("\n")) {
+      const match = line.match(/^\s*([A-Za-z]+)\s*:\s*(.+?)\s*$/u);
+      if (match?.[1] && match[2]) settings[match[1]] = match[2];
+    }
+    return settings;
+  } catch {
+    return null;
+  }
+}
+
+function proxyAuthorizationHeader(proxy: URL): string | undefined {
+  if (!proxy.username) return undefined;
+  const username = decodeURIComponent(proxy.username);
+  const password = decodeURIComponent(proxy.password);
+  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+}
+
+function fetchViaHTTPProxy(target: URL, init: RequestInit | undefined, proxy: URL): Promise<Response> {
+  const targetPort = target.port || (target.protocol === "https:" ? "443" : "80");
+  const body = requestBody(init?.body);
+  const headers = requestHeaders(init?.headers);
+  const method = init?.method ?? (body ? "POST" : "GET");
+  if (!headers["host"]) headers["host"] = target.host;
+  if (body && !headers["content-length"]) headers["content-length"] = String(body.byteLength);
+
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    let proxyRequest: ReturnType<typeof httpRequest> | undefined;
+    let tunnelSocket: Socket | undefined;
+    let secureSocket: TLSSocket | undefined;
+    let finalRequest: ReturnType<typeof httpRequest> | undefined;
+
+    const cleanup = (): void => {
+      init?.signal?.removeEventListener("abort", abort);
+    };
+    const destroySockets = (error: Error): void => {
+      proxyRequest?.destroy(error);
+      finalRequest?.destroy(error);
+      secureSocket?.destroy(error);
+      tunnelSocket?.destroy(error);
+    };
+    const fail = (cause: unknown): void => {
+      if (finished) return;
+      finished = true;
+      const error = cause instanceof Error ? cause : new Error("代理请求失败");
+      cleanup();
+      destroySockets(error);
+      reject(error);
+    };
+    const done = (response: Response): void => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve(response);
+    };
+    function abort(): void {
+      fail(new Error("请求已取消或超时"));
+    }
+
+    if (init?.signal?.aborted) {
+      abort();
+      return;
+    }
+    init?.signal?.addEventListener("abort", abort, { once: true });
+
+    const connectHeaders: Record<string, string> = { host: `${target.hostname}:${targetPort}` };
+    const authorization = proxyAuthorizationHeader(proxy);
+    if (authorization) connectHeaders["proxy-authorization"] = authorization;
+
+    proxyRequest = httpRequest({
+      hostname: proxy.hostname,
+      port: Number(proxy.port || "80"),
+      method: "CONNECT",
+      path: `${target.hostname}:${targetPort}`,
+      headers: connectHeaders,
+    });
+    proxyRequest.once("error", fail);
+    proxyRequest.once("connect", (response, socket) => {
+      if ((response.statusCode ?? 0) < 200 || (response.statusCode ?? 0) >= 300) {
+        socket.destroy();
+        fail(new Error(`代理连接失败：HTTP ${response.statusCode ?? 0}`));
+        return;
+      }
+      tunnelSocket = socket;
+      secureSocket = tlsConnect({ socket, servername: target.hostname });
+      secureSocket.once("error", fail);
+      secureSocket.once("secureConnect", () => {
+        finalRequest = httpRequest({
+          method,
+          path: `${target.pathname}${target.search}`,
+          headers,
+          createConnection: () => secureSocket as TLSSocket,
+        }, (gatewayResponse) => {
+          const chunks: Buffer[] = [];
+          gatewayResponse.on("data", (chunk: unknown) => {
+            if (typeof chunk === "string") chunks.push(Buffer.from(chunk));
+            else if (chunk instanceof Buffer) chunks.push(chunk);
+            else if (chunk instanceof Uint8Array) chunks.push(Buffer.from(chunk));
+          });
+          gatewayResponse.once("error", fail);
+          gatewayResponse.once("end", () => {
+            done(new Response(Buffer.concat(chunks), {
+              status: gatewayResponse.statusCode ?? 500,
+              statusText: gatewayResponse.statusMessage,
+              headers: responseHeaders(gatewayResponse.headers),
+            }));
+          });
+        });
+        finalRequest.once("error", fail);
+        if (body) finalRequest.write(body);
+        finalRequest.end();
+      });
+    });
+    proxyRequest.end();
+  });
+}
+
+async function gatewayFetch(input: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (cause) {
+    if (init?.signal?.aborted) throw cause;
+    const target = new URL(input);
+    const proxy = proxyFor(target);
+    if (!proxy) throw cause;
+    try {
+      return await fetchViaHTTPProxy(target, init, proxy);
+    } catch (proxyCause) {
+      throw new Error(`${networkFailureMessage(cause)}；代理请求失败：${networkFailureMessage(proxyCause)}`);
+    }
+  }
+}
 
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -49,6 +314,11 @@ function requiredString(source: Record<string, unknown>, key: string): string {
   return value.trim();
 }
 
+function optionalNonEmptyString(source: Record<string, unknown>, key: string): string | undefined {
+  const value = source[key];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
 function assertEndpoint(issuer: URL, value: string, key: string): string {
   const endpoint = new URL(value);
   if (endpoint.origin !== issuer.origin) throw new Error(`网关端点 ${key} 不同源`);
@@ -58,34 +328,27 @@ function assertEndpoint(issuer: URL, value: string, key: string): string {
   return endpoint.toString();
 }
 
-function escapeHTML(value: string): string {
-  const entities: Record<string, string> = {
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  };
-  return value.replace(/[&<>"']/g, (character) => entities[character] ?? character);
-}
-
 function completionHTML(): string {
-  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>已登录 Tietiezhi</title><style>:root{color-scheme:dark;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#171717;color:#f5f5f5}header{position:fixed;top:20px;left:20px;font-size:18px;font-weight:650;letter-spacing:-.02em}main{min-height:100vh;display:grid;place-items:center;padding:32px}.content{text-align:center;transform:translateY(-10px)}p{margin:0 0 26px;color:#a3a3a3;font-size:14px}.button{display:inline-flex;min-width:168px;height:48px;align-items:center;justify-content:center;border:1px solid #393939;border-radius:999px;background:#292929;color:#f5f5f5;font-size:14px;font-weight:600;cursor:pointer}.button:hover{background:#333}</style></head><body><header>Tietiezhi Gateway</header><main><div class="content"><p>你已登录，可以关闭此标签页</p><button class="button" onclick="window.close()">返回 Tietiezhi</button></div></main></body></html>`;
-}
-
-function errorHTML(message: string): string {
-  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>登录失败</title><body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#171717;color:#f5f5f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"><main style="text-align:center"><h1 style="font-size:20px">登录没有完成</h1><p style="color:#aaa">${escapeHTML(message)}</p></main></body></html>`;
-}
-
-function respond(response: ServerResponse, status: number, html: string): void {
-  response.writeHead(status, {
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
-    "x-content-type-options": "nosniff",
-  });
-  response.end(html);
+  return [
+    "<!doctype html>",
+    '<html lang="zh-CN">',
+    "<head>",
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    "<title>登录完成</title>",
+    "</head>",
+    "<body>",
+    "<p>登录完成，正在返回 Tietiezhi，可以关闭此页面。</p>",
+    "<script>window.close();</script>",
+    "</body>",
+    "</html>",
+  ].join("");
 }
 
 export class GatewayAuthService {
   private readonly credentialPath: string;
   private readonly devicePath: string;
-  private activeLogin: { cancel: () => void } | null = null;
+  private activeLogin: ActiveBrowserLogin | null = null;
 
   constructor(
     private readonly userDataPath: string,
@@ -93,6 +356,7 @@ export class GatewayAuthService {
     private readonly issuer = process.env["TIETIEZHI_GATEWAY_URL"]?.trim() ||
       process.env["TIETIEZHI_GATEWAY_WEB_URL"]?.trim() ||
       "https://tietiezhi.vip",
+    private readonly fetcher: GatewayFetcher = gatewayFetch,
   ) {
     this.credentialPath = join(userDataPath, "gateway-credential.bin");
     this.devicePath = join(userDataPath, "gateway-device-id");
@@ -103,24 +367,39 @@ export class GatewayAuthService {
     if (!credential || (credential.mode === "login" && credential.expires <= Date.now())) {
       return { authenticated: false };
     }
-    return {
-      authenticated: true,
-      mode: credential.mode,
-      account: credential.mode === "login" ? credential.account : undefined,
-    };
+    return this.authStatus(credential);
   }
 
   async loginWithAPIKey(value: string): Promise<AuthStatus> {
     const apiKey = value.trim();
     if (!apiKey) throw new Error("请输入 API 密钥");
     const issuer = this.normalizedIssuer();
-    const response = await fetch(`${issuer}/v1/models`, {
+    const response = await this.request(`${issuer}/v1/models`, {
       headers: { accept: "application/json", authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(15_000),
-    });
+    }, "验证 API 密钥");
     if (!response.ok) throw new Error(`API 密钥验证失败：HTTP ${response.status}`);
-    await this.storeCredential({ version: 1, mode: "api_key", issuer, apiKey });
-    return { authenticated: true, mode: "api_key" };
+    const credential: StoredCredential = { version: 1, mode: "api_key", issuer, apiKey };
+    await this.storeCredential(credential);
+    return this.authStatus(credential);
+  }
+
+  async logout(): Promise<void> {
+    this.cancelLogin();
+    await rm(this.credentialPath, { force: true });
+  }
+
+  async setAvatar(value: string | null): Promise<AuthStatus> {
+    const credential = await this.readCredential();
+    if (!credential || (credential.mode === "login" && credential.expires <= Date.now())) {
+      throw new Error("请先登录");
+    }
+    const avatarOverride = this.normalizedAvatar(value);
+    const next: StoredCredential = avatarOverride
+      ? { ...credential, avatarOverride }
+      : { ...credential, avatarOverride: undefined };
+    await this.storeCredential(next);
+    return this.authStatus(next);
   }
 
   async loginWithBrowser(): Promise<AuthStatus> {
@@ -130,73 +409,27 @@ export class GatewayAuthService {
     const verifier = randomBytes(48).toString("base64url");
     const challenge = createHash("sha256").update(verifier).digest("base64url");
     const deviceId = await this.deviceId();
-    let redirectURI = "";
-    let settled = false;
-    let resolveLogin: (status: AuthStatus) => void = () => undefined;
-    let rejectLogin: (error: Error) => void = () => undefined;
+    const localCallback = process.defaultApp ? await this.createLocalCallbackServer() : null;
+    const redirectURI = localCallback?.redirectURI ?? NATIVE_REDIRECT_URI;
     const result = new Promise<AuthStatus>((resolve, reject) => {
-      resolveLogin = resolve;
-      rejectLogin = reject;
+      const timeout = setTimeout(() => {
+        if (!this.activeLogin || this.activeLogin.state !== state) return;
+        this.activeLogin.server?.close();
+        this.activeLogin = null;
+        reject(new Error("登录已超时，请重新尝试"));
+      }, LOGIN_TIMEOUT_MS);
+      this.activeLogin = {
+        discovery,
+        state,
+        verifier,
+        redirectURI,
+        server: localCallback?.server,
+        timeout,
+        resolve,
+        reject,
+      };
     });
 
-    const server = createServer(async (request, response) => {
-      const url = new URL(request.url || "/", redirectURI);
-      if (url.pathname !== "/callback") {
-        respond(response, 404, errorHTML("回调地址无效"));
-        return;
-      }
-      if (url.searchParams.get("state") !== state) {
-        respond(response, 400, errorHTML("登录状态校验失败"));
-        return;
-      }
-      const code = url.searchParams.get("code")?.trim();
-      if (!code) {
-        respond(response, 400, errorHTML("网关没有返回授权码"));
-        return;
-      }
-      try {
-        const token = await this.exchange(discovery, code, verifier, redirectURI);
-        if (settled) return;
-        await this.storeCredential({
-          version: 1,
-          mode: "login",
-          issuer: discovery.issuer,
-          sessionToken: token.session_token,
-          apiKey: token.api_key,
-          expires: token.expires,
-          account: token.account,
-        });
-        respond(response, 200, completionHTML());
-        settled = true;
-        resolveLogin({ authenticated: true, mode: "login", account: token.account });
-        server.close();
-      } catch (cause) {
-        const error = cause instanceof Error ? cause : new Error("登录失败");
-        respond(response, 500, errorHTML(error.message));
-        settled = true;
-        rejectLogin(error);
-        server.close();
-      }
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      server.close();
-      throw new Error("无法创建本地登录回调");
-    }
-    redirectURI = `http://127.0.0.1:${address.port}/callback`;
-    this.activeLogin = {
-      cancel: () => {
-        if (settled) return;
-        settled = true;
-        server.close();
-        rejectLogin(new Error("登录已取消"));
-      },
-    };
     const authorizationURL = new URL(discovery.authorizationEndpoint);
     authorizationURL.search = new URLSearchParams({
       client_id: discovery.clientId,
@@ -211,29 +444,80 @@ export class GatewayAuthService {
     try {
       await this.openExternal(authorizationURL.toString());
     } catch (cause) {
-      server.close();
-      this.activeLogin = null;
+      this.cancelLogin();
+      void result.catch(() => undefined);
       throw cause;
     }
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      server.close();
-      rejectLogin(new Error("登录已超时，请重新尝试"));
-    }, LOGIN_TIMEOUT_MS);
+
+    return result;
+  }
+
+  async completeBrowserLogin(callbackURL: string): Promise<void> {
+    const active = this.activeLogin;
+    if (!active) return;
+
+    let url: URL;
     try {
-      return await result;
-    } finally {
-      clearTimeout(timeout);
-      this.activeLogin = null;
+      url = new URL(callbackURL);
+    } catch {
+      return;
     }
+    const expected = new URL(active.redirectURI);
+    if (
+      url.protocol !== expected.protocol ||
+      url.hostname !== expected.hostname ||
+      url.port !== expected.port ||
+      url.pathname !== expected.pathname
+    ) {
+      return;
+    }
+    if (url.searchParams.get("state") !== active.state) {
+      this.finishBrowserLogin(active, new Error("登录状态校验失败"));
+      return;
+    }
+    const code = url.searchParams.get("code")?.trim();
+    if (!code) {
+      this.finishBrowserLogin(active, new Error("网关没有返回授权码"));
+      return;
+    }
+
+    try {
+      const token = await this.exchange(active.discovery, code, active.verifier, active.redirectURI);
+      const credential: StoredCredential = {
+        version: 1,
+        mode: "login",
+        issuer: active.discovery.issuer,
+        sessionToken: token.session_token,
+        apiKey: token.api_key,
+        expires: token.expires,
+        account: token.account,
+      };
+      await this.storeCredential(credential);
+      this.finishBrowserLogin(active, undefined, this.authStatus(credential));
+    } catch (cause) {
+      this.finishBrowserLogin(active, cause instanceof Error ? cause : new Error("登录失败"));
+    }
+  }
+
+  private finishBrowserLogin(active: ActiveBrowserLogin, error?: Error, status?: AuthStatus): void {
+    if (this.activeLogin !== active) return;
+    clearTimeout(active.timeout);
+    active.server?.close();
+    this.activeLogin = null;
+    if (error) {
+      active.reject(error);
+      return;
+    }
+    active.resolve(status ?? { authenticated: false });
   }
 
   cancelLogin(): void {
     if (!this.activeLogin) return;
     const activeLogin = this.activeLogin;
+    clearTimeout(activeLogin.timeout);
+    activeLogin.server?.close();
     this.activeLogin = null;
-    activeLogin.cancel();
+    activeLogin.reject(new Error("登录已取消"));
   }
 
   registrationURL(): string {
@@ -246,13 +530,55 @@ export class GatewayAuthService {
     return this.issuer.replace(/\/+$/, "");
   }
 
+  private normalizedAvatar(value: string | null): string | undefined {
+    const avatar = value?.trim();
+    if (!avatar) return undefined;
+    const url = new URL(avatar);
+    if (url.protocol !== "https:") throw new Error("头像地址必须使用 HTTPS");
+    return url.toString();
+  }
+
+  private authStatus(credential: StoredCredential): AuthStatus {
+    if (credential.mode === "login") {
+      const displayName = credential.account.nickname.trim() || credential.account.email.trim() || "Tietiezhi 用户";
+      return {
+        authenticated: true,
+        mode: "login",
+        profile: {
+          displayName,
+          email: credential.account.email,
+          avatar: credential.avatarOverride,
+        },
+        account: credential.avatarOverride
+          ? { ...credential.account, avatar: credential.avatarOverride }
+          : credential.account,
+      };
+    }
+    return {
+      authenticated: true,
+      mode: "api_key",
+      profile: {
+        displayName: "API Key 用户",
+        avatar: credential.avatarOverride,
+      },
+    };
+  }
+
+  private async request(input: string, init: RequestInit, action: string): Promise<Response> {
+    try {
+      return await this.fetcher(input, init);
+    } catch (cause) {
+      throw new Error(`${action}失败：${networkFailureMessage(cause)}`);
+    }
+  }
+
   private async discover(): Promise<GatewayDiscovery> {
     const expectedIssuer = new URL(this.normalizedIssuer());
     const root = expectedIssuer.toString().replace(/\/$/, "");
-    const response = await fetch(`${root}/.well-known/tietiezhi-gateway`, {
+    const response = await this.request(`${root}/.well-known/tietiezhi-gateway`, {
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(10_000),
-    });
+    }, "连接登录网关");
     if (!response.ok) throw new Error(`发现网关失败：HTTP ${response.status}`);
     const source = record((await response.json()) as unknown, "网关发现文档");
     const issuer = new URL(requiredString(source, "issuer"));
@@ -265,13 +591,49 @@ export class GatewayAuthService {
     };
   }
 
+  private async createLocalCallbackServer(): Promise<{ redirectURI: string; server: HTTPServer }> {
+    const server = createServer((request, response) => {
+      const host = typeof request.headers.host === "string" ? request.headers.host : LOCAL_CALLBACK_HOST;
+      const target = new URL(request.url ?? "/", `http://${host}`);
+      if (target.pathname !== "/callback") {
+        response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+        response.end("Not Found");
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(completionHTML());
+      void this.completeBrowserLogin(target.toString());
+    });
+
+    return new Promise((resolve, reject) => {
+      const fail = (error: Error): void => {
+        server.close();
+        reject(error);
+      };
+      server.once("error", fail);
+      server.listen(0, LOCAL_CALLBACK_HOST, () => {
+        server.off("error", fail);
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          server.close();
+          reject(new Error("本地登录回调服务启动失败"));
+          return;
+        }
+        resolve({
+          redirectURI: `http://${LOCAL_CALLBACK_HOST}:${address.port}/callback`,
+          server,
+        });
+      });
+    });
+  }
+
   private async exchange(discovery: GatewayDiscovery, code: string, verifier: string, redirectURI: string): Promise<NativeTokenData> {
-    const response = await fetch(discovery.tokenEndpoint, {
+    const response = await this.request(discovery.tokenEndpoint, {
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify({ client_id: discovery.clientId, code, code_verifier: verifier, redirect_uri: redirectURI }),
       signal: AbortSignal.timeout(15_000),
-    });
+    }, "交换登录凭据");
     if (!response.ok) throw new Error(`交换登录凭据失败：HTTP ${response.status}`);
     const payload = (await response.json()) as unknown;
     const source = record(payload, "网关登录响应");
@@ -314,6 +676,8 @@ export class GatewayAuthService {
       const value = JSON.parse(safeStorage.decryptString(encrypted)) as unknown;
       const source = record(value, "本地登录凭据");
       if (source["version"] !== 1 || (source["mode"] !== "login" && source["mode"] !== "api_key")) return null;
+      const avatarOverride = optionalNonEmptyString(source, "avatarOverride");
+      if (avatarOverride) new URL(avatarOverride);
       return value as StoredCredential;
     } catch {
       return null;
