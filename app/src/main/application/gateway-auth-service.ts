@@ -15,12 +15,30 @@ import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import { safeStorage } from "electron";
 
 import type { AuthStatus } from "@shared/contracts";
+import {
+  GATEWAY_SCHEMA_VERSION,
+  type GatewayBootstrap,
+  type GatewayModel,
+  type GatewayModelList,
+  type GatewayModality,
+} from "@shared/gateway-protocol";
+
+import { parseGatewayBootstrap, type GatewayCredential } from "../gateway/gateway-client.js";
 
 interface GatewayDiscovery {
   issuer: string;
+  apiBase: string;
   authorizationEndpoint: string;
   tokenEndpoint: string;
+  bootstrapEndpoint: string;
+  modelsEndpoint: string;
+  responsesEndpoint: string;
   clientId: string;
+}
+
+export interface GatewayAgentConfig {
+  credential: GatewayCredential;
+  bootstrap: GatewayBootstrap;
 }
 
 interface NativeTokenData {
@@ -328,6 +346,113 @@ function assertEndpoint(issuer: URL, value: string, key: string): string {
   return endpoint.toString();
 }
 
+function optionalRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "").map((item) => item.trim())
+    : [];
+}
+
+const GATEWAY_MODALITIES = new Set<GatewayModality>(["text", "image", "audio", "video", "file"]);
+
+function modalities(value: unknown): GatewayModality[] {
+  const result = stringArray(value).filter((item): item is GatewayModality => GATEWAY_MODALITIES.has(item as GatewayModality));
+  return result.length > 0 ? result : ["text"];
+}
+
+function finiteNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function legacyGatewayModel(value: unknown): GatewayModel {
+  const source = record(value, "网关模型");
+  const id = requiredString(source, "id");
+  const capabilities = optionalRecord(source["capabilities"]);
+  const reasoningSource = optionalRecord(source["reasoning"]);
+  const supportedEfforts = stringArray(reasoningSource?.["efforts"] ?? reasoningSource?.["supported_efforts"]);
+  const reasoning = supportedEfforts.length > 0
+    ? {
+        efforts: supportedEfforts,
+        ...(typeof reasoningSource?.["default_effort"] === "string"
+          ? { default_effort: reasoningSource["default_effort"] }
+          : {}),
+      }
+    : undefined;
+  const model: GatewayModel = {
+    id,
+    object: "model",
+    display_name: optionalNonEmptyString(source, "display_name") ??
+      optionalNonEmptyString(source, "name") ?? id,
+    owned_by: optionalNonEmptyString(source, "owned_by") ?? "tietiezhi-gateway",
+    created: finiteNumberOrNull(source["created"]) ?? 0,
+    status: source["status"] === "deprecated" || source["status"] === "disabled"
+      ? source["status"]
+      : "available",
+    capabilities: {
+      input_modalities: modalities(capabilities?.["input_modalities"] ?? source["input_modalities"]),
+      output_modalities: modalities(capabilities?.["output_modalities"] ?? source["output_modalities"]),
+      streaming: capabilities?.["streaming"] !== false,
+      tool_calling: capabilities?.["tool_calling"] === true,
+      structured_output: capabilities?.["structured_output"] === true,
+      reasoning: capabilities?.["reasoning"] === true || Boolean(reasoning),
+    },
+    limits: {
+      context_window: finiteNumberOrNull(
+        optionalRecord(source["limits"])?.["context_window"] ?? source["context_window"],
+      ),
+      max_output_tokens: finiteNumberOrNull(
+        optionalRecord(source["limits"])?.["max_output_tokens"] ?? source["max_output_tokens"],
+      ),
+    },
+    supported_parameters: stringArray(source["supported_parameters"]),
+  };
+  const description = optionalNonEmptyString(source, "description");
+  if (description) model.description = description;
+  if (reasoning) model.reasoning = reasoning;
+  return model;
+}
+
+function parseLegacyGatewayModelList(value: unknown): GatewayModelList {
+  const source = record(value, "网关模型列表");
+  if (!Array.isArray(source["data"])) throw new Error("网关模型列表 data 无效");
+  return {
+    schema_version: GATEWAY_SCHEMA_VERSION,
+    object: "list",
+    revision: optionalNonEmptyString(source, "revision") ?? `legacy-${Date.now()}`,
+    data: source["data"].map(legacyGatewayModel),
+  };
+}
+
+function isLegacyBootstrapNotFound(value: unknown): boolean {
+  const source = optionalRecord(value);
+  return source?.["success"] === false &&
+    typeof source["message"] === "string" &&
+    source["message"].toLowerCase().includes("not found");
+}
+
+function legacyGatewayBootstrap(discovery: GatewayDiscovery, models: GatewayModelList): GatewayBootstrap {
+  return {
+    schema_version: GATEWAY_SCHEMA_VERSION,
+    object: "gateway.bootstrap",
+    issued_at: new Date().toISOString(),
+    auth: {
+      mode: "api_key",
+      subject: "desktop",
+      scopes: ["models:read", "responses:create"],
+    },
+    endpoints: {
+      models: discovery.modelsEndpoint,
+      responses: discovery.responsesEndpoint,
+    },
+    models,
+  };
+}
+
 function completionHTML(): string {
   return [
     "<!doctype html>",
@@ -368,6 +493,62 @@ export class GatewayAuthService {
       return { authenticated: false };
     }
     return this.authStatus(credential);
+  }
+
+  async agentConfig(): Promise<GatewayAgentConfig> {
+    const credential = await this.runtimeCredential();
+    if (!credential) throw new Error("请先登录 Tietiezhi Gateway");
+
+    const discovery = await this.discover(credential.issuer);
+    const response = await this.request(discovery.bootstrapEndpoint, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${credential.credential.secret}`,
+        "x-tietiezhi-auth-mode": credential.credential.mode,
+      },
+      signal: AbortSignal.timeout(15_000),
+    }, "读取网关配置");
+    if (!response.ok && response.status !== 404) {
+      throw new Error(`读取网关配置失败：HTTP ${response.status}`);
+    }
+    const payload = response.ok ? (await response.json()) as unknown : null;
+    let bootstrap: GatewayBootstrap | undefined;
+    if (response.ok) {
+      try {
+        bootstrap = parseGatewayBootstrap(payload);
+      } catch (cause) {
+        if (!isLegacyBootstrapNotFound(payload)) throw cause;
+      }
+    }
+    if (!bootstrap) {
+      return this.legacyAgentConfig(discovery, credential.apiKey);
+    }
+    if (bootstrap.auth.mode !== credential.credential.mode) {
+      throw new Error("网关返回了不同的鉴权模式");
+    }
+    const issuer = new URL(credential.issuer);
+    if (new URL(bootstrap.endpoints.responses).origin !== issuer.origin) {
+      throw new Error("网关响应端点不同源");
+    }
+    return { credential: { mode: "api_key", secret: credential.apiKey }, bootstrap };
+  }
+
+  private async legacyAgentConfig(discovery: GatewayDiscovery, apiKey: string): Promise<GatewayAgentConfig> {
+    const response = await this.request(discovery.modelsEndpoint, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${apiKey}`,
+        "x-tietiezhi-auth-mode": "api_key",
+      },
+      signal: AbortSignal.timeout(15_000),
+    }, "读取网关模型");
+    if (!response.ok) throw new Error(`读取网关模型失败：HTTP ${response.status}`);
+    const models = parseLegacyGatewayModelList((await response.json()) as unknown);
+    if (models.data.length === 0) throw new Error("网关没有可用模型");
+    return {
+      credential: { mode: "api_key", secret: apiKey },
+      bootstrap: legacyGatewayBootstrap(discovery, models),
+    };
   }
 
   async loginWithAPIKey(value: string): Promise<AuthStatus> {
@@ -572,8 +753,42 @@ export class GatewayAuthService {
     }
   }
 
-  private async discover(): Promise<GatewayDiscovery> {
-    const expectedIssuer = new URL(this.normalizedIssuer());
+  async fetchForAgent(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const target = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+    const requestInit = input instanceof Request && init === undefined
+      ? {
+          method: input.method,
+          headers: input.headers,
+          body: input.method === "GET" || input.method === "HEAD" ? undefined : await input.text(),
+          signal: input.signal,
+        }
+      : init;
+    return this.fetcher(target, requestInit);
+  }
+
+  private async runtimeCredential(): Promise<{
+    issuer: string;
+    credential: GatewayCredential;
+    apiKey: string;
+  } | null> {
+    const stored = await this.readCredential();
+    if (!stored || (stored.mode === "login" && stored.expires <= Date.now())) return null;
+    return {
+      issuer: stored.issuer,
+      credential: {
+        mode: stored.mode,
+        secret: stored.mode === "login" ? stored.sessionToken : stored.apiKey,
+      },
+      apiKey: stored.apiKey,
+    };
+  }
+
+  private async discover(issuerValue = this.normalizedIssuer()): Promise<GatewayDiscovery> {
+    const expectedIssuer = new URL(issuerValue);
     const root = expectedIssuer.toString().replace(/\/$/, "");
     const response = await this.request(`${root}/.well-known/tietiezhi-gateway`, {
       headers: { accept: "application/json" },
@@ -583,10 +798,31 @@ export class GatewayAuthService {
     const source = record((await response.json()) as unknown, "网关发现文档");
     const issuer = new URL(requiredString(source, "issuer"));
     if (issuer.origin !== expectedIssuer.origin) throw new Error("网关签发方不匹配");
+    const apiBase = assertEndpoint(
+      issuer,
+      optionalNonEmptyString(source, "api_base") ?? `${issuer.toString().replace(/\/$/u, "")}/v1`,
+      "api_base",
+    );
     return {
       issuer: issuer.toString().replace(/\/$/, ""),
+      apiBase,
       authorizationEndpoint: assertEndpoint(issuer, requiredString(source, "authorization_endpoint"), "authorization_endpoint"),
       tokenEndpoint: assertEndpoint(issuer, requiredString(source, "token_endpoint"), "token_endpoint"),
+      bootstrapEndpoint: assertEndpoint(
+        issuer,
+        optionalNonEmptyString(source, "bootstrap_endpoint") ?? `${issuer.toString().replace(/\/$/, "")}/v1/bootstrap`,
+        "bootstrap_endpoint",
+      ),
+      modelsEndpoint: assertEndpoint(
+        issuer,
+        optionalNonEmptyString(source, "models_endpoint") ?? `${apiBase.replace(/\/$/u, "")}/models`,
+        "models_endpoint",
+      ),
+      responsesEndpoint: assertEndpoint(
+        issuer,
+        optionalNonEmptyString(source, "responses_endpoint") ?? `${apiBase.replace(/\/$/u, "")}/responses`,
+        "responses_endpoint",
+      ),
       clientId: requiredString(source, "client_id"),
     };
   }

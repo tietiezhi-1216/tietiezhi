@@ -8,10 +8,16 @@ import type {
   Message,
 } from "@shared/contracts";
 
+import { AgentProfileService } from "./agent-profile-service.js";
+import { AgentGroupService } from "./agent-group-service.js";
 import { AppDatabase } from "../infrastructure/database.js";
 
 export class ConversationService {
-  constructor(private readonly database: AppDatabase) {}
+  constructor(
+    private readonly database: AppDatabase,
+    private readonly agentProfiles?: AgentProfileService,
+    private readonly agentGroups?: AgentGroupService,
+  ) {}
 
   list(workspaceId?: string): Conversation[] {
     return this.database.listConversations(workspaceId);
@@ -20,10 +26,24 @@ export class ConversationService {
   create(input: CreateConversationInput): ConversationDetail {
     const workspace = this.database.workspace(input.workspaceId);
     if (!workspace) throw new Error("Workspace 不存在");
+    if (input.agentId) {
+      if (!this.agentProfiles) throw new Error("智能体服务尚未初始化");
+      this.agentProfiles.require(input.agentId);
+    }
+    const group = input.groupId
+      ? this.agentGroups?.require(input.groupId)
+      : undefined;
+    if (input.groupId && !group) throw new Error("群聊服务尚未初始化");
+    if (group && input.agentId && !group.agentIds.includes(input.agentId)) {
+      throw new Error("智能体不属于该群聊");
+    }
+    const agentId = input.agentId ?? group?.agentIds[0];
     const now = Date.now();
     const conversation: Conversation = {
       id: randomUUID(),
       workspaceId: workspace.id,
+      agentId,
+      groupId: group?.id,
       title: input.title?.trim().slice(0, 120) || "新对话",
       createdAt: now,
       updatedAt: now,

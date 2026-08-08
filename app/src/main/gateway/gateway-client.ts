@@ -12,6 +12,8 @@ export interface GatewayCredential {
   secret: string;
 }
 
+export type GatewayFetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error(`${label}格式无效`);
@@ -95,7 +97,7 @@ export function parseGatewayBootstrap(value: unknown): GatewayBootstrap {
 }
 
 export class GatewayClient {
-  constructor(private readonly fetch: typeof globalThis.fetch) {}
+  constructor(private readonly fetch: GatewayFetcher) {}
 
   async discover(issuer: string): Promise<GatewayDiscovery> {
     const root = issuer.trim().replace(/\/+$/, "");

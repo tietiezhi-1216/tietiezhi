@@ -161,6 +161,9 @@ export function createMainWindow(): BrowserWindow {
     },
   });
   windowModes.set(window, mode);
+  if (!restored) {
+    window.center();
+  }
   window.setMenuBarVisibility(false);
 
   // Only workspace-mode geometry is remembered; the setup window is fixed.

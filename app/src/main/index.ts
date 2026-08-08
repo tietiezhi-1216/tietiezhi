@@ -5,7 +5,10 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { IPC, type AppendMessageInput, type CreateConversationInput } from "@shared/contracts";
 
 import { ConversationService } from "./application/conversation-service.js";
+import { AgentProfileService } from "./application/agent-profile-service.js";
+import { AgentGroupService } from "./application/agent-group-service.js";
 import { GatewayAuthService } from "./application/gateway-auth-service.js";
+import { PiAgentService } from "./application/pi-agent-service.js";
 import { WorkspaceService } from "./application/workspace-service.js";
 import { AppDatabase } from "./infrastructure/database.js";
 import { applyWindowMode, createMainWindow, loadRenderer } from "./window.js";
@@ -16,6 +19,8 @@ if (customDataDirectory) app.setPath("userData", customDataDirectory);
 let mainWindow: BrowserWindow | undefined;
 let database: AppDatabase | undefined;
 let authService: GatewayAuthService | undefined;
+let piAgentService: PiAgentService | undefined;
+let shutdownStarted = false;
 
 function registerAppProtocol(): void {
   if (process.defaultApp) {
@@ -83,6 +88,8 @@ function createConversationInput(value: unknown): CreateConversationInput {
   const input = record(value);
   return {
     workspaceId: string(input, "workspaceId"),
+    agentId: optionalString(input, "agentId"),
+    groupId: optionalString(input, "groupId"),
     title: optionalString(input, "title"),
   };
 }
@@ -122,9 +129,19 @@ async function bootstrap(): Promise<void> {
     },
     reveal: (path) => shell.openPath(path),
   });
-  const conversations = new ConversationService(database);
+  const agentProfiles = new AgentProfileService(database, resolve(userData, "agents"));
+  const agentGroups = new AgentGroupService(database, agentProfiles);
+  const conversations = new ConversationService(database, agentProfiles, agentGroups);
   const auth = new GatewayAuthService(userData, (url) => shell.openExternal(url));
   authService = auth;
+  piAgentService = new PiAgentService(
+    auth,
+    conversations,
+    workspaces,
+    agentProfiles,
+    agentGroups,
+    (agentEvent) => mainWindow?.webContents.send(IPC.agentEvent, agentEvent),
+  );
 
   ipcMain.handle(IPC.invoke, async (event, payload: unknown) => {
     const request = readRequest(payload);
@@ -149,6 +166,7 @@ async function bootstrap(): Promise<void> {
         await shell.openExternal(auth.registrationURL());
         return;
       case "auth.logout":
+        await piAgentService?.stopAll();
         await auth.logout();
         return;
       case "auth.setAvatar": {
@@ -191,6 +209,62 @@ async function bootstrap(): Promise<void> {
         );
       case "conversations.remove":
         return conversations.remove(string(request.input, "id"));
+      case "agentProfiles.list":
+        return agentProfiles.list();
+      case "agentProfiles.presets":
+        return agentProfiles.presets();
+      case "agentProfiles.create": {
+        const input = record(request.input);
+        return agentProfiles.create({
+          presetId: optionalString(input, "presetId"),
+          name: string(input, "name"),
+          role: string(input, "role"),
+          description: optionalString(input, "description"),
+          avatar: optionalString(input, "avatar"),
+          modelId: optionalString(input, "modelId"),
+          systemPrompt: optionalString(input, "systemPrompt"),
+        });
+      }
+      case "agentGroups.list":
+        return agentGroups.list();
+      case "agentGroups.create": {
+        const input = record(request.input);
+        const agentIds = input["agentIds"];
+        if (!Array.isArray(agentIds) || !agentIds.every((item): item is string => typeof item === "string")) {
+          throw new Error("群聊成员格式无效");
+        }
+        return agentGroups.create({
+          name: string(input, "name"),
+          description: optionalString(input, "description"),
+          agentIds,
+        });
+      }
+      case "agentGroups.remove":
+        return agentGroups.remove(string(request.input, "id"));
+      case "agents.start": {
+        const input = record(request.input);
+        if (!piAgentService) throw new Error("Agent 服务尚未初始化");
+        return piAgentService.start({
+          conversationId: string(input, "conversationId"),
+          workspaceId: string(input, "workspaceId"),
+          agentId: optionalString(input, "agentId"),
+          groupId: optionalString(input, "groupId"),
+        });
+      }
+      case "agents.prompt": {
+        const input = record(request.input);
+        if (!piAgentService) throw new Error("Agent 服务尚未初始化");
+        return piAgentService.prompt({
+          conversationId: string(input, "conversationId"),
+          text: string(input, "text"),
+        });
+      }
+      case "agents.abort":
+        if (!piAgentService) throw new Error("Agent 服务尚未初始化");
+        return piAgentService.abort(string(request.input, "conversationId"));
+      case "agents.stop":
+        if (!piAgentService) throw new Error("Agent 服务尚未初始化");
+        return piAgentService.stop(string(request.input, "conversationId"));
       default:
         throw new Error(`未知 IPC 方法：${request.method}`);
     }
@@ -236,6 +310,19 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
-  database?.close();
+app.on("before-quit", (event) => {
+  if (shutdownStarted || !piAgentService) {
+    database?.close();
+    return;
+  }
+  shutdownStarted = true;
+  event.preventDefault();
+  void piAgentService.stopAll()
+    .catch((error: unknown) => {
+      console.error("[host] agent shutdown failed:", error);
+    })
+    .finally(() => {
+      database?.close();
+      app.quit();
+    });
 });

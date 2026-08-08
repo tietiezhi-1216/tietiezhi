@@ -1,5 +1,57 @@
 export type WorkspaceKind = "project" | "temporary";
 
+export type AgentAvailability = "idle" | "working" | "offline";
+
+/** A persistent digital employee owned by the user. */
+export interface AgentDefinition {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  avatar?: string;
+  modelId?: string;
+  availability: AgentAvailability;
+  isBuiltIn: boolean;
+  presetId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Read-only template used to create an AgentDefinition. */
+export interface AgentPreset {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  avatar?: string;
+  defaultModelId?: string;
+}
+
+export interface CreateAgentInput {
+  presetId?: string;
+  name: string;
+  role: string;
+  description?: string;
+  avatar?: string;
+  modelId?: string;
+  systemPrompt?: string;
+}
+
+export interface AgentGroup {
+  id: string;
+  name: string;
+  description: string;
+  agentIds: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface CreateAgentGroupInput {
+  name: string;
+  description?: string;
+  agentIds: string[];
+}
+
 export interface Workspace {
   id: string;
   kind: WorkspaceKind;
@@ -28,10 +80,54 @@ export interface Message {
   updatedAt: number;
 }
 
+export interface AgentStartInput {
+  conversationId: string;
+  workspaceId: string;
+  agentId?: string;
+  groupId?: string;
+}
+
+export interface AgentPromptInput {
+  conversationId: string;
+  text: string;
+}
+
+export interface AgentSessionInfo {
+  conversationId: string;
+  agentId?: string;
+  sessionId: string;
+  modelId: string;
+}
+
+export type AgentEvent =
+  | ({ type: "session_started" } & AgentSessionInfo)
+  | {
+      type: "assistant_text_delta";
+      conversationId: string;
+      delta: string;
+    }
+  | {
+      type: "assistant_completed";
+      conversationId: string;
+      text: string;
+    }
+  | {
+      type: "session_error";
+      conversationId: string;
+      message: string;
+    }
+  | {
+      type: "session_stopped";
+      conversationId: string;
+    };
+
 export interface Conversation {
   id: string;
   workspaceId: string;
+  agentId?: string;
+  groupId?: string;
   title: string;
+  messageCount?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -44,6 +140,8 @@ export interface ConversationDetail {
 
 export interface CreateConversationInput {
   workspaceId: string;
+  agentId?: string;
+  groupId?: string;
   title?: string;
 }
 
@@ -107,8 +205,26 @@ export interface DesktopAPI {
     rename(id: string, title: string): Promise<Conversation>;
     remove(id: string): Promise<void>;
   };
+  agentProfiles: {
+    list(): Promise<AgentDefinition[]>;
+    presets(): Promise<AgentPreset[]>;
+    create(input: CreateAgentInput): Promise<AgentDefinition>;
+  };
+  agentGroups: {
+    list(): Promise<AgentGroup[]>;
+    create(input: CreateAgentGroupInput): Promise<AgentGroup>;
+    remove(id: string): Promise<void>;
+  };
+  agents: {
+    start(input: AgentStartInput): Promise<AgentSessionInfo>;
+    prompt(input: AgentPromptInput): Promise<void>;
+    abort(conversationId: string): Promise<void>;
+    stop(conversationId: string): Promise<void>;
+    onEvent(listener: (event: AgentEvent) => void): () => void;
+  };
 }
 
 export const IPC = {
   invoke: "tietiezhi:invoke",
+  agentEvent: "tietiezhi:agent-event",
 } as const;
